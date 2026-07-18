@@ -374,7 +374,12 @@ function App() {
     setCompleted([]);
     setTask(nextTask);
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 180000);
+    let idleTimeout = null;
+    const resetIdleTimeout = () => {
+      if (idleTimeout) window.clearTimeout(idleTimeout);
+      idleTimeout = window.setTimeout(() => controller.abort(), 180000);
+    };
+    resetIdleTimeout();
     try {
       const response = await fetch(`${API_URL}/api/sessions/${session.id}/analyze/stream`, {
         method: "POST",
@@ -391,6 +396,7 @@ function App() {
       let buffer = "";
       while (true) {
         const { value, done } = await reader.read();
+        if (!done) resetIdleTimeout();
         buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
         const blocks = buffer.split("\n\n");
         buffer = blocks.pop() || "";
@@ -412,9 +418,9 @@ function App() {
         if (done) break;
       }
     } catch (err) {
-      setError(err.name === "AbortError" ? "分析超时，请稍后重试或缩小任务范围。" : err.message);
+      setError(err.name === "AbortError" ? "长时间未收到分析进度，请稍后重试。" : err.message);
     } finally {
-      window.clearTimeout(timeout);
+      if (idleTimeout) window.clearTimeout(idleTimeout);
       setRunning(false);
     }
   }
