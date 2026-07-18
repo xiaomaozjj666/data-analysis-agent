@@ -65,11 +65,25 @@ const presets = [
 ];
 
 async function api(path, options = {}) {
-  const response = await fetch(`${API_URL}${path}`, { ...options, headers: requestHeaders(options.headers) });
-  const contentType = response.headers.get("content-type") || "";
-  const payload = contentType.includes("application/json") ? await response.json() : await response.text();
-  if (!response.ok) throw new Error(payload?.detail || payload || `请求失败 (${response.status})`);
-  return payload;
+  const { timeoutMs = 30000, signal: providedSignal, ...fetchOptions } = options;
+  const controller = providedSignal ? null : new AbortController();
+  const timeout = controller ? window.setTimeout(() => controller.abort(), timeoutMs) : null;
+  try {
+    const response = await fetch(`${API_URL}${path}`, {
+      ...fetchOptions,
+      headers: requestHeaders(fetchOptions.headers),
+      signal: providedSignal || controller.signal,
+    });
+    const contentType = response.headers.get("content-type") || "";
+    const payload = contentType.includes("application/json") ? await response.json() : await response.text();
+    if (!response.ok) throw new Error(payload?.detail || payload || `请求失败 (${response.status})`);
+    return payload;
+  } catch (error) {
+    if (error.name === "AbortError") throw new Error("连接服务超时，请刷新页面后重试。Render 免费实例首次唤醒可能需要几十秒。");
+    throw error;
+  } finally {
+    if (timeout) window.clearTimeout(timeout);
+  }
 }
 
 function AccessGate({ onAuthenticated }) {
