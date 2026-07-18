@@ -87,6 +87,19 @@ def test_access_token_protects_api(monkeypatch):
     assert authorized.status_code == 200
 
 
+def test_access_token_protects_analysis_stream(monkeypatch):
+    monkeypatch.setenv("APP_ACCESS_TOKEN", "test-access-token")
+    client = TestClient(api.app)
+
+    response = client.post(
+        "/api/sessions/api_missing/analyze/stream",
+        json={"task": "检查数据"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "需要有效的应用访问令牌。"
+
+
 def test_upload_stream_enforces_dataset_limits(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_AGENT_RUNS_DIR", str(tmp_path / "runs"))
     monkeypatch.setenv("DATA_AGENT_MAX_ROWS", "1")

@@ -24,6 +24,9 @@ class FakeS3Client:
     def head_bucket(self, Bucket: str) -> None:
         (self.root / Bucket).mkdir(parents=True, exist_ok=True)
 
+    def delete_object(self, Bucket: str, Key: str) -> None:
+        (self.root / Bucket / Key).unlink(missing_ok=True)
+
 
 class FailingStorage:
     backend = "s3"
@@ -93,3 +96,21 @@ def test_registry_keeps_local_session_when_storage_sync_fails(tmp_path):
 
     assert session_id == "api_degraded"
     assert registry.get(session_id).workspace.dataframe.iloc[0].to_dict() == {"region": "East", "sales": 100}
+
+
+def test_registry_prunes_remote_session_archive(tmp_path):
+    storage = fake_storage(tmp_path / "remote")
+    runs = tmp_path / "runs"
+    workspace = DataWorkspace(runs, session_id="api_old")
+    source = workspace.save_upload("sales.csv", b"region,sales\nEast,100\n")
+    workspace.load(source)
+    registry = SessionRegistry(runs, max_sessions=1, ttl_hours=24, storage=storage)
+    registry.create(workspace)
+    assert (tmp_path / "remote" / "test-bucket" / "sessions" / "api_old.zip").is_file()
+
+    newer = DataWorkspace(runs, session_id="api_new")
+    source = newer.save_upload("sales.csv", b"region,sales\nWest,200\n")
+    newer.load(source)
+    registry.create(newer)
+
+    assert not (tmp_path / "remote" / "test-bucket" / "sessions" / "api_old.zip").exists()

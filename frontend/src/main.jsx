@@ -372,11 +372,14 @@ function App() {
     setPlan([]);
     setCompleted([]);
     setTask(nextTask);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 180000);
     try {
       const response = await fetch(`${API_URL}/api/sessions/${session.id}/analyze/stream`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: requestHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ task: nextTask }),
+        signal: controller.signal,
       });
       if (!response.ok) {
         const payload = await response.json();
@@ -408,8 +411,9 @@ function App() {
         if (done) break;
       }
     } catch (err) {
-      setError(err.message);
+      setError(err.name === "AbortError" ? "分析超时，请稍后重试或缩小任务范围。" : err.message);
     } finally {
+      window.clearTimeout(timeout);
       setRunning(false);
     }
   }
@@ -512,6 +516,10 @@ function App() {
         <div className="sidebar-foot">
           <span><i className={settings?.langsmith_tracing ? "online" : ""} />LangSmith</span>
           <small>{settings?.langsmith_tracing ? "追踪开启" : "本地模式"}</small>
+        </div>
+        <div className="storage-status">
+          <span><i className={settings?.storage_status === "ok" ? "online" : "warning"} />对象存储</span>
+          <small>{settings?.storage_status === "ok" ? "持久化正常" : "降级模式"}</small>
         </div>
       </aside>
 

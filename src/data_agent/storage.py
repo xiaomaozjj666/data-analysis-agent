@@ -14,6 +14,8 @@ class SessionStorage(Protocol):
 
     def restore_session(self, session_id: str, destination: Path) -> bool: ...
 
+    def delete_session(self, session_id: str) -> None: ...
+
     def healthcheck(self) -> dict[str, str | bool]: ...
 
 
@@ -26,6 +28,9 @@ class LocalSessionStorage:
 
     def restore_session(self, session_id: str, destination: Path) -> bool:
         return False
+
+    def delete_session(self, session_id: str) -> None:
+        return
 
     def healthcheck(self) -> dict[str, str | bool]:
         return {"backend": self.backend, "persistent": self.persistent, "status": "local_only"}
@@ -105,6 +110,12 @@ class S3SessionStorage:
             return True
         finally:
             archive.unlink(missing_ok=True)
+
+    def delete_session(self, session_id: str) -> None:
+        try:
+            self.client.delete_object(Bucket=self.bucket, Key=self._key(session_id))
+        except Exception as exc:
+            raise RuntimeError(f"R2/S3 会话归档删除失败：{exc}") from exc
 
     def healthcheck(self) -> dict[str, str | bool]:
         try:

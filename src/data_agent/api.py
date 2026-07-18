@@ -66,8 +66,9 @@ class SessionRegistry:
         self.ttl_seconds = ttl_hours * 3600
         self.storage = storage or LocalSessionStorage()
 
-    def _prune_locked(self) -> None:
+    def _prune_locked(self, reserve: int = 0) -> list[str]:
         now = time.monotonic()
+        removed_ids: list[str] = []
         expired = [
             (session_id, record)
             for session_id, record in self._items.items()
@@ -75,22 +76,33 @@ class SessionRegistry:
         ]
         for session_id, record in expired:
             self._items.pop(session_id, None)
+            removed_ids.append(session_id)
             try:
                 record.workspace.cleanup()
             except OSError:
                 pass
-        if len(self._items) <= self.max_sessions:
-            return
+        allowed = max(self.max_sessions - reserve, 0)
+        if len(self._items) <= allowed:
+            return removed_ids
         candidates = sorted(
             ((record.last_access, session_id, record) for session_id, record in self._items.items() if not record.run_lock.locked()),
             key=lambda item: item[0],
         )
-        for _, session_id, record in candidates[: max(0, len(self._items) - self.max_sessions)]:
+        for _, session_id, record in candidates[: max(0, len(self._items) - allowed)]:
             self._items.pop(session_id, None)
+            removed_ids.append(session_id)
             try:
                 record.workspace.cleanup()
             except OSError:
                 pass
+        return removed_ids
+
+    def _cleanup_remote(self, session_ids: list[str]) -> None:
+        for session_id in session_ids:
+            try:
+                self.storage.delete_session(session_id)
+            except Exception:
+                logger.exception("Session storage cleanup failed for %s", session_id)
 
     def _manifest_path(self, record: SessionRecord) -> Path:
         return record.workspace.root / "session.json"
@@ -171,20 +183,22 @@ class SessionRegistry:
         session_id = workspace.root.name
         record = SessionRecord(workspace)
         with self._lock:
-            self._prune_locked()
+            removed_ids = self._prune_locked(reserve=1)
             self._items[session_id] = record
             self._persist_locked(session_id, record)
+        self._cleanup_remote(removed_ids)
         self._sync_storage(session_id, record.workspace.root)
         return session_id, record
 
     def get(self, session_id: str) -> SessionRecord:
         with self._lock:
-            self._prune_locked()
+            removed_ids = self._prune_locked()
             record = self._items.get(session_id)
             if record is None:
                 record = self._restore_locked(session_id)
             if record is not None:
                 record.last_access = time.monotonic()
+        self._cleanup_remote(removed_ids)
         if record is None:
             raise HTTPException(status_code=404, detail="分析会话不存在或服务已经重启。")
         return record
@@ -356,6 +370,7 @@ def storage_health() -> dict[str, str | bool]:
 @app.get("/api/settings")
 def get_settings() -> dict[str, Any]:
     settings = _effective_settings()
+    storage_status = session_storage.healthcheck()
     return {
         "provider": "deepseek",
         "model": settings.model,
@@ -367,6 +382,8 @@ def get_settings() -> dict[str, Any]:
         "langsmith_project": os.getenv("LANGSMITH_PROJECT", "data-analysis-agent"),
         "storage_backend": session_storage.backend,
         "persistent_storage": session_storage.persistent,
+        "storage_status": storage_status.get("status", "unknown"),
+        "storage_message": storage_status.get("message", ""),
     }
 
 

@@ -116,6 +116,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .model-line small { margin-top: 2px; color: var(--muted); font-size: 9px; }
 .model-line i, .sidebar-foot i, .api-status i { width: 6px; height: 6px; border-radius: 50%; background: #aeb4bb; flex: 0 0 auto; }
 i.online { background: var(--green); box-shadow: 0 0 0 3px rgba(33, 132, 90, .1); }
+i.warning { background: var(--amber); box-shadow: 0 0 0 3px rgba(184, 119, 25, .1); }
 .settings-form {
   position: absolute;
   left: 8px;
@@ -144,6 +145,10 @@ i.online { background: var(--green); box-shadow: 0 0 0 3px rgba(33, 132, 90, .1)
 .save-button { width: 100%; height: 34px; margin-top: 14px; display: flex; align-items: center; justify-content: center; gap: 7px; border: 0; border-radius: 4px; background: var(--ink); color: white; font-size: 11px; font-weight: 650; }
 .sidebar-foot { height: 38px; display: flex; align-items: end; justify-content: space-between; margin-top: 8px; padding: 10px 8px 0; border-top: 1px solid var(--line); color: #4f5660; font-size: 9px; }
 .sidebar-foot small { color: var(--faint); }
+.storage-status { display: flex; align-items: center; justify-content: space-between; padding: 7px 8px 0; color: #4f5660; font-size: 9px; }
+.storage-status span { display: flex; align-items: center; gap: 8px; }
+.storage-status i { width: 6px; height: 6px; border-radius: 50%; background: #aeb4bb; flex: 0 0 auto; }
+.storage-status small { color: var(--faint); }
 
 .main { min-width: 0; padding: 0 34px 48px; }
 .topbar { height: 64px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
@@ -314,7 +319,7 @@ tr:hover td { background: #f3f6ff !important; }
   .sidebar-section { margin-top: 14px; }
   .sidebar-spacer { display: none; }
   .provider-block { margin-top: 10px; }
-  .provider-block .sidebar-label, .sidebar-foot { display: none; }
+  .provider-block .sidebar-label, .sidebar-foot, .storage-status { display: none; }
   .model-line { min-height: 42px; padding-inline: 2px; border-top: 1px solid var(--line); border-radius: 0; }
   .settings-form { position: fixed; left: 12px; right: 12px; bottom: 12px; width: auto; }
   .main { padding: 0 14px 34px; }
