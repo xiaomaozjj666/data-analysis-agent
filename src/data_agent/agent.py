@@ -24,12 +24,14 @@ SYSTEM_PROMPT = """你是一名严谨、主动的数据分析专家。你通过 
 
 工作规范：
 1. 不得猜测数据结构；进行清洗、统计或绘图前必须确认字段、类型和缺失情况。
-2. 清洗必须采用保守策略，说明处理前后的行数、缺失值和异常值变化。
-3. 统计结论给出样本量、指标、适用时的 p 值与显著性；相关不等于因果。
-4. 图表必须匹配变量类型并使用清晰标题；复杂关系优先使用热力图或关系图。
-5. 只能引用工具实际返回的数字和文件，不得编造结果。
-6. 不展示隐藏的内部推理，只简要说明已执行的动作和可验证结果。
-7. 当前只完成计划中指定的步骤，不要擅自重复已经完成的工作。
+2. 如果工具因列类型、日期格式、数值格式或编码问题失败，先检查错误，再调用 repair_data_format，修复后重试原操作一次。
+3. repair_data_format 只允许修复明确的格式问题；不得把负数、离群值、重复记录或业务缺失值擅自改掉。
+4. 清洗必须采用保守策略，说明处理前后的行数、缺失值和异常值变化。
+5. 统计结论给出样本量、指标、适用时的 p 值与显著性；相关不等于因果。
+6. 图表必须匹配变量类型并使用清晰标题；复杂关系优先使用热力图或关系图。
+7. 只能引用工具实际返回的数字和文件，不得编造结果。
+8. 不展示隐藏的内部推理，只简要说明已执行的动作和可验证结果。
+9. 当前只完成计划中指定的步骤，不要擅自重复已经完成的工作。
 """
 
 
@@ -211,13 +213,46 @@ def _tool_trace(messages: list[BaseMessage]) -> list[dict[str, str]]:
     return trace
 
 
+def _format_error_text(messages: list[BaseMessage]) -> str:
+    return "\n".join(
+        _message_text(message)
+        for message in messages
+        if isinstance(message, ToolMessage) and "工具执行失败" in _message_text(message)
+    )
+
+
+def _is_recoverable_format_error(text: str) -> bool:
+    markers = (
+        "类型",
+        "日期",
+        "数值",
+        "格式",
+        "dtype",
+        "numeric",
+        "datetime",
+        "could not convert",
+        "not numeric",
+        "invalid",
+    )
+    lowered = text.lower()
+    return any(marker in text or marker in lowered for marker in markers)
+
+
+def _query_allows_format_repair(query: str) -> bool:
+    return not any(token in query for token in ("不修改", "无需修改", "只检查", "仅检查"))
+
+
 @wrap_tool_call
 def _handle_tool_error(request: Any, handler: Any) -> ToolMessage:
     try:
         return handler(request)
     except Exception as exc:
         return ToolMessage(
-            content=f"工具执行失败：{type(exc).__name__}: {exc}。请检查列名和参数后修正重试。",
+            content=(
+                f"工具执行失败：{type(exc).__name__}: {exc}。"
+                "如果原因与列类型、日期或数值格式有关，请先调用 repair_data_format，"
+                "再用修正后的列名和参数重试；如果是业务数据异常，不要擅自修改。"
+            ),
             tool_call_id=request.tool_call["id"],
         )
 
@@ -294,16 +329,52 @@ class DataAnalysisAgent:
                 f"已完成步骤：\n{completed_text}\n\n"
                 "只执行当前步骤。使用工具获得证据，然后用简短文字报告实际结果。"
             )
-            result = self.react_agent.invoke(
-                {"messages": [*state.get("input_messages", []), HumanMessage(content=execution_prompt)]},
-                config={"recursion_limit": self.settings.max_iterations * 2 + 5},
-            )
-            messages = result["messages"]
+            messages: list[BaseMessage] = []
+            recovery_note = ""
+            try:
+                result = self.react_agent.invoke(
+                    {"messages": [*state.get("input_messages", []), HumanMessage(content=execution_prompt)]},
+                    config={"recursion_limit": self.settings.max_iterations * 2 + 5},
+                )
+                messages = result["messages"]
+                format_error = _format_error_text(messages)
+                if format_error and _query_allows_format_repair(state["query"]) and _is_recoverable_format_error(format_error):
+                    repair_tool = next((item for item in self.tools if item.name == "repair_data_format"), None)
+                    if repair_tool is not None:
+                        repair_result = repair_tool.invoke({})
+                        recovery_note = f"已执行一次安全格式修复并重试：{repair_result}"
+                        retry_prompt = (
+                            f"{execution_prompt}\n\n上一次工具调用失败：{format_error[:3000]}\n"
+                            f"自动修复结果：{repair_result}\n请只重试当前步骤，不要扩大任务范围。"
+                        )
+                        retry = self.react_agent.invoke(
+                            {"messages": [*state.get("input_messages", []), HumanMessage(content=retry_prompt)]},
+                            config={"recursion_limit": self.settings.max_iterations * 2 + 5},
+                        )
+                        messages = [*messages, *retry["messages"]]
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"
+                step_result = {
+                    **step,
+                    "status": "failed",
+                    "summary": f"步骤执行失败：{error}。后续将由重规划判断是否需要补偿。",
+                }
+                return {
+                    "current_step": step,
+                    "last_step_result": step_result,
+                    "trace": [
+                        *state.get("trace", []),
+                        {"type": "error", "name": step["id"], "detail": error[:4000]},
+                    ],
+                    "artifacts": list(self.workspace.artifacts),
+                }
             final_ai = next(
                 (message for message in reversed(messages) if isinstance(message, AIMessage)), None
             )
             summary = _message_text(final_ai) or "步骤已执行，但模型未返回文字摘要。"
-            step_result = {**step, "summary": summary}
+            if recovery_note:
+                summary = f"{summary}\n\n{recovery_note}"
+            step_result = {**step, "status": "ok", "summary": summary}
             return {
                 "current_step": step,
                 "last_step_result": step_result,
@@ -329,6 +400,7 @@ class DataAnalysisAgent:
                 "completed": completed,
                 "remaining": original_remaining,
                 "artifact_count": len(state.get("artifacts", [])),
+                "failed_steps": [item for item in completed if item.get("status") == "failed"],
             }
             try:
                 decision = self.replanner.invoke(

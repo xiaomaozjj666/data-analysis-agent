@@ -169,6 +169,8 @@ i.online { background: var(--green); box-shadow: 0 0 0 3px rgba(33, 132, 90, .1)
 
 .dataset-header { min-height: 92px; display: flex; align-items: center; justify-content: space-between; gap: 24px; }
 .dataset-header h1 { max-width: 65vw; margin: 6px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 24px; line-height: 1.2; font-weight: 680; }
+.dataset-warning { display: flex; align-items: center; gap: 6px; margin: 8px 0 0; color: var(--amber); font-size: 10px; }
+.dataset-warning svg { flex: 0 0 auto; }
 .change-file { height: 34px; display: flex; align-items: center; gap: 7px; padding: 0 11px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--paper); color: #454c55; font-size: 10px; }
 .change-file:hover { border-color: #aeb4bc; }
 .metrics-band { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }

@@ -52,6 +52,31 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         return json_text(workspace.profile(sample_rows=sample_rows))
 
     @tool
+    def repair_data_format(
+        normalize_missing: bool = True,
+        trim_strings: bool = True,
+        parse_numeric: bool = True,
+        parse_dates: bool = True,
+        normalize_column_names: bool = False,
+    ) -> str:
+        """Repair only unambiguous formatting issues and return an audit record.
+
+        Safe repairs include trimming text, standardizing explicit missing markers, converting
+        fully numeric text columns, and converting fully parseable date/time columns. It never
+        removes duplicates, fills missing business values, clips outliers, or changes negatives.
+        Call this after a type/format error before retrying the failed analysis tool.
+        """
+        return json_text(
+            workspace.repair_format(
+                normalize_missing=normalize_missing,
+                trim_strings=trim_strings,
+                parse_numeric=parse_numeric,
+                parse_dates=parse_dates,
+                normalize_column_names=normalize_column_names,
+            )
+        )
+
+    @tool
     def clean_data(
         columns: list[str] | None = None,
         drop_duplicates: bool = True,
@@ -460,4 +485,12 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         path = workspace.save_dataframe(f"{safe_stem}.{format}")
         return json_text({"status": "ok", "rows": len(workspace.dataframe), "output": path})
 
-    return [inspect_data, clean_data, transform_data, statistical_analysis, create_visualization, export_data]
+    return [
+        inspect_data,
+        repair_data_format,
+        clean_data,
+        transform_data,
+        statistical_analysis,
+        create_visualization,
+        export_data,
+    ]

@@ -127,6 +127,7 @@ def test_native_deepseek_agent_binds_analysis_tools_without_network(workspace):
     assert isinstance(agent.model, ChatDeepSeek)
     assert {tool.name for tool in agent.tools} == {
         "inspect_data",
+        "repair_data_format",
         "clean_data",
         "transform_data",
         "statistical_analysis",

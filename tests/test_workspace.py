@@ -23,6 +23,18 @@ def test_workspace_reads_chinese_encoded_csv(tmp_path):
     assert list(workspace.dataframe.columns) == ["地区", "销售额"]
 
 
+def test_workspace_skips_unparseable_csv_rows_with_warning(tmp_path):
+    path = tmp_path / "malformed.csv"
+    path.write_text("a,b\n1,2\n3,4,5\n6,7\n", encoding="utf-8")
+    workspace = DataWorkspace(tmp_path / "runs")
+
+    profile = workspace.load(path)
+
+    assert profile["rows"] == 2
+    assert profile["load_warnings"]
+    assert "跳过" in profile["load_warnings"][0]
+
+
 def test_rejects_unsupported_file(tmp_path):
     path = tmp_path / "unsafe.py"
     path.write_text("print('no')", encoding="utf-8")

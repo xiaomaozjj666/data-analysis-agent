@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
+  AlertTriangle,
   Activity,
   BarChart3,
   Check,
@@ -430,6 +431,9 @@ function App() {
               <div>
                 <span className="section-kicker">当前数据集</span>
                 <h1>{session.filename}</h1>
+                {profile.load_warnings?.length > 0 && (
+                  <p className="dataset-warning"><AlertTriangle size={13} />{profile.load_warnings[0]}</p>
+                )}
               </div>
               <button className="change-file" onClick={() => fileInput.current?.click()}>
                 <RefreshCw size={14} />替换数据

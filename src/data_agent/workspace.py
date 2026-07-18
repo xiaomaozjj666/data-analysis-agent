@@ -43,6 +43,7 @@ class DataWorkspace:
         self._df: pd.DataFrame | None = None
         self.source_path: Path | None = None
         self._artifacts: list[Artifact] = []
+        self.load_warnings: list[str] = []
 
     @property
     def dataframe(self) -> pd.DataFrame:
@@ -89,19 +90,23 @@ class DataWorkspace:
             shutil.copy2(path, target)
             path = target.resolve()
 
-        if suffix in {".csv", ".tsv"}:
-            df = self._read_delimited(path, suffix)
-        elif suffix in {".xlsx", ".xls"}:
-            df = pd.read_excel(path)
-        elif suffix == ".parquet":
-            df = pd.read_parquet(path)
-        elif suffix == ".jsonl":
-            df = pd.read_json(path, lines=True)
-        else:
-            try:
-                df = pd.read_json(path)
-            except ValueError:
+        self.load_warnings = []
+        try:
+            if suffix in {".csv", ".tsv"}:
+                df = self._read_delimited(path, suffix)
+            elif suffix in {".xlsx", ".xls"}:
+                df = pd.read_excel(path)
+            elif suffix == ".parquet":
+                df = pd.read_parquet(path)
+            elif suffix == ".jsonl":
                 df = pd.read_json(path, lines=True)
+            else:
+                try:
+                    df = pd.read_json(path)
+                except ValueError:
+                    df = pd.read_json(path, lines=True)
+        except (pd.errors.ParserError, UnicodeDecodeError, ValueError) as exc:
+            raise ValueError(f"文件格式无法解析：{exc}") from exc
 
         if df.empty and len(df.columns) == 0:
             raise ValueError("数据文件为空或无法识别出列。")
@@ -111,16 +116,142 @@ class DataWorkspace:
         self.source_path = path
         return self.profile(sample_rows=5)
 
-    @staticmethod
-    def _read_delimited(path: Path, suffix: str) -> pd.DataFrame:
+    def _read_delimited(self, path: Path, suffix: str) -> pd.DataFrame:
         sep = "\t" if suffix == ".tsv" else None
         last_error: Exception | None = None
         for encoding in ("utf-8-sig", "utf-8", "gb18030"):
             try:
-                return pd.read_csv(path, sep=sep, engine="python", encoding=encoding)
+                return pd.read_csv(path, sep=sep, engine="python", encoding=encoding, on_bad_lines="error")
+            except pd.errors.ParserError as exc:
+                last_error = exc
+                try:
+                    repaired = pd.read_csv(
+                        path,
+                        sep=sep,
+                        engine="python",
+                        encoding=encoding,
+                        on_bad_lines="skip",
+                    )
+                except (pd.errors.ParserError, UnicodeDecodeError) as retry_exc:
+                    last_error = retry_exc
+                    continue
+                self.load_warnings.append("文件包含格式异常行，已跳过无法解析的记录。")
+                return repaired
             except UnicodeDecodeError as exc:
                 last_error = exc
         raise ValueError(f"无法识别文件编码：{last_error}")
+
+    def repair_format(
+        self,
+        *,
+        normalize_missing: bool = True,
+        trim_strings: bool = True,
+        parse_numeric: bool = True,
+        parse_dates: bool = True,
+        normalize_column_names: bool = False,
+    ) -> dict[str, Any]:
+        """Apply conservative, auditable repairs for unambiguous formatting issues."""
+        df = self.dataframe.copy()
+        before = {
+            "rows": len(df),
+            "columns": len(df.columns),
+            "missing": int(df.isna().sum().sum()),
+        }
+        changes: list[str] = []
+        warnings: list[str] = []
+
+        if normalize_column_names:
+            original = list(df.columns)
+            normalized: list[str] = []
+            seen: dict[str, int] = {}
+            for value in original:
+                base = re.sub(r"[^\w\u4e00-\u9fff]+", "_", str(value).strip().lower()).strip("_") or "column"
+                seen[base] = seen.get(base, 0) + 1
+                normalized.append(base if seen[base] == 1 else f"{base}_{seen[base]}")
+            if normalized != original:
+                df.columns = normalized
+                changes.append("规范化列名并处理重复列名")
+
+        if trim_strings:
+            string_columns = list(df.select_dtypes(include=["object", "string"]).columns)
+            trimmed = 0
+            for column in string_columns:
+                original_values = df[column].copy()
+                df[column] = df[column].map(lambda value: value.strip() if isinstance(value, str) else value)
+                if not df[column].equals(original_values):
+                    trimmed += 1
+            if trimmed:
+                changes.append(f"清理 {trimmed} 个文本列首尾空格")
+
+        if normalize_missing:
+            missing_tokens = {"", "na", "n/a", "null", "none", "nan", "<na>"}
+            normalized_missing = 0
+            for column in df.select_dtypes(include=["object", "string"]).columns:
+                values = df[column].astype("string")
+                mask = values.str.strip().str.lower().isin(missing_tokens)
+                normalized_missing += int(mask.sum())
+                df.loc[mask, column] = pd.NA
+            if normalized_missing:
+                changes.append(f"将 {normalized_missing} 个明确缺失标记统一为空值")
+
+        if parse_numeric:
+            for column in list(df.select_dtypes(include=["object", "string"]).columns):
+                series = df[column]
+                non_empty = series.dropna()
+                if non_empty.empty:
+                    continue
+                text = non_empty.astype("string").str.strip()
+                if text.str.contains("%", regex=False).any() or text.str.match(r"^0\d+$").any():
+                    continue
+                candidate = pd.to_numeric(
+                    text.str.replace(",", "", regex=False).str.replace(r"^[¥￥$€]\s*", "", regex=True),
+                    errors="coerce",
+                )
+                if candidate.notna().all():
+                    df[column] = pd.to_numeric(
+                        df[column].astype("string").str.strip()
+                        .str.replace(",", "", regex=False)
+                        .str.replace(r"^[¥￥$€]\s*", "", regex=True),
+                        errors="coerce",
+                    )
+                    changes.append(f"将格式明确的数值列 {column} 转为数值类型")
+
+        if parse_dates:
+            for column in list(df.select_dtypes(include=["object", "string"]).columns):
+                if not re.search(r"date|time|日期|时间", str(column), flags=re.IGNORECASE):
+                    continue
+                non_empty = df[column].dropna()
+                if non_empty.empty:
+                    continue
+                try:
+                    parsed = pd.to_datetime(non_empty, errors="coerce", format="mixed")
+                except (TypeError, ValueError):
+                    parsed = pd.to_datetime(non_empty, errors="coerce")
+                if parsed.notna().all():
+                    df[column] = pd.to_datetime(df[column], errors="coerce", format="mixed")
+                    changes.append(f"将日期列 {column} 转为日期时间类型")
+                else:
+                    warnings.append(f"日期列 {column} 存在无法确认的值，未自动转换。")
+
+        changed = bool(changes)
+        output: Path | None = None
+        if changed:
+            self.dataframe = df.reset_index(drop=True)
+            output = self.save_dataframe("format_repaired.csv")
+        after = {
+            "rows": len(self.dataframe),
+            "columns": len(self.dataframe.columns),
+            "missing": int(self.dataframe.isna().sum().sum()),
+        }
+        return {
+            "status": "ok",
+            "changed": changed,
+            "before": before,
+            "after": after,
+            "changes": changes,
+            "warnings": warnings,
+            "output": str(output) if output else None,
+        }
 
     def profile(self, sample_rows: int = 5) -> dict[str, Any]:
         df = self.dataframe
@@ -144,6 +275,7 @@ class DataWorkspace:
                 "columns": len(df.columns),
                 "duplicate_rows": int(df.duplicated().sum()),
                 "memory_mb": round(float(df.memory_usage(deep=True).sum() / 1024**2), 3),
+                "load_warnings": list(self.load_warnings),
                 "column_info": column_info,
                 "sample": df.head(sample_rows),
             }
@@ -163,4 +295,3 @@ class DataWorkspace:
             raise ValueError("数据产物仅支持 .csv、.xlsx 或 .parquet。")
         self.register_artifact(path, "dataset", "清洗或变换后的数据集")
         return path
-
