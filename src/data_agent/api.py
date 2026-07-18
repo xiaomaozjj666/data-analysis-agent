@@ -313,7 +313,12 @@ def _history(record: SessionRecord) -> list[HumanMessage | AIMessage]:
 
 @app.get("/api/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "architecture": "plan-and-execute-react"}
+    return {
+        "status": "ok",
+        "architecture": "plan-and-execute-react",
+        "storage_backend": session_storage.backend,
+        "persistent_storage": str(session_storage.persistent).lower(),
+    }
 
 
 @app.get("/api/auth")
