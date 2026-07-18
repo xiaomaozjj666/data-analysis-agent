@@ -78,6 +78,28 @@ class DataWorkspace:
         destination.write_bytes(content)
         return destination
 
+    def save_upload_stream(self, filename: str, stream: Any, max_bytes: int) -> Path:
+        """Write an uploaded file incrementally so the request does not duplicate it in RAM."""
+        safe_name = re.sub(r"[^\w.\-()\u4e00-\u9fff]", "_", Path(filename).name)
+        if Path(safe_name).suffix.lower() not in SUPPORTED_EXTENSIONS:
+            raise ValueError(f"不支持的文件类型。支持：{', '.join(sorted(SUPPORTED_EXTENSIONS))}")
+        destination = (self.input_dir / safe_name).resolve()
+        total = 0
+        try:
+            with destination.open("wb") as target:
+                while True:
+                    chunk = stream.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise ValueError(f"文件不能超过 {max_bytes // (1024 * 1024)}MB。")
+                    target.write(chunk)
+        except Exception:
+            destination.unlink(missing_ok=True)
+            raise
+        return destination
+
     def load(self, source: str | Path, copy_into_workspace: bool = False) -> dict[str, Any]:
         path = Path(source).expanduser().resolve()
         if not path.is_file():
@@ -295,3 +317,19 @@ class DataWorkspace:
             raise ValueError("数据产物仅支持 .csv、.xlsx 或 .parquet。")
         self.register_artifact(path, "dataset", "清洗或变换后的数据集")
         return path
+
+    def cleanup(self) -> None:
+        """Remove this isolated workspace when a session expires or upload fails."""
+        if self.root.exists():
+            shutil.rmtree(self.root)
+
+    def restore_artifacts(self) -> None:
+        """Re-register files already present when a persistent workspace is reopened."""
+        if not self.artifacts_dir.is_dir():
+            return
+        for path in sorted(self.artifacts_dir.iterdir()):
+            if not path.is_file():
+                continue
+            suffix = path.suffix.lower()
+            kind = "visualization" if suffix == ".html" else "image" if suffix in {".png", ".jpg", ".jpeg"} else "dataset"
+            self.register_artifact(path, kind, "恢复的工作区产物")

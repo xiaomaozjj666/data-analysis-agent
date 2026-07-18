@@ -72,6 +72,13 @@ def test_statistics_groupby_and_regression(workspace):
     )
     assert regression["r2"] > 0.8
     assert regression["sample_size"] == 5
+    assert "adjusted_r2" in regression
+
+    correlation = json.loads(
+        tools["statistical_analysis"].invoke({"method": "correlation", "columns": ["sales", "profit"]})
+    )
+    assert correlation["sample_sizes"]["sales"]["profit"] == 5
+    assert "p_values" in correlation
 
 
 def test_complex_visualizations_create_offline_artifacts(workspace):

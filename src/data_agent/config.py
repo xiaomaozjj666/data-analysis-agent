@@ -25,6 +25,13 @@ class AgentSettings:
     max_plan_steps: int = 8
     timeout_seconds: float = 120.0
     runs_dir: Path = Path("runs")
+    max_upload_bytes: int = 200 * 1024 * 1024
+    max_rows: int = 1_000_000
+    max_cells: int = 10_000_000
+    max_active_sessions: int = 100
+    session_ttl_hours: float = 24.0
+    rate_limit_per_minute: int = 30
+    max_concurrent_analyses: int = 2
 
     @classmethod
     def from_env(
@@ -58,6 +65,13 @@ class AgentSettings:
             max_plan_steps=int(os.getenv("AGENT_MAX_PLAN_STEPS", "8")),
             timeout_seconds=float(os.getenv("AGENT_TIMEOUT_SECONDS", "120")),
             runs_dir=Path(os.getenv("DATA_AGENT_RUNS_DIR", "runs")),
+            max_upload_bytes=int(os.getenv("DATA_AGENT_MAX_UPLOAD_BYTES", str(200 * 1024 * 1024))),
+            max_rows=int(os.getenv("DATA_AGENT_MAX_ROWS", "1000000")),
+            max_cells=int(os.getenv("DATA_AGENT_MAX_CELLS", "10000000")),
+            max_active_sessions=int(os.getenv("DATA_AGENT_MAX_ACTIVE_SESSIONS", "100")),
+            session_ttl_hours=float(os.getenv("DATA_AGENT_SESSION_TTL_HOURS", "24")),
+            rate_limit_per_minute=int(os.getenv("DATA_AGENT_RATE_LIMIT_PER_MINUTE", "30")),
+            max_concurrent_analyses=int(os.getenv("DATA_AGENT_MAX_CONCURRENT_ANALYSES", "2")),
         )
 
     def validate_for_model(self) -> None:
@@ -77,3 +91,11 @@ class AgentSettings:
             raise ValueError("AGENT_MAX_ITERATIONS 必须在 1 到 100 之间。")
         if not 2 <= self.max_plan_steps <= 12:
             raise ValueError("AGENT_MAX_PLAN_STEPS 必须在 2 到 12 之间。")
+        if self.max_upload_bytes <= 0 or self.max_rows <= 0 or self.max_cells <= 0:
+            raise ValueError("数据资源上限必须为正数。")
+        if self.max_active_sessions <= 0 or self.session_ttl_hours <= 0:
+            raise ValueError("会话资源上限必须为正数。")
+        if self.rate_limit_per_minute <= 0:
+            raise ValueError("DATA_AGENT_RATE_LIMIT_PER_MINUTE 必须为正数。")
+        if self.max_concurrent_analyses <= 0:
+            raise ValueError("DATA_AGENT_MAX_CONCURRENT_ANALYSES 必须为正数。")

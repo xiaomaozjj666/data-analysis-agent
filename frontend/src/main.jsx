@@ -33,6 +33,15 @@ const API_URL = (
   import.meta.env.VITE_API_URL ||
   (import.meta.env.PROD ? window.location.origin : "http://127.0.0.1:8000")
 ).replace(/\/$/, "");
+const ACCESS_TOKEN_KEY = "data-desk-access-token";
+
+function requestHeaders(headers = {}) {
+  const token = window.localStorage.getItem(ACCESS_TOKEN_KEY);
+  return {
+    ...headers,
+    ...(token ? { "X-App-Token": token } : {}),
+  };
+}
 
 const presets = [
   {
@@ -56,11 +65,56 @@ const presets = [
 ];
 
 async function api(path, options = {}) {
-  const response = await fetch(`${API_URL}${path}`, options);
+  const response = await fetch(`${API_URL}${path}`, { ...options, headers: requestHeaders(options.headers) });
   const contentType = response.headers.get("content-type") || "";
   const payload = contentType.includes("application/json") ? await response.json() : await response.text();
   if (!response.ok) throw new Error(payload?.detail || payload || `请求失败 (${response.status})`);
   return payload;
+}
+
+function AccessGate({ onAuthenticated }) {
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+
+  async function submit(event) {
+    event.preventDefault();
+    if (!token.trim()) return;
+    setBusy(true);
+    setMessage("");
+    window.localStorage.setItem(ACCESS_TOKEN_KEY, token.trim());
+    try {
+      const status = await api("/api/auth");
+      if (!status.authenticated) throw new Error("访问令牌无效。");
+      onAuthenticated();
+    } catch (error) {
+      window.localStorage.removeItem(ACCESS_TOKEN_KEY);
+      setMessage(error.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="auth-gate">
+      <form className="auth-card" onSubmit={submit}>
+        <span className="section-kicker">DATA DESK</span>
+        <h1>进入数据工作台</h1>
+        <p>请输入部署管理员提供的访问令牌。</p>
+        <input
+          type="password"
+          value={token}
+          onChange={(event) => setToken(event.target.value)}
+          placeholder="应用访问令牌"
+          autoFocus
+        />
+        <button className="primary" type="submit" disabled={busy || !token.trim()}>
+          {busy ? "验证中" : "进入工作台"}
+        </button>
+        {message && <small className="auth-error">{message}</small>}
+      </form>
+    </main>
+  );
 }
 
 function Metric({ label, value, unit }) {
@@ -190,6 +244,9 @@ function DatasetOverview({ profile }) {
 }
 
 function App() {
+  const [authRequired, setAuthRequired] = useState(false);
+  const [authenticated, setAuthenticated] = useState(false);
+  const [authReady, setAuthReady] = useState(false);
   const [settings, setSettings] = useState(null);
   const [session, setSession] = useState(null);
   const [activeTab, setActiveTab] = useState("analysis");
@@ -208,15 +265,47 @@ function App() {
   const fileInput = useRef(null);
 
   useEffect(() => {
-    api("/api/settings")
-      .then((value) => {
-        setSettings(value);
-        setEffort(value.reasoning_effort);
-        setThinking(value.thinking_enabled);
-        setKeyOpen(!value.configured);
+    api("/api/auth")
+      .then((status) => {
+        setAuthRequired(status.required);
+        setAuthenticated(status.authenticated);
+        if (!status.required || status.authenticated) return api("/api/settings");
+        return null;
       })
-      .catch((err) => setError(`后端连接失败：${err.message}`));
+      .then((value) => {
+        if (value) {
+          setSettings(value);
+          setEffort(value.reasoning_effort);
+          setThinking(value.thinking_enabled);
+          setKeyOpen(!value.configured);
+        }
+        setAuthReady(true);
+      })
+      .catch((err) => {
+        setAuthReady(true);
+        setError(`后端连接失败：${err.message}`);
+      });
   }, []);
+
+  async function downloadArtifact(item) {
+    try {
+      const response = await fetch(`${API_URL}${item.download_url}`, { headers: requestHeaders() });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.detail || `请求失败 (${response.status})`);
+      }
+      const blob = await response.blob();
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = item.name;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(link.href);
+    } catch (err) {
+      setError(`下载失败：${err.message}`);
+    }
+  }
 
   async function saveSettings() {
     setError("");
@@ -314,6 +403,13 @@ function App() {
   const profile = session?.profile;
   const missingCount = profile?.column_info?.reduce((sum, item) => sum + item.missing, 0) || 0;
   const missingRate = profile ? ((missingCount / Math.max(profile.rows * profile.columns, 1)) * 100).toFixed(1) : "0.0";
+
+  if (!authReady) {
+    return <main className="auth-gate"><div className="auth-loading">正在连接数据工作台…</div></main>;
+  }
+  if (authRequired && !authenticated) {
+    return <AccessGate onAuthenticated={() => { setAuthenticated(true); window.location.reload(); }} />;
+  }
 
   return (
     <div className="app-shell">
@@ -528,7 +624,7 @@ function App() {
                       <div key={item.name}>
                         <FileSpreadsheet size={17} />
                         <span><strong>{item.name}</strong><small>{item.description}</small></span>
-                        <a title={`下载 ${item.name}`} href={`${API_URL}${item.download_url}`}><Download size={16} /></a>
+                        <button className="artifact-download" title={`下载 ${item.name}`} onClick={() => downloadArtifact(item)}><Download size={16} /></button>
                       </div>
                     ))}
                   </div>

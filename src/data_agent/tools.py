@@ -285,6 +285,20 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             numeric = _numeric_columns(df, columns)
             result["columns"] = numeric
             result["result"] = df[numeric].corr().round(6).to_dict()
+            p_values: dict[str, dict[str, float | None]] = {column: {} for column in numeric}
+            sample_sizes: dict[str, dict[str, int]] = {column: {} for column in numeric}
+            for left in numeric:
+                for right in numeric:
+                    pair = df[[left, right]].dropna()
+                    sample_sizes[left][right] = len(pair)
+                    if left == right:
+                        p_values[left][right] = 0.0
+                    elif len(pair) < 3 or pair[left].nunique() < 2 or pair[right].nunique() < 2:
+                        p_values[left][right] = None
+                    else:
+                        p_values[left][right] = float(stats.pearsonr(pair[left], pair[right]).pvalue)
+            result["p_values"] = p_values
+            result["sample_sizes"] = sample_sizes
         elif method == "groupby":
             if not group_by:
                 raise ValueError("groupby 方法需要 group_by。")
@@ -298,13 +312,25 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             if len(numeric) != 2:
                 raise ValueError("t 检验需要恰好两个数值列。")
             pair = df[numeric].dropna()
-            test = stats.ttest_ind(pair[numeric[0]], pair[numeric[1]], equal_var=False) if method == "ttest_ind" else stats.ttest_rel(pair[numeric[0]], pair[numeric[1]])
+            first, second = pair[numeric[0]], pair[numeric[1]]
+            test = stats.ttest_ind(first, second, equal_var=False) if method == "ttest_ind" else stats.ttest_rel(first, second)
+            difference = first - second
+            if method == "ttest_ind":
+                pooled = np.sqrt(((first.var(ddof=1) * (len(first) - 1)) + (second.var(ddof=1) * (len(second) - 1))) / max(len(pair) - 2, 1))
+                effect_size = float((first.mean() - second.mean()) / pooled) if pooled else 0.0
+            else:
+                effect_size = float(difference.mean() / difference.std(ddof=1)) if difference.std(ddof=1) else 0.0
+            confidence = test.confidence_interval(confidence_level=1 - alpha)
             result.update(
                 statistic=float(test.statistic),
                 p_value=float(test.pvalue),
                 significant=bool(test.pvalue < alpha),
                 sample_size=len(pair),
                 means={column: float(pair[column].mean()) for column in numeric},
+                mean_difference=float(difference.mean()),
+                confidence_interval={"low": float(confidence.low), "high": float(confidence.high)},
+                effect_size=float(effect_size),
+                effect_size_name="cohens_d",
             )
         elif method == "anova":
             if not group_by or not target:
@@ -316,7 +342,17 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             if len(groups) < 2:
                 raise ValueError("anova 至少需要两个各含 2 个有效观测值的组。")
             test = stats.f_oneway(*groups)
-            result.update(statistic=float(test.statistic), p_value=float(test.pvalue), significant=bool(test.pvalue < alpha), groups=len(groups))
+            valid = np.concatenate(groups)
+            grand_mean = float(valid.mean())
+            between = sum(len(group) * (float(group.mean()) - grand_mean) ** 2 for group in groups)
+            total = float(((valid - grand_mean) ** 2).sum())
+            result.update(
+                statistic=float(test.statistic),
+                p_value=float(test.pvalue),
+                significant=bool(test.pvalue < alpha),
+                groups=len(groups),
+                eta_squared=float(between / total) if total else 0.0,
+            )
         elif method == "chi_square":
             selected = _checked_columns(df, columns)
             if len(selected) != 2:
@@ -347,6 +383,7 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                 r2=float(r2_score(model_data[target], prediction)),
                 rmse=float(mean_squared_error(model_data[target], prediction) ** 0.5),
                 mae=float(mean_absolute_error(model_data[target], prediction)),
+                adjusted_r2=float(1 - (1 - r2_score(model_data[target], prediction)) * (len(model_data) - 1) / max(len(model_data) - len(features) - 1, 1)),
             )
 
         return json_text(result)

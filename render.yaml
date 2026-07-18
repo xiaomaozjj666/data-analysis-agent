@@ -13,7 +13,19 @@ services:
       - key: DATA_AGENT_RUNS_DIR
         value: /tmp/data-agent-runs
       - key: DATA_AGENT_CORS_ORIGINS
-        value: "*"
+        value: "https://data-analysis-agent-wikz.onrender.com"
+      - key: APP_ACCESS_TOKEN
+        sync: false
+      - key: DATA_AGENT_MAX_UPLOAD_BYTES
+        value: "209715200"
+      - key: DATA_AGENT_MAX_ROWS
+        value: "1000000"
+      - key: DATA_AGENT_MAX_CELLS
+        value: "10000000"
+      - key: DATA_AGENT_RATE_LIMIT_PER_MINUTE
+        value: "30"
+      - key: DATA_AGENT_MAX_CONCURRENT_ANALYSES
+        value: "2"
       - key: DEEPSEEK_API_KEY
         sync: false
       - key: LANGSMITH_TRACING

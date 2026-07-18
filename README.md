@@ -67,6 +67,7 @@ npm run dev
 主要接口：
 
 - `GET /api/health`
+- `GET /api/auth`：检查是否需要应用访问令牌
 - `GET /api/settings`
 - `PUT /api/settings`
 - `POST /api/sessions`：multipart 文件上传
@@ -89,6 +90,12 @@ LANGSMITH_PROJECT=data-analysis-agent
 
 启用后，规划、每个 ReAct 工具调用、重规划和最终汇总都会进入 LangSmith Trace。
 
+### 线上访问保护
+
+公开部署时建议设置 `APP_ACCESS_TOKEN`。设置后，前端会先要求输入访问令牌，所有上传、分析、设置和产物下载接口都会校验令牌；`/api/health` 仍保持公开，便于 Render 健康检查。生产环境还会限制单文件大小、最大行数、最大单元格数、会话数量和写入请求频率。
+
+`APP_ACCESS_TOKEN` 为空时保持本地开发的免登录模式。不要把 DeepSeek API Key 编译进前端，生产环境优先在 Render 或 LangSmith 的环境变量中配置 `DEEPSEEK_API_KEY`。
+
 ### 部署
 
 1. 构建前端：`cd frontend && npm ci && npm run build`。
@@ -97,7 +104,7 @@ LANGSMITH_PROJECT=data-analysis-agent
 4. 在部署环境变量中填入 `DEEPSEEK_API_KEY`；LangSmith 服务密钥由部署环境管理。
 5. 部署完成后直接打开部署 URL，`/docs` 可查看 Agent Server 与自定义 API。
 
-LangSmith Cloud 会托管 Agent Server、线程、运行队列和检查点。本项目生成的数据文件当前保存在部署实例的 `runs` 目录；需要多副本扩缩容或长期保存上传文件时，应把 `DataWorkspace` 的文件层切换到 S3、OSS 或 Azure Blob。
+LangSmith Cloud 会托管 Agent Server、线程、运行队列和检查点。本项目生成的数据文件当前保存在部署实例的 `runs` 目录；需要多副本扩缩容或长期保存上传文件时，应把 `DataWorkspace` 的文件层切换到 S3、OSS 或 Azure Blob。Agent Server 图支持传入 `dataset_id`（优先从 `runs/{dataset_id}/input` 查找）或受控的 `dataset_path`，不要把用户电脑本地路径直接传给云端 Agent。
 
 ### 免费部署到 Render
 
@@ -106,7 +113,8 @@ LangSmith Cloud 会托管 Agent Server、线程、运行队列和检查点。本
 1. 选择 Free Web Service。
 2. 在环境变量界面填写 `DEEPSEEK_API_KEY`。
 3. 填写 `LANGSMITH_API_KEY`；Tracing 可以使用 LangSmith Developer 免费额度。
-4. 提交部署，访问 Render 分配的 `https://*.onrender.com` 地址。
+4. 设置 `APP_ACCESS_TOKEN`，作为工作台登录令牌。
+5. 提交部署，访问 Render 分配的 `https://*.onrender.com` 地址。
 
 前端生产文件已经包含在 `frontend/dist`，FastAPI 会在同一域名托管它；React 仍然只通过 `/api` 和 SSE 接口访问后端。Render Free 服务空闲 15 分钟后会休眠，且 `/tmp/data-agent-runs` 会在重启时清空，所以适合个人测试，不适合长期保存用户数据。需要持久化时接入对象存储或升级实例。
 

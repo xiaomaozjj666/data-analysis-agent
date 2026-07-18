@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+import hmac
 import json
 import os
+import re
 import threading
+import time
+from collections import defaultdict, deque
 from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated, Any
 from uuid import uuid4
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
@@ -19,9 +23,7 @@ from data_agent.agent import AnalysisResult, DataAnalysisAgent
 from data_agent.config import AgentSettings
 from data_agent.credentials import delete_saved_api_key, get_saved_api_key, save_api_key
 from data_agent.serialization import to_jsonable
-from data_agent.workspace import DataWorkspace
-
-MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+from data_agent.workspace import SUPPORTED_EXTENSIONS, DataWorkspace
 
 
 class SettingsUpdate(BaseModel):
@@ -40,34 +42,136 @@ class SessionRecord:
         self.workspace = workspace
         self.chat: list[dict[str, str]] = []
         self.last_result: AnalysisResult | None = None
+        self.last_access = time.monotonic()
+        self.run_lock = threading.Lock()
+        self.created_at = time.time()
 
 
 class SessionRegistry:
-    def __init__(self) -> None:
+    def __init__(self, runs_dir: Path, max_sessions: int, ttl_hours: float) -> None:
         self._items: dict[str, SessionRecord] = {}
         self._lock = threading.RLock()
+        self.runs_dir = runs_dir.resolve()
+        self.max_sessions = max_sessions
+        self.ttl_seconds = ttl_hours * 3600
+
+    def _prune_locked(self) -> None:
+        now = time.monotonic()
+        expired = [
+            (session_id, record)
+            for session_id, record in self._items.items()
+            if now - record.last_access > self.ttl_seconds and not record.run_lock.locked()
+        ]
+        for session_id, record in expired:
+            self._items.pop(session_id, None)
+            try:
+                record.workspace.cleanup()
+            except OSError:
+                pass
+        if len(self._items) <= self.max_sessions:
+            return
+        candidates = sorted(
+            ((record.last_access, session_id, record) for session_id, record in self._items.items() if not record.run_lock.locked()),
+            key=lambda item: item[0],
+        )
+        for _, session_id, record in candidates[: max(0, len(self._items) - self.max_sessions)]:
+            self._items.pop(session_id, None)
+            try:
+                record.workspace.cleanup()
+            except OSError:
+                pass
+
+    def _manifest_path(self, record: SessionRecord) -> Path:
+        return record.workspace.root / "session.json"
+
+    def _persist_locked(self, session_id: str, record: SessionRecord) -> None:
+        payload = {
+            "id": session_id,
+            "filename": record.workspace.source_path.name if record.workspace.source_path else "dataset",
+            "chat": record.chat[-40:],
+            "created_at": record.created_at,
+            "updated_at": time.time(),
+        }
+        target = self._manifest_path(record)
+        temporary = target.with_suffix(".tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(target)
+
+    def persist(self, session_id: str, record: SessionRecord) -> None:
+        with self._lock:
+            self._persist_locked(session_id, record)
+
+    def _restore_locked(self, session_id: str) -> SessionRecord | None:
+        if not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", session_id):
+            return None
+        root = (self.runs_dir / session_id).resolve()
+        if self.runs_dir not in root.parents or not root.is_dir():
+            return None
+        input_dir = root / "input"
+        input_files = [
+            path for path in input_dir.iterdir()
+            if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS
+        ] if input_dir.is_dir() else []
+        if not input_files:
+            return None
+        workspace = DataWorkspace(self.runs_dir, session_id=session_id)
+        try:
+            workspace.load(input_files[0])
+        except (OSError, ValueError):
+            return None
+        workspace.restore_artifacts()
+        record = SessionRecord(workspace)
+        manifest = root / "session.json"
+        if manifest.is_file():
+            try:
+                payload = json.loads(manifest.read_text(encoding="utf-8"))
+                record.chat = [
+                    item for item in payload.get("chat", [])
+                    if isinstance(item, dict) and item.get("role") in {"user", "assistant"}
+                ][-40:]
+                record.created_at = float(payload.get("created_at", record.created_at))
+            except (OSError, ValueError, TypeError):
+                pass
+        self._items[session_id] = record
+        return record
 
     def create(self, workspace: DataWorkspace) -> tuple[str, SessionRecord]:
         session_id = workspace.root.name
         record = SessionRecord(workspace)
         with self._lock:
+            self._prune_locked()
             self._items[session_id] = record
+            self._persist_locked(session_id, record)
         return session_id, record
 
     def get(self, session_id: str) -> SessionRecord:
         with self._lock:
+            self._prune_locked()
             record = self._items.get(session_id)
+            if record is None:
+                record = self._restore_locked(session_id)
+            if record is not None:
+                record.last_access = time.monotonic()
         if record is None:
             raise HTTPException(status_code=404, detail="分析会话不存在或服务已经重启。")
         return record
 
 
-registry = SessionRegistry()
+bootstrap_settings = AgentSettings.from_env(provider="deepseek")
+registry = SessionRegistry(
+    bootstrap_settings.runs_dir,
+    bootstrap_settings.max_active_sessions,
+    bootstrap_settings.session_ttl_hours,
+)
 runtime_settings = {
     "api_key": "",
     "thinking_enabled": None,
     "reasoning_effort": None,
 }
+runtime_settings_lock = threading.RLock()
+request_buckets: dict[str, deque[float]] = defaultdict(deque)
+request_buckets_lock = threading.Lock()
+analysis_slots = threading.BoundedSemaphore(bootstrap_settings.max_concurrent_analyses)
 
 app = FastAPI(
     title="Data Analysis Agent API",
@@ -92,17 +196,59 @@ app.add_middleware(
 )
 
 
+def _check_access(request: Request) -> None:
+    expected = os.getenv("APP_ACCESS_TOKEN", "").strip()
+    if not expected:
+        return
+    provided = request.headers.get("x-app-token", "")
+    if provided.lower().startswith("bearer "):
+        provided = provided[7:]
+    if not provided:
+        provided = request.headers.get("authorization", "")
+        if provided.lower().startswith("bearer "):
+            provided = provided[7:]
+    if not hmac.compare_digest(provided.strip(), expected):
+        raise HTTPException(status_code=401, detail="需要有效的应用访问令牌。")
+
+
+def _check_rate_limit(request: Request) -> None:
+    if request.method not in {"POST", "PUT", "DELETE"} or not request.url.path.startswith("/api/"):
+        return
+    limit = bootstrap_settings.rate_limit_per_minute
+    now = time.monotonic()
+    key = request.client.host if request.client else "unknown"
+    with request_buckets_lock:
+        bucket = request_buckets[key]
+        while bucket and now - bucket[0] >= 60:
+            bucket.popleft()
+        if len(bucket) >= limit:
+            raise HTTPException(status_code=429, detail="请求过于频繁，请稍后再试。")
+        bucket.append(now)
+
+
+@app.middleware("http")
+async def protect_api(request: Request, call_next):
+    if request.url.path.startswith("/api/") and request.url.path not in {"/api/health", "/api/auth"}:
+        try:
+            _check_access(request)
+            _check_rate_limit(request)
+        except HTTPException as exc:
+            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    return await call_next(request)
+
+
 def _effective_settings() -> AgentSettings:
     settings = AgentSettings.from_env(provider="deepseek")
-    settings.api_key = (
-        str(runtime_settings["api_key"] or "")
-        or settings.api_key
-        or get_saved_api_key()
-    )
-    if runtime_settings["thinking_enabled"] is not None:
-        settings.thinking_enabled = bool(runtime_settings["thinking_enabled"])
-    if runtime_settings["reasoning_effort"] is not None:
-        settings.reasoning_effort = str(runtime_settings["reasoning_effort"])
+    with runtime_settings_lock:
+        settings.api_key = (
+            str(runtime_settings["api_key"] or "")
+            or settings.api_key
+            or get_saved_api_key()
+        )
+        if runtime_settings["thinking_enabled"] is not None:
+            settings.thinking_enabled = bool(runtime_settings["thinking_enabled"])
+        if runtime_settings["reasoning_effort"] is not None:
+            settings.reasoning_effort = str(runtime_settings["reasoning_effort"])
     return settings
 
 
@@ -150,6 +296,18 @@ def health() -> dict[str, str]:
     return {"status": "ok", "architecture": "plan-and-execute-react"}
 
 
+@app.get("/api/auth")
+def auth_status(request: Request) -> dict[str, bool]:
+    required = bool(os.getenv("APP_ACCESS_TOKEN", "").strip())
+    if not required:
+        return {"required": False, "authenticated": True}
+    try:
+        _check_access(request)
+    except HTTPException:
+        return {"required": True, "authenticated": False}
+    return {"required": True, "authenticated": True}
+
+
 @app.get("/api/settings")
 def get_settings() -> dict[str, Any]:
     settings = _effective_settings()
@@ -171,35 +329,39 @@ def update_settings(update: SettingsUpdate) -> dict[str, Any]:
         value = update.api_key.strip()
         if not value:
             raise HTTPException(status_code=422, detail="API Key 不能为空。")
-        runtime_settings["api_key"] = value
+        with runtime_settings_lock:
+            runtime_settings["api_key"] = value
         if update.persist_key:
             save_api_key(value)
-    runtime_settings["thinking_enabled"] = update.thinking_enabled
-    runtime_settings["reasoning_effort"] = update.reasoning_effort
+    with runtime_settings_lock:
+        runtime_settings["thinking_enabled"] = update.thinking_enabled
+        runtime_settings["reasoning_effort"] = update.reasoning_effort
     return get_settings()
 
 
 @app.delete("/api/settings/key")
 def delete_key() -> dict[str, bool]:
-    runtime_settings["api_key"] = ""
+    with runtime_settings_lock:
+        runtime_settings["api_key"] = ""
     delete_saved_api_key()
     return {"configured": bool(AgentSettings.from_env(provider="deepseek").api_key)}
 
 
 @app.post("/api/sessions", status_code=201)
 async def create_session(file: Annotated[UploadFile, File()]) -> dict[str, Any]:
-    content = await file.read(MAX_UPLOAD_BYTES + 1)
-    if len(content) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="文件不能超过 200MB。")
-    if not content:
-        raise HTTPException(status_code=422, detail="上传文件为空。")
     settings = AgentSettings.from_env(provider="deepseek")
     session_id = f"api_{uuid4().hex[:12]}"
     workspace = DataWorkspace(settings.runs_dir, session_id=session_id)
     try:
-        saved = workspace.save_upload(file.filename or "dataset.csv", content)
+        saved = workspace.save_upload_stream(file.filename or "dataset.csv", file.file, settings.max_upload_bytes)
+        if saved.stat().st_size == 0:
+            raise ValueError("上传文件为空。")
         workspace.load(saved)
+        rows, columns = len(workspace.dataframe), len(workspace.dataframe.columns)
+        if rows > settings.max_rows or rows * columns > settings.max_cells:
+            raise ValueError(f"数据规模超过限制：最多 {settings.max_rows:,} 行或 {settings.max_cells:,} 个单元格。")
     except (ValueError, OSError) as exc:
+        workspace.cleanup()
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     actual_id, record = registry.create(workspace)
     return _session_payload(actual_id, record)
@@ -217,11 +379,19 @@ def analyze(session_id: str, request: AnalyzeRequest) -> dict[str, Any]:
     if not settings.api_key:
         raise HTTPException(status_code=409, detail="请先配置 DeepSeek API Key。")
     history = _history(record)
-    agent = DataAnalysisAgent(record.workspace, settings)
+    if not record.run_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="当前会话已有分析正在运行。")
+    if not analysis_slots.acquire(blocking=False):
+        record.run_lock.release()
+        raise HTTPException(status_code=429, detail="当前服务正在处理其他分析，请稍后再试。")
     try:
+        agent = DataAnalysisAgent(record.workspace, settings)
         result = agent.run(request.task, history=history)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"分析执行失败：{exc}") from exc
+    finally:
+        analysis_slots.release()
+        record.run_lock.release()
     record.chat.extend(
         [
             {"role": "user", "content": request.task},
@@ -229,6 +399,7 @@ def analyze(session_id: str, request: AnalyzeRequest) -> dict[str, Any]:
         ]
     )
     record.last_result = result
+    registry.persist(session_id, record)
     return _result_payload(session_id, result)
 
 
@@ -243,6 +414,11 @@ def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingRespons
     if not settings.api_key:
         raise HTTPException(status_code=409, detail="请先配置 DeepSeek API Key。")
     history = _history(record)
+    if not record.run_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="当前会话已有分析正在运行。")
+    if not analysis_slots.acquire(blocking=False):
+        record.run_lock.release()
+        raise HTTPException(status_code=429, detail="当前服务正在处理其他分析，请稍后再试。")
 
     def generate():
         yield _sse("started", {"task": request.task})
@@ -272,9 +448,13 @@ def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingRespons
                 ]
             )
             record.last_result = result
+            registry.persist(session_id, record)
             yield _sse("complete", _result_payload(session_id, result))
         except Exception as exc:
             yield _sse("error", {"message": str(exc)})
+        finally:
+            analysis_slots.release()
+            record.run_lock.release()
 
     return StreamingResponse(
         generate(),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, TypedDict
 from uuid import uuid4
@@ -15,6 +16,7 @@ from data_agent.workspace import DataWorkspace
 class DeploymentState(TypedDict, total=False):
     query: str
     dataset_path: str
+    dataset_id: str
     response: str
     plan: list[dict[str, str]]
     completed_steps: list[dict[str, Any]]
@@ -30,7 +32,19 @@ def make_graph(config: RunnableConfig | None = None):
     thread_id = str(configurable.get("thread_id") or uuid4().hex)
 
     def run_analysis(state: DeploymentState) -> dict[str, Any]:
-        source = Path(state["dataset_path"]).expanduser().resolve()
+        if state.get("dataset_id"):
+            dataset_id = state["dataset_id"]
+            if not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", dataset_id):
+                raise ValueError("dataset_id 格式无效。")
+            input_dir = (settings.runs_dir / dataset_id / "input").resolve()
+            if settings.runs_dir.resolve() not in input_dir.parents or not input_dir.is_dir():
+                raise FileNotFoundError("找不到指定的数据集工作区。")
+            candidates = sorted(path for path in input_dir.iterdir() if path.is_file())
+            if not candidates:
+                raise FileNotFoundError("指定的数据集没有可读取的文件。")
+            source = candidates[0]
+        else:
+            source = Path(state["dataset_path"]).expanduser().resolve()
         workspace = DataWorkspace(settings.runs_dir, session_id=f"deploy_{thread_id[:24]}")
         workspace.load(source, copy_into_workspace=True)
         result = DataAnalysisAgent(workspace, settings).run(state["query"])
