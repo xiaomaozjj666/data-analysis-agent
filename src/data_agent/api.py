@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import logging
 import os
 import re
 import threading
@@ -25,6 +26,8 @@ from data_agent.credentials import delete_saved_api_key, get_saved_api_key, save
 from data_agent.serialization import to_jsonable
 from data_agent.storage import LocalSessionStorage, SessionStorage, build_session_storage
 from data_agent.workspace import SUPPORTED_EXTENSIONS, DataWorkspace
+
+logger = logging.getLogger(__name__)
 
 
 class SettingsUpdate(BaseModel):
@@ -105,10 +108,18 @@ class SessionRegistry:
         temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         temporary.replace(target)
 
+    def _sync_storage(self, session_id: str, root: Path) -> None:
+        try:
+            self.storage.sync_session(session_id, root)
+        except Exception:
+            # Object storage is a durability layer; it must not turn a valid
+            # upload or completed analysis into a 500 when the provider is down.
+            logger.exception("Session storage sync failed for %s", session_id)
+
     def persist(self, session_id: str, record: SessionRecord) -> None:
         with self._lock:
             self._persist_locked(session_id, record)
-        self.storage.sync_session(session_id, record.workspace.root)
+        self._sync_storage(session_id, record.workspace.root)
 
     def _restore_locked(self, session_id: str) -> SessionRecord | None:
         if not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", session_id):
@@ -122,7 +133,11 @@ class SessionRegistry:
             for path in input_dir.iterdir()
         )
         if not has_local_input:
-            self.storage.restore_session(session_id, root)
+            try:
+                self.storage.restore_session(session_id, root)
+            except Exception:
+                logger.exception("Session storage restore failed for %s", session_id)
+                return None
         if not root.is_dir():
             return None
         input_files = [
@@ -159,7 +174,7 @@ class SessionRegistry:
             self._prune_locked()
             self._items[session_id] = record
             self._persist_locked(session_id, record)
-        self.storage.sync_session(session_id, record.workspace.root)
+        self._sync_storage(session_id, record.workspace.root)
         return session_id, record
 
     def get(self, session_id: str) -> SessionRecord:

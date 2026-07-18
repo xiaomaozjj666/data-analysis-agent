@@ -25,6 +25,20 @@ class FakeS3Client:
         (self.root / Bucket).mkdir(parents=True, exist_ok=True)
 
 
+class FailingStorage:
+    backend = "s3"
+    persistent = True
+
+    def sync_session(self, session_id: str, source: Path) -> None:
+        raise RuntimeError("provider unavailable")
+
+    def restore_session(self, session_id: str, destination: Path) -> bool:
+        raise RuntimeError("provider unavailable")
+
+    def healthcheck(self) -> dict[str, str | bool]:
+        return {"backend": self.backend, "persistent": self.persistent, "status": "error"}
+
+
 def fake_storage(root: Path) -> S3SessionStorage:
     storage = object.__new__(S3SessionStorage)
     storage.bucket = "test-bucket"
@@ -67,3 +81,15 @@ def test_registry_restores_session_from_remote_archive(tmp_path):
 
     restored = SessionRegistry(tmp_path / "runs", 10, 24, storage=storage).get("api_remote")
     assert restored.workspace.dataframe.iloc[0].to_dict() == {"region": "East", "sales": 100}
+
+
+def test_registry_keeps_local_session_when_storage_sync_fails(tmp_path):
+    workspace = DataWorkspace(tmp_path / "runs", session_id="api_degraded")
+    source = workspace.save_upload("sales.csv", b"region,sales\nEast,100\n")
+    workspace.load(source)
+    registry = SessionRegistry(tmp_path / "runs", 10, 24, storage=FailingStorage())
+
+    session_id, _ = registry.create(workspace)
+
+    assert session_id == "api_degraded"
+    assert registry.get(session_id).workspace.dataframe.iloc[0].to_dict() == {"region": "East", "sales": 100}
