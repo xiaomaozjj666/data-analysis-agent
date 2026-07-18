@@ -277,6 +277,7 @@ function App() {
   const [effort, setEffort] = useState("high");
   const [thinking, setThinking] = useState(true);
   const fileInput = useRef(null);
+  const taskInput = useRef(null);
 
   useEffect(() => {
     api("/api/auth")
@@ -583,6 +584,7 @@ function App() {
                       {running && <span><LoaderCircle className="spin" size={14} />正在分析</span>}
                     </div>
                     <textarea
+                      ref={taskInput}
                       value={task}
                       onChange={(event) => setTask(event.target.value)}
                       placeholder="例如：比较各区域销售表现，解释异常波动并生成趋势图"
@@ -594,7 +596,10 @@ function App() {
                           <button
                             key={title}
                             title={detail}
-                            onClick={() => { setTask(presetTask); startAnalysis(presetTask); }}
+                            onClick={() => {
+                              setTask(presetTask);
+                              window.setTimeout(() => taskInput.current?.focus(), 0);
+                            }}
                             disabled={running || !settings?.configured}
                           >
                             <Icon size={14} />{title}
