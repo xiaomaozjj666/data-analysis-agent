@@ -49,6 +49,7 @@ class S3SessionStorage:
         if not all((bucket, endpoint_url, access_key_id, secret_access_key)):
             raise ValueError("R2/S3 持久化配置不完整。")
         import boto3
+        from botocore.config import Config
 
         self.bucket = bucket
         self.endpoint_url = endpoint_url.rstrip("/")
@@ -59,6 +60,7 @@ class S3SessionStorage:
             region_name=region,
             aws_access_key_id=access_key_id,
             aws_secret_access_key=secret_access_key,
+            config=Config(s3={"addressing_style": "path"}),
         )
 
     def _key(self, session_id: str) -> str:
