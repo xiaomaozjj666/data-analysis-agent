@@ -15,7 +15,7 @@ services:
       - key: DATA_AGENT_CORS_ORIGINS
         value: "https://data-analysis-agent-wikz.onrender.com"
       - key: APP_ACCESS_TOKEN
-        generateValue: true
+        sync: false
       - key: DATA_AGENT_MAX_UPLOAD_BYTES
         value: "209715200"
       - key: DATA_AGENT_MAX_ROWS
