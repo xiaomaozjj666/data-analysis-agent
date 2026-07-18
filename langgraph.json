@@ -4,7 +4,7 @@
   "graphs": {
     "data_analysis_agent": "./src/data_agent/deployment.py:make_graph"
   },
-  "env": ".env",
+  "image_distro": "wolfi",
   "http": {
     "app": "./src/data_agent/api.py:app"
   }
