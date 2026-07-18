@@ -10,6 +10,16 @@ $WebUrl = "http://127.0.0.1:5173"
 Set-Location $ProjectDir
 New-Item -ItemType Directory -Force -Path $RunsDir | Out-Null
 
+# Load local secrets for the child API process without committing them.
+$DotEnv = Join-Path $ProjectDir ".env"
+if (Test-Path -LiteralPath $DotEnv) {
+    foreach ($Line in Get-Content -LiteralPath $DotEnv) {
+        if ($Line -match '^\s*([^#=][^=]*)=(.*)$') {
+            Set-Item -Path "Env:$($Matches[1].Trim())" -Value $Matches[2].Trim()
+        }
+    }
+}
+
 try {
     if (-not (Test-Path -LiteralPath $Python)) {
         Write-Host "[Data Analysis] Creating Python environment..." -ForegroundColor Cyan
