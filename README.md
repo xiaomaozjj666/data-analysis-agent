@@ -99,6 +99,17 @@ LANGSMITH_PROJECT=data-analysis-agent
 
 LangSmith Cloud 会托管 Agent Server、线程、运行队列和检查点。本项目生成的数据文件当前保存在部署实例的 `runs` 目录；需要多副本扩缩容或长期保存上传文件时，应把 `DataWorkspace` 的文件层切换到 S3、OSS 或 Azure Blob。
 
+### 免费部署到 Render
+
+项目根目录已经提供 `render.yaml`。在 Render 中选择 **New > Blueprint**，连接 GitHub 仓库 `xiaomaozjj666/data-analysis-agent`，Render 会自动读取该文件：
+
+1. 选择 Free Web Service。
+2. 在环境变量界面填写 `DEEPSEEK_API_KEY`。
+3. 填写 `LANGSMITH_API_KEY`；Tracing 可以使用 LangSmith Developer 免费额度。
+4. 提交部署，访问 Render 分配的 `https://*.onrender.com` 地址。
+
+前端生产文件已经包含在 `frontend/dist`，FastAPI 会在同一域名托管它；React 仍然只通过 `/api` 和 SSE 接口访问后端。Render Free 服务空闲 15 分钟后会休眠，且 `/tmp/data-agent-runs` 会在重启时清空，所以适合个人测试，不适合长期保存用户数据。需要持久化时接入对象存储或升级实例。
+
 ## 质量检查
 
 ```powershell

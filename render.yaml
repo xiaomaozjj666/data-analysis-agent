@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: data-analysis-agent
+    runtime: python
+    plan: free
+    buildCommand: pip install -e .
+    startCommand: uvicorn data_agent.api:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13.5"
+      - key: DATA_AGENT_RUNS_DIR
+        value: /tmp/data-agent-runs
+      - key: DATA_AGENT_CORS_ORIGINS
+        value: "*"
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: LANGSMITH_TRACING
+        value: "true"
+      - key: LANGSMITH_API_KEY
+        sync: false
+      - key: LANGSMITH_PROJECT
+        value: data-analysis-agent
