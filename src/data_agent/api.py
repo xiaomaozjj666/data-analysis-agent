@@ -23,6 +23,7 @@ from data_agent.agent import AnalysisResult, DataAnalysisAgent
 from data_agent.config import AgentSettings
 from data_agent.credentials import delete_saved_api_key, get_saved_api_key, save_api_key
 from data_agent.serialization import to_jsonable
+from data_agent.storage import LocalSessionStorage, SessionStorage, build_session_storage
 from data_agent.workspace import SUPPORTED_EXTENSIONS, DataWorkspace
 
 
@@ -48,12 +49,19 @@ class SessionRecord:
 
 
 class SessionRegistry:
-    def __init__(self, runs_dir: Path, max_sessions: int, ttl_hours: float) -> None:
+    def __init__(
+        self,
+        runs_dir: Path,
+        max_sessions: int,
+        ttl_hours: float,
+        storage: SessionStorage | None = None,
+    ) -> None:
         self._items: dict[str, SessionRecord] = {}
         self._lock = threading.RLock()
         self.runs_dir = runs_dir.resolve()
         self.max_sessions = max_sessions
         self.ttl_seconds = ttl_hours * 3600
+        self.storage = storage or LocalSessionStorage()
 
     def _prune_locked(self) -> None:
         now = time.monotonic()
@@ -100,14 +108,23 @@ class SessionRegistry:
     def persist(self, session_id: str, record: SessionRecord) -> None:
         with self._lock:
             self._persist_locked(session_id, record)
+        self.storage.sync_session(session_id, record.workspace.root)
 
     def _restore_locked(self, session_id: str) -> SessionRecord | None:
         if not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", session_id):
             return None
         root = (self.runs_dir / session_id).resolve()
-        if self.runs_dir not in root.parents or not root.is_dir():
+        if self.runs_dir not in root.parents:
             return None
         input_dir = root / "input"
+        has_local_input = input_dir.is_dir() and any(
+            path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS
+            for path in input_dir.iterdir()
+        )
+        if not has_local_input:
+            self.storage.restore_session(session_id, root)
+        if not root.is_dir():
+            return None
         input_files = [
             path for path in input_dir.iterdir()
             if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS
@@ -142,6 +159,7 @@ class SessionRegistry:
             self._prune_locked()
             self._items[session_id] = record
             self._persist_locked(session_id, record)
+        self.storage.sync_session(session_id, record.workspace.root)
         return session_id, record
 
     def get(self, session_id: str) -> SessionRecord:
@@ -158,10 +176,12 @@ class SessionRegistry:
 
 
 bootstrap_settings = AgentSettings.from_env(provider="deepseek")
+session_storage = build_session_storage()
 registry = SessionRegistry(
     bootstrap_settings.runs_dir,
     bootstrap_settings.max_active_sessions,
     bootstrap_settings.session_ttl_hours,
+    storage=session_storage,
 )
 runtime_settings = {
     "api_key": "",
@@ -308,6 +328,11 @@ def auth_status(request: Request) -> dict[str, bool]:
     return {"required": True, "authenticated": True}
 
 
+@app.get("/api/storage/health")
+def storage_health() -> dict[str, str | bool]:
+    return session_storage.healthcheck()
+
+
 @app.get("/api/settings")
 def get_settings() -> dict[str, Any]:
     settings = _effective_settings()
@@ -320,6 +345,8 @@ def get_settings() -> dict[str, Any]:
         "reasoning_effort": settings.reasoning_effort,
         "langsmith_tracing": os.getenv("LANGSMITH_TRACING", "false").lower() == "true",
         "langsmith_project": os.getenv("LANGSMITH_PROJECT", "data-analysis-agent"),
+        "storage_backend": session_storage.backend,
+        "persistent_storage": session_storage.persistent,
     }
 
 

@@ -118,6 +118,22 @@ LangSmith Cloud 会托管 Agent Server、线程、运行队列和检查点。本
 
 前端生产文件已经包含在 `frontend/dist`，FastAPI 会在同一域名托管它；React 仍然只通过 `/api` 和 SSE 接口访问后端。Render Free 服务空闲 15 分钟后会休眠，且 `/tmp/data-agent-runs` 会在重启时清空，所以适合个人测试，不适合长期保存用户数据。需要持久化时接入对象存储或升级实例。
 
+### Cloudflare R2 免费持久化
+
+项目支持把整个会话工作区归档到 Cloudflare R2 或其他 S3 兼容存储。启用后，Render 的 `/tmp` 只作为计算缓存；上传数据、`session.json`、清洗结果和图表产物会在会话创建及每次分析结束时同步到对象存储，服务重启后按 session ID 自动恢复。
+
+```dotenv
+DATA_AGENT_STORAGE_BACKEND=s3
+DATA_AGENT_STORAGE_BUCKET=data-analysis-agent
+DATA_AGENT_STORAGE_ENDPOINT_URL=https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+DATA_AGENT_STORAGE_PREFIX=data-analysis-agent/sessions
+AWS_ACCESS_KEY_ID=...
+AWS_SECRET_ACCESS_KEY=...
+AWS_DEFAULT_REGION=auto
+```
+
+Bucket 应保持私有，Token 只授予该 Bucket 的 Object Read & Write 权限。可通过受保护的 `GET /api/storage/health` 检查连接状态；接口不会返回访问密钥。
+
 ## 质量检查
 
 ```powershell

@@ -10,6 +10,7 @@ from langgraph.graph import END, START, StateGraph
 
 from data_agent.agent import DataAnalysisAgent
 from data_agent.config import AgentSettings
+from data_agent.storage import build_session_storage
 from data_agent.workspace import DataWorkspace
 
 
@@ -28,6 +29,7 @@ class DeploymentState(TypedDict, total=False):
 def make_graph(config: RunnableConfig | None = None):
     """Build the graph exported to LangSmith Agent Server."""
     settings = AgentSettings.from_env(provider="deepseek")
+    storage = build_session_storage()
     configurable = (config or {}).get("configurable", {})
     thread_id = str(configurable.get("thread_id") or uuid4().hex)
 
@@ -37,6 +39,8 @@ def make_graph(config: RunnableConfig | None = None):
             if not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", dataset_id):
                 raise ValueError("dataset_id 格式无效。")
             input_dir = (settings.runs_dir / dataset_id / "input").resolve()
+            if not input_dir.is_dir():
+                storage.restore_session(dataset_id, input_dir.parent)
             if settings.runs_dir.resolve() not in input_dir.parents or not input_dir.is_dir():
                 raise FileNotFoundError("找不到指定的数据集工作区。")
             candidates = sorted(path for path in input_dir.iterdir() if path.is_file())
@@ -48,6 +52,7 @@ def make_graph(config: RunnableConfig | None = None):
         workspace = DataWorkspace(settings.runs_dir, session_id=f"deploy_{thread_id[:24]}")
         workspace.load(source, copy_into_workspace=True)
         result = DataAnalysisAgent(workspace, settings).run(state["query"])
+        storage.sync_session(workspace.root.name, workspace.root)
         return {
             "response": result.response,
             "plan": result.plan,
