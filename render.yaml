@@ -27,7 +27,7 @@ services:
       - key: DATA_AGENT_MAX_CONCURRENT_ANALYSES
         value: "2"
       - key: DATA_AGENT_STORAGE_BACKEND
-        value: local
+        value: s3
       - key: DATA_AGENT_STORAGE_BUCKET
         sync: false
       - key: DATA_AGENT_STORAGE_ENDPOINT_URL
@@ -39,7 +39,7 @@ services:
       - key: AWS_SECRET_ACCESS_KEY
         sync: false
       - key: AWS_DEFAULT_REGION
-        value: auto
+        value: ap-southeast-1
       - key: DEEPSEEK_API_KEY
         sync: false
       - key: LANGSMITH_TRACING
