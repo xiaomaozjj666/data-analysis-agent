@@ -94,6 +94,7 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         parse_numeric converts string columns when at least 80% of non-empty values are numeric.
         datetime_columns explicitly selects columns to parse as dates.
         IQR/z-score outlier handling only applies to numeric selected columns.
+        High-volume row deletion is refused unless the request explicitly narrows columns.
         """
         df = workspace.dataframe.copy()
         before = {"rows": len(df), "columns": len(df.columns), "missing": int(df.isna().sum().sum())}
@@ -150,7 +151,13 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             if missing_strategy == "drop":
                 old_len = len(df)
                 df = df.dropna(subset=selected).copy()
-                changes.append(f"dropped {old_len - len(df)} rows with missing selected values")
+                dropped = old_len - len(df)
+                if dropped > 0 and dropped / max(old_len, 1) > 0.5 and columns is None:
+                    raise ValueError(
+                        f"拒绝无列限定的高比例删行：将删除 {dropped}/{old_len} 行。"
+                        "请明确指定需要检查的列，或改用填充策略。"
+                    )
+                changes.append(f"dropped {dropped} rows with missing selected values")
             elif missing_strategy in {"forward_fill", "backward_fill"}:
                 method = "ffill" if missing_strategy == "forward_fill" else "bfill"
                 df[selected] = getattr(df[selected], method)()

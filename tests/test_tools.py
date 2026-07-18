@@ -32,6 +32,24 @@ def test_clean_data_updates_frame_and_exports(workspace):
     assert Path(result["output"]).exists()
 
 
+def test_clean_data_refuses_implicit_high_volume_row_drop(tmp_path):
+    source = tmp_path / "mostly_missing.csv"
+    pd.DataFrame({"keep": [1, 2, 3, 4], "notes": [None, None, None, "ok"]}).to_csv(source, index=False)
+    workspace = DataWorkspace(tmp_path / "runs", session_id="guard")
+    workspace.load(source, copy_into_workspace=True)
+
+    try:
+        tool_map(workspace)["clean_data"].invoke(
+            {"drop_duplicates": False, "trim_strings": False, "missing_strategy": "drop"}
+        )
+    except Exception as exc:
+        assert "高比例删行" in str(exc)
+    else:
+        raise AssertionError("expected the implicit high-volume drop to be rejected")
+
+    assert len(workspace.dataframe) == 4
+
+
 def test_repair_data_format_applies_only_unambiguous_repairs(tmp_path):
     source = tmp_path / "format_dirty.csv"
     pd.DataFrame(
