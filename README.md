@@ -92,7 +92,7 @@ LANGSMITH_PROJECT=data-analysis-agent
 
 ### 线上访问保护
 
-公开部署时建议设置 `APP_ACCESS_TOKEN`。设置后，前端会先要求输入访问令牌，所有上传、分析、设置和产物下载接口都会校验令牌；`/api/health` 仍保持公开，便于 Render 健康检查。生产环境还会限制单文件大小、最大行数、最大单元格数、会话数量和写入请求频率。
+公开部署时建议设置 `APP_ACCESS_TOKEN`。Render Blueprint 使用 `generateValue: true` 时会自动生成随机令牌；首次同步后可在 Render 的 Environment 页面查看并交给使用者。设置后，前端会先要求输入访问令牌，所有上传、分析、设置和产物下载接口都会校验令牌；`/api/health` 仍保持公开，便于 Render 健康检查。生产环境还会限制单文件大小、最大行数、最大单元格数、会话数量和写入请求频率。
 
 `APP_ACCESS_TOKEN` 为空时保持本地开发的免登录模式。不要把 DeepSeek API Key 编译进前端，生产环境优先在 Render 或 LangSmith 的环境变量中配置 `DEEPSEEK_API_KEY`。
 
