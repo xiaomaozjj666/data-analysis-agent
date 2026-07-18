@@ -163,7 +163,7 @@ i.online { background: var(--green); box-shadow: 0 0 0 3px rgba(33, 132, 90, .1)
 .auth-loading { color: var(--muted); font-size: 12px; }
 
 .empty-workspace { min-height: calc(100vh - 112px); display: grid; grid-template-columns: minmax(360px, 580px) minmax(270px, 380px); align-items: center; justify-content: center; gap: 7vw; overflow: hidden; }
-.empty-grid { position: relative; display: grid; grid-template-columns: repeat(5, 1fr); width: min(42vw, 560px); aspect-ratio: 1.35; background: var(--paper); border: 1px solid var(--line-strong); box-shadow: 0 18px 52px rgba(28, 33, 39, .08); transform: rotate(-1deg); }
+.empty-grid { position: relative; display: grid; grid-template-columns: repeat(5, 1fr); width: min(42vw, 560px); aspect-ratio: 1.35; background: var(--paper); border: 1px solid var(--line-strong); box-shadow: 0 18px 52px rgba(28, 33, 39, .08); }
 .empty-grid::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 36px; background: #f0f2f4; border-right: 1px solid var(--line); }
 .empty-grid::after { content: ""; position: absolute; inset: 0 0 auto; height: 34px; background: #f0f2f4; border-bottom: 1px solid var(--line); }
 .empty-grid i { min-height: 58px; border-right: 1px solid #e7e9ec; border-bottom: 1px solid #e7e9ec; }
