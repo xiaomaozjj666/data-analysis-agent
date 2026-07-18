@@ -10,7 +10,7 @@ from langchain_deepseek import ChatDeepSeek
 from langchain_openai import ChatOpenAI
 from pydantic import PrivateAttr
 
-from data_agent.agent import DataAnalysisAgent, create_chat_model
+from data_agent.agent import DataAnalysisAgent, _fallback_plan, create_chat_model
 from data_agent.config import AgentSettings
 
 
@@ -90,6 +90,11 @@ def test_full_langgraph_react_workflow_without_network(workspace):
     assert result.dataset_profile["rows"] == 6
     assert [step["id"] for step in result.plan] == ["inspect"]
     assert [step["id"] for step in result.completed_steps] == ["inspect"]
+
+
+def test_fallback_plan_respects_read_only_chart_constraints():
+    plan = _fallback_plan("只检查数据质量并总结，不修改数据，不生成图表")
+    assert [step.id for step in plan.steps] == ["inspect"]
 
 
 def test_native_deepseek_model_preserves_thinking_configuration():

@@ -122,7 +122,7 @@ def _message_text(message: BaseMessage | None) -> str:
 
 
 def _fallback_plan(query: str) -> AnalysisPlan:
-    return AnalysisPlan(
+    plan = AnalysisPlan(
         objective=f"基于当前数据集完成可验证的分析：{query}",
         steps=[
             PlanStep(
@@ -151,6 +151,41 @@ def _fallback_plan(query: str) -> AnalysisPlan:
             ),
         ],
     )
+    return _apply_query_constraints(query, plan)
+
+
+def _apply_query_constraints(query: str, plan: AnalysisPlan) -> AnalysisPlan:
+    """Keep explicit user constraints intact even when structured planning falls back."""
+    read_only = any(token in query for token in ("不修改", "无需修改", "只检查", "仅检查"))
+    no_charts = any(token in query for token in ("不生成图表", "不要图表", "不画图", "无需绘图"))
+    inspect_only = any(token in query for token in ("只检查", "仅检查")) and "质量" in query
+    steps = list(plan.steps)
+    if inspect_only:
+        steps = [step for step in steps if step.id == "inspect"]
+    if read_only:
+        steps = [
+            step
+            for step in steps
+            if step.id not in {"prepare", "clean", "transform", "export"}
+            and not any(word in f"{step.title}{step.instruction}" for word in ("清洗", "转换", "导出"))
+        ]
+    if no_charts:
+        steps = [
+            step
+            for step in steps
+            if step.id not in {"visualize", "chart", "plot"}
+            and not any(word in f"{step.title}{step.instruction}" for word in ("图表", "绘图", "可视化"))
+        ]
+    if not steps:
+        steps = [
+            PlanStep(
+                id="inspect",
+                title="检查数据质量",
+                instruction="只读取数据并检查字段、类型、缺失、重复和样例，不修改任何数据。",
+                success_criteria="返回数据规模、字段类型、缺失和重复情况。",
+            )
+        ]
+    return AnalysisPlan(objective=plan.objective, steps=steps)
 
 
 def _tool_trace(messages: list[BaseMessage]) -> list[dict[str, str]]:
@@ -238,6 +273,7 @@ class DataAnalysisAgent:
                     plan = AnalysisPlan.model_validate(plan)
             except Exception:
                 plan = _fallback_plan(state["query"])
+            plan = _apply_query_constraints(state["query"], plan)
             steps = [step.model_dump() for step in plan.steps[: self.settings.max_plan_steps]]
             return {"objective": plan.objective, "plan": steps, "remaining_steps": steps}
 
