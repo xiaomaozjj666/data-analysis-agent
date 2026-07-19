@@ -115,7 +115,11 @@ const presets = [
 
 function describeApiError(payload, status) {
   if (payload == null || payload === "") return `请求失败 (${status})`;
-  if (typeof payload === "string") return payload;
+  if (typeof payload === "string") {
+    // 服务端返回整页 HTML 时截断到 200 字符，避免错误消息变成一长坨标签。
+    const trimmed = payload.length > 200 ? `${payload.slice(0, 200)}…` : payload;
+    return trimmed;
+  }
   if (typeof payload === "object") {
     if (typeof payload.detail === "string" && payload.detail) return payload.detail;
     // FastAPI HTTPException 默认 {detail: ...}，但也可能嵌套其他字段。
@@ -416,6 +420,7 @@ function App() {
   const taskInput = useRef(null);
   const analysisController = useRef(null);
   const previewController = useRef(null);
+  const retryController = useRef(null);
   const cancelRequested = useRef(false);
   const lastTaskRef = useRef("");
 
@@ -508,8 +513,11 @@ function App() {
         signal: controller.signal,
       });
       if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        throw new Error(payload.detail || `请求失败 (${response.status})`);
+        const contentType = response.headers.get("content-type") || "";
+        const payload = contentType.includes("application/json")
+          ? await response.json().catch(() => ({}))
+          : await response.text().catch(() => "");
+        throw new Error(describeApiError(payload, response.status));
       }
       const blob = await response.blob();
       const link = document.createElement("a");
@@ -552,16 +560,20 @@ function App() {
     if (!file) return;
     setUploading(true);
     setError("");
+    // 上传新数据集时清理上一个会话的残留 UI 状态，避免预览/重试/进度泄漏到新会话。
+    closeArtifactPreview();
+    setPlan([]);
+    setCompleted([]);
+    setResult(null);
+    setTask("");
+    setActiveTab("analysis");
+    setCurrentNodeTitle("");
+    setRetryOffer(null);
     const form = new FormData();
     form.append("file", file);
     try {
       const value = await api("/api/sessions", { method: "POST", body: form });
       setSession(value);
-      setPlan([]);
-      setCompleted([]);
-      setResult(null);
-      setTask("");
-      setActiveTab("analysis");
     } catch (err) {
       setError(err.message);
     } finally {
@@ -577,9 +589,12 @@ function App() {
       method: "POST",
       timeoutMs: 10000,
     }).catch(() => null);
+    // 同时中断 SSE 流和 retry 轮询，确保用户点击停止后所有后台请求都结束。
     analysisController.current?.abort();
+    retryController.current?.abort();
     await cancelRequest;
     setRunning(false);
+    setRetryChecking(false);
     setCurrentNodeTitle("");
     setRetryOffer(null);
     setError("已发送停止请求；如果模型正在响应，会在本轮响应结束后安全停止。");
@@ -721,6 +736,8 @@ function App() {
     if (!assistantMessage) return false;
     setResult({
       response: assistantMessage.content,
+      // 后端持久化的 last_result 包含 trace，但 chat fallback 路径没有 trace，
+      // 显式置空避免残留旧分析的 trace。
       trace: [],
       artifacts: latest.artifacts || [],
       dataset_profile: latest.profile,
@@ -741,9 +758,15 @@ function App() {
       return;
     }
 
+    // 轮询期间使用独立的 AbortController，让 stopAnalysis 能中断轮询。
+    retryController.current?.abort();
+    const controller = new AbortController();
+    retryController.current = controller;
+
     setRetryChecking(true);
     try {
-      let latest = await api(`/api/sessions/${session.id}`, { timeoutMs: 45000 });
+      // 单次查询用短超时（8s），让网络故障快速暴露而不是卡 45s。
+      let latest = await api(`/api/sessions/${session.id}`, { timeoutMs: 8000, signal: controller.signal });
       setSession(latest);
 
       if (ACTIVE_ANALYSIS_STATES.has(latest.analysis_status)) {
@@ -753,13 +776,18 @@ function App() {
         const deadline = Date.now() + 5 * 60 * 1000;
         while (ACTIVE_ANALYSIS_STATES.has(latest.analysis_status) && Date.now() < deadline) {
           await wait(3000);
-          latest = await api(`/api/sessions/${session.id}`, { timeoutMs: 45000 });
+          if (controller.signal.aborted) break;
+          latest = await api(`/api/sessions/${session.id}`, { timeoutMs: 8000, signal: controller.signal });
           setSession(latest);
         }
       }
 
       setRunning(false);
       setCurrentNodeTitle("");
+      if (controller.signal.aborted) {
+        // 用户主动取消轮询，不修改 error（stopAnalysis 已设过消息）。
+        return;
+      }
       if (latest.analysis_status === "completed" && restoreCompletedAnalysis(latest)) {
         setError("");
         setRetryOffer(null);
@@ -777,8 +805,14 @@ function App() {
     } catch (err) {
       setRunning(false);
       setCurrentNodeTitle("");
+      if (err.name === "AbortError") {
+        // 用户主动取消或 stopAnalysis 中断，不覆盖已有 error。
+        return;
+      }
+      // 网络错误（TypeError）或超时：立即退出轮询，不傻等 5 分钟。
       setError(`暂时无法确认任务状态：${err.message}`);
     } finally {
+      if (retryController.current === controller) retryController.current = null;
       setRetryChecking(false);
     }
   }
@@ -903,7 +937,13 @@ function App() {
             <Activity size={16} />
             <span>{error}</span>
             {retryOffer && !running && (
-              <button type="button" className="retry-button" onClick={retryAnalysis} disabled={retryChecking}>
+              <button
+                type="button"
+                className="retry-button"
+                onClick={retryAnalysis}
+                disabled={retryChecking}
+                aria-busy={retryChecking}
+              >
                 <RefreshCw size={13} className={retryChecking ? "spin" : ""} />
                 {retryChecking ? "确认中" : retryOffer.reason === "ready" ? "重新运行" : "检查状态"}
               </button>

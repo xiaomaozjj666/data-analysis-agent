@@ -28,6 +28,10 @@ def _isolate_runtime(tmp_path: Path, monkeypatch) -> None:
     per test, so we swap the globals explicitly instead of relying on
     ``monkeypatch.setenv`` which has no effect after import.
     """
+    # AgentSettings.from_env() calls load_dotenv() at import time, which may
+    # have injected APP_ACCESS_TOKEN from a local .env file. Remove it so
+    # tests that don't explicitly set the token run against an unguarded API.
+    monkeypatch.delenv("APP_ACCESS_TOKEN", raising=False)
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
     settings = AgentSettings(
@@ -151,7 +155,9 @@ def test_access_token_protects_analysis_stream(monkeypatch):
 
 def test_upload_stream_enforces_dataset_limits(tmp_path, monkeypatch):
     _isolate_runtime(tmp_path, monkeypatch)
-    api.bootstrap_settings.max_rows = 1
+    # 用 monkeypatch.setattr 而非直接赋值，确保测试结束后属性自动还原，
+    # 避免同进程后续测试读到被污染的 max_rows。
+    monkeypatch.setattr(api.bootstrap_settings, "max_rows", 1)
     client = TestClient(api.app)
 
     response = client.post(
@@ -271,6 +277,26 @@ def test_cancel_on_idle_session_returns_current_status(tmp_path, monkeypatch):
     response = client.post(f"/api/sessions/{uploaded['id']}/cancel")
     assert response.json() == {"status": "idle"}
     assert not record.cancel_event.is_set()
+
+
+def test_cancel_persists_cancelling_status(tmp_path, monkeypatch):
+    """cancel_analysis must persist the cancelling status so a process restart
+    during the unwind does not leave the manifest stuck on "running"."""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = client.post(
+        "/api/sessions",
+        files={"file": ("sales.csv", b"region,sales\nEast,100\n", "text/csv")},
+    ).json()
+    record = api.registry.get(uploaded["id"])
+    record.analysis_status = "running"
+
+    response = client.post(f"/api/sessions/{uploaded['id']}/cancel")
+    assert response.json() == {"status": "cancelling"}
+
+    manifest_path = tmp_path / "runs" / uploaded["id"] / "session.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["analysis_status"] == "cancelling"
 
 
 def test_cleaned_data_csv_is_not_dropped_from_artifacts(tmp_path, monkeypatch):

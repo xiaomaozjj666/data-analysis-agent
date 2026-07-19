@@ -146,10 +146,13 @@ class SessionRegistry:
         record.workspace.save_checkpoint()
         last_result = None
         if record.last_result is not None:
+            # trace 可能包含大段 LLM 输出和工具调用细节，多轮分析后会让
+            # manifest 膨胀到 MB 级。只保留最近 20 条，足够恢复时展示上下文。
+            trimmed_trace = list(record.last_result.trace or [])[-20:]
             last_result = to_jsonable(
                 {
                     "response": record.last_result.response,
-                    "trace": record.last_result.trace,
+                    "trace": trimmed_trace,
                     "dataset_profile": record.last_result.dataset_profile,
                     "plan": record.last_result.plan,
                     "completed_steps": record.last_result.completed_steps,
@@ -753,6 +756,11 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
         except asyncio.CancelledError:
             record.cancel_event.set()
             record.analysis_status = "cancelling"
+            # Persist cancelling so a process restart during the unwind does
+            # not leave the manifest stuck on "running"; the retry poller on
+            # the client can then recognize the interrupted state instead of
+            # waiting the full deadline for a dead worker.
+            registry.persist(session_id, record)
             # Give the worker a chance to observe the cancel event and unwind
             # gracefully before we leave; a single LLM call may take 60+ s so
             # we only wait a short while and let the daemon thread finish on
@@ -780,6 +788,10 @@ def cancel_analysis(session_id: str) -> dict[str, str]:
         return {"status": record.analysis_status}
     record.cancel_event.set()
     record.analysis_status = "cancelling"
+    # Persist so a restart between this call and the worker's unwind does
+    # not leave the manifest stuck on "running"; the retry poller relies on
+    # seeing "cancelling" to recognize an interrupted analysis.
+    registry.persist(session_id, record)
     return {"status": "cancelling"}
 
 
@@ -809,7 +821,8 @@ _PREVIEW_CSP = (
     "object-src 'none'; "
     "base-uri 'none'; "
     "form-action 'none'; "
-    "frame-src 'none'"
+    "frame-src 'none'; "
+    "manifest-src 'none'"
 )
 
 
@@ -834,6 +847,16 @@ def _harden_preview_document(html_text: str) -> str:
     head_pattern = re.compile(r"<head(?:\s[^>]*)?>", flags=re.IGNORECASE)
     if head_pattern.search(html_text):
         return head_pattern.sub(lambda match: f"{match.group(0)}{meta}", html_text, count=1)
+    # 如果原文已是完整文档但缺少 <head>（罕见），直接在 <html> 后注入 <head>。
+    html_tag_pattern = re.compile(r"<html(?:\s[^>]*)?>", flags=re.IGNORECASE)
+    if html_tag_pattern.search(html_text):
+        return html_tag_pattern.sub(
+            lambda match: f"{match.group(0)}<head>{meta}</head>", html_text, count=1
+        )
+    # 原文是 body 片段，包一层完整文档。先检测是否已带 doctype，避免重复声明
+    # 导致浏览器进入怪异模式。
+    if re.match(r"\s*<!doctype", html_text, flags=re.IGNORECASE):
+        return html_text
     return f"<!doctype html><html><head>{meta}</head><body>{html_text}</body></html>"
 
 
