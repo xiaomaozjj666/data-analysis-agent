@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from langchain_core.messages import AIMessage, HumanMessage
@@ -143,11 +144,23 @@ class SessionRegistry:
 
     def _persist_locked(self, session_id: str, record: SessionRecord) -> None:
         record.workspace.save_checkpoint()
+        last_result = None
+        if record.last_result is not None:
+            last_result = to_jsonable(
+                {
+                    "response": record.last_result.response,
+                    "trace": record.last_result.trace,
+                    "dataset_profile": record.last_result.dataset_profile,
+                    "plan": record.last_result.plan,
+                    "completed_steps": record.last_result.completed_steps,
+                }
+            )
         payload = {
             "id": session_id,
             "filename": record.workspace.source_path.name if record.workspace.source_path else "dataset",
             "chat": record.chat[-40:],
             "analysis_status": record.analysis_status,
+            "last_result": last_result,
             "artifacts": [
                 {
                     "name": item["name"],
@@ -228,6 +241,16 @@ class SessionRegistry:
         record.created_at = float(payload.get("created_at", record.created_at))
         saved_status = str(payload.get("analysis_status", "idle"))
         record.analysis_status = saved_status if saved_status in {"completed", "cancelled", "failed"} else "idle"
+        saved_result = payload.get("last_result")
+        if isinstance(saved_result, dict) and isinstance(saved_result.get("response"), str):
+            record.last_result = AnalysisResult(
+                response=saved_result["response"],
+                trace=saved_result.get("trace", []),
+                artifacts=list(workspace.artifacts),
+                dataset_profile=saved_result.get("dataset_profile", workspace.profile()),
+                plan=saved_result.get("plan", []),
+                completed_steps=saved_result.get("completed_steps", []),
+            )
         self._items[session_id] = record
         return record
 
@@ -295,6 +318,7 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
 def _check_access(request: Request) -> None:
@@ -308,12 +332,6 @@ def _check_access(request: Request) -> None:
         provided = request.headers.get("authorization", "")
         if provided.lower().startswith("bearer "):
             provided = provided[7:]
-    # Allow the token to be passed via the ``token`` query parameter so that
-    # resources loaded inside <iframe src="..."> (which cannot set custom
-    # headers) can still authenticate. Only the preview/plotly endpoints use
-    # this; the main API surface keeps using the header.
-    if not provided:
-        provided = request.query_params.get("token", "")
     if not hmac.compare_digest(provided.strip(), expected):
         raise HTTPException(status_code=401, detail="需要有效的应用访问令牌。")
 
@@ -358,7 +376,15 @@ async def protect_api(request: Request, call_next):
             _check_rate_limit(request)
         except HTTPException as exc:
             return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
-    return await call_next(request)
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault(
+        "Permissions-Policy",
+        "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+    )
+    return response
 
 
 def _effective_settings() -> AgentSettings:
@@ -454,6 +480,11 @@ def _session_payload(session_id: str, record: SessionRecord) -> dict[str, Any]:
         "chat": record.chat,
         "artifacts": _artifact_payload(session_id, workspace.artifacts),
         "analysis_status": record.analysis_status,
+        "last_result": (
+            _result_payload(session_id, record.last_result)
+            if record.last_result is not None
+            else None
+        ),
     }
 
 
@@ -550,7 +581,10 @@ def delete_key() -> dict[str, bool]:
 
 @app.post("/api/sessions", status_code=201)
 async def create_session(file: Annotated[UploadFile, File()]) -> dict[str, Any]:
-    settings = AgentSettings.from_env(provider="deepseek")
+    # Resource limits and the run directory are process-level deployment
+    # settings. Reuse the startup snapshot so uploads cannot drift into a
+    # different directory when the environment changes mid-process.
+    settings = bootstrap_settings
     session_id = f"api_{uuid4().hex[:12]}"
     workspace = DataWorkspace(settings.runs_dir, session_id=session_id)
     try:
@@ -594,9 +628,11 @@ def analyze(session_id: str, request: AnalyzeRequest) -> dict[str, Any]:
         record.analysis_status = "completed"
     except AnalysisCancelled as exc:
         record.analysis_status = "cancelled"
+        registry.persist(session_id, record)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
         record.analysis_status = "failed"
+        registry.persist(session_id, record)
         raise HTTPException(status_code=502, detail=f"分析执行失败：{exc}") from exc
     finally:
         record.current_task = ""
@@ -675,14 +711,16 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
                 ]
             )
             record.last_result = result
-            registry.persist(session_id, record)
             record.analysis_status = "completed"
+            registry.persist(session_id, record)
             loop.call_soon_threadsafe(queue.put_nowait, ("complete", _result_payload(session_id, result)))
         except AnalysisCancelled:
             record.analysis_status = "cancelled"
+            registry.persist(session_id, record)
             loop.call_soon_threadsafe(queue.put_nowait, ("cancelled", {"message": "分析已取消。"}))
         except Exception as exc:
             record.analysis_status = "failed"
+            registry.persist(session_id, record)
             loop.call_soon_threadsafe(queue.put_nowait, ("error", {"message": str(exc)}))
         finally:
             record.current_task = ""
@@ -759,10 +797,23 @@ _PLOTLY_TAG_PATTERN = re.compile(
     flags=re.IGNORECASE,
 )
 
+_PREVIEW_CSP = (
+    "default-src 'none'; "
+    "script-src 'unsafe-inline'; "
+    "style-src 'unsafe-inline'; "
+    "img-src data: blob:; "
+    "font-src data:; "
+    "connect-src 'none'; "
+    "object-src 'none'; "
+    "base-uri 'none'; "
+    "form-action 'none'; "
+    "frame-src 'none'"
+)
+
 
 def _inline_plotly_bundle(record: SessionRecord, html_text: str) -> str:
     """Replace the shared ``<script src='plotly.min.js'>`` tag with the full
-    Plotly.js source so the HTML stays self-contained when downloaded."""
+    Plotly.js source so previews and downloads stay self-contained."""
     bundle_path = record.workspace.artifacts_dir / PLOTLY_BUNDLE_NAME
     if not bundle_path.is_file():
         return html_text
@@ -775,43 +826,26 @@ def _inline_plotly_bundle(record: SessionRecord, html_text: str) -> str:
     return _PLOTLY_TAG_PATTERN.sub(lambda _match: f"<script>{plotly_js}</script>", html_text, count=1)
 
 
+def _harden_preview_document(html_text: str) -> str:
+    """Confine generated chart HTML to a script-only, offline document."""
+    meta = f'<meta http-equiv="Content-Security-Policy" content="{_PREVIEW_CSP}">'
+    head_pattern = re.compile(r"<head(?:\s[^>]*)?>", flags=re.IGNORECASE)
+    if head_pattern.search(html_text):
+        return head_pattern.sub(lambda match: f"{match.group(0)}{meta}", html_text, count=1)
+    return f"<!doctype html><html><head>{meta}</head><body>{html_text}</body></html>"
+
+
 @app.get("/api/sessions/{session_id}/artifacts/{filename}/preview")
-def preview_artifact(session_id: str, filename: str, request: Request) -> Response:
+def preview_artifact(session_id: str, filename: str) -> Response:
     record, path = _artifact_file(session_id, filename)
     if path.suffix.lower() != ".html":
         raise HTTPException(status_code=415, detail="该产物不支持在线预览。")
-    html_text = path.read_text(encoding="utf-8")
-    # Preview never inlines the multi-MB Plotly bundle; it loads the shared
-    # runtime via a dedicated endpoint so concurrent previews stay cheap.
-    bundle_url = str(request.url.replace(path=f"/api/sessions/{session_id}/plotly.js"))
-    html_text = _PLOTLY_TAG_PATTERN.sub(
-        lambda _match: f"<script src='{bundle_url}'></script>",
-        html_text,
-        count=1,
-    )
+    html_text = _inline_plotly_bundle(record, path.read_text(encoding="utf-8"))
+    html_text = _harden_preview_document(html_text)
     return Response(
         content=html_text,
         media_type="text/html",
-        headers={"Cache-Control": "private, max-age=300"},
-    )
-
-
-@app.get("/api/sessions/{session_id}/plotly.js")
-def serve_plotly_bundle(session_id: str) -> Response:
-    """Serve the shared Plotly.js bundle for chart previews.
-
-    The bundle is intentionally not registered as an artifact (it is internal
-    runtime, not a user-facing product), so it needs its own endpoint. The
-    response is heavily cacheable so concurrent previews reuse a single copy.
-    """
-    record = registry.get(session_id)
-    bundle_path = record.workspace.artifacts_dir / PLOTLY_BUNDLE_NAME
-    if not bundle_path.is_file():
-        raise HTTPException(status_code=404, detail="Plotly 运行时尚未生成。")
-    return FileResponse(
-        bundle_path,
-        media_type="application/javascript",
-        headers={"Cache-Control": "public, max-age=86400"},
+        headers={"Cache-Control": "private, no-store"},
     )
 
 

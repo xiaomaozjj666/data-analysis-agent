@@ -224,10 +224,10 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         datetime_columns explicitly selects columns to parse as dates.
         IQR/z-score outlier handling only applies to numeric selected columns.
         Safety guards (always enforced regardless of parameters):
-          - Missing-value deletion over 50% of selected rows is refused unless the
-            caller explicitly narrows ``columns``.
+          - Missing-value deletion over 50% of the current rows is always refused;
+            narrowing ``columns`` does not bypass this guard.
           - The cumulative row count of the main dataset must stay at or above 20%
-            of the original source row count (computed as max(1, floor(source/5))).
+            of the original source row count (computed as max(1, ceil(source/5))).
             Anything that would drop below that floor is refused so the active
             dataset never collapses to a meaningless sample.
         """

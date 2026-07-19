@@ -37,6 +37,11 @@ const API_URL = (
   (import.meta.env.PROD ? window.location.origin : "http://127.0.0.1:8000")
 ).replace(/\/$/, "");
 const ACCESS_TOKEN_KEY = "data-desk-access-token";
+const ACTIVE_ANALYSIS_STATES = new Set(["running", "cancelling"]);
+
+function wait(milliseconds) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
 
 function requestHeaders(headers = {}) {
   const token = window.localStorage.getItem(ACCESS_TOKEN_KEY);
@@ -406,9 +411,11 @@ function App() {
   const [previewError, setPreviewError] = useState("");
   const [currentNodeTitle, setCurrentNodeTitle] = useState("");
   const [retryOffer, setRetryOffer] = useState(null);
+  const [retryChecking, setRetryChecking] = useState(false);
   const fileInput = useRef(null);
   const taskInput = useRef(null);
   const analysisController = useRef(null);
+  const previewController = useRef(null);
   const cancelRequested = useRef(false);
   const lastTaskRef = useRef("");
 
@@ -447,22 +454,45 @@ function App() {
 
   async function openArtifactPreview(item) {
     if (!item.preview_url) return;
+    previewController.current?.abort();
+    const controller = new AbortController();
+    previewController.current = controller;
     setPreviewItem(item);
     setPreviewHtml("");
     setPreviewError("");
     setPreviewLoading(true);
-    // 使用 iframe src（而非 srcDoc）让浏览器通过相对路径加载共享 Plotly bundle，
-    // 避免每次预览都内联 3MB 脚本。token 通过 query 传递以便 iframe 场景鉴权；
-    // 单租户部署下风险可控，token 会出现在浏览器历史和服务器 access log，
-    // 因此配合 referrerPolicy="no-referrer" 阻止 Referer 泄露。
-    const token = window.localStorage.getItem(ACCESS_TOKEN_KEY);
-    const url = new URL(`${API_URL}${item.preview_url}`);
-    if (token) url.searchParams.set("token", token);
-    setPreviewHtml(url.toString());
-    // loading 状态交由 iframe onLoad 关闭；这里不预先关，避免一闪即逝。
+    try {
+      // 预览仍使用请求头鉴权，主访问令牌不会进入 URL、历史记录或服务器 access log。
+      // 服务端返回完全离线的文档，再交给无同源权限的 sandbox iframe 执行。
+      const response = await fetch(`${API_URL}${item.preview_url}`, {
+        headers: requestHeaders(),
+        signal: controller.signal,
+      });
+      const html = await response.text();
+      if (!response.ok) {
+        let payload = html;
+        try {
+          payload = JSON.parse(html);
+        } catch {
+          // 非 JSON 错误正文交给统一错误描述处理。
+        }
+        throw new Error(describeApiError(payload, response.status));
+      }
+      setPreviewHtml(html);
+      // loading 状态由 iframe onLoad 关闭，确保用户看到的是完成渲染的图表。
+    } catch (err) {
+      if (err.name !== "AbortError") {
+        setPreviewLoading(false);
+        setPreviewError(`图表加载失败：${err.message}`);
+      }
+    } finally {
+      if (previewController.current === controller) previewController.current = null;
+    }
   }
 
   function closeArtifactPreview() {
+    previewController.current?.abort();
+    previewController.current = null;
     setPreviewItem(null);
     setPreviewHtml("");
     setPreviewLoading(false);
@@ -552,7 +582,7 @@ function App() {
     setRunning(false);
     setCurrentNodeTitle("");
     setRetryOffer(null);
-    setError("分析已取消，已完成的步骤不会继续扩展。");
+    setError("已发送停止请求；如果模型正在响应，会在本轮响应结束后安全停止。");
   }
 
   async function startAnalysis(nextTask = task) {
@@ -677,11 +707,80 @@ function App() {
     }
   }
 
-  function retryAnalysis() {
+  function restoreCompletedAnalysis(latest) {
+    const savedResult = latest.last_result;
+    if (savedResult) {
+      setResult(savedResult);
+      setPlan(savedResult.plan || []);
+      setCompleted(savedResult.completed_steps || []);
+      return true;
+    }
+    const assistantMessage = [...(latest.chat || [])]
+      .reverse()
+      .find((item) => item.role === "assistant" && item.content);
+    if (!assistantMessage) return false;
+    setResult({
+      response: assistantMessage.content,
+      trace: [],
+      artifacts: latest.artifacts || [],
+      dataset_profile: latest.profile,
+      plan: [],
+      completed_steps: [],
+    });
+    setPlan([]);
+    setCompleted([]);
+    return true;
+  }
+
+  async function retryAnalysis() {
     if (!retryOffer) return;
     const retryTask = retryOffer.task;
-    setRetryOffer(null);
-    startAnalysis(retryTask);
+    if (retryOffer.reason === "ready") {
+      setRetryOffer(null);
+      startAnalysis(retryTask);
+      return;
+    }
+
+    setRetryChecking(true);
+    try {
+      let latest = await api(`/api/sessions/${session.id}`, { timeoutMs: 45000 });
+      setSession(latest);
+
+      if (ACTIVE_ANALYSIS_STATES.has(latest.analysis_status)) {
+        setRunning(true);
+        setCurrentNodeTitle("原分析仍在后台运行，正在等待结果");
+        setError("连接已恢复，原分析仍在运行；不会重复提交任务。");
+        const deadline = Date.now() + 5 * 60 * 1000;
+        while (ACTIVE_ANALYSIS_STATES.has(latest.analysis_status) && Date.now() < deadline) {
+          await wait(3000);
+          latest = await api(`/api/sessions/${session.id}`, { timeoutMs: 45000 });
+          setSession(latest);
+        }
+      }
+
+      setRunning(false);
+      setCurrentNodeTitle("");
+      if (latest.analysis_status === "completed" && restoreCompletedAnalysis(latest)) {
+        setError("");
+        setRetryOffer(null);
+      } else if (ACTIVE_ANALYSIS_STATES.has(latest.analysis_status)) {
+        setError("原分析仍在后台运行，请稍后再次检查状态；系统不会重复提交任务。");
+      } else {
+        const statusMessage = latest.analysis_status === "cancelled"
+          ? "原分析已经取消。确认后可以重新运行。"
+          : latest.analysis_status === "failed"
+            ? "原分析执行失败。确认后可以重新运行。"
+            : "没有发现正在运行的任务。确认后可以重新运行。";
+        setError(statusMessage);
+        setRetryOffer({ task: retryTask, reason: "ready" });
+      }
+    } catch (err) {
+      setRunning(false);
+      setCurrentNodeTitle("");
+      setError(`暂时无法确认任务状态：${err.message}`);
+    } finally {
+      setRetryChecking(false);
+    }
   }
 
   const profile = session?.profile;
@@ -804,8 +903,9 @@ function App() {
             <Activity size={16} />
             <span>{error}</span>
             {retryOffer && !running && (
-              <button type="button" className="retry-button" onClick={retryAnalysis}>
-                <RefreshCw size={13} />重新运行
+              <button type="button" className="retry-button" onClick={retryAnalysis} disabled={retryChecking}>
+                <RefreshCw size={13} className={retryChecking ? "spin" : ""} />
+                {retryChecking ? "确认中" : retryOffer.reason === "ready" ? "重新运行" : "检查状态"}
               </button>
             )}
             <button type="button" title="关闭" onClick={() => { setError(""); setRetryOffer(null); }}><X size={15} /></button>
@@ -968,9 +1068,9 @@ function App() {
               {previewHtml && !previewError && (
                 <iframe
                   title={previewItem.description || previewItem.name}
-                  sandbox="allow-scripts allow-same-origin"
+                  sandbox="allow-scripts"
                   referrerPolicy="no-referrer"
-                  src={previewHtml}
+                  srcDoc={previewHtml}
                   onLoad={() => setPreviewLoading(false)}
                   onError={() => {
                     setPreviewLoading(false);

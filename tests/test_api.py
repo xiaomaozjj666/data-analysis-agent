@@ -125,9 +125,12 @@ def test_access_token_protects_api(monkeypatch):
     status = client.get("/api/auth")
     assert status.json() == {"required": True, "authenticated": False}
     assert client.get("/api/settings").status_code == 401
+    assert client.get("/api/settings?token=test-access-token").status_code == 401
 
     authorized = client.get("/api/settings", headers={"X-App-Token": "test-access-token"})
     assert authorized.status_code == 200
+    assert authorized.headers["x-content-type-options"] == "nosniff"
+    assert authorized.headers["x-frame-options"] == "DENY"
 
 
 def test_access_token_protects_analysis_stream(monkeypatch):
@@ -145,8 +148,7 @@ def test_access_token_protects_analysis_stream(monkeypatch):
 
 def test_upload_stream_enforces_dataset_limits(tmp_path, monkeypatch):
     _isolate_runtime(tmp_path, monkeypatch)
-    monkeypatch.setenv("DATA_AGENT_RUNS_DIR", str(tmp_path / "runs"))
-    monkeypatch.setenv("DATA_AGENT_MAX_ROWS", "1")
+    api.bootstrap_settings.max_rows = 1
     client = TestClient(api.app)
 
     response = client.post(
@@ -203,6 +205,10 @@ def test_artifact_payload_is_curated_and_chart_preview_is_standalone(tmp_path, m
     assert preview.status_code == 200
     assert "<script src='plotly.min.js'" not in preview.text
     assert "Plotly" in preview.text
+    assert "Content-Security-Policy" in preview.text
+    assert "connect-src 'none'" in preview.text
+    assert preview.headers["cache-control"] == "private, no-store"
+    assert client.get(f"/api/sessions/{uploaded['id']}/plotly.js").status_code == 404
 
     download = client.get(chart["download_url"])
     assert download.status_code == 200
@@ -380,6 +386,14 @@ def test_sse_stream_emits_progress_and_heartbeat(tmp_path, monkeypatch):
     assert "started" in events
     assert "progress" in events
     assert "complete" in events
+    manifest = json.loads((tmp_path / "runs" / uploaded["id"] / "session.json").read_text(encoding="utf-8"))
+    assert manifest["analysis_status"] == "completed"
+    assert manifest["last_result"]["response"] == "done"
+
+    restored = api.SessionRegistry(tmp_path / "runs", max_sessions=10, ttl_hours=24).get(uploaded["id"])
+    assert restored.analysis_status == "completed"
+    assert restored.last_result is not None
+    assert restored.last_result.response == "done"
 
 
 def _short_wait_for(awaitable, timeout=None):
