@@ -243,3 +243,62 @@ def test_visualizations_keep_extreme_values_but_default_to_readable_scale(tmp_pa
         for trace in scatter.data
         for value in plotly_values(trace.y)
     ) == 2_990_001
+
+
+def test_grouped_bars_explain_absent_category_combinations(tmp_path):
+    source = tmp_path / "category_coverage.csv"
+    pd.DataFrame(
+        {
+            "product": ["音箱", "音箱", "键盘", "键盘", "键盘"],
+            "channel": ["线上", "线上", "门店", "门店", "经销商"],
+            "is_returned": [False, False, False, True, False],
+            "rating": [4.8, 4.6, 4.0, 2.1, 3.9],
+            "revenue": [900, 1100, 450, 400, 500],
+        }
+    ).to_csv(source, index=False)
+    workspace = DataWorkspace(tmp_path / "runs", session_id="coverage_chart")
+    workspace.load(source, copy_into_workspace=True)
+    visualization = tool_map(workspace)["create_visualization"]
+
+    rating_result = json.loads(
+        visualization.invoke(
+            {
+                "chart_type": "bar",
+                "x": "product",
+                "y": "rating",
+                "color": "is_returned",
+                "aggregation": "mean",
+                "title": "评分与退货",
+            }
+        )
+    )
+    rating = pio.read_json(rating_result["plotly_json"])
+    assert {trace.name for trace in rating.data} == {"未退货", "已退货"}
+    assert rating_result["category_coverage"] == {
+        "complete": False,
+        "observed_combinations": 3,
+        "total_combinations": 4,
+        "missing_count": 1,
+    }
+    assert "组合覆盖 3/4" in rating.layout.title.text
+    assert "不是数值为 0，也不是漏画" in rating.layout.title.text
+    assert any(annotation.text == "无样本" for annotation in rating.layout.annotations)
+    assert all("样本数" in trace.hovertemplate for trace in rating.data)
+
+    channel_result = json.loads(
+        visualization.invoke(
+            {
+                "chart_type": "bar",
+                "x": "product",
+                "y": "revenue",
+                "color": "channel",
+                "aggregation": "sum",
+                "title": "收入渠道",
+            }
+        )
+    )
+    channel = pio.read_json(channel_result["plotly_json"])
+    assert channel_result["category_coverage"]["observed_combinations"] == 3
+    assert channel_result["category_coverage"]["total_combinations"] == 6
+    assert channel_result["category_coverage"]["missing_count"] == 3
+    assert sum(annotation.text == "○" for annotation in channel.layout.annotations) == 3

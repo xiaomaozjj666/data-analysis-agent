@@ -45,6 +45,7 @@ _COLUMN_LABELS = {
     "order_date": "订单日期",
     "date": "日期",
     "count": "记录数",
+    "is_returned": "是否退货",
 }
 
 _AGGREGATION_LABELS = {
@@ -55,6 +56,10 @@ _AGGREGATION_LABELS = {
     "min": "最小值",
     "max": "最大值",
 }
+
+_BOOLEAN_VALUE_LABELS = {False: "未退货", True: "已退货"}
+_SAMPLE_COUNT_COLUMN = "__sample_count__"
+_HAS_RECORDS_COLUMN = "__has_records__"
 
 
 def _human_column_label(column: str | None) -> str:
@@ -72,6 +77,117 @@ def _compact_number(value: float) -> str:
     if absolute >= 10:
         return f"{value:,.0f}"
     return f"{value:,.2f}".rstrip("0").rstrip(".")
+
+
+def _append_title_note(fig: go.Figure, note: str) -> None:
+    """Append a compact factual note without nesting Plotly title markup."""
+    current = fig.layout.title.text or "数据图表"
+    if current.endswith("</sup>") and "<br><sup>" in current:
+        fig.update_layout(title_text=f"{current[:-6]}；{note}</sup>")
+    else:
+        fig.update_layout(title_text=f"{current}<br><sup>{note}</sup>")
+
+
+def _localize_boolean_categories(df: pd.DataFrame, columns: list[str | None]) -> None:
+    """Turn raw True/False category labels into unambiguous Chinese labels."""
+    for column in (value for value in columns if value and value in df.columns):
+        non_null = set(df[column].dropna().unique().tolist())
+        if non_null and non_null.issubset({True, False, np.bool_(True), np.bool_(False)}):
+            df[column] = df[column].map(_BOOLEAN_VALUE_LABELS)
+
+
+def _aggregate_for_chart(
+    df: pd.DataFrame,
+    *,
+    x: str,
+    y: str | None,
+    color: str | None,
+    aggregation: str,
+) -> tuple[pd.DataFrame, str, dict[str, Any]]:
+    """Aggregate while retaining sample counts and absent category combinations."""
+    group_columns = [x] + ([color] if color else [])
+    grouped = df.groupby(group_columns, dropna=False)
+    counts = grouped.size().rename(_SAMPLE_COUNT_COLUMN)
+    if aggregation == "count":
+        result = counts.rename("count").reset_index()
+        result[_SAMPLE_COUNT_COLUMN] = result["count"]
+        y = "count"
+    else:
+        if not y:
+            raise ValueError(f"{aggregation} 聚合需要 y。")
+        result = grouped[y].agg(aggregation).to_frame().join(counts).reset_index()
+
+    coverage: dict[str, Any] = {
+        "complete": True,
+        "observed_combinations": len(result),
+        "total_combinations": len(result),
+        "missing_combinations": [],
+    }
+    result[_HAS_RECORDS_COLUMN] = True
+    if not color:
+        return result, y, coverage
+
+    x_levels = list(pd.unique(df[x].dropna()))
+    color_levels = list(pd.unique(df[color].dropna()))
+    if not x_levels or not color_levels:
+        return result, y, coverage
+    combinations = pd.MultiIndex.from_product([x_levels, color_levels], names=[x, color])
+    result = result.set_index([x, color]).reindex(combinations).reset_index()
+    result[_HAS_RECORDS_COLUMN] = result[_SAMPLE_COUNT_COLUMN].notna()
+    result[_SAMPLE_COUNT_COLUMN] = result[_SAMPLE_COUNT_COLUMN].fillna(0).astype(int)
+    missing_rows = result.loc[~result[_HAS_RECORDS_COLUMN], [x, color]].to_dict("records")
+    coverage = {
+        "complete": not missing_rows,
+        "observed_combinations": len(result) - len(missing_rows),
+        "total_combinations": len(result),
+        "missing_combinations": missing_rows,
+        "color_levels": color_levels,
+    }
+    return result, y, coverage
+
+
+def _add_missing_combination_markers(
+    fig: go.Figure,
+    coverage: dict[str, Any],
+    *,
+    x: str | None,
+    color: str | None,
+    aggregation: str,
+) -> None:
+    """Mark absent grouped categories so blank space cannot look like a render failure."""
+    missing = coverage.get("missing_combinations") or []
+    if not missing or not x or not color:
+        return
+    color_levels = coverage.get("color_levels") or []
+    trace_colors = {
+        str(trace.name): getattr(getattr(trace, "marker", None), "color", "#7B8783")
+        for trace in fig.data
+        if getattr(trace, "name", None) is not None
+    }
+    detailed_label = len(color_levels) <= 2
+    for item in missing:
+        color_index = color_levels.index(item[color]) if item[color] in color_levels else 0
+        xshift = int((color_index - (len(color_levels) - 1) / 2) * 36)
+        label = "无样本" if aggregation in {"mean", "median", "min", "max"} else "○"
+        fig.add_annotation(
+            x=item[x],
+            y=0,
+            xref="x",
+            yref="y",
+            xshift=xshift,
+            yshift=12,
+            text=label if detailed_label else "○",
+            showarrow=False,
+            font={"size": 10 if detailed_label else 15, "color": trace_colors.get(str(item[color]), "#7B8783")},
+            bgcolor="rgba(251,250,245,0.78)" if detailed_label else "rgba(0,0,0,0)",
+            borderpad=2,
+        )
+    missing_label = "无样本" if aggregation in {"mean", "median", "min", "max"} else "无记录"
+    _append_title_note(
+        fig,
+        f"组合覆盖 {coverage['observed_combinations']}/{coverage['total_combinations']}；"
+        f"基线标记表示{missing_label}，不是数值为 0，也不是漏画",
+    )
 
 
 def _severe_axis_compression(values: list[Any], *, include_zero: bool = False) -> dict[str, Any] | None:
@@ -249,12 +365,10 @@ def _apply_outlier_scale_controls(
             "axis_ranges": axis_ranges,
         },
     )
-    original_title = fig.layout.title.text or "数据图表"
-    fig.update_layout(
-        title_text=(
-            f"{original_title}<br><sup>检测到 {indicator_count} 个极端点；默认显示主体尺度，"
-            "右上角可切换全量视图。原始数据未修改。</sup>"
-        )
+    _append_title_note(
+        fig,
+        f"检测到 {indicator_count} 个极端点；默认显示主体尺度，"
+        "右上角可切换全量视图。原始数据未修改",
     )
     return {"scale_mode": "robust", "extreme_points": indicator_count, "axis_ranges": axis_ranges}
 
@@ -790,17 +904,32 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             df = df[df[x].isin(keep)].copy()
 
         groupable = chart_type in {"bar", "line", "area"}
+        coverage: dict[str, Any] = {
+            "complete": True,
+            "observed_combinations": 0,
+            "total_combinations": 0,
+            "missing_combinations": [],
+        }
         if aggregation != "none":
             if not groupable or not x:
                 raise ValueError("aggregation 仅用于带 x 的 bar/line/area。")
-            group_columns = [x] + ([color] if color else [])
-            if aggregation == "count":
-                df = df.groupby(group_columns, dropna=False).size().reset_index(name="count")
-                y = "count"
-            else:
-                if not y:
-                    raise ValueError(f"{aggregation} 聚合需要 y。")
-                df = df.groupby(group_columns, dropna=False)[y].agg(aggregation).reset_index()
+            df, y, coverage = _aggregate_for_chart(
+                df,
+                x=x,
+                y=y,
+                color=color,
+                aggregation=aggregation,
+            )
+
+        _localize_boolean_categories(df, [x, color])
+        for item in coverage.get("missing_combinations", []):
+            for column in (x, color):
+                if column and item.get(column) in _BOOLEAN_VALUE_LABELS:
+                    item[column] = _BOOLEAN_VALUE_LABELS[item[column]]
+        if coverage.get("color_levels"):
+            coverage["color_levels"] = [
+                _BOOLEAN_VALUE_LABELS.get(value, value) for value in coverage["color_levels"]
+            ]
 
         labels = {column: _human_column_label(str(column)) for column in df.columns}
         if y and aggregation in _AGGREGATION_LABELS:
@@ -813,7 +942,12 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             "color_discrete_sequence": _CHART_COLORS,
         }
         if chart_type == "bar":
-            fig = px.bar(**common, x=x, y=y, color=color, barmode="group")
+            custom_data = (
+                [_SAMPLE_COUNT_COLUMN, _HAS_RECORDS_COLUMN]
+                if aggregation != "none" and _SAMPLE_COUNT_COLUMN in df.columns
+                else None
+            )
+            fig = px.bar(**common, x=x, y=y, color=color, barmode="group", custom_data=custom_data)
         elif chart_type == "line":
             fig = px.line(**common, x=x, y=y, color=color, markers=True)
         elif chart_type == "area":
@@ -859,12 +993,27 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             fig = px.treemap(**common, path=path_columns, values=values, color=color)
 
         scale_details = _apply_outlier_scale_controls(fig, chart_type, scale_mode)
+        if chart_type == "bar" and aggregation != "none":
+            _add_missing_combination_markers(
+                fig,
+                coverage,
+                x=x,
+                color=color,
+                aggregation=aggregation,
+            )
         fig.update_layout(
             font={"family": "IBM Plex Sans, Noto Sans SC, sans-serif", "color": "#102a2a"},
             paper_bgcolor="#fbfaf5",
             plot_bgcolor="#fbfaf5",
             colorway=_CHART_COLORS,
-            margin={"l": 64, "r": 36, "t": 108 if scale_details["scale_mode"] == "robust" else 76, "b": 64},
+            margin={
+                "l": 64,
+                "r": 36,
+                "t": 108
+                if scale_details["scale_mode"] == "robust" or coverage.get("missing_combinations")
+                else 76,
+                "b": 64,
+            },
             hoverlabel={"bgcolor": "#102a2a", "font_color": "white"},
             title={"x": 0.01, "xanchor": "left", "font": {"size": 22, "color": "#102a2a"}},
             legend={
@@ -896,6 +1045,15 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         )
         if chart_type == "bar":
             fig.update_traces(marker_line_color="rgba(16,42,42,0.16)", marker_line_width=0.8, selector={"type": "bar"})
+            if aggregation != "none" and _SAMPLE_COUNT_COLUMN in df.columns:
+                fig.update_traces(
+                    hovertemplate=(
+                        f"{_human_column_label(x)}：%{{x}}<br>"
+                        f"{_human_column_label(y)}：%{{y:,.2f}}<br>"
+                        "样本数：%{customdata[0]}<extra>%{fullData.name}</extra>"
+                    ),
+                    selector={"type": "bar"},
+                )
             if x and not pd.api.types.is_numeric_dtype(df[x]):
                 fig.update_xaxes(categoryorder="total descending")
             fig.update_layout(bargap=0.26, bargroupgap=0.08)
@@ -949,6 +1107,12 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             "chart_type": chart_type,
             "rows_plotted": len(df),
             **scale_details,
+            "category_coverage": {
+                "complete": coverage["complete"],
+                "observed_combinations": coverage["observed_combinations"],
+                "total_combinations": coverage["total_combinations"],
+                "missing_count": len(coverage.get("missing_combinations", [])),
+            },
             "html": html_path,
             "plotly_json": json_path,
         }
