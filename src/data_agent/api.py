@@ -370,13 +370,15 @@ def _check_rate_limit(request: Request) -> None:
 
 @app.middleware("http")
 async def protect_api(request: Request, call_next):
+    response = None
     if request.url.path.startswith("/api/") and request.url.path not in {"/api/health", "/api/auth"}:
         try:
             _check_access(request)
             _check_rate_limit(request)
         except HTTPException as exc:
-            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
-    response = await call_next(request)
+            response = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    if response is None:
+        response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
     response.headers.setdefault("X-Frame-Options", "DENY")

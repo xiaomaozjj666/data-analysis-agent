@@ -124,7 +124,10 @@ def test_access_token_protects_api(monkeypatch):
 
     status = client.get("/api/auth")
     assert status.json() == {"required": True, "authenticated": False}
-    assert client.get("/api/settings").status_code == 401
+    unauthorized = client.get("/api/settings")
+    assert unauthorized.status_code == 401
+    assert unauthorized.headers["x-content-type-options"] == "nosniff"
+    assert unauthorized.headers["x-frame-options"] == "DENY"
     assert client.get("/api/settings?token=test-access-token").status_code == 401
 
     authorized = client.get("/api/settings", headers={"X-App-Token": "test-access-token"})
