@@ -134,6 +134,16 @@ function describeApiError(payload, status) {
   return String(payload);
 }
 
+// 自定义错误类保留 HTTP status，让上层能区分 404（会话失效）等场景，
+// 而不是去解析 error.message 字符串。
+class ApiError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 async function api(path, options = {}) {
   const { timeoutMs = 30000, signal: providedSignal, ...fetchOptions } = options;
   const controller = providedSignal ? null : new AbortController();
@@ -146,7 +156,7 @@ async function api(path, options = {}) {
     });
     const contentType = response.headers.get("content-type") || "";
     const payload = contentType.includes("application/json") ? await response.json() : await response.text();
-    if (!response.ok) throw new Error(describeApiError(payload, response.status));
+    if (!response.ok) throw new ApiError(describeApiError(payload, response.status), response.status);
     return payload;
   } catch (error) {
     if (error.name === "AbortError") throw new Error("连接服务超时，请刷新页面后重试。Render 免费实例首次唤醒可能需要几十秒。");
@@ -207,6 +217,60 @@ function Metric({ label, value, unit }) {
       <span>{label}</span>
       <strong>{value}<small>{unit}</small></strong>
     </div>
+  );
+}
+
+// 报告区独立组件：负责渲染最终 Markdown 报告，并附带时间戳、复制按钮、
+// 长 report-body 展开/收起。把这块从主组件拆出来也让 props 校验更清晰。
+function ReportView({ result }) {
+  const [copied, setCopied] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(result.response || "");
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      // 浏览器禁用 clipboard（HTTP 部署、iframe 受限）时静默失败，
+      // 不阻塞用户阅读报告。
+    }
+  };
+
+  return (
+    <article className="report">
+      <div className="report-meta">
+        <div className="report-title">
+          <FileChartColumn size={15} />
+          <span>分析报告</span>
+          <small className="report-count">{result.artifacts?.length || 0} 个产物</small>
+        </div>
+        <div className="report-actions">
+          <button
+            type="button"
+            className="report-copy"
+            onClick={handleCopy}
+            title="复制全文"
+            aria-label="复制报告全文"
+          >
+            {copied ? <Check size={13} /> : <FileSpreadsheet size={13} />}
+            {copied ? "已复制" : "复制"}
+          </button>
+        </div>
+      </div>
+      <div className={`report-body ${expanded ? "is-expanded" : ""}`}>
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{result.response}</ReactMarkdown>
+      </div>
+      <button
+        type="button"
+        className="report-toggle"
+        onClick={() => setExpanded((value) => !value)}
+        aria-expanded={expanded}
+      >
+        <ChevronDown size={13} className={expanded ? "rot-180" : ""} />
+        {expanded ? "收起报告" : "展开完整报告"}
+      </button>
+    </article>
   );
 }
 
@@ -631,7 +695,7 @@ function App() {
       });
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
-        throw new Error(describeApiError(payload, response.status));
+        throw new ApiError(describeApiError(payload, response.status), response.status);
       }
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -710,6 +774,9 @@ function App() {
         // fetch 网络层错误（DNS/CORS/离线），尚未收到任何 SSE 帧。
         setError(`无法连接分析服务：${err.message}`);
         setRetryOffer({ task: nextTask, reason: "network" });
+      } else if (err instanceof ApiError && err.status === 404) {
+        // 重运行时服务端 session 已被清理，引导用户重新上传。
+        handleSessionLost("会话已失效（服务端数据已被清理），请重新上传数据集后再开始分析。");
       } else {
         setError(err.message);
         setRetryOffer({ task: nextTask, reason: "error" });
@@ -725,7 +792,15 @@ function App() {
   function restoreCompletedAnalysis(latest) {
     const savedResult = latest.last_result;
     if (savedResult) {
-      setResult(savedResult);
+      // 前端 UI 不消费 trace 字段，恢复时丢弃以减小内存占用；
+      // 后端持久化时 trace 也已截断到最近 20 条，这里不再透传。
+      setResult({
+        response: savedResult.response,
+        artifacts: savedResult.artifacts || latest.artifacts || [],
+        dataset_profile: savedResult.dataset_profile || latest.profile,
+        plan: savedResult.plan || [],
+        completed_steps: savedResult.completed_steps || [],
+      });
       setPlan(savedResult.plan || []);
       setCompleted(savedResult.completed_steps || []);
       return true;
@@ -736,8 +811,6 @@ function App() {
     if (!assistantMessage) return false;
     setResult({
       response: assistantMessage.content,
-      // 后端持久化的 last_result 包含 trace，但 chat fallback 路径没有 trace，
-      // 显式置空避免残留旧分析的 trace。
       trace: [],
       artifacts: latest.artifacts || [],
       dataset_profile: latest.profile,
@@ -747,6 +820,21 @@ function App() {
     setPlan([]);
     setCompleted([]);
     return true;
+  }
+
+  // 会话失效（404）时清空前端状态，引导用户回到上传界面。
+  // Render 免费实例重启会清空 /tmp，session 数据不可恢复，与其让用户
+  // 反复点"检查状态"得到 404，不如明确告知并重置。
+  function handleSessionLost(message) {
+    setSession(null);
+    setResult(null);
+    setPlan([]);
+    setCompleted([]);
+    setCurrentNodeTitle("");
+    setRetryOffer(null);
+    retryController.current?.abort();
+    analysisController.current?.abort();
+    setError(message || "会话已失效，请重新上传数据集后再开始分析。");
   }
 
   async function retryAnalysis() {
@@ -792,7 +880,11 @@ function App() {
         setError("");
         setRetryOffer(null);
       } else if (ACTIVE_ANALYSIS_STATES.has(latest.analysis_status)) {
-        setError("原分析仍在后台运行，请稍后再次检查状态；系统不会重复提交任务。");
+        // 5 分钟 deadline 到了但后端仍在 running——可能是 Render free 实例被
+        // 暂停、worker 死亡或 LLM 调用超长。提供"强制重新运行"让用户能
+        // 中断旧任务重跑，而不是无限等待。
+        setError("原分析长时间未结束（可能服务被暂停或任务卡住）。可以选择强制重新运行，将提交新的分析任务。");
+        setRetryOffer({ task: retryTask, reason: "ready" });
       } else {
         const statusMessage = latest.analysis_status === "cancelled"
           ? "原分析已经取消。确认后可以重新运行。"
@@ -809,8 +901,15 @@ function App() {
         // 用户主动取消或 stopAnalysis 中断，不覆盖已有 error。
         return;
       }
+      if (err instanceof ApiError && err.status === 404) {
+        // 服务端 session 已被清理（Render 重启 /tmp 清空、TTL 过期等）。
+        // 明确告知用户并重置到上传界面，避免用户反复点"检查状态"得到 404。
+        handleSessionLost("会话已失效（服务端数据已被清理），请重新上传数据集后再开始分析。");
+        return;
+      }
       // 网络错误（TypeError）或超时：立即退出轮询，不傻等 5 分钟。
-      setError(`暂时无法确认任务状态：${err.message}`);
+      // 保留 retryOffer 让用户可以再次尝试检查状态。
+      setError(`暂时无法确认任务状态：${err.message}。可稍后再次点击检查状态。`);
     } finally {
       if (retryController.current === controller) retryController.current = null;
       setRetryChecking(false);
@@ -948,7 +1047,7 @@ function App() {
                 {retryChecking ? "确认中" : retryOffer.reason === "ready" ? "重新运行" : "检查状态"}
               </button>
             )}
-            <button type="button" title="关闭" onClick={() => { setError(""); setRetryOffer(null); }}><X size={15} /></button>
+            <button type="button" title="关闭" className="error-close" onClick={() => { setError(""); setRetryOffer(null); }}><X size={15} /></button>
           </div>
         )}
 
@@ -1030,13 +1129,7 @@ function App() {
                   {!settings?.configured && <p className="composer-note">请先在左侧配置 DeepSeek API Key。</p>}
 
                   {result ? (
-                    <article className="report">
-                      <div className="report-meta">
-                        <span>分析报告</span>
-                        <small>{result.artifacts?.length || 0} 个产物</small>
-                      </div>
-                      <div className="report-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{result.response}</ReactMarkdown></div>
-                    </article>
+                    <ReportView result={result} />
                   ) : (
                     <DatasetOverview profile={profile} />
                   )}

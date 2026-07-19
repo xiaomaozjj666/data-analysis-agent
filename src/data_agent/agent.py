@@ -556,13 +556,40 @@ class DataAnalysisAgent:
         def finalize(state: WorkflowState) -> dict[str, Any]:
             ensure_not_cancelled()
             self._enter_node("finalize", "正在汇总最终报告")
-            evidence = "\n\n".join(
-                f"## {item['title']}\n{item.get('summary', '')}" for item in state.get("completed_steps", [])
-            )
+            # 按步数分配 evidence 预算，避免硬截断 30k 时把后面步骤的 summary 整段丢掉。
+            # 每步至少保留 800 字符（短 summary 不受影响），剩余预算按步均分。
+            completed_steps = state.get("completed_steps", []) or []
+            total_budget = 30000
+            per_step_min = 800
+            if completed_steps:
+                reserved = min(total_budget, per_step_min * len(completed_steps))
+                remaining = max(0, total_budget - reserved)
+                per_step_extra = remaining // len(completed_steps)
+                per_step_limit = per_step_min + per_step_extra
+            else:
+                per_step_limit = total_budget
+
+            def _trim_summary(text: str, limit: int) -> str:
+                text = (text or "").strip()
+                if len(text) <= limit:
+                    return text
+                return f"{text[:limit]}…（已截断）"
+
+            evidence_parts = [
+                f"## {item['title']}\n{_trim_summary(item.get('summary', ''), per_step_limit)}"
+                for item in completed_steps
+            ]
+            evidence = "\n\n".join(evidence_parts)
+
             prompt = (
-                "请基于以下工具执行结果生成最终中文数据分析报告。不得新增不存在的数字。"
-                "结构包含：数据质量、处理动作、关键发现、统计解释、图表与产物、局限与建议。\n\n"
-                f"用户目标：{state['query']}\n\n执行结果：\n{evidence[:30000]}"
+                "请基于以下工具执行结果生成最终中文数据分析报告。要求：\n"
+                "1. 不得新增不存在的数字或推断未提供的结论；\n"
+                "2. 全文控制在 1500-2500 字之间，避免过长或过短；\n"
+                "3. 结构按以下章节组织，每节用二级标题（## ）：数据质量、处理动作、关键发现、"
+                "统计解释、图表与产物、局限与建议；\n"
+                "4. 关键数字用 **加粗** 标注，便于快速定位；\n"
+                "5. 如有表格，使用 Markdown 表格语法，列数不超过 5 列。\n\n"
+                f"用户目标：{state['query']}\n\n执行结果：\n{evidence}"
             )
             try:
                 final_message = self.model.invoke(prompt, config=self._invoke_config())
@@ -570,7 +597,14 @@ class DataAnalysisAgent:
             except Exception:
                 response = ""
             if not response:
-                response = evidence or "分析已完成，但没有可汇总的步骤结果。"
+                # LLM 汇总失败时，把各步骤的标题与摘要作为兜底返回，避免用户看到空白。
+                if evidence:
+                    response = (
+                        "> 模型汇总失败，以下是各分析步骤的执行摘要。\n\n"
+                        + evidence
+                    )
+                else:
+                    response = "分析已完成，但没有可汇总的步骤结果。"
             return {
                 "response": response,
                 "artifacts": list(self.workspace.artifacts),
