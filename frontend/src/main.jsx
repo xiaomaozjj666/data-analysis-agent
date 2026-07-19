@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { Component, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -13,7 +13,9 @@ import {
   Download,
   Eye,
   EyeOff,
+  ExternalLink,
   FileCheck2,
+  FileChartColumn,
   FilePlus2,
   FileSpreadsheet,
   KeyRound,
@@ -23,6 +25,7 @@ import {
   RefreshCw,
   Rows3,
   Settings2,
+  Square,
   Table2,
   Upload,
   X,
@@ -41,6 +44,42 @@ function requestHeaders(headers = {}) {
     ...headers,
     ...(token ? { "X-App-Token": token } : {}),
   };
+}
+
+class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidCatch(error, info) {
+    console.error("工作台渲染失败：", error, info);
+  }
+
+  reset = () => this.setState({ error: null });
+
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <main className="auth-gate">
+        <div className="auth-card">
+          <span className="section-kicker">DATA DESK</span>
+          <h1>渲染出现异常</h1>
+          <p>{String(this.state.error?.message || this.state.error || "未知错误")}</p>
+          <button className="primary" type="button" onClick={() => window.location.reload()}>
+            刷新页面
+          </button>
+          <button type="button" onClick={this.reset} style={{ marginTop: 8 }}>
+            尝试恢复
+          </button>
+        </div>
+      </main>
+    );
+  }
 }
 
 const presets = [
@@ -257,6 +296,62 @@ function DatasetOverview({ profile }) {
   );
 }
 
+function formatBytes(value = 0) {
+  if (!value) return "";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function ArtifactCenter({ artifacts = [], onDownload, onPreview }) {
+  const charts = artifacts.filter((item) => item.kind === "visualization");
+  const files = artifacts.filter((item) => item.kind !== "visualization");
+  if (!artifacts.length) return <div className="empty-row">分析完成后，最终图表和数据文件会出现在这里。</div>;
+  return (
+    <div className="artifact-center">
+      {charts.length > 0 && (
+        <section className="artifact-section">
+          <div className="artifact-section-label"><span>交互图表</span><small>{charts.length} 张精选结果</small></div>
+          <div className="chart-grid">
+            {charts.map((item, index) => (
+              <article className="chart-card" key={item.name}>
+                <div className="chart-index">{String(index + 1).padStart(2, "0")}</div>
+                <FileChartColumn size={20} />
+                <div>
+                  <strong>{item.description || item.name}</strong>
+                  <small>{formatBytes(item.size_bytes)} · HTML 交互图</small>
+                </div>
+                <div className="artifact-actions">
+                  <button className="preview-button" onClick={() => onPreview(item)}>
+                    <ExternalLink size={14} />在线查看
+                  </button>
+                  <button className="icon-button" title={`下载 ${item.name}`} onClick={() => onDownload(item)}>
+                    <Download size={15} />
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+      {files.length > 0 && (
+        <section className="artifact-section artifact-files">
+          <div className="artifact-section-label"><span>数据文件</span><small>仅保留最终版本</small></div>
+          <div className="artifact-list">
+            {files.map((item) => (
+              <div key={item.name}>
+                <FileSpreadsheet size={17} />
+                <span><strong>{item.name}</strong><small>{item.description} {formatBytes(item.size_bytes)}</small></span>
+                <button className="artifact-download" title={`下载 ${item.name}`} onClick={() => onDownload(item)}><Download size={16} /></button>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
 function App() {
   const [authRequired, setAuthRequired] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
@@ -276,8 +371,13 @@ function App() {
   const [apiKey, setApiKey] = useState("");
   const [effort, setEffort] = useState("high");
   const [thinking, setThinking] = useState(true);
+  const [previewItem, setPreviewItem] = useState(null);
+  const [previewHtml, setPreviewHtml] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
   const fileInput = useRef(null);
   const taskInput = useRef(null);
+  const analysisController = useRef(null);
+  const cancelRequested = useRef(false);
 
   useEffect(() => {
     api("/api/auth")
@@ -302,9 +402,46 @@ function App() {
       });
   }, []);
 
-  async function downloadArtifact(item) {
+  async function openArtifactPreview(item) {
+    if (!item.preview_url) return;
+    setPreviewItem(item);
+    setPreviewHtml("");
+    setPreviewLoading(true);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 120000);
     try {
-      const response = await fetch(`${API_URL}${item.download_url}`, { headers: requestHeaders() });
+      const response = await fetch(`${API_URL}${item.preview_url}`, {
+        headers: requestHeaders(),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.detail || `预览请求失败 (${response.status})`);
+      }
+      setPreviewHtml(await response.text());
+    } catch (err) {
+      setPreviewItem(null);
+      setError(`图表预览失败：${err.name === "AbortError" ? "加载超时" : err.message}`);
+    } finally {
+      window.clearTimeout(timeout);
+      setPreviewLoading(false);
+    }
+  }
+
+  function closeArtifactPreview() {
+    setPreviewItem(null);
+    setPreviewHtml("");
+    setPreviewLoading(false);
+  }
+
+  async function downloadArtifact(item) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 120000);
+    try {
+      const response = await fetch(`${API_URL}${item.download_url}`, {
+        headers: requestHeaders(),
+        signal: controller.signal,
+      });
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
         throw new Error(payload.detail || `请求失败 (${response.status})`);
@@ -318,7 +455,9 @@ function App() {
       link.remove();
       URL.revokeObjectURL(link.href);
     } catch (err) {
-      setError(`下载失败：${err.message}`);
+      setError(`下载失败：${err.name === "AbortError" ? "下载超时，请稍后重试。" : err.message}`);
+    } finally {
+      window.clearTimeout(timeout);
     }
   }
 
@@ -338,6 +477,7 @@ function App() {
       setSettings(payload);
       setApiKey("");
       setKeyOpen(false);
+      if (payload.warning) setError(payload.warning);
     } catch (err) {
       setError(err.message);
     }
@@ -365,6 +505,19 @@ function App() {
     }
   }
 
+  async function stopAnalysis() {
+    if (!session || !running) return;
+    cancelRequested.current = true;
+    const cancelRequest = api(`/api/sessions/${session.id}/cancel`, {
+      method: "POST",
+      timeoutMs: 10000,
+    }).catch(() => null);
+    analysisController.current?.abort();
+    await cancelRequest;
+    setRunning(false);
+    setError("分析已取消，已完成的步骤不会继续扩展。");
+  }
+
   async function startAnalysis(nextTask = task) {
     if (!session || !nextTask.trim() || running) return;
     setRunning(true);
@@ -374,7 +527,10 @@ function App() {
     setCompleted([]);
     setTask(nextTask);
     const controller = new AbortController();
+    analysisController.current = controller;
+    cancelRequested.current = false;
     let idleTimeout = null;
+    let completedPayload = null;
     const resetIdleTimeout = () => {
       if (idleTimeout) window.clearTimeout(idleTimeout);
       idleTimeout = window.setTimeout(() => controller.abort(), 180000);
@@ -408,19 +564,33 @@ function App() {
           if (event === "plan_analysis") setPlan(data.plan || []);
           if (event === "replan") setCompleted(data.completed_steps || []);
           if (event === "complete") {
+            completedPayload = data;
             setResult(data);
             setPlan(data.plan || []);
             setCompleted(data.completed_steps || []);
             setSession((current) => ({ ...current, artifacts: data.artifacts || [] }));
           }
+          if (event === "cancelled") {
+            cancelRequested.current = true;
+            setError(data.message || "分析已取消。");
+          }
           if (event === "error") throw new Error(data.message || "分析失败");
         }
         if (done) break;
       }
+      if (completedPayload) {
+        const refreshed = await api(`/api/sessions/${session.id}`);
+        setSession(refreshed);
+      }
     } catch (err) {
-      setError(err.name === "AbortError" ? "长时间未收到分析进度，请稍后重试。" : err.message);
+      if (err.name === "AbortError" && cancelRequested.current) {
+        setError("分析已取消，已完成的步骤不会继续扩展。");
+      } else {
+        setError(err.name === "AbortError" ? "长时间未收到分析进度，请稍后重试。" : err.message);
+      }
     } finally {
       if (idleTimeout) window.clearTimeout(idleTimeout);
+      if (analysisController.current === controller) analysisController.current = null;
       setRunning(false);
     }
   }
@@ -482,7 +652,7 @@ function App() {
           <button className="model-line" onClick={() => setKeyOpen((value) => !value)}>
             <span>
               <i className={settings?.configured ? "online" : ""} />
-              <span><strong>DeepSeek V4 Pro</strong><small>{settings?.configured ? "已连接" : "等待配置"}</small></span>
+              <span><strong>{settings?.model || "deepseek-v4-pro"}</strong><small>{settings?.configured ? "已连接" : "等待配置"}</small></span>
             </span>
             <Settings2 size={15} />
           </button>
@@ -612,10 +782,15 @@ function App() {
                           </button>
                         ))}
                       </div>
-                      <button className="run-button" onClick={() => startAnalysis()} disabled={!task.trim() || running || !settings?.configured}>
-                        {running ? <LoaderCircle className="spin" size={16} /> : <Play size={15} fill="currentColor" />}
-                        运行分析
-                      </button>
+                      {running ? (
+                        <button className="cancel-button" onClick={stopAnalysis}>
+                          <Square size={13} fill="currentColor" />停止分析
+                        </button>
+                      ) : (
+                        <button className="run-button" onClick={() => startAnalysis()} disabled={!task.trim() || !settings?.configured}>
+                          <Play size={15} fill="currentColor" />运行分析
+                        </button>
+                      )}
                     </div>
                   </div>
                   {!settings?.configured && <p className="composer-note">请先在左侧配置 DeepSeek API Key。</p>}
@@ -648,27 +823,54 @@ function App() {
 
             {activeTab === "artifacts" && (
               <section className="artifact-view">
-                <div className="section-title"><div><span className="section-kicker">输出文件</span><h2>分析产物</h2></div></div>
-                {!session.artifacts?.length ? (
-                  <div className="empty-row">暂无产物</div>
-                ) : (
-                  <div className="artifact-list">
-                    {session.artifacts.map((item) => (
-                      <div key={item.name}>
-                        <FileSpreadsheet size={17} />
-                        <span><strong>{item.name}</strong><small>{item.description}</small></span>
-                        <button className="artifact-download" title={`下载 ${item.name}`} onClick={() => downloadArtifact(item)}><Download size={16} /></button>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                <div className="section-title artifact-title">
+                  <div><span className="section-kicker">结果中心</span><h2>值得保留的结论</h2></div>
+                  <small>中间文件已自动收起</small>
+                </div>
+                <ArtifactCenter
+                  artifacts={session.artifacts}
+                  onDownload={downloadArtifact}
+                  onPreview={openArtifactPreview}
+                />
               </section>
             )}
           </>
         )}
       </main>
+      {previewItem && (
+        <div className="preview-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) closeArtifactPreview();
+        }}>
+          <section className="preview-panel" role="dialog" aria-modal="true" aria-label={`预览 ${previewItem.description || previewItem.name}`}>
+            <header>
+              <div>
+                <span className="section-kicker">交互图表</span>
+                <h2>{previewItem.description || previewItem.name}</h2>
+              </div>
+              <div className="preview-actions">
+                <button onClick={() => downloadArtifact(previewItem)}><Download size={15} />下载</button>
+                <button className="icon-button" title="关闭预览" onClick={closeArtifactPreview}><X size={17} /></button>
+              </div>
+            </header>
+            <div className="preview-stage">
+              {previewLoading && <div className="preview-loading"><LoaderCircle className="spin" size={18} />正在准备交互图表…</div>}
+              {previewHtml && (
+                <iframe
+                  title={previewItem.description || previewItem.name}
+                  sandbox="allow-scripts"
+                  srcDoc={previewHtml}
+                />
+              )}
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }
 
-createRoot(document.getElementById("root")).render(<App />);
+createRoot(document.getElementById("root")).render(
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>,
+);

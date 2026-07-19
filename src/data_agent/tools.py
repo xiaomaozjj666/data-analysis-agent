@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import operator
 import re
+from html import escape
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -40,6 +41,128 @@ def _safe_stem(title: str | None, fallback: str) -> str:
     return f"{stem or fallback}_{uuid4().hex[:8]}"
 
 
+def _normalize_column_names(
+    df: pd.DataFrame,
+    columns: list[str] | None,
+    datetime_columns: list[str] | None,
+) -> tuple[pd.DataFrame, list[str] | None, list[str] | None, bool]:
+    """Lowercase and sanitize column names; remap caller-provided selections."""
+    original = list(df.columns)
+    normalized: list[str] = []
+    seen: dict[str, int] = {}
+    for value in original:
+        base = re.sub(r"[^\w\u4e00-\u9fff]+", "_", str(value).strip().lower()).strip("_") or "column"
+        seen[base] = seen.get(base, 0) + 1
+        normalized.append(base if seen[base] == 1 else f"{base}_{seen[base]}")
+    if normalized == original:
+        return df, columns, datetime_columns, False
+    df = df.copy()
+    df.columns = normalized
+    mapping = dict(zip(original, normalized, strict=True))
+    if columns:
+        columns = [mapping.get(value, value) for value in columns]
+    if datetime_columns:
+        datetime_columns = [mapping.get(value, value) for value in datetime_columns]
+    return df, columns, datetime_columns, True
+
+
+def _trim_string_columns(df: pd.DataFrame) -> int:
+    """Trim leading/trailing whitespace on object/string columns in place."""
+    string_columns = list(df.select_dtypes(include=["object", "string"]).columns)
+    for column in string_columns:
+        df[column] = df[column].map(lambda value: value.strip() if isinstance(value, str) else value)
+    return len(string_columns)
+
+
+def _parse_numeric_columns(df: pd.DataFrame, threshold: float = 0.8) -> list[str]:
+    """Coerce object/string columns whose numeric ratio meets ``threshold``."""
+    converted: list[str] = []
+    for column in df.select_dtypes(include=["object", "string"]).columns:
+        non_empty = df[column].dropna()
+        if non_empty.empty:
+            continue
+        candidate = pd.to_numeric(df[column], errors="coerce")
+        if candidate.notna().sum() / len(non_empty) >= threshold:
+            df[column] = candidate
+            converted.append(str(column))
+    return converted
+
+
+def _apply_missing_strategy(
+    df: pd.DataFrame,
+    selected: list[str],
+    strategy: str,
+) -> None:
+    """Apply the requested missing-value strategy in place."""
+    if strategy == "drop":
+        old_len = len(df)
+        df.dropna(subset=selected, inplace=True)
+        df.reset_index(drop=True, inplace=True)
+        dropped = old_len - len(df)
+        if dropped > 0 and dropped / max(old_len, 1) > 0.5:
+            raise ValueError(
+                f"拒绝高比例删行：将删除 {dropped}/{old_len} 行。"
+                "请改用填充策略，或先让用户确认后分批处理。"
+            )
+        return
+    if strategy in {"forward_fill", "backward_fill"}:
+        method = "ffill" if strategy == "forward_fill" else "bfill"
+        df[selected] = getattr(df[selected], method)()
+        return
+    for column in selected:
+        series = df[column]
+        if not series.isna().any():
+            continue
+        if strategy in {"mean", "median"}:
+            if not pd.api.types.is_numeric_dtype(series):
+                raise ValueError(f"列 {column} 不是数值列，不能使用 {strategy} 填充。")
+            fill_value = getattr(series, strategy)()
+        else:
+            modes = series.mode(dropna=True)
+            if modes.empty:
+                continue
+            fill_value = modes.iloc[0]
+        df[column] = series.fillna(fill_value)
+
+
+def _handle_outliers(
+    df: pd.DataFrame,
+    selected: list[str],
+    method: str,
+    action: str,
+) -> tuple[int, dict[str, tuple[float, float]]]:
+    """Detect and optionally cap/remove outliers on numeric selected columns."""
+    numeric = _numeric_columns(df, selected)
+    masks: dict[str, pd.Series] = {}
+    bounds: dict[str, tuple[float, float]] = {}
+    for column in numeric:
+        series = df[column]
+        if method == "iqr":
+            q1, q3 = series.quantile([0.25, 0.75])
+            spread = q3 - q1
+            lower, upper = float(q1 - 1.5 * spread), float(q3 + 1.5 * spread)
+        else:
+            mean, std = float(series.mean()), float(series.std(ddof=0))
+            if std == 0 or not np.isfinite(std):
+                continue
+            lower, upper = mean - 3 * std, mean + 3 * std
+        bounds[column] = (lower, upper)
+        masks[column] = series.lt(lower) | series.gt(upper)
+    count = int(pd.DataFrame(masks).any(axis=1).sum()) if masks else 0
+    if action == "remove" and masks:
+        if count / max(len(df), 1) > 0.3:
+            raise ValueError(
+                f"拒绝一次删除过多离群记录：将删除 {count}/{len(df)} 行。"
+                "请改用 cap，或缩小需要检查的列。"
+            )
+        df.drop(pd.DataFrame(masks).any(axis=1).loc[lambda s: s].index, inplace=True)
+        df.reset_index(drop=True, inplace=True)
+    elif action == "cap":
+        for column, (lower, upper) in bounds.items():
+            df[column] = df[column].clip(lower, upper)
+    return count, bounds
+
+
 def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
     """Create session-bound tools used by the ReAct agent."""
 
@@ -49,6 +172,8 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
 
         Always call this before cleaning, statistics or visualization. sample_rows must be 1-20.
         """
+        if not 1 <= sample_rows <= 20:
+            raise ValueError("sample_rows 必须在 1 到 20 之间。")
         return json_text(workspace.profile(sample_rows=sample_rows))
 
     @tool
@@ -91,49 +216,32 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         """Clean the active dataset and save cleaned_data.csv.
 
         columns limits missing/outlier handling; other operations still apply globally.
-        parse_numeric converts string columns when at least 80% of non-empty values are numeric.
+        parse_numeric converts an object/string column when at least 80% of its non-empty
+        values are numeric. This is intentionally more permissive than repair_data_format,
+        which only converts columns where 100% of values are unambiguously numeric after
+        trimming currency symbols and thousands separators. Use repair_data_format for safe
+        formatting fixes and clean_data when the analysis needs broader numeric coercion.
         datetime_columns explicitly selects columns to parse as dates.
         IQR/z-score outlier handling only applies to numeric selected columns.
-        High-volume row deletion is refused unless the request explicitly narrows columns.
+        Missing-value deletion over 50% and outlier deletion over 30% are always refused.
         """
         df = workspace.dataframe.copy()
         before = {"rows": len(df), "columns": len(df.columns), "missing": int(df.isna().sum().sum())}
         changes: list[str] = []
 
         if normalize_column_names:
-            original = list(df.columns)
-            normalized: list[str] = []
-            seen: dict[str, int] = {}
-            for value in original:
-                base = re.sub(r"[^\w\u4e00-\u9fff]+", "_", str(value).strip().lower()).strip("_") or "column"
-                seen[base] = seen.get(base, 0) + 1
-                normalized.append(base if seen[base] == 1 else f"{base}_{seen[base]}")
-            df.columns = normalized
-            if columns:
-                mapping = dict(zip(original, normalized, strict=True))
-                columns = [mapping.get(value, value) for value in columns]
-            if datetime_columns:
-                mapping = dict(zip(original, normalized, strict=True))
-                datetime_columns = [mapping.get(value, value) for value in datetime_columns]
-            changes.append("normalized column names")
+            df, columns, datetime_columns, changed = _normalize_column_names(df, columns, datetime_columns)
+            if changed:
+                changes.append("normalized column names")
 
         selected = _checked_columns(df, columns)
         if trim_strings:
-            string_columns = list(df.select_dtypes(include=["object", "string"]).columns)
-            for column in string_columns:
-                df[column] = df[column].map(lambda value: value.strip() if isinstance(value, str) else value)
-            changes.append(f"trimmed {len(string_columns)} text columns")
+            trimmed = _trim_string_columns(df)
+            if trimmed:
+                changes.append(f"trimmed {trimmed} text columns")
 
         if parse_numeric:
-            converted: list[str] = []
-            for column in df.select_dtypes(include=["object", "string"]).columns:
-                non_empty = df[column].dropna()
-                if non_empty.empty:
-                    continue
-                candidate = pd.to_numeric(df[column], errors="coerce")
-                if candidate.notna().sum() / len(non_empty) >= 0.8:
-                    df[column] = candidate
-                    converted.append(str(column))
+            converted = _parse_numeric_columns(df)
             changes.append(f"parsed numeric columns: {converted}")
 
         if datetime_columns:
@@ -148,60 +256,11 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             changes.append(f"removed {count} duplicate rows")
 
         if missing_strategy != "none":
-            if missing_strategy == "drop":
-                old_len = len(df)
-                df = df.dropna(subset=selected).copy()
-                dropped = old_len - len(df)
-                if dropped > 0 and dropped / max(old_len, 1) > 0.5 and columns is None:
-                    raise ValueError(
-                        f"拒绝无列限定的高比例删行：将删除 {dropped}/{old_len} 行。"
-                        "请明确指定需要检查的列，或改用填充策略。"
-                    )
-                changes.append(f"dropped {dropped} rows with missing selected values")
-            elif missing_strategy in {"forward_fill", "backward_fill"}:
-                method = "ffill" if missing_strategy == "forward_fill" else "bfill"
-                df[selected] = getattr(df[selected], method)()
-                changes.append(f"applied {missing_strategy}")
-            else:
-                for column in selected:
-                    series = df[column]
-                    if not series.isna().any():
-                        continue
-                    if missing_strategy in {"mean", "median"}:
-                        if not pd.api.types.is_numeric_dtype(series):
-                            raise ValueError(f"列 {column} 不是数值列，不能使用 {missing_strategy} 填充。")
-                        fill_value = getattr(series, missing_strategy)()
-                    else:
-                        modes = series.mode(dropna=True)
-                        if modes.empty:
-                            continue
-                        fill_value = modes.iloc[0]
-                    df[column] = series.fillna(fill_value)
-                changes.append(f"filled missing values with {missing_strategy}")
+            _apply_missing_strategy(df, selected, missing_strategy)
+            changes.append(f"applied missing strategy: {missing_strategy}")
 
         if outlier_method != "none":
-            numeric = _numeric_columns(df, selected)
-            masks: dict[str, pd.Series] = {}
-            bounds: dict[str, tuple[float, float]] = {}
-            for column in numeric:
-                series = df[column]
-                if outlier_method == "iqr":
-                    q1, q3 = series.quantile([0.25, 0.75])
-                    spread = q3 - q1
-                    lower, upper = float(q1 - 1.5 * spread), float(q3 + 1.5 * spread)
-                else:
-                    mean, std = float(series.mean()), float(series.std(ddof=0))
-                    if std == 0 or not np.isfinite(std):
-                        continue
-                    lower, upper = mean - 3 * std, mean + 3 * std
-                bounds[column] = (lower, upper)
-                masks[column] = series.lt(lower) | series.gt(upper)
-            count = int(pd.DataFrame(masks).any(axis=1).sum()) if masks else 0
-            if outlier_action == "remove" and masks:
-                df = df.loc[~pd.DataFrame(masks).any(axis=1)].copy()
-            elif outlier_action == "cap":
-                for column, (lower, upper) in bounds.items():
-                    df[column] = df[column].clip(lower, upper)
+            count, _ = _handle_outliers(df, selected, outlier_method, outlier_action)
             changes.append(f"{outlier_action}ped {count} {outlier_method} outlier rows")
 
         workspace.dataframe = df.reset_index(drop=True)
@@ -364,6 +423,13 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             selected = _checked_columns(df, columns)
             if len(selected) != 2:
                 raise ValueError("卡方检验需要恰好两个分类列。")
+            cardinality = {column: int(df[column].nunique(dropna=True)) for column in selected}
+            max_cardinality = max(cardinality.values())
+            if max_cardinality > 100:
+                raise ValueError(
+                    f"卡方检验拒绝高基数列：{cardinality}。"
+                    "请对类别做合并、分组或改用其他统计方法。"
+                )
             table = pd.crosstab(df[selected[0]], df[selected[1]])
             chi2, p_value, dof, expected = stats.chi2_contingency(table)
             result.update(statistic=float(chi2), p_value=float(p_value), significant=bool(p_value < alpha), degrees_of_freedom=int(dof), contingency_table=table.to_dict(), min_expected=float(np.min(expected)))
@@ -499,7 +565,29 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         )
         stem = _safe_stem(title, chart_type)
         html_path = workspace.artifacts_dir / f"{stem}.html"
-        fig.write_html(html_path, include_plotlyjs=True, full_html=True)
+        shared_plotly = workspace.ensure_plotly_bundle()
+        relative_script = shared_plotly.relative_to(workspace.artifacts_dir).as_posix() if shared_plotly else None
+        html_template = (
+            "<!doctype html><html><head><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            "<title>{title}</title><script src='{script}'></script>"
+            "<style>html,body{{margin:0;background:#fbfaf5}}body{{min-height:100vh}}</style>"
+            "</head><body>{div}</body></html>"
+            if relative_script
+            else None
+        )
+        if html_template is not None:
+            div = fig.to_html(full_html=False, include_plotlyjs=False)
+            html_path.write_text(
+                html_template.format(
+                    title=escape(title or chart_type),
+                    script=relative_script,
+                    div=div,
+                ),
+                encoding="utf-8",
+            )
+        else:
+            fig.write_html(html_path, include_plotlyjs=True, full_html=True)
         workspace.register_artifact(html_path, "visualization", title or chart_type)
         json_path = workspace.artifacts_dir / f"{stem}.plotly.json"
         fig.write_json(json_path)

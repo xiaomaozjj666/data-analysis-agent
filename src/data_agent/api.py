@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
 import logging
@@ -11,21 +12,22 @@ from collections import defaultdict, deque
 from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
 
-from data_agent.agent import AnalysisResult, DataAnalysisAgent
+from data_agent.agent import AnalysisCancelled, AnalysisResult, DataAnalysisAgent
 from data_agent.config import AgentSettings
 from data_agent.credentials import delete_saved_api_key, get_saved_api_key, save_api_key
 from data_agent.serialization import to_jsonable
 from data_agent.storage import LocalSessionStorage, SessionStorage, build_session_storage
-from data_agent.workspace import SUPPORTED_EXTENSIONS, DataWorkspace
+from data_agent.workspace import PLOTLY_BUNDLE_NAME, SUPPORTED_EXTENSIONS, DataWorkspace
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +37,19 @@ class SettingsUpdate(BaseModel):
     thinking_enabled: bool = True
     reasoning_effort: str = Field(default="high", pattern="^(high|max)$")
     persist_key: bool = True
+
+
+def _save_runtime_api_key(value: str, persist_key: bool) -> bool:
+    """Store the key in memory and try to persist it via the OS keyring.
+
+    Returns True when persistence succeeded (or was not requested), False when
+    the OS credential backend is unavailable so the key only lives in memory.
+    """
+    with runtime_settings_lock:
+        runtime_settings["api_key"] = value
+    if not persist_key:
+        return True
+    return save_api_key(value)
 
 
 class AnalyzeRequest(BaseModel):
@@ -48,6 +63,9 @@ class SessionRecord:
         self.last_result: AnalysisResult | None = None
         self.last_access = time.monotonic()
         self.run_lock = threading.Lock()
+        self.cancel_event = threading.Event()
+        self.analysis_status = "idle"
+        self.current_task = ""
         self.created_at = time.time()
 
 
@@ -260,12 +278,29 @@ def _check_access(request: Request) -> None:
         raise HTTPException(status_code=401, detail="需要有效的应用访问令牌。")
 
 
+def _client_identifier(request: Request) -> str:
+    """Best-effort client identifier for rate limiting.
+
+    Prefer the first hop of ``X-Forwarded-For`` when the request reaches us
+    through a trusted reverse proxy (Render, Nginx, etc.). Fall back to the
+    direct socket address so the limiter always has a stable key.
+    """
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        first = forwarded.split(",", 1)[0].strip()
+        if first:
+            return first
+    if request.client:
+        return request.client.host
+    return "unknown"
+
+
 def _check_rate_limit(request: Request) -> None:
     if request.method not in {"POST", "PUT", "DELETE"} or not request.url.path.startswith("/api/"):
         return
     limit = bootstrap_settings.rate_limit_per_minute
     now = time.monotonic()
-    key = request.client.host if request.client else "unknown"
+    key = _client_identifier(request)
     with request_buckets_lock:
         bucket = request_buckets[key]
         while bucket and now - bucket[0] >= 60:
@@ -301,11 +336,53 @@ def _effective_settings() -> AgentSettings:
     return settings
 
 
-def _artifact_payload(session_id: str, artifacts: list[dict[str, str]]) -> list[dict[str, str]]:
-    result: list[dict[str, str]] = []
+def _curate_artifacts(artifacts: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Return a concise, user-facing result set instead of every intermediate file."""
+    latest_visualizations: dict[str, dict[str, str]] = {}
+    images: dict[str, dict[str, str]] = {}
+    datasets: list[dict[str, str]] = []
+    documents: list[dict[str, str]] = []
     for item in artifacts:
+        kind = item.get("kind", "dataset")
+        if kind == "chart_data":
+            continue
+        description = re.sub(r"\s+", " ", item.get("description", "").strip().lower())
+        key = description or Path(item.get("name", "artifact")).stem.lower()
+        if kind == "visualization":
+            latest_visualizations[key] = item
+        elif kind == "image":
+            images[key] = item
+        elif kind == "dataset":
+            datasets.append(item)
+        else:
+            documents.append(item)
+
+    preferred = [
+        item
+        for item in datasets
+        if re.search(r"final|result|report|cleaned_data_final|analysis_result", item.get("name", ""), re.I)
+    ]
+    selected_datasets = preferred[-2:] if preferred else datasets[-1:]
+    return [
+        *list(latest_visualizations.values())[-6:],
+        *list(images.values())[-3:],
+        *selected_datasets,
+        *documents[-2:],
+    ]
+
+
+def _artifact_payload(session_id: str, artifacts: list[dict[str, str]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for item in _curate_artifacts(artifacts):
         value = dict(item)
         value["download_url"] = f"/api/sessions/{session_id}/artifacts/{item['name']}"
+        value["previewable"] = item.get("kind") == "visualization"
+        if item.get("kind") == "visualization":
+            value["preview_url"] = f"/api/sessions/{session_id}/artifacts/{item['name']}/preview"
+        try:
+            value["size_bytes"] = Path(item["path"]).stat().st_size
+        except (OSError, KeyError):
+            value["size_bytes"] = 0
         value.pop("path", None)
         result.append(value)
     return result
@@ -321,6 +398,7 @@ def _session_payload(session_id: str, record: SessionRecord) -> dict[str, Any]:
         "preview": to_jsonable(workspace.dataframe.head(100)),
         "chat": record.chat,
         "artifacts": _artifact_payload(session_id, workspace.artifacts),
+        "analysis_status": record.analysis_status,
     }
 
 
@@ -389,18 +467,21 @@ def get_settings() -> dict[str, Any]:
 
 @app.put("/api/settings")
 def update_settings(update: SettingsUpdate) -> dict[str, Any]:
+    keyring_warning = ""
     if update.api_key is not None:
         value = update.api_key.strip()
         if not value:
             raise HTTPException(status_code=422, detail="API Key 不能为空。")
-        with runtime_settings_lock:
-            runtime_settings["api_key"] = value
-        if update.persist_key:
-            save_api_key(value)
+        persisted = _save_runtime_api_key(value, update.persist_key)
+        if update.persist_key and not persisted:
+            keyring_warning = "系统凭据存储不可用，本次 Key 仅保留在服务进程内存中，重启后需重新填写。"
     with runtime_settings_lock:
         runtime_settings["thinking_enabled"] = update.thinking_enabled
         runtime_settings["reasoning_effort"] = update.reasoning_effort
-    return get_settings()
+    payload = get_settings()
+    if keyring_warning:
+        payload["warning"] = keyring_warning
+    return payload
 
 
 @app.delete("/api/settings/key")
@@ -408,7 +489,8 @@ def delete_key() -> dict[str, bool]:
     with runtime_settings_lock:
         runtime_settings["api_key"] = ""
     delete_saved_api_key()
-    return {"configured": bool(AgentSettings.from_env(provider="deepseek").api_key)}
+    configured = bool(_effective_settings().api_key)
+    return {"configured": configured}
 
 
 @app.post("/api/sessions", status_code=201)
@@ -448,12 +530,21 @@ def analyze(session_id: str, request: AnalyzeRequest) -> dict[str, Any]:
     if not analysis_slots.acquire(blocking=False):
         record.run_lock.release()
         raise HTTPException(status_code=429, detail="当前服务正在处理其他分析，请稍后再试。")
+    record.cancel_event.clear()
+    record.analysis_status = "running"
+    record.current_task = request.task
     try:
-        agent = DataAnalysisAgent(record.workspace, settings)
+        agent = DataAnalysisAgent(record.workspace, settings, cancel_event=record.cancel_event)
         result = agent.run(request.task, history=history)
+        record.analysis_status = "completed"
+    except AnalysisCancelled as exc:
+        record.analysis_status = "cancelled"
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
+        record.analysis_status = "failed"
         raise HTTPException(status_code=502, detail=f"分析执行失败：{exc}") from exc
     finally:
+        record.current_task = ""
         analysis_slots.release()
         record.run_lock.release()
     record.chat.extend(
@@ -472,7 +563,7 @@ def _sse(event: str, data: Any) -> str:
 
 
 @app.post("/api/sessions/{session_id}/analyze/stream")
-def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingResponse:
+async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingResponse:
     record = registry.get(session_id)
     settings = _effective_settings()
     if not settings.api_key:
@@ -483,18 +574,27 @@ def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingRespons
     if not analysis_slots.acquire(blocking=False):
         record.run_lock.release()
         raise HTTPException(status_code=429, detail="当前服务正在处理其他分析，请稍后再试。")
+    record.cancel_event.clear()
+    record.analysis_status = "running"
+    record.current_task = request.task
 
-    def generate():
-        yield _sse("started", {"task": request.task})
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[tuple[str, Any] | None] = asyncio.Queue()
+
+    def _run_analysis() -> None:
         try:
-            agent = DataAnalysisAgent(record.workspace, settings)
+            agent = DataAnalysisAgent(
+                record.workspace,
+                settings,
+                cancel_event=record.cancel_event,
+            )
             final_payload: dict[str, Any] | None = None
             for update in agent.stream(request.task, history=history):
                 node = update["node"]
                 data = update["data"]
                 if node == "finalize":
                     final_payload = data
-                yield _sse(node, data)
+                loop.call_soon_threadsafe(queue.put_nowait, (node, data))
             if final_payload is None:
                 raise RuntimeError("工作流没有返回最终结果。")
             result = AnalysisResult(
@@ -513,12 +613,43 @@ def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingRespons
             )
             record.last_result = result
             registry.persist(session_id, record)
-            yield _sse("complete", _result_payload(session_id, result))
+            record.analysis_status = "completed"
+            loop.call_soon_threadsafe(queue.put_nowait, ("complete", _result_payload(session_id, result)))
+        except AnalysisCancelled:
+            record.analysis_status = "cancelled"
+            loop.call_soon_threadsafe(queue.put_nowait, ("cancelled", {"message": "分析已取消。"}))
         except Exception as exc:
-            yield _sse("error", {"message": str(exc)})
+            record.analysis_status = "failed"
+            loop.call_soon_threadsafe(queue.put_nowait, ("error", {"message": str(exc)}))
         finally:
+            record.current_task = ""
+            loop.call_soon_threadsafe(queue.put_nowait, None)
             analysis_slots.release()
             record.run_lock.release()
+
+    worker = threading.Thread(target=_run_analysis, name=f"analysis-{session_id}", daemon=True)
+
+    async def generate():
+        yield _sse("started", {"task": request.task})
+        worker.start()
+        try:
+            while True:
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=15)
+                except TimeoutError:
+                    yield _sse("heartbeat", {"status": record.analysis_status})
+                    continue
+                if item is None:
+                    break
+                event, data = item
+                yield _sse(event, data)
+        except asyncio.CancelledError:
+            record.cancel_event.set()
+            record.analysis_status = "cancelling"
+            raise
+        finally:
+            if worker.is_alive():
+                worker.join(timeout=0.1)
 
     return StreamingResponse(
         generate(),
@@ -527,8 +658,17 @@ def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingRespons
     )
 
 
-@app.get("/api/sessions/{session_id}/artifacts/{filename}")
-def download_artifact(session_id: str, filename: str) -> FileResponse:
+@app.post("/api/sessions/{session_id}/cancel")
+def cancel_analysis(session_id: str) -> dict[str, str]:
+    record = registry.get(session_id)
+    if not record.run_lock.locked():
+        return {"status": record.analysis_status}
+    record.cancel_event.set()
+    record.analysis_status = "cancelling"
+    return {"status": "cancelling"}
+
+
+def _artifact_file(session_id: str, filename: str) -> tuple[SessionRecord, Path]:
     record = registry.get(session_id)
     matches = [item for item in record.workspace.artifacts if item["name"] == Path(filename).name]
     if not matches:
@@ -536,6 +676,46 @@ def download_artifact(session_id: str, filename: str) -> FileResponse:
     path = Path(matches[0]["path"])
     if not path.is_file():
         raise HTTPException(status_code=404, detail="产物文件已被移除。")
+    return record, path
+
+
+def _standalone_visualization(record: SessionRecord, path: Path) -> str:
+    """Inline the shared Plotly runtime when a chart is viewed or downloaded."""
+    html_text = path.read_text(encoding="utf-8")
+    bundle_path = record.workspace.artifacts_dir / PLOTLY_BUNDLE_NAME
+    if not bundle_path.is_file():
+        return html_text
+    plotly_js = bundle_path.read_text(encoding="utf-8")
+    for tag in (
+        f"<script src='{PLOTLY_BUNDLE_NAME}'></script>",
+        f'<script src="{PLOTLY_BUNDLE_NAME}"></script>',
+    ):
+        if tag in html_text:
+            return html_text.replace(tag, f"<script>{plotly_js}</script>", 1)
+    return html_text
+
+
+@app.get("/api/sessions/{session_id}/artifacts/{filename}/preview")
+def preview_artifact(session_id: str, filename: str) -> Response:
+    record, path = _artifact_file(session_id, filename)
+    if path.suffix.lower() != ".html":
+        raise HTTPException(status_code=415, detail="该产物不支持在线预览。")
+    return Response(
+        content=_standalone_visualization(record, path),
+        media_type="text/html",
+        headers={"Cache-Control": "private, max-age=300"},
+    )
+
+
+@app.get("/api/sessions/{session_id}/artifacts/{filename}")
+def download_artifact(session_id: str, filename: str) -> Response:
+    record, path = _artifact_file(session_id, filename)
+    if path.suffix.lower() == ".html":
+        return Response(
+            content=_standalone_visualization(record, path),
+            media_type="text/html",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(path.name)}"},
+        )
     return FileResponse(path, filename=path.name)
 
 

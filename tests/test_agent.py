@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from langchain_core.callbacks import CallbackManagerForLLMRun
@@ -10,7 +11,14 @@ from langchain_deepseek import ChatDeepSeek
 from langchain_openai import ChatOpenAI
 from pydantic import PrivateAttr
 
-from data_agent.agent import DataAnalysisAgent, _fallback_plan, create_chat_model
+from data_agent.agent import (
+    AnalysisCancelled,
+    DataAnalysisAgent,
+    _apply_query_constraints,
+    _fallback_plan,
+    _is_recoverable_format_error,
+    create_chat_model,
+)
 from data_agent.config import AgentSettings
 
 
@@ -93,8 +101,32 @@ def test_full_langgraph_react_workflow_without_network(workspace):
 
 
 def test_fallback_plan_respects_read_only_chart_constraints():
-    plan = _fallback_plan("只检查数据质量并总结，不修改数据，不生成图表")
+    query = "只检查数据质量并总结，不修改数据，不生成图表"
+    plan = _apply_query_constraints(query, _fallback_plan(query))
     assert [step.id for step in plan.steps] == ["inspect"]
+
+
+def test_format_repair_detection_ignores_unrelated_tool_errors():
+    assert _is_recoverable_format_error("ValueError: could not convert string to float")
+    assert not _is_recoverable_format_error("ValueError: Invalid marker size -459")
+
+
+def test_cancelled_agent_stops_before_model_work(workspace):
+    cancel_event = threading.Event()
+    cancel_event.set()
+    settings = AgentSettings(api_key="not-used", max_iterations=5, runs_dir=workspace.root.parent)
+    agent = DataAnalysisAgent(
+        workspace,
+        settings=settings,
+        model=ToolCallingFakeModel(),
+        cancel_event=cancel_event,
+    )
+    try:
+        agent.run("检查数据")
+    except AnalysisCancelled:
+        pass
+    else:
+        raise AssertionError("cancelled analysis should stop before running the workflow")
 
 
 def test_native_deepseek_model_preserves_thinking_configuration():

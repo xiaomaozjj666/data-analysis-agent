@@ -17,15 +17,15 @@ services:
       - key: APP_ACCESS_TOKEN
         sync: false
       - key: DATA_AGENT_MAX_UPLOAD_BYTES
-        value: "209715200"
+        value: "52428800"
       - key: DATA_AGENT_MAX_ROWS
-        value: "1000000"
+        value: "250000"
       - key: DATA_AGENT_MAX_CELLS
-        value: "10000000"
+        value: "3000000"
       - key: DATA_AGENT_RATE_LIMIT_PER_MINUTE
         value: "30"
       - key: DATA_AGENT_MAX_CONCURRENT_ANALYSES
-        value: "2"
+        value: "1"
       - key: DATA_AGENT_STORAGE_BACKEND
         value: s3
       - key: DATA_AGENT_STORAGE_BUCKET

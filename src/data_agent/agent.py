@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from dataclasses import dataclass
+from threading import Event
 from typing import Any, TypedDict
 from uuid import uuid4
 
@@ -79,6 +80,10 @@ class AnalysisResult:
     completed_steps: list[dict[str, Any]]
 
 
+class AnalysisCancelled(RuntimeError):
+    """Raised between workflow nodes when the user cancels an analysis."""
+
+
 def create_chat_model(settings: AgentSettings) -> BaseChatModel:
     """Create the provider-native chat model required for reliable tool calling."""
     settings.validate_for_model()
@@ -124,7 +129,8 @@ def _message_text(message: BaseMessage | None) -> str:
 
 
 def _fallback_plan(query: str) -> AnalysisPlan:
-    plan = AnalysisPlan(
+    """Build a default plan; query constraints are applied by the caller."""
+    return AnalysisPlan(
         objective=f"基于当前数据集完成可验证的分析：{query}",
         steps=[
             PlanStep(
@@ -153,7 +159,6 @@ def _fallback_plan(query: str) -> AnalysisPlan:
             ),
         ],
     )
-    return _apply_query_constraints(query, plan)
 
 
 def _apply_query_constraints(query: str, plan: AnalysisPlan) -> AnalysisPlan:
@@ -217,22 +222,24 @@ def _format_error_text(messages: list[BaseMessage]) -> str:
     return "\n".join(
         _message_text(message)
         for message in messages
-        if isinstance(message, ToolMessage) and "工具执行失败" in _message_text(message)
+        if isinstance(message, ToolMessage)
+        and message.additional_kwargs.get("error_code") == "format_error"
     )
 
 
 def _is_recoverable_format_error(text: str) -> bool:
     markers = (
-        "类型",
-        "日期",
-        "数值",
-        "格式",
         "dtype",
-        "numeric",
         "datetime",
         "could not convert",
         "not numeric",
-        "invalid",
+        "不是数值列",
+        "无法转换",
+        "unable to parse",
+        "time data",
+        "日期格式",
+        "数值格式",
+        "编码",
     )
     lowered = text.lower()
     return any(marker in text or marker in lowered for marker in markers)
@@ -247,13 +254,16 @@ def _handle_tool_error(request: Any, handler: Any) -> ToolMessage:
     try:
         return handler(request)
     except Exception as exc:
+        detail = f"{type(exc).__name__}: {exc}"
+        error_code = "format_error" if _is_recoverable_format_error(detail) else "tool_error"
         return ToolMessage(
             content=(
-                f"工具执行失败：{type(exc).__name__}: {exc}。"
+                f"工具执行失败：{detail}。"
                 "如果原因与列类型、日期或数值格式有关，请先调用 repair_data_format，"
                 "再用修正后的列名和参数重试；如果是业务数据异常，不要擅自修改。"
             ),
             tool_call_id=request.tool_call["id"],
+            additional_kwargs={"error_code": error_code},
         )
 
 
@@ -265,10 +275,12 @@ class DataAnalysisAgent:
         workspace: DataWorkspace,
         settings: AgentSettings | None = None,
         model: BaseChatModel | None = None,
+        cancel_event: Event | None = None,
     ) -> None:
         self.workspace = workspace
         self.settings = settings or AgentSettings.from_env()
         self.model = model or create_chat_model(self.settings)
+        self.cancel_event = cancel_event or Event()
         self.tools = build_tools(workspace)
         self.react_agent = create_agent(
             model=self.model,
@@ -282,7 +294,12 @@ class DataAnalysisAgent:
         self.graph = self._build_workflow()
 
     def _build_workflow(self):
+        def ensure_not_cancelled() -> None:
+            if self.cancel_event.is_set():
+                raise AnalysisCancelled("分析已取消。")
+
         def validate_dataset(state: WorkflowState) -> dict[str, Any]:
+            ensure_not_cancelled()
             profile = self.workspace.profile(sample_rows=5)
             messages = list(state.get("input_messages", []))
             if not messages:
@@ -296,6 +313,7 @@ class DataAnalysisAgent:
             }
 
         def plan_analysis(state: WorkflowState) -> dict[str, Any]:
+            ensure_not_cancelled()
             profile_text = json.dumps(state["dataset_profile"], ensure_ascii=False)[:12000]
             prompt = (
                 "为数据分析任务制定 2 到 6 个可执行步骤。第一步必须检查数据，最后应包含必要的图表和导出。"
@@ -313,6 +331,7 @@ class DataAnalysisAgent:
             return {"objective": plan.objective, "plan": steps, "remaining_steps": steps}
 
         def execute_step(state: WorkflowState) -> dict[str, Any]:
+            ensure_not_cancelled()
             remaining = list(state.get("remaining_steps", []))
             if not remaining:
                 return {"current_step": {}, "last_step_result": {}}
@@ -331,6 +350,7 @@ class DataAnalysisAgent:
             )
             messages: list[BaseMessage] = []
             recovery_note = ""
+            snapshot = self.workspace.snapshot_state()
             try:
                 result = self.react_agent.invoke(
                     {"messages": [*state.get("input_messages", []), HumanMessage(content=execution_prompt)]},
@@ -352,7 +372,11 @@ class DataAnalysisAgent:
                             config={"recursion_limit": self.settings.max_iterations * 2 + 5},
                         )
                         messages = [*messages, *retry["messages"]]
+                ensure_not_cancelled()
             except Exception as exc:
+                self.workspace.restore_state(snapshot)
+                if isinstance(exc, AnalysisCancelled):
+                    raise
                 error = f"{type(exc).__name__}: {exc}"
                 step_result = {
                     **step,
@@ -368,6 +392,35 @@ class DataAnalysisAgent:
                     ],
                     "artifacts": list(self.workspace.artifacts),
                 }
+            last_error_index = max(
+                (
+                    index
+                    for index, message in enumerate(messages)
+                    if isinstance(message, ToolMessage)
+                    and message.additional_kwargs.get("error_code")
+                ),
+                default=-1,
+            )
+            recovered = any(
+                isinstance(message, ToolMessage)
+                and not message.additional_kwargs.get("error_code")
+                for message in messages[last_error_index + 1 :]
+            )
+            if last_error_index >= 0 and not recovered:
+                self.workspace.restore_state(snapshot)
+                error_text = _message_text(messages[last_error_index])
+                step_result = {
+                    **step,
+                    "status": "failed",
+                    "summary": f"步骤未完成，已自动回滚数据与产物：{error_text[:1200]}",
+                }
+                return {
+                    "current_step": step,
+                    "last_step_result": step_result,
+                    "trace": [*state.get("trace", []), *_tool_trace(messages)],
+                    "artifacts": list(self.workspace.artifacts),
+                }
+
             final_ai = next(
                 (message for message in reversed(messages) if isinstance(message, AIMessage)), None
             )
@@ -383,6 +436,7 @@ class DataAnalysisAgent:
             }
 
         def replan(state: WorkflowState) -> dict[str, Any]:
+            ensure_not_cancelled()
             current = state.get("last_step_result", {})
             completed = [*state.get("completed_steps", [])]
             if current:
@@ -435,6 +489,7 @@ class DataAnalysisAgent:
             return "execute_step" if state.get("remaining_steps") else "finalize"
 
         def finalize(state: WorkflowState) -> dict[str, Any]:
+            ensure_not_cancelled()
             evidence = "\n\n".join(
                 f"## {item['title']}\n{item.get('summary', '')}" for item in state.get("completed_steps", [])
             )

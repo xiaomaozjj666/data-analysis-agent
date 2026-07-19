@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 from data_agent.tools import build_tools
-from data_agent.workspace import DataWorkspace
+from data_agent.workspace import PLOTLY_BUNDLE_NAME, DataWorkspace
 
 
 def tool_map(workspace):
@@ -32,20 +32,26 @@ def test_clean_data_updates_frame_and_exports(workspace):
     assert Path(result["output"]).exists()
 
 
-def test_clean_data_refuses_implicit_high_volume_row_drop(tmp_path):
+def test_clean_data_refuses_high_volume_row_drop_even_with_columns(tmp_path):
     source = tmp_path / "mostly_missing.csv"
     pd.DataFrame({"keep": [1, 2, 3, 4], "notes": [None, None, None, "ok"]}).to_csv(source, index=False)
     workspace = DataWorkspace(tmp_path / "runs", session_id="guard")
     workspace.load(source, copy_into_workspace=True)
 
-    try:
-        tool_map(workspace)["clean_data"].invoke(
-            {"drop_duplicates": False, "trim_strings": False, "missing_strategy": "drop"}
-        )
-    except Exception as exc:
-        assert "高比例删行" in str(exc)
-    else:
-        raise AssertionError("expected the implicit high-volume drop to be rejected")
+    for columns in (None, ["notes"]):
+        try:
+            tool_map(workspace)["clean_data"].invoke(
+                {
+                    "columns": columns,
+                    "drop_duplicates": False,
+                    "trim_strings": False,
+                    "missing_strategy": "drop",
+                }
+            )
+        except Exception as exc:
+            assert "高比例删行" in str(exc)
+        else:
+            raise AssertionError("expected the high-volume drop to be rejected")
 
     assert len(workspace.dataframe) == 4
 
@@ -111,6 +117,14 @@ def test_complex_visualizations_create_offline_artifacts(workspace):
     )
     html = Path(result["html"])
     chart_json = Path(result["plotly_json"])
-    assert html.exists() and html.stat().st_size > 100_000
+    plotly_bundle = workspace.artifacts_dir / PLOTLY_BUNDLE_NAME
+    assert html.exists() and html.stat().st_size > 5_000
+    assert plotly_bundle.exists() and plotly_bundle.stat().st_size > 1_000_000
     assert chart_json.exists()
+    # The bundle is shared, not registered as an artifact, and each chart HTML
+    # references it relatively instead of inlining the full Plotly.js source.
+    html_text = html.read_text(encoding="utf-8")
+    assert "<script src='plotly.min.js'" in html_text
+    # The HTML must NOT inline the multi-megabyte Plotly.js source.
+    assert html.stat().st_size < plotly_bundle.stat().st_size
     assert {item["kind"] for item in workspace.artifacts} == {"visualization", "chart_data"}

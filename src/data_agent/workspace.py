@@ -12,6 +12,7 @@ import pandas as pd
 from data_agent.serialization import to_jsonable
 
 SUPPORTED_EXTENSIONS = {".csv", ".tsv", ".xlsx", ".xls", ".json", ".jsonl", ".parquet"}
+PLOTLY_BUNDLE_NAME = "plotly.min.js"
 
 
 @dataclass(frozen=True, slots=True)
@@ -318,6 +319,42 @@ class DataWorkspace:
         self.register_artifact(path, "dataset", "清洗或变换后的数据集")
         return path
 
+    def ensure_plotly_bundle(self) -> Path | None:
+        """Write the bundled Plotly.js once per workspace and reuse it for every chart.
+
+        Returns the path to ``plotly.min.js`` inside this workspace's artifacts
+        directory, or None when Plotly is not importable (extremely unlikely
+        since it is a hard dependency). Each HTML artifact references this file
+        relatively instead of inlining ~3 MB of JavaScript per chart.
+        """
+        try:
+            from plotly.offline import get_plotlyjs
+        except Exception:
+            return None
+        bundle = (self.artifacts_dir / PLOTLY_BUNDLE_NAME).resolve()
+        if not bundle.exists():
+            bundle.write_text(get_plotlyjs(), encoding="utf-8")
+        return bundle
+
+    def snapshot_state(self) -> tuple[pd.DataFrame, set[Path]]:
+        """Capture the active data and artifact files before one agent step."""
+        files = {
+            path.resolve()
+            for path in self.artifacts_dir.iterdir()
+            if path.is_file()
+        }
+        return self.dataframe.copy(deep=True), files
+
+    def restore_state(self, snapshot: tuple[pd.DataFrame, set[Path]]) -> None:
+        """Rollback data mutations and files created by a failed agent step."""
+        dataframe, existing_files = snapshot
+        self.dataframe = dataframe
+        for path in self.artifacts_dir.iterdir():
+            resolved = path.resolve()
+            if path.is_file() and resolved not in existing_files:
+                path.unlink(missing_ok=True)
+        self._artifacts = [item for item in self._artifacts if item.path.resolve() in existing_files]
+
     def cleanup(self) -> None:
         """Remove this isolated workspace when a session expires or upload fails."""
         if self.root.exists():
@@ -328,7 +365,7 @@ class DataWorkspace:
         if not self.artifacts_dir.is_dir():
             return
         for path in sorted(self.artifacts_dir.iterdir()):
-            if not path.is_file():
+            if not path.is_file() or path.name == PLOTLY_BUNDLE_NAME:
                 continue
             suffix = path.suffix.lower()
             kind = "visualization" if suffix == ".html" else "image" if suffix in {".png", ".jpg", ".jpeg"} else "dataset"

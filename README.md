@@ -74,7 +74,11 @@ npm run dev
 - `GET /api/sessions/{id}`
 - `POST /api/sessions/{id}/analyze`
 - `POST /api/sessions/{id}/analyze/stream`：SSE 节点进度
+- `POST /api/sessions/{id}/cancel`：请求停止当前分析
 - `GET /api/sessions/{id}/artifacts/{filename}`
+- `GET /api/sessions/{id}/artifacts/{filename}/preview`：鉴权后的在线图表预览
+
+分析期间服务每 15 秒发送一次 SSE 心跳，避免模型长思考被误判为超时。前端支持停止分析；后端会在当前模型/工具调用返回后终止后续节点。产物接口默认隐藏 Plotly JSON 和中间清洗文件，只展示去重后的精选图表与最终数据文件。
 
 ## LangSmith
 
@@ -88,6 +92,8 @@ LANGSMITH_API_KEY=...
 LANGSMITH_PROJECT=data-analysis-agent
 ```
 
+`DEEPSEEK_MODEL` 默认填 `deepseek-v4-pro`；DeepSeek 平台分配的其他模型名也可填入 `DEEPSEEK_MODEL`。启用思考模式时，DeepSeek 仅支持 `high`/`max` 两种推理强度。
+
 启用后，规划、每个 ReAct 工具调用、重规划和最终汇总都会进入 LangSmith Trace。
 
 ### 线上访问保护
@@ -99,7 +105,7 @@ LANGSMITH_PROJECT=data-analysis-agent
 ### 部署
 
 1. 构建前端：`cd frontend && npm ci && npm run build`。
-2. 确保 `frontend/dist` 随代码提交到 GitHub。
+2. 确保 `frontend/dist` 随代码提交到 GitHub；仓库 `.gitignore` 已显式保留该目录。
 3. 在 LangSmith 左侧进入 `Deployments`，创建部署并连接该仓库。
 4. 在部署环境变量中填入 `DEEPSEEK_API_KEY`；LangSmith 服务密钥由部署环境管理。
 5. 部署完成后直接打开部署 URL，`/docs` 可查看 Agent Server 与自定义 API。
