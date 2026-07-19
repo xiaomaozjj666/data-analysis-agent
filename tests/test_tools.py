@@ -56,6 +56,47 @@ def test_clean_data_refuses_high_volume_row_drop_even_with_columns(tmp_path):
     assert len(workspace.dataframe) == 4
 
 
+def test_transform_data_exports_view_without_replacing_active_dataset(workspace):
+    result = json.loads(
+        tool_map(workspace)["transform_data"].invoke(
+            {"filter_column": "sales", "filter_operator": "eq", "filter_value": 230}
+        )
+    )
+
+    assert result["view_only"] is True
+    assert result["rows"] == 1
+    assert result["active_rows"] == 6
+    assert len(workspace.dataframe) == 6
+    assert len(pd.read_csv(result["output"])) == 1
+
+
+def test_clean_data_refuses_cumulative_collapse_below_source_floor(tmp_path):
+    source = tmp_path / "staged_missing.csv"
+    pd.DataFrame(
+        {
+            "value": range(16),
+            "stage_a": ["ok"] * 8 + [None] * 8,
+            "stage_b": ["ok"] * 4 + [None] * 12,
+            "stage_c": ["ok"] * 2 + [None] * 14,
+        }
+    ).to_csv(source, index=False)
+    workspace = DataWorkspace(tmp_path / "runs", session_id="cumulative_guard")
+    workspace.load(source, copy_into_workspace=True)
+    clean = tool_map(workspace)["clean_data"]
+    common = {"drop_duplicates": False, "trim_strings": False, "missing_strategy": "drop"}
+
+    clean.invoke({**common, "columns": ["stage_a"]})
+    clean.invoke({**common, "columns": ["stage_b"]})
+    assert len(workspace.dataframe) == 4
+    try:
+        clean.invoke({**common, "columns": ["stage_c"]})
+    except Exception as exc:
+        assert "累计删除过多" in str(exc)
+    else:
+        raise AssertionError("expected cumulative row-loss guard to reject the operation")
+    assert len(workspace.dataframe) == 4
+
+
 def test_repair_data_format_applies_only_unambiguous_repairs(tmp_path):
     source = tmp_path / "format_dirty.csv"
     pd.DataFrame(

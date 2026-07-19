@@ -43,6 +43,7 @@ class DataWorkspace:
         self.input_dir.mkdir(parents=True, exist_ok=True)
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
         self._df: pd.DataFrame | None = None
+        self._source_row_count = 0
         self.source_path: Path | None = None
         self._artifacts: list[Artifact] = []
         self.load_warnings: list[str] = []
@@ -137,6 +138,7 @@ class DataWorkspace:
         if len(df.columns) > 1000:
             raise ValueError("列数超过 1000，拒绝加载以防止意外资源耗尽。")
         self._df = df
+        self._source_row_count = len(df)
         self.source_path = path
         return self.profile(sample_rows=5)
 
@@ -305,19 +307,30 @@ class DataWorkspace:
             }
         )
 
-    def save_dataframe(self, filename: str = "cleaned_data.csv") -> Path:
+    @property
+    def source_row_count(self) -> int:
+        """Number of rows loaded from the uploaded source before agent mutations."""
+        return self._source_row_count
+
+    def save_dataframe(
+        self,
+        filename: str = "cleaned_data.csv",
+        dataframe: pd.DataFrame | None = None,
+        description: str = "清洗或变换后的数据集",
+    ) -> Path:
         safe_name = re.sub(r"[^\w.\-\u4e00-\u9fff]", "_", Path(filename).name)
         path = (self.artifacts_dir / safe_name).resolve()
+        frame = self.dataframe if dataframe is None else dataframe
         suffix = path.suffix.lower()
         if suffix == ".csv":
-            self.dataframe.to_csv(path, index=False, encoding="utf-8-sig")
+            frame.to_csv(path, index=False, encoding="utf-8-sig")
         elif suffix == ".xlsx":
-            self.dataframe.to_excel(path, index=False)
+            frame.to_excel(path, index=False)
         elif suffix == ".parquet":
-            self.dataframe.to_parquet(path, index=False)
+            frame.to_parquet(path, index=False)
         else:
             raise ValueError("数据产物仅支持 .csv、.xlsx 或 .parquet。")
-        self.register_artifact(path, "dataset", "清洗或变换后的数据集")
+        self.register_artifact(path, "dataset", description)
         return path
 
     def ensure_plotly_bundle(self) -> Path | None:

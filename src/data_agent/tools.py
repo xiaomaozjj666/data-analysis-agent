@@ -263,6 +263,14 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             count, _ = _handle_outliers(df, selected, outlier_method, outlier_action)
             changes.append(f"{outlier_action}ped {count} {outlier_method} outlier rows")
 
+        minimum_rows = max(1, (workspace.source_row_count + 4) // 5)
+        if len(df) < minimum_rows:
+            raise ValueError(
+                f"拒绝累计删除过多记录：当前操作会使主数据从原始 {workspace.source_row_count} 行"
+                f"缩减为 {len(df)} 行，安全下限为 {minimum_rows} 行。"
+                "请保留主数据，并使用非破坏性的筛选视图检查子集。"
+            )
+
         workspace.dataframe = df.reset_index(drop=True)
         output = workspace.save_dataframe("cleaned_data.csv")
         after = {"rows": len(df), "columns": len(df.columns), "missing": int(df.isna().sum().sum())}
@@ -278,10 +286,11 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         ascending: bool = True,
         limit: int | None = None,
     ) -> str:
-        """Apply a safe selection, single filter, sort and row limit to the active dataset.
+        """Create a non-destructive filtered or sorted view and export it.
 
-        Use 'in' with a list. Use 'contains' for text. The transformed data replaces the active
-        data and is exported as transformed_data.csv.
+        Use 'in' with a list and 'contains' for text. The result is exported as
+        transformed_data.csv but never replaces the active dataset. Use clean_data for deliberate,
+        guarded changes to the main data.
         """
         df = workspace.dataframe.copy()
         if filter_column:
@@ -319,9 +328,22 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             if not 1 <= limit <= 1_000_000:
                 raise ValueError("limit 必须在 1 到 1,000,000 之间。")
             df = df.head(limit).copy()
-        workspace.dataframe = df.reset_index(drop=True)
-        output = workspace.save_dataframe("transformed_data.csv")
-        return json_text({"status": "ok", "rows": len(df), "columns": list(df.columns), "output": output})
+        df = df.reset_index(drop=True)
+        output = workspace.save_dataframe(
+            "transformed_data.csv",
+            dataframe=df,
+            description="筛选或排序后的数据视图（未改变主数据）",
+        )
+        return json_text(
+            {
+                "status": "ok",
+                "rows": len(df),
+                "columns": list(df.columns),
+                "output": output,
+                "view_only": True,
+                "active_rows": len(workspace.dataframe),
+            }
+        )
 
     @tool
     def statistical_analysis(
