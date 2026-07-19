@@ -156,12 +156,20 @@ def test_session_manifest_can_restore_persistent_workspace(tmp_path):
     workspace.load(source)
     first = api.SessionRegistry(tmp_path / "runs", max_sessions=10, ttl_hours=24)
     session_id, record = first.create(workspace)
+    record.workspace.dataframe["sales"] = [999]
+    {item.name: item for item in build_tools(record.workspace)}["export_data"].invoke(
+        {"format": "csv", "filename": "cleaned_data_final"}
+    )
     record.chat.append({"role": "user", "content": "检查数据"})
+    record.analysis_status = "completed"
     first.persist(session_id, record)
 
     restored = api.SessionRegistry(tmp_path / "runs", max_sessions=10, ttl_hours=24).get(session_id)
     assert restored.workspace.dataframe.shape == (1, 2)
+    assert restored.workspace.dataframe["sales"].tolist() == [999]
     assert restored.chat == [{"role": "user", "content": "检查数据"}]
+    assert restored.analysis_status == "completed"
+    assert restored.workspace.artifacts[0]["description"] == "清洗或变换后的数据集"
 
 
 def test_artifact_payload_is_curated_and_chart_preview_is_standalone(tmp_path, monkeypatch):

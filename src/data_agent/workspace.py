@@ -13,6 +13,7 @@ from data_agent.serialization import to_jsonable
 
 SUPPORTED_EXTENSIONS = {".csv", ".tsv", ".xlsx", ".xls", ".json", ".jsonl", ".parquet"}
 PLOTLY_BUNDLE_NAME = "plotly.min.js"
+WORKSPACE_STATE_NAME = "workspace_state.parquet"
 
 
 @dataclass(frozen=True, slots=True)
@@ -355,18 +356,47 @@ class DataWorkspace:
                 path.unlink(missing_ok=True)
         self._artifacts = [item for item in self._artifacts if item.path.resolve() in existing_files]
 
+    def save_checkpoint(self) -> Path:
+        """Persist the active DataFrame separately from user-facing artifacts."""
+        path = self.root / WORKSPACE_STATE_NAME
+        self.dataframe.to_parquet(path, index=False)
+        return path
+
+    def restore_checkpoint(self) -> bool:
+        """Restore the most recently persisted active DataFrame after a restart."""
+        path = self.root / WORKSPACE_STATE_NAME
+        if not path.is_file():
+            return False
+        self.dataframe = pd.read_parquet(path)
+        return True
+
     def cleanup(self) -> None:
         """Remove this isolated workspace when a session expires or upload fails."""
         if self.root.exists():
             shutil.rmtree(self.root)
 
-    def restore_artifacts(self) -> None:
+    def restore_artifacts(self, metadata: list[dict[str, str]] | None = None) -> None:
         """Re-register files already present when a persistent workspace is reopened."""
         if not self.artifacts_dir.is_dir():
             return
+        metadata_by_name = {
+            item.get("name", ""): item
+            for item in (metadata or [])
+            if isinstance(item, dict) and item.get("name")
+        }
         for path in sorted(self.artifacts_dir.iterdir()):
             if not path.is_file() or path.name == PLOTLY_BUNDLE_NAME:
                 continue
             suffix = path.suffix.lower()
-            kind = "visualization" if suffix == ".html" else "image" if suffix in {".png", ".jpg", ".jpeg"} else "dataset"
-            self.register_artifact(path, kind, "恢复的工作区产物")
+            saved = metadata_by_name.get(path.name, {})
+            kind = saved.get("kind") or (
+                "visualization"
+                if suffix == ".html"
+                else "image"
+                if suffix in {".png", ".jpg", ".jpeg"}
+                else "chart_data"
+                if path.name.endswith(".plotly.json")
+                else "dataset"
+            )
+            description = saved.get("description") or path.stem
+            self.register_artifact(path, kind, description)

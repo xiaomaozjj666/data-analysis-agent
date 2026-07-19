@@ -126,10 +126,20 @@ class SessionRegistry:
         return record.workspace.root / "session.json"
 
     def _persist_locked(self, session_id: str, record: SessionRecord) -> None:
+        record.workspace.save_checkpoint()
         payload = {
             "id": session_id,
             "filename": record.workspace.source_path.name if record.workspace.source_path else "dataset",
             "chat": record.chat[-40:],
+            "analysis_status": record.analysis_status,
+            "artifacts": [
+                {
+                    "name": item["name"],
+                    "kind": item["kind"],
+                    "description": item["description"],
+                }
+                for item in record.workspace.artifacts
+            ],
             "created_at": record.created_at,
             "updated_at": time.time(),
         }
@@ -181,19 +191,27 @@ class SessionRegistry:
             workspace.load(input_files[0])
         except (OSError, ValueError):
             return None
-        workspace.restore_artifacts()
-        record = SessionRecord(workspace)
         manifest = root / "session.json"
+        payload: dict[str, Any] = {}
         if manifest.is_file():
             try:
                 payload = json.loads(manifest.read_text(encoding="utf-8"))
-                record.chat = [
-                    item for item in payload.get("chat", [])
-                    if isinstance(item, dict) and item.get("role") in {"user", "assistant"}
-                ][-40:]
-                record.created_at = float(payload.get("created_at", record.created_at))
             except (OSError, ValueError, TypeError):
-                pass
+                payload = {}
+        try:
+            workspace.restore_checkpoint()
+        except (OSError, ValueError):
+            logger.exception("Workspace checkpoint restore failed for %s", session_id)
+        workspace.restore_artifacts(payload.get("artifacts"))
+        record = SessionRecord(workspace)
+        record.chat = [
+            item
+            for item in payload.get("chat", [])
+            if isinstance(item, dict) and item.get("role") in {"user", "assistant"}
+        ][-40:]
+        record.created_at = float(payload.get("created_at", record.created_at))
+        saved_status = str(payload.get("analysis_status", "idle"))
+        record.analysis_status = saved_status if saved_status in {"completed", "cancelled", "failed"} else "idle"
         self._items[session_id] = record
         return record
 
