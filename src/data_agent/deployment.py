@@ -81,7 +81,15 @@ def make_graph(config: RunnableConfig | None = None):
 
     def run_analysis(state: DeploymentState) -> dict[str, Any]:
         source = _resolve_dataset_source(state, settings, storage)
-        workspace = DataWorkspace(settings.runs_dir, session_id=f"deploy_{thread_id[:24]}")
+        # Each run gets a fresh, isolated workspace. Reusing a thread_id-derived
+        # name would let a second invocation overwrite the first run's input
+        # file and leak stale artifacts. A short uuid suffix keeps the name
+        # unique while still grouping runs under the same thread prefix for
+        # easier debugging.
+        workspace = DataWorkspace(
+            settings.runs_dir,
+            session_id=f"deploy_{thread_id[:24]}_{uuid4().hex[:8]}",
+        )
         workspace.load(source, copy_into_workspace=True)
         result = DataAnalysisAgent(workspace, settings).run(state["query"])
         storage.sync_session(workspace.root.name, workspace.root)

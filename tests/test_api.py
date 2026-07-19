@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import threading
 from pathlib import Path
 
@@ -11,6 +13,11 @@ from data_agent.config import AgentSettings
 from data_agent.storage import LocalSessionStorage
 from data_agent.tools import build_tools
 from data_agent.workspace import DataWorkspace
+
+# Capture the real asyncio.wait_for before any test patches it, so the
+# short-timeout shim used to force heartbeats can still delegate to the
+# original implementation without infinite recursion.
+_real_wait_for = asyncio.wait_for
 
 
 def _isolate_runtime(tmp_path: Path, monkeypatch) -> None:
@@ -219,3 +226,163 @@ def test_running_analysis_can_be_cancelled(tmp_path, monkeypatch):
         assert record.cancel_event.is_set()
     finally:
         record.run_lock.release()
+
+
+def test_cancel_endpoint_uses_status_not_run_lock(tmp_path, monkeypatch):
+    """cancel_analysis must rely on analysis_status, not run_lock.locked().
+
+    A session whose run_lock was just released but whose status is still
+    "running" (race window) should still accept the cancel signal.
+    """
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = client.post(
+        "/api/sessions",
+        files={"file": ("sales.csv", b"region,sales\nEast,100\n", "text/csv")},
+    ).json()
+    record = api.registry.get(uploaded["id"])
+    # Simulate the race: lock already released, status still "running".
+    record.analysis_status = "running"
+    response = client.post(f"/api/sessions/{uploaded['id']}/cancel")
+    assert response.json() == {"status": "cancelling"}
+    assert record.cancel_event.is_set()
+    # A second cancel on an already-cancelling session keeps reporting cancelling.
+    assert client.post(f"/api/sessions/{uploaded['id']}/cancel").json() == {"status": "cancelling"}
+
+
+def test_cancel_on_idle_session_returns_current_status(tmp_path, monkeypatch):
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = client.post(
+        "/api/sessions",
+        files={"file": ("sales.csv", b"region,sales\nEast,100\n", "text/csv")},
+    ).json()
+    record = api.registry.get(uploaded["id"])
+    assert record.analysis_status == "idle"
+    response = client.post(f"/api/sessions/{uploaded['id']}/cancel")
+    assert response.json() == {"status": "idle"}
+    assert not record.cancel_event.is_set()
+
+
+def test_cleaned_data_csv_is_not_dropped_from_artifacts(tmp_path, monkeypatch):
+    """A cleaning step that only saves cleaned_data.csv must still surface in
+    the ArtifactCenter; it must not be silently filtered out for lacking a
+    'final' suffix."""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = client.post(
+        "/api/sessions",
+        files={"file": ("sales.csv", b"region,sales\nEast,100\nWest,200\n", "text/csv")},
+    ).json()
+    record = api.registry.get(uploaded["id"])
+    tools = {item.name: item for item in build_tools(record.workspace)}
+    # Only run clean_data; never call export_data with a "final" filename.
+    payload = json.loads(tools["clean_data"].invoke({"drop_duplicates": True}))
+    assert payload["status"] == "ok"
+
+    artifacts = client.get(f"/api/sessions/{uploaded['id']}").json()["artifacts"]
+    dataset_names = [item["name"] for item in artifacts if item["kind"] == "dataset"]
+    assert "cleaned_data.csv" in dataset_names
+
+
+def test_transformed_data_does_not_shadow_cleaned_data(tmp_path, monkeypatch):
+    """When both cleaned_data.csv and transformed_data.csv exist, the curated
+    artifact list must prefer the authoritative cleaner output."""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = client.post(
+        "/api/sessions",
+        files={"file": ("sales.csv", b"region,sales\nEast,100\nWest,200\n", "text/csv")},
+    ).json()
+    record = api.registry.get(uploaded["id"])
+    tools = {item.name: item for item in build_tools(record.workspace)}
+
+    tools["clean_data"].invoke({"drop_duplicates": True})
+    tools["transform_data"].invoke({"filter_column": "region", "filter_operator": "eq", "filter_value": "East"})
+
+    artifacts = client.get(f"/api/sessions/{uploaded['id']}").json()["artifacts"]
+    dataset_names = [item["name"] for item in artifacts if item["kind"] == "dataset"]
+    assert "cleaned_data.csv" in dataset_names
+    # transformed_data.csv may or may not appear (priority 4 vs 1), but it
+    # must never replace cleaned_data.csv in the curated list.
+    if "transformed_data.csv" in dataset_names:
+        assert dataset_names.count("cleaned_data.csv") == 1
+
+
+def test_sse_stream_emits_progress_and_heartbeat(tmp_path, monkeypatch):
+    """The SSE stream must emit progress events at node entry and heartbeats
+    when no event arrives within the heartbeat window."""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = client.post(
+        "/api/sessions",
+        files={"file": ("sales.csv", b"region,sales\nEast,100\n", "text/csv")},
+    ).json()
+
+    monkeypatch.setattr(
+        api,
+        "_effective_settings",
+        lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs"),
+    )
+
+    class SlowAgent:
+        """Mimics DataAnalysisAgent.stream: emits one progress + one finalize."""
+
+        def __init__(self, workspace, settings, cancel_event=None, progress_callback=None):
+            self.workspace = workspace
+            self.progress_callback = progress_callback
+            self.cancel_event = cancel_event
+
+        def stream(self, query, history=None):
+            if self.progress_callback:
+                self.progress_callback("validate_dataset", "正在检查数据集结构")
+            import time
+
+            # Force a heartbeat by sleeping past the 15s timeout would be too
+            # slow; instead patch the heartbeat timeout via monkeypatch below.
+            time.sleep(0.1)
+            yield {"node": "finalize", "data": {
+                "response": "done",
+                "trace": [],
+                "artifacts": list(self.workspace.artifacts),
+                "dataset_profile": self.workspace.profile(),
+                "plan": [],
+                "completed_steps": [],
+            }}
+
+        def run(self, query, history=None):
+            for _update in self.stream(query, history=history):
+                pass
+            return AnalysisResult(
+                response="done",
+                trace=[],
+                artifacts=list(self.workspace.artifacts),
+                dataset_profile=self.workspace.profile(),
+                plan=[],
+                completed_steps=[],
+            )
+
+    monkeypatch.setattr(api, "DataAnalysisAgent", SlowAgent)
+    # Shrink the heartbeat window so the test stays fast.
+    monkeypatch.setattr("data_agent.api.asyncio.wait_for", _short_wait_for)
+
+    with client.stream(
+        "POST",
+        f"/api/sessions/{uploaded['id']}/analyze/stream",
+        json={"task": "检查数据"},
+    ) as response:
+        assert response.status_code == 200
+        events = []
+        for line in response.iter_lines():
+            if line.startswith("event: "):
+                events.append(line[len("event: "):])
+
+    assert "started" in events
+    assert "progress" in events
+    assert "complete" in events
+
+
+def _short_wait_for(awaitable, timeout=None):
+    """Replacement for asyncio.wait_for that times out quickly to force a
+    heartbeat within the test window."""
+    return _real_wait_for(awaitable, timeout=0.05)

@@ -223,7 +223,13 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         formatting fixes and clean_data when the analysis needs broader numeric coercion.
         datetime_columns explicitly selects columns to parse as dates.
         IQR/z-score outlier handling only applies to numeric selected columns.
-        Missing-value deletion over 50% and outlier deletion over 30% are always refused.
+        Safety guards (always enforced regardless of parameters):
+          - Missing-value deletion over 50% of selected rows is refused unless the
+            caller explicitly narrows ``columns``.
+          - The cumulative row count of the main dataset must stay at or above 20%
+            of the original source row count (computed as max(1, floor(source/5))).
+            Anything that would drop below that floor is refused so the active
+            dataset never collapses to a meaningless sample.
         """
         df = workspace.dataframe.copy()
         before = {"rows": len(df), "columns": len(df.columns), "missing": int(df.isna().sum().sum())}
@@ -303,7 +309,23 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             elif filter_operator == "in":
                 if not isinstance(filter_value, list):
                     raise ValueError("in 操作需要列表类型 filter_value。")
-                mask = series.isin(filter_value)
+                # Adapt list element types so that numeric columns accept numeric
+                # lists and string columns accept string lists; mixed types
+                # would silently produce an empty result via pandas isin.
+                values: list[Any] = list(filter_value)
+                if pd.api.types.is_numeric_dtype(series):
+                    coerced: list[Any] = []
+                    for value in values:
+                        try:
+                            coerced.append(float(value))
+                        except (TypeError, ValueError) as exc:
+                            raise ValueError(
+                                f"列 {filter_column} 是数值列，filter_value 中的 {value!r} 无法转为数值。"
+                            ) from exc
+                    values = coerced
+                else:
+                    values = [str(value) for value in values]
+                mask = series.isin(values)
             else:
                 operations = {
                     "eq": operator.eq,
@@ -315,7 +337,12 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                 }
                 comparison: Any = filter_value
                 if pd.api.types.is_numeric_dtype(series):
-                    comparison = float(filter_value)  # type: ignore[arg-type]
+                    try:
+                        comparison = float(filter_value)  # type: ignore[arg-type]
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError(
+                            f"列 {filter_column} 是数值列，filter_value {filter_value!r} 无法转为数值。"
+                        ) from exc
                 mask = operations[filter_operator](series, comparison)
             df = df.loc[mask].copy()
         if sort_by:

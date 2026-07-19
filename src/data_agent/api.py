@@ -64,9 +64,25 @@ class SessionRecord:
         self.last_access = time.monotonic()
         self.run_lock = threading.Lock()
         self.cancel_event = threading.Event()
-        self.analysis_status = "idle"
+        self._status_lock = threading.Lock()
+        self._analysis_status = "idle"
         self.current_task = ""
         self.created_at = time.time()
+
+    @property
+    def analysis_status(self) -> str:
+        with self._status_lock:
+            return self._analysis_status
+
+    @analysis_status.setter
+    def analysis_status(self, value: str) -> None:
+        with self._status_lock:
+            self._analysis_status = value
+
+    def is_running(self) -> bool:
+        """Whether an analysis is currently active (running or being cancelled)."""
+        with self._status_lock:
+            return self._analysis_status in {"running", "cancelling"}
 
 
 class SessionRegistry:
@@ -292,6 +308,12 @@ def _check_access(request: Request) -> None:
         provided = request.headers.get("authorization", "")
         if provided.lower().startswith("bearer "):
             provided = provided[7:]
+    # Allow the token to be passed via the ``token`` query parameter so that
+    # resources loaded inside <iframe src="..."> (which cannot set custom
+    # headers) can still authenticate. Only the preview/plotly endpoints use
+    # this; the main API surface keeps using the header.
+    if not provided:
+        provided = request.query_params.get("token", "")
     if not hmac.compare_digest(provided.strip(), expected):
         raise HTTPException(status_code=401, detail="需要有效的应用访问令牌。")
 
@@ -378,12 +400,24 @@ def _curate_artifacts(artifacts: list[dict[str, str]]) -> list[dict[str, str]]:
         else:
             documents.append(item)
 
-    preferred = [
-        item
-        for item in datasets
-        if re.search(r"final|result|report|cleaned_data_final|analysis_result", item.get("name", ""), re.I)
-    ]
-    selected_datasets = preferred[-2:] if preferred else datasets[-1:]
+    # Prefer explicit "final" / "result" exports, then the cleaner's output,
+    # then a non-destructive transformed view. ``transformed_data.csv`` is only
+    # surfaced when nothing more authoritative exists, so that a cleaning step
+    # always shows up in the ArtifactCenter even if the agent never called
+    # export_data with a "final" filename.
+    def _dataset_priority(name: str) -> int:
+        lowered = name.lower()
+        if re.search(r"cleaned_data_final|analysis_result", lowered):
+            return 0
+        if re.search(r"(^|[_/])cleaned_data\.csv$", lowered):
+            return 1
+        if re.search(r"final|result|report", lowered):
+            return 2
+        if re.search(r"(^|[_/])transformed_data\.csv$", lowered):
+            return 4
+        return 3
+
+    selected_datasets = sorted(datasets, key=lambda item: (_dataset_priority(item.get("name", "")),))[-2:]
     return [
         *list(latest_visualizations.values())[-6:],
         *list(images.values())[-3:],
@@ -566,6 +600,7 @@ def analyze(session_id: str, request: AnalyzeRequest) -> dict[str, Any]:
         raise HTTPException(status_code=502, detail=f"分析执行失败：{exc}") from exc
     finally:
         record.current_task = ""
+        record.cancel_event.clear()
         analysis_slots.release()
         record.run_lock.release()
     record.chat.extend(
@@ -602,12 +637,19 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[tuple[str, Any] | None] = asyncio.Queue()
 
+    def _emit_progress(node: str, title: str) -> None:
+        # Called from the worker thread at node entry; hop back to the event
+        # loop so the SSE generator can flush a progress frame immediately
+        # instead of waiting for the node to finish.
+        loop.call_soon_threadsafe(queue.put_nowait, ("progress", {"node": node, "title": title}))
+
     def _run_analysis() -> None:
         try:
             agent = DataAnalysisAgent(
                 record.workspace,
                 settings,
                 cancel_event=record.cancel_event,
+                progress_callback=_emit_progress,
             )
             final_payload: dict[str, Any] | None = None
             for update in agent.stream(request.task, history=history):
@@ -644,6 +686,10 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
             loop.call_soon_threadsafe(queue.put_nowait, ("error", {"message": str(exc)}))
         finally:
             record.current_task = ""
+            # Always clear the cancel event so the next analysis on this
+            # session starts from a clean state, even if the client aborted
+            # mid-stream and set the event after the worker already finished.
+            record.cancel_event.clear()
             loop.call_soon_threadsafe(queue.put_nowait, None)
             analysis_slots.release()
             record.run_lock.release()
@@ -667,10 +713,16 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
         except asyncio.CancelledError:
             record.cancel_event.set()
             record.analysis_status = "cancelling"
+            # Give the worker a chance to observe the cancel event and unwind
+            # gracefully before we leave; a single LLM call may take 60+ s so
+            # we only wait a short while and let the daemon thread finish on
+            # its own afterwards.
+            if worker.is_alive():
+                worker.join(timeout=5.0)
             raise
         finally:
             if worker.is_alive():
-                worker.join(timeout=0.1)
+                worker.join(timeout=1.0)
 
     return StreamingResponse(
         generate(),
@@ -682,7 +734,9 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
 @app.post("/api/sessions/{session_id}/cancel")
 def cancel_analysis(session_id: str) -> dict[str, str]:
     record = registry.get(session_id)
-    if not record.run_lock.locked():
+    # ``run_lock.locked()`` is unreliable (a thread may have just released it
+    # but not yet cleared the status); use the explicit status field instead.
+    if not record.is_running():
         return {"status": record.analysis_status}
     record.cancel_event.set()
     record.analysis_status = "cancelling"
@@ -700,31 +754,64 @@ def _artifact_file(session_id: str, filename: str) -> tuple[SessionRecord, Path]
     return record, path
 
 
-def _standalone_visualization(record: SessionRecord, path: Path) -> str:
-    """Inline the shared Plotly runtime when a chart is viewed or downloaded."""
-    html_text = path.read_text(encoding="utf-8")
+_PLOTLY_TAG_PATTERN = re.compile(
+    r"<script\s+src=['\"]plotly\.min\.js['\"]\s*></script>",
+    flags=re.IGNORECASE,
+)
+
+
+def _inline_plotly_bundle(record: SessionRecord, html_text: str) -> str:
+    """Replace the shared ``<script src='plotly.min.js'>`` tag with the full
+    Plotly.js source so the HTML stays self-contained when downloaded."""
     bundle_path = record.workspace.artifacts_dir / PLOTLY_BUNDLE_NAME
     if not bundle_path.is_file():
         return html_text
-    plotly_js = bundle_path.read_text(encoding="utf-8")
-    for tag in (
-        f"<script src='{PLOTLY_BUNDLE_NAME}'></script>",
-        f'<script src="{PLOTLY_BUNDLE_NAME}"></script>',
-    ):
-        if tag in html_text:
-            return html_text.replace(tag, f"<script>{plotly_js}</script>", 1)
-    return html_text
+    try:
+        plotly_js = bundle_path.read_text(encoding="utf-8")
+    except OSError:
+        return html_text
+    # Use a lambda replacement so backslashes in plotly_js (e.g. "\s" inside
+    # the minified source) are treated literally instead of as regex escapes.
+    return _PLOTLY_TAG_PATTERN.sub(lambda _match: f"<script>{plotly_js}</script>", html_text, count=1)
 
 
 @app.get("/api/sessions/{session_id}/artifacts/{filename}/preview")
-def preview_artifact(session_id: str, filename: str) -> Response:
+def preview_artifact(session_id: str, filename: str, request: Request) -> Response:
     record, path = _artifact_file(session_id, filename)
     if path.suffix.lower() != ".html":
         raise HTTPException(status_code=415, detail="该产物不支持在线预览。")
+    html_text = path.read_text(encoding="utf-8")
+    # Preview never inlines the multi-MB Plotly bundle; it loads the shared
+    # runtime via a dedicated endpoint so concurrent previews stay cheap.
+    bundle_url = str(request.url.replace(path=f"/api/sessions/{session_id}/plotly.js"))
+    html_text = _PLOTLY_TAG_PATTERN.sub(
+        lambda _match: f"<script src='{bundle_url}'></script>",
+        html_text,
+        count=1,
+    )
     return Response(
-        content=_standalone_visualization(record, path),
+        content=html_text,
         media_type="text/html",
         headers={"Cache-Control": "private, max-age=300"},
+    )
+
+
+@app.get("/api/sessions/{session_id}/plotly.js")
+def serve_plotly_bundle(session_id: str) -> Response:
+    """Serve the shared Plotly.js bundle for chart previews.
+
+    The bundle is intentionally not registered as an artifact (it is internal
+    runtime, not a user-facing product), so it needs its own endpoint. The
+    response is heavily cacheable so concurrent previews reuse a single copy.
+    """
+    record = registry.get(session_id)
+    bundle_path = record.workspace.artifacts_dir / PLOTLY_BUNDLE_NAME
+    if not bundle_path.is_file():
+        raise HTTPException(status_code=404, detail="Plotly 运行时尚未生成。")
+    return FileResponse(
+        bundle_path,
+        media_type="application/javascript",
+        headers={"Cache-Control": "public, max-age=86400"},
     )
 
 
@@ -732,8 +819,10 @@ def preview_artifact(session_id: str, filename: str) -> Response:
 def download_artifact(session_id: str, filename: str) -> Response:
     record, path = _artifact_file(session_id, filename)
     if path.suffix.lower() == ".html":
+        # Downloads must remain self-contained so they open offline.
+        html_text = _inline_plotly_bundle(record, path.read_text(encoding="utf-8"))
         return Response(
-            content=_standalone_visualization(record, path),
+            content=html_text,
             media_type="text/html",
             headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(path.name)}"},
         )

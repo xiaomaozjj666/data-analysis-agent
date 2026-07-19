@@ -49,7 +49,7 @@ function requestHeaders(headers = {}) {
 class ErrorBoundary extends Component {
   constructor(props) {
     super(props);
-    this.state = { error: null };
+    this.state = { error: null, resetKey: 0 };
   }
 
   static getDerivedStateFromError(error) {
@@ -60,25 +60,30 @@ class ErrorBoundary extends Component {
     console.error("工作台渲染失败：", error, info);
   }
 
-  reset = () => this.setState({ error: null });
+  reset = () => {
+    // 递增 resetKey 强制子树重挂，清掉可能导致再次抛错的内部 state。
+    this.setState((prev) => ({ error: null, resetKey: prev.resetKey + 1 }));
+  };
 
   render() {
-    if (!this.state.error) return this.props.children;
-    return (
-      <main className="auth-gate">
-        <div className="auth-card">
-          <span className="section-kicker">DATA DESK</span>
-          <h1>渲染出现异常</h1>
-          <p>{String(this.state.error?.message || this.state.error || "未知错误")}</p>
-          <button className="primary" type="button" onClick={() => window.location.reload()}>
-            刷新页面
-          </button>
-          <button type="button" onClick={this.reset} style={{ marginTop: 8 }}>
-            尝试恢复
-          </button>
-        </div>
-      </main>
-    );
+    if (this.state.error) {
+      return (
+        <main className="auth-gate">
+          <div className="auth-card">
+            <span className="section-kicker">DATA DESK</span>
+            <h1>渲染出现异常</h1>
+            <p>{String(this.state.error?.message || this.state.error || "未知错误")}</p>
+            <button className="primary" type="button" onClick={() => window.location.reload()}>
+              刷新页面
+            </button>
+            <button type="button" onClick={this.reset} style={{ marginTop: 8 }}>
+              尝试恢复
+            </button>
+          </div>
+        </main>
+      );
+    }
+    return <div key={this.state.resetKey}>{this.props.children}</div>;
   }
 }
 
@@ -103,6 +108,23 @@ const presets = [
   },
 ];
 
+function describeApiError(payload, status) {
+  if (payload == null || payload === "") return `请求失败 (${status})`;
+  if (typeof payload === "string") return payload;
+  if (typeof payload === "object") {
+    if (typeof payload.detail === "string" && payload.detail) return payload.detail;
+    // FastAPI HTTPException 默认 {detail: ...}，但也可能嵌套其他字段。
+    const fallback = payload.message || payload.error;
+    if (typeof fallback === "string" && fallback) return fallback;
+    try {
+      return JSON.stringify(payload);
+    } catch {
+      return `请求失败 (${status})`;
+    }
+  }
+  return String(payload);
+}
+
 async function api(path, options = {}) {
   const { timeoutMs = 30000, signal: providedSignal, ...fetchOptions } = options;
   const controller = providedSignal ? null : new AbortController();
@@ -115,7 +137,7 @@ async function api(path, options = {}) {
     });
     const contentType = response.headers.get("content-type") || "";
     const payload = contentType.includes("application/json") ? await response.json() : await response.text();
-    if (!response.ok) throw new Error(payload?.detail || payload || `请求失败 (${response.status})`);
+    if (!response.ok) throw new Error(describeApiError(payload, response.status));
     return payload;
   } catch (error) {
     if (error.name === "AbortError") throw new Error("连接服务超时，请刷新页面后重试。Render 免费实例首次唤醒可能需要几十秒。");
@@ -179,7 +201,7 @@ function Metric({ label, value, unit }) {
   );
 }
 
-function PlanPanel({ plan, completed, running }) {
+function PlanPanel({ plan, completed, running, currentNodeTitle }) {
   const completedIds = new Set((completed || []).map((item) => item.id));
   const doneCount = plan.filter((item) => completedIds.has(item.id)).length;
 
@@ -195,6 +217,13 @@ function PlanPanel({ plan, completed, running }) {
           {running ? "运行中" : plan.length ? "已完成" : "待开始"}
         </span>
       </div>
+
+      {running && currentNodeTitle && (
+        <div className="current-node" role="status" aria-live="polite">
+          <LoaderCircle size={12} className="spin" />
+          <span>{currentNodeTitle}</span>
+        </div>
+      )}
 
       {plan.length > 0 && (
         <div className="progress-line" aria-label={`已完成 ${doneCount}/${plan.length}`}>
@@ -374,10 +403,24 @@ function App() {
   const [previewItem, setPreviewItem] = useState(null);
   const [previewHtml, setPreviewHtml] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState("");
+  const [currentNodeTitle, setCurrentNodeTitle] = useState("");
+  const [retryOffer, setRetryOffer] = useState(null);
   const fileInput = useRef(null);
   const taskInput = useRef(null);
   const analysisController = useRef(null);
   const cancelRequested = useRef(false);
+  const lastTaskRef = useRef("");
+
+  // Esc 键关闭预览模态框（P0-4）。
+  useEffect(() => {
+    if (!previewItem) return;
+    const onKey = (event) => {
+      if (event.key === "Escape") closeArtifactPreview();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [previewItem]);
 
   useEffect(() => {
     api("/api/auth")
@@ -406,32 +449,24 @@ function App() {
     if (!item.preview_url) return;
     setPreviewItem(item);
     setPreviewHtml("");
+    setPreviewError("");
     setPreviewLoading(true);
-    const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 120000);
-    try {
-      const response = await fetch(`${API_URL}${item.preview_url}`, {
-        headers: requestHeaders(),
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        throw new Error(payload.detail || `预览请求失败 (${response.status})`);
-      }
-      setPreviewHtml(await response.text());
-    } catch (err) {
-      setPreviewItem(null);
-      setError(`图表预览失败：${err.name === "AbortError" ? "加载超时" : err.message}`);
-    } finally {
-      window.clearTimeout(timeout);
-      setPreviewLoading(false);
-    }
+    // 使用 iframe src（而非 srcDoc）让浏览器通过相对路径加载共享 Plotly bundle，
+    // 避免每次预览都内联 3MB 脚本。token 通过 query 传递以便 iframe 场景鉴权；
+    // 单租户部署下风险可控，token 会出现在浏览器历史和服务器 access log，
+    // 因此配合 referrerPolicy="no-referrer" 阻止 Referer 泄露。
+    const token = window.localStorage.getItem(ACCESS_TOKEN_KEY);
+    const url = new URL(`${API_URL}${item.preview_url}`);
+    if (token) url.searchParams.set("token", token);
+    setPreviewHtml(url.toString());
+    // loading 状态交由 iframe onLoad 关闭；这里不预先关，避免一闪即逝。
   }
 
   function closeArtifactPreview() {
     setPreviewItem(null);
     setPreviewHtml("");
     setPreviewLoading(false);
+    setPreviewError("");
   }
 
   async function downloadArtifact(item) {
@@ -515,6 +550,8 @@ function App() {
     analysisController.current?.abort();
     await cancelRequest;
     setRunning(false);
+    setCurrentNodeTitle("");
+    setRetryOffer(null);
     setError("分析已取消，已完成的步骤不会继续扩展。");
   }
 
@@ -525,12 +562,16 @@ function App() {
     setResult(null);
     setPlan([]);
     setCompleted([]);
+    setCurrentNodeTitle("");
+    setRetryOffer(null);
     setTask(nextTask);
+    lastTaskRef.current = nextTask;
     const controller = new AbortController();
     analysisController.current = controller;
     cancelRequested.current = false;
     let idleTimeout = null;
     let completedPayload = null;
+    let sawEvent = false;
     const resetIdleTimeout = () => {
       if (idleTimeout) window.clearTimeout(idleTimeout);
       idleTimeout = window.setTimeout(() => controller.abort(), 180000);
@@ -544,8 +585,8 @@ function App() {
         signal: controller.signal,
       });
       if (!response.ok) {
-        const payload = await response.json();
-        throw new Error(payload.detail || "分析请求失败");
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(describeApiError(payload, response.status));
       }
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -557,42 +598,90 @@ function App() {
         const blocks = buffer.split("\n\n");
         buffer = blocks.pop() || "";
         for (const block of blocks) {
-          const event = block.split("\n").find((line) => line.startsWith("event:"))?.slice(6).trim();
-          const dataText = block.split("\n").find((line) => line.startsWith("data:"))?.slice(5).trim();
+          // 显式过滤 SSE 注释行（": keep-alive"），避免被当作无 event 的块。
+          const lines = block.split("\n").filter((line) => line.length > 0 && !line.startsWith(":"));
+          const event = lines.find((line) => line.startsWith("event:"))?.slice(6).trim();
+          const dataText = lines.find((line) => line.startsWith("data:"))?.slice(5).trim();
           if (!event || !dataText) continue;
+          sawEvent = true;
           const data = JSON.parse(dataText);
-          if (event === "plan_analysis") setPlan(data.plan || []);
-          if (event === "replan") setCompleted(data.completed_steps || []);
-          if (event === "complete") {
+          if (event === "started") {
+            // 任务已被后端接收，确认运行中。
+            setCurrentNodeTitle("后端已接收任务");
+          } else if (event === "progress") {
+            // 节点级进度（如"正在检查数据集结构"），立即更新 UI。
+            setCurrentNodeTitle(data.title || "正在分析");
+          } else if (event === "validate_dataset") {
+            setCurrentNodeTitle("正在检查数据集结构");
+          } else if (event === "plan_analysis") {
+            setPlan(data.plan || []);
+            setCurrentNodeTitle("正在规划分析步骤");
+          } else if (event === "execute_step") {
+            // execute_step 的 data 是节点状态更新，标题已由前一帧 progress 给出；
+            // 若没有 progress 帧兜底，使用一个通用文案。
+            setCurrentNodeTitle((current) => current || "正在执行分析步骤");
+          } else if (event === "replan") {
+            setCompleted(data.completed_steps || []);
+            setCurrentNodeTitle("正在审查进度并重规划");
+          } else if (event === "finalize") {
+            setCurrentNodeTitle("正在汇总最终报告");
+          } else if (event === "complete") {
             completedPayload = data;
             setResult(data);
             setPlan(data.plan || []);
             setCompleted(data.completed_steps || []);
-            setSession((current) => ({ ...current, artifacts: data.artifacts || [] }));
+            // 乐观更新 artifacts，refresh 失败时仍能看到产物。
+            setSession((current) => (current ? { ...current, artifacts: data.artifacts || [] } : current));
+            setCurrentNodeTitle("");
+          } else if (event === "cancelled") {
+            // 仅在用户未通过 stopAnalysis 主动取消时显示后端取消消息，避免重复 setError。
+            if (!cancelRequested.current) {
+              setError(data.message || "分析已取消。");
+            }
+          } else if (event === "error") {
+            throw new Error(data.message || "分析失败");
+          } else if (event === "heartbeat") {
+            // 仅用于保活，重置 idle timer 即可；不更新 UI。
           }
-          if (event === "cancelled") {
-            cancelRequested.current = true;
-            setError(data.message || "分析已取消。");
-          }
-          if (event === "error") throw new Error(data.message || "分析失败");
         }
         if (done) break;
       }
       if (completedPayload) {
-        const refreshed = await api(`/api/sessions/${session.id}`);
-        setSession(refreshed);
+        try {
+          const refreshed = await api(`/api/sessions/${session.id}`);
+          setSession(refreshed);
+        } catch {
+          // refresh 失败时保留 complete 帧的乐观更新，不阻塞用户。
+        }
       }
     } catch (err) {
       if (err.name === "AbortError" && cancelRequested.current) {
         setError("分析已取消，已完成的步骤不会继续扩展。");
+      } else if (err.name === "AbortError") {
+        // idle timeout：长时间未收到事件。
+        setError("长时间未收到分析进度，连接已断开。");
+        setRetryOffer({ task: nextTask, reason: "idle" });
+      } else if (!sawEvent && err.name === "TypeError") {
+        // fetch 网络层错误（DNS/CORS/离线），尚未收到任何 SSE 帧。
+        setError(`无法连接分析服务：${err.message}`);
+        setRetryOffer({ task: nextTask, reason: "network" });
       } else {
-        setError(err.name === "AbortError" ? "长时间未收到分析进度，请稍后重试。" : err.message);
+        setError(err.message);
+        setRetryOffer({ task: nextTask, reason: "error" });
       }
     } finally {
       if (idleTimeout) window.clearTimeout(idleTimeout);
       if (analysisController.current === controller) analysisController.current = null;
       setRunning(false);
+      setCurrentNodeTitle("");
     }
+  }
+
+  function retryAnalysis() {
+    if (!retryOffer) return;
+    const retryTask = retryOffer.task;
+    setRetryOffer(null);
+    startAnalysis(retryTask);
   }
 
   const profile = session?.profile;
@@ -711,10 +800,15 @@ function App() {
         </header>
 
         {error && (
-          <div className="error-banner">
+          <div className="error-banner" role="alert">
             <Activity size={16} />
             <span>{error}</span>
-            <button title="关闭" onClick={() => setError("")}><X size={15} /></button>
+            {retryOffer && !running && (
+              <button type="button" className="retry-button" onClick={retryAnalysis}>
+                <RefreshCw size={13} />重新运行
+              </button>
+            )}
+            <button type="button" title="关闭" onClick={() => { setError(""); setRetryOffer(null); }}><X size={15} /></button>
           </div>
         )}
 
@@ -807,7 +901,7 @@ function App() {
                     <DatasetOverview profile={profile} />
                   )}
                 </section>
-                <PlanPanel plan={plan} completed={completed} running={running} />
+                <PlanPanel plan={plan} completed={completed} running={running} currentNodeTitle={currentNodeTitle} />
               </div>
             )}
 
@@ -838,9 +932,15 @@ function App() {
         )}
       </main>
       {previewItem && (
-        <div className="preview-backdrop" role="presentation" onMouseDown={(event) => {
-          if (event.target === event.currentTarget) closeArtifactPreview();
-        }}>
+        <div
+          className="preview-backdrop"
+          role="presentation"
+          onClick={(event) => {
+            // 用 onClick 而非 onMouseDown，同时覆盖鼠标点击和触摸结束，
+            // 避免纯触屏设备上 mousedown 被 preventDefault 或延迟 300ms。
+            if (event.target === event.currentTarget) closeArtifactPreview();
+          }}
+        >
           <section className="preview-panel" role="dialog" aria-modal="true" aria-label={`预览 ${previewItem.description || previewItem.name}`}>
             <header>
               <div>
@@ -848,17 +948,34 @@ function App() {
                 <h2>{previewItem.description || previewItem.name}</h2>
               </div>
               <div className="preview-actions">
-                <button onClick={() => downloadArtifact(previewItem)}><Download size={15} />下载</button>
-                <button className="icon-button" title="关闭预览" onClick={closeArtifactPreview}><X size={17} /></button>
+                <button type="button" onClick={() => downloadArtifact(previewItem)}><Download size={15} />下载</button>
+                <button type="button" className="icon-button" title="关闭预览 (Esc)" onClick={closeArtifactPreview}><X size={17} /></button>
               </div>
             </header>
             <div className="preview-stage">
-              {previewLoading && <div className="preview-loading"><LoaderCircle className="spin" size={18} />正在准备交互图表…</div>}
-              {previewHtml && (
+              {previewLoading && !previewError && (
+                <div className="preview-loading"><LoaderCircle className="spin" size={18} />正在准备交互图表…</div>
+              )}
+              {previewError && (
+                <div className="preview-loading preview-error">
+                  <AlertTriangle size={18} />
+                  <span>{previewError}</span>
+                  <button type="button" className="retry-button" onClick={() => openArtifactPreview(previewItem)}>
+                    <RefreshCw size={13} />重试
+                  </button>
+                </div>
+              )}
+              {previewHtml && !previewError && (
                 <iframe
                   title={previewItem.description || previewItem.name}
-                  sandbox="allow-scripts"
-                  srcDoc={previewHtml}
+                  sandbox="allow-scripts allow-same-origin"
+                  referrerPolicy="no-referrer"
+                  src={previewHtml}
+                  onLoad={() => setPreviewLoading(false)}
+                  onError={() => {
+                    setPreviewLoading(false);
+                    setPreviewError("图表加载失败，请检查网络或重新生成产物。");
+                  }}
                 />
               )}
             </div>

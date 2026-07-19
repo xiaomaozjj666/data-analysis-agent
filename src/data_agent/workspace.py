@@ -221,6 +221,13 @@ class DataWorkspace:
                 changes.append(f"将 {normalized_missing} 个明确缺失标记统一为空值")
 
         if parse_numeric:
+            # Skip columns that carry semantic suffixes (units like kg, 元,
+            # °C, km/h, ...) since converting them would silently drop the
+            # unit and corrupt the data. Only currency prefixes and thousands
+            # separators are considered unambiguous and get stripped.
+            unit_residual_pattern = re.compile(
+                r"^[\s¥￥$€]*[+-]?[\d.,]+(?:[eE][+-]?\d+)?"
+            )
             for column in list(df.select_dtypes(include=["object", "string"]).columns):
                 series = df[column]
                 non_empty = series.dropna()
@@ -229,10 +236,15 @@ class DataWorkspace:
                 text = non_empty.astype("string").str.strip()
                 if text.str.contains("%", regex=False).any() or text.str.match(r"^0\d+$").any():
                     continue
-                candidate = pd.to_numeric(
-                    text.str.replace(",", "", regex=False).str.replace(r"^[¥￥$€]\s*", "", regex=True),
-                    errors="coerce",
+                stripped = text.str.replace(",", "", regex=False).str.replace(
+                    r"^[¥￥$€]\s*", "", regex=True
                 )
+                # After removing the leading number, anything non-empty that
+                # remains is a unit suffix -> skip the column.
+                residual = stripped.str.replace(unit_residual_pattern, "", regex=True).str.strip()
+                if (residual.str.len() > 0).any():
+                    continue
+                candidate = pd.to_numeric(stripped, errors="coerce")
                 if candidate.notna().all():
                     df[column] = pd.to_numeric(
                         df[column].astype("string").str.strip()
@@ -352,18 +364,27 @@ class DataWorkspace:
 
     def snapshot_state(self) -> tuple[pd.DataFrame, set[Path]]:
         """Capture the active data and artifact files before one agent step."""
-        files = {
-            path.resolve()
-            for path in self.artifacts_dir.iterdir()
-            if path.is_file()
-        }
+        try:
+            files = {
+                path.resolve()
+                for path in self.artifacts_dir.iterdir()
+                if path.is_file()
+            }
+        except FileNotFoundError:
+            # The artifacts dir may have been removed by a concurrent prune
+            # between the run_lock check and this call; treat as empty.
+            files = set()
         return self.dataframe.copy(deep=True), files
 
     def restore_state(self, snapshot: tuple[pd.DataFrame, set[Path]]) -> None:
         """Rollback data mutations and files created by a failed agent step."""
         dataframe, existing_files = snapshot
         self.dataframe = dataframe
-        for path in self.artifacts_dir.iterdir():
+        try:
+            children = list(self.artifacts_dir.iterdir())
+        except FileNotFoundError:
+            children = []
+        for path in children:
             resolved = path.resolve()
             if path.is_file() and resolved not in existing_files:
                 path.unlink(missing_ok=True)

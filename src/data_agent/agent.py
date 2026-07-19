@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from threading import Event
 from typing import Any, TypedDict
@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import wrap_tool_call
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_deepseek import ChatDeepSeek
@@ -83,6 +84,34 @@ class AnalysisResult:
 
 class AnalysisCancelled(RuntimeError):
     """Raised between workflow nodes when the user cancels an analysis."""
+
+
+class CancelCallback(BaseCallbackHandler):
+    """LangChain callback that aborts long-running LLM/tool calls on cancel.
+
+    The workflow only checks ``cancel_event`` at node boundaries, so a single
+    DeepSeek thinking-mode call (60+ s) or a 25-iteration ReAct loop would
+    otherwise keep running for minutes after the user clicks Cancel. This
+    handler raises :class:`AnalysisCancelled` from ``on_llm_start`` /
+    ``on_tool_start`` / ``on_chat_model_start`` so the cancellation takes
+    effect within one LLM call instead of one node.
+    """
+
+    def __init__(self, cancel_event: Event) -> None:
+        self.cancel_event = cancel_event
+
+    def _ensure(self) -> None:
+        if self.cancel_event.is_set():
+            raise AnalysisCancelled("分析已取消。")
+
+    def on_llm_start(self, *args: Any, **kwargs: Any) -> Any:
+        self._ensure()
+
+    def on_chat_model_start(self, *args: Any, **kwargs: Any) -> Any:
+        self._ensure()
+
+    def on_tool_start(self, *args: Any, **kwargs: Any) -> Any:
+        self._ensure()
 
 
 def create_chat_model(settings: AgentSettings) -> BaseChatModel:
@@ -164,8 +193,20 @@ def _fallback_plan(query: str) -> AnalysisPlan:
 
 def _apply_query_constraints(query: str, plan: AnalysisPlan) -> AnalysisPlan:
     """Keep explicit user constraints intact even when structured planning falls back."""
-    read_only = any(token in query for token in ("不修改", "无需修改", "只检查", "仅检查"))
-    no_charts = any(token in query for token in ("不生成图表", "不要图表", "不画图", "无需绘图"))
+    read_only = any(
+        token in query
+        for token in (
+            "不修改", "无需修改", "只检查", "仅检查", "不要改动", "不要修改",
+            "保持原样", "只读", "只看",
+        )
+    )
+    no_charts = any(
+        token in query
+        for token in (
+            "不生成图表", "不要图表", "不画图", "无需绘图", "不用画图", "不用绘图",
+            "不需要图表", "不需要可视化", "不用可视化", "无需图表", "不要可视化",
+        )
+    )
     inspect_only = any(token in query for token in ("只检查", "仅检查")) and "质量" in query
     steps = list(plan.steps)
     if inspect_only:
@@ -277,11 +318,14 @@ class DataAnalysisAgent:
         settings: AgentSettings | None = None,
         model: BaseChatModel | None = None,
         cancel_event: Event | None = None,
+        progress_callback: Callable[[str, str], None] | None = None,
     ) -> None:
         self.workspace = workspace
         self.settings = settings or AgentSettings.from_env()
         self.model = model or create_chat_model(self.settings)
         self.cancel_event = cancel_event or Event()
+        self.cancel_callback = CancelCallback(self.cancel_event)
+        self.progress_callback = progress_callback or (lambda node, title: None)
         self.tools = build_tools(workspace)
         self.react_agent = create_agent(
             model=self.model,
@@ -294,6 +338,21 @@ class DataAnalysisAgent:
         self.replanner = self.model.with_structured_output(ReplanDecision)
         self.graph = self._build_workflow()
 
+    def _invoke_config(self, **extra: Any) -> dict[str, Any]:
+        """Build a RunnableConfig that wires the cancel callback into every
+        LLM/tool call inside a node so cancellation takes effect promptly."""
+        return {"callbacks": [self.cancel_callback], **extra}
+
+    def _enter_node(self, node: str, title: str) -> None:
+        """Emit a progress signal at node entry so the SSE stream can surface
+        "正在检查数据" / "正在规划" etc. before the (potentially slow) LLM call
+        inside the node returns."""
+        try:
+            self.progress_callback(node, title)
+        except Exception:
+            # Progress is best-effort; never let it break the workflow.
+            pass
+
     def _build_workflow(self):
         def ensure_not_cancelled() -> None:
             if self.cancel_event.is_set():
@@ -301,6 +360,7 @@ class DataAnalysisAgent:
 
         def validate_dataset(state: WorkflowState) -> dict[str, Any]:
             ensure_not_cancelled()
+            self._enter_node("validate_dataset", "正在检查数据集结构")
             profile = self.workspace.profile(sample_rows=5)
             messages = list(state.get("input_messages", []))
             if not messages:
@@ -315,6 +375,7 @@ class DataAnalysisAgent:
 
         def plan_analysis(state: WorkflowState) -> dict[str, Any]:
             ensure_not_cancelled()
+            self._enter_node("plan_analysis", "正在规划分析步骤")
             profile_text = json.dumps(state["dataset_profile"], ensure_ascii=False)[:12000]
             prompt = (
                 "为数据分析任务制定 2 到 6 个可执行步骤。第一步必须检查数据，最后应包含必要的图表和导出。"
@@ -322,7 +383,7 @@ class DataAnalysisAgent:
                 f"用户目标：{state['query']}\n数据概况：{profile_text}"
             )
             try:
-                plan = self.planner.invoke(prompt)
+                plan = self.planner.invoke(prompt, config=self._invoke_config())
                 if not isinstance(plan, AnalysisPlan):
                     plan = AnalysisPlan.model_validate(plan)
             except Exception:
@@ -337,6 +398,7 @@ class DataAnalysisAgent:
             if not remaining:
                 return {"current_step": {}, "last_step_result": {}}
             step = remaining[0]
+            self._enter_node("execute_step", f"正在执行：{step.get('title', step.get('id', '未知步骤'))}")
             completed = state.get("completed_steps", [])
             completed_text = "\n".join(
                 f"- {item['title']}: {item.get('summary', '')[:800]}" for item in completed
@@ -355,7 +417,7 @@ class DataAnalysisAgent:
             try:
                 result = self.react_agent.invoke(
                     {"messages": [*state.get("input_messages", []), HumanMessage(content=execution_prompt)]},
-                    config={"recursion_limit": self.settings.max_iterations * 2 + 5},
+                    config=self._invoke_config(recursion_limit=self.settings.max_iterations * 2 + 5),
                 )
                 messages = result["messages"]
                 format_error = _format_error_text(messages)
@@ -370,7 +432,7 @@ class DataAnalysisAgent:
                         )
                         retry = self.react_agent.invoke(
                             {"messages": [*state.get("input_messages", []), HumanMessage(content=retry_prompt)]},
-                            config={"recursion_limit": self.settings.max_iterations * 2 + 5},
+                            config=self._invoke_config(recursion_limit=self.settings.max_iterations * 2 + 5),
                         )
                         messages = [*messages, *retry["messages"]]
                 ensure_not_cancelled()
@@ -438,6 +500,7 @@ class DataAnalysisAgent:
 
         def replan(state: WorkflowState) -> dict[str, Any]:
             ensure_not_cancelled()
+            self._enter_node("replan", "正在审查进度并重规划")
             current = state.get("last_step_result", {})
             completed = [*state.get("completed_steps", [])]
             if current:
@@ -461,7 +524,8 @@ class DataAnalysisAgent:
                 decision = self.replanner.invoke(
                     "审查数据分析计划的执行进度。根据已经获得的证据判断是否可以结束；"
                     "否则只返回仍然必要的后续步骤，删除重复或没有价值的步骤。\n"
-                    + json.dumps(review_payload, ensure_ascii=False)[:16000]
+                    + json.dumps(review_payload, ensure_ascii=False)[:16000],
+                    config=self._invoke_config(),
                 )
                 if not isinstance(decision, ReplanDecision):
                     decision = ReplanDecision.model_validate(decision)
@@ -491,6 +555,7 @@ class DataAnalysisAgent:
 
         def finalize(state: WorkflowState) -> dict[str, Any]:
             ensure_not_cancelled()
+            self._enter_node("finalize", "正在汇总最终报告")
             evidence = "\n\n".join(
                 f"## {item['title']}\n{item.get('summary', '')}" for item in state.get("completed_steps", [])
             )
@@ -500,7 +565,7 @@ class DataAnalysisAgent:
                 f"用户目标：{state['query']}\n\n执行结果：\n{evidence[:30000]}"
             )
             try:
-                final_message = self.model.invoke(prompt)
+                final_message = self.model.invoke(prompt, config=self._invoke_config())
                 response = _message_text(final_message)
             except Exception:
                 response = ""
