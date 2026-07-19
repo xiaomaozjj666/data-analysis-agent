@@ -173,9 +173,9 @@ def test_artifact_payload_is_curated_and_chart_preview_is_standalone(tmp_path, m
     ).json()
     record = api.registry.get(uploaded["id"])
     tools = {item.name: item for item in build_tools(record.workspace)}
-    for _ in range(2):
+    for title in ("区域销售（n=2）", "区域销售（样本=2）"):
         tools["create_visualization"].invoke(
-            {"chart_type": "bar", "x": "region", "y": "sales", "title": "区域销售"}
+            {"chart_type": "bar", "x": "region", "y": "sales", "title": title}
         )
     tools["export_data"].invoke({"format": "csv", "filename": "cleaned_data_final"})
 

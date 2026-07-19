@@ -347,7 +347,10 @@ def _curate_artifacts(artifacts: list[dict[str, str]]) -> list[dict[str, str]]:
         if kind == "chart_data":
             continue
         description = re.sub(r"\s+", " ", item.get("description", "").strip().lower())
-        key = description or Path(item.get("name", "artifact")).stem.lower()
+        semantic_title = re.split(r"[（(]", description, maxsplit=1)[0]
+        semantic_title = semantic_title.replace("相关系数", "相关").replace("相关性", "相关")
+        key = re.sub(r"[^\w\u4e00-\u9fff]+", "", semantic_title)
+        key = key or Path(item.get("name", "artifact")).stem.lower()
         if kind == "visualization":
             latest_visualizations[key] = item
         elif kind == "image":
