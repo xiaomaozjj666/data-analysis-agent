@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+import plotly.io as pio
 
 from data_agent.tools import build_tools
 from data_agent.workspace import PLOTLY_BUNDLE_NAME, DataWorkspace
@@ -11,6 +14,13 @@ from data_agent.workspace import PLOTLY_BUNDLE_NAME, DataWorkspace
 
 def tool_map(workspace):
     return {item.name: item for item in build_tools(workspace)}
+
+
+def plotly_values(values):
+    """Decode Plotly 6 typed arrays while remaining compatible with plain lists."""
+    if isinstance(values, dict) and "bdata" in values and "dtype" in values:
+        return np.frombuffer(base64.b64decode(values["bdata"]), dtype=np.dtype(values["dtype"]))
+    return values
 
 
 def test_clean_data_updates_frame_and_exports(workspace):
@@ -169,3 +179,67 @@ def test_complex_visualizations_create_offline_artifacts(workspace):
     # The HTML must NOT inline the multi-megabyte Plotly.js source.
     assert html.stat().st_size < plotly_bundle.stat().st_size
     assert {item["kind"] for item in workspace.artifacts} == {"visualization", "chart_data"}
+
+
+def test_visualizations_keep_extreme_values_but_default_to_readable_scale(tmp_path):
+    source = tmp_path / "extreme_sales.csv"
+    pd.DataFrame(
+        {
+            "product": ["A", "B", "C", "D", "E", "F"],
+            "units": [2, 3, 4, 5, 8, 9999],
+            "revenue": [900, 1200, 1700, 2100, 3600, 2_990_001],
+        }
+    ).to_csv(source, index=False)
+    workspace = DataWorkspace(tmp_path / "runs", session_id="outlier_chart")
+    workspace.load(source, copy_into_workspace=True)
+    visualization = tool_map(workspace)["create_visualization"]
+
+    bar_result = json.loads(
+        visualization.invoke(
+            {
+                "chart_type": "bar",
+                "x": "product",
+                "y": "revenue",
+                "aggregation": "sum",
+                "title": "产品收入",
+            }
+        )
+    )
+    bar = pio.read_json(bar_result["plotly_json"])
+    assert bar_result["scale_mode"] == "robust"
+    assert bar_result["extreme_points"] == 1
+    assert bar.layout.yaxis.range[1] < 10_000
+    assert max(
+        float(value)
+        for trace in bar.data
+        if trace.type == "bar"
+        for value in plotly_values(trace.y)
+    ) == 2_990_001
+    assert [button.label for button in bar.layout.updatemenus[0].buttons] == ["主体尺度", "全量视图"]
+    assert all(button.method == "relayout" for button in bar.layout.updatemenus[0].buttons)
+    assert any("极端值超出主体尺度" in annotation.text for annotation in bar.layout.annotations)
+    html_text = Path(bar_result["html"]).read_text(encoding="utf-8")
+    assert "height:100%" in html_text
+    assert '"displaylogo": false' in html_text
+
+    scatter_result = json.loads(
+        visualization.invoke(
+            {
+                "chart_type": "scatter",
+                "x": "units",
+                "y": "revenue",
+                "color": "product",
+                "title": "销量与收入",
+            }
+        )
+    )
+    scatter = pio.read_json(scatter_result["plotly_json"])
+    assert scatter_result["scale_mode"] == "robust"
+    assert scatter.layout.xaxis.range[1] < 20
+    assert scatter.layout.yaxis.range[1] < 10_000
+    # The real point remains in the base traces and is only outside the default viewport.
+    assert max(
+        float(value)
+        for trace in scatter.data
+        for value in plotly_values(trace.y)
+    ) == 2_990_001

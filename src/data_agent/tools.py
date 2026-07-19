@@ -10,6 +10,7 @@ from uuid import uuid4
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 from langchain_core.tools import BaseTool, tool
 from scipy import stats
 from sklearn.linear_model import LinearRegression
@@ -17,6 +18,245 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 from data_agent.serialization import json_text
 from data_agent.workspace import DataWorkspace
+
+_CHART_COLORS = [
+    "#245C55",
+    "#D97745",
+    "#4F6BED",
+    "#C75D63",
+    "#7A6FB0",
+    "#D2A63C",
+    "#4B8FA8",
+    "#8A9A5B",
+]
+
+_COLUMN_LABELS = {
+    "units": "销量",
+    "revenue": "收入",
+    "sales": "销售额",
+    "profit": "利润",
+    "product": "产品",
+    "region": "区域",
+    "channel": "渠道",
+    "category": "类别",
+    "customer_rating": "客户评分",
+    "unit_price": "单价",
+    "discount_rate": "折扣率",
+    "order_date": "订单日期",
+    "date": "日期",
+    "count": "记录数",
+}
+
+_AGGREGATION_LABELS = {
+    "sum": "合计",
+    "mean": "平均值",
+    "median": "中位数",
+    "count": "计数",
+    "min": "最小值",
+    "max": "最大值",
+}
+
+
+def _human_column_label(column: str | None) -> str:
+    if not column:
+        return ""
+    return _COLUMN_LABELS.get(column, str(column).replace("_", " ").strip())
+
+
+def _compact_number(value: float) -> str:
+    absolute = abs(value)
+    if absolute >= 1_000_000:
+        return f"{value / 1_000_000:.2f}M"
+    if absolute >= 1_000:
+        return f"{value / 1_000:.1f}K"
+    if absolute >= 10:
+        return f"{value:,.0f}"
+    return f"{value:,.2f}".rstrip("0").rstrip(".")
+
+
+def _severe_axis_compression(values: list[Any], *, include_zero: bool = False) -> dict[str, Any] | None:
+    """Return a readable axis range when a few values collapse the main distribution.
+
+    The plotted data is never modified. The returned range only controls the default
+    viewport; the chart also exposes a full-range toggle.
+    """
+    numeric = pd.to_numeric(pd.Series(values, dtype="object"), errors="coerce")
+    numeric = numeric[np.isfinite(numeric)]
+    if len(numeric) < 5 or numeric.nunique() < 3:
+        return None
+    q1, q3 = numeric.quantile([0.25, 0.75])
+    spread = float(q3 - q1)
+    if not np.isfinite(spread) or spread <= 0:
+        median = float(numeric.median())
+        deviations = (numeric - median).abs()
+        mad = float(deviations.median())
+        if mad <= 0 or not np.isfinite(mad):
+            return None
+        lower_fence, upper_fence = median - 8 * mad, median + 8 * mad
+    else:
+        # Three IQRs is deliberately conservative: ordinary high performers stay
+        # visible, while only scale-destroying points trigger the alternate view.
+        lower_fence, upper_fence = float(q1 - 3 * spread), float(q3 + 3 * spread)
+    normal_mask = numeric.between(lower_fence, upper_fence)
+    normal = numeric[normal_mask]
+    extreme = numeric[~normal_mask]
+    if extreme.empty or len(normal) < 3 or len(extreme) > max(3, int(len(numeric) * 0.2)):
+        return None
+    normal_min, normal_max = float(normal.min()), float(normal.max())
+    full_min, full_max = float(numeric.min()), float(numeric.max())
+    normal_span = normal_max - normal_min
+    reference = max(normal_span, abs(float(normal.median())) * 0.25, 1.0)
+    if (full_max - full_min) / reference < 8:
+        return None
+    padding = max(normal_span * 0.08, max(abs(normal_min), abs(normal_max), 1.0) * 0.04)
+    lower = normal_min - padding
+    upper = normal_max + padding
+    if include_zero and normal_min >= 0:
+        lower = 0.0
+    return {
+        "lower": float(lower),
+        "upper": float(upper),
+        "extreme_count": int(len(extreme)),
+    }
+
+
+def _trace_axis_values(fig: go.Figure, axis: str) -> list[Any]:
+    values: list[Any] = []
+    for trace in fig.data:
+        if getattr(trace, "name", None) == "极端值提示":
+            continue
+        raw = getattr(trace, axis, None)
+        if raw is not None:
+            values.extend(list(raw))
+    return values
+
+
+def _apply_outlier_scale_controls(
+    fig: go.Figure,
+    chart_type: str,
+    scale_mode: str,
+) -> dict[str, Any]:
+    """Add honest robust/full viewport controls when extreme values ruin readability."""
+    if scale_mode == "full" or chart_type not in {"bar", "line", "area", "scatter"}:
+        fig.update_layout(meta={"scale_mode": "full", "extreme_points": 0})
+        return {"scale_mode": "full", "extreme_points": 0, "axis_ranges": {}}
+
+    x_guard = None
+    if chart_type == "scatter":
+        x_guard = _severe_axis_compression(_trace_axis_values(fig, "x"))
+    y_guard = _severe_axis_compression(
+        _trace_axis_values(fig, "y"),
+        include_zero=chart_type == "bar",
+    )
+    if not x_guard and not y_guard:
+        fig.update_layout(meta={"scale_mode": "full", "extreme_points": 0})
+        return {"scale_mode": "full", "extreme_points": 0, "axis_ranges": {}}
+
+    indicator_text: list[str] = []
+    for trace in fig.data:
+        xs = list(trace.x) if getattr(trace, "x", None) is not None else []
+        ys = list(trace.y) if getattr(trace, "y", None) is not None else []
+        for raw_x, raw_y in zip(xs, ys, strict=False):
+            numeric_x = pd.to_numeric(pd.Series([raw_x]), errors="coerce").iloc[0]
+            numeric_y = pd.to_numeric(pd.Series([raw_y]), errors="coerce").iloc[0]
+            x_extreme = bool(
+                x_guard
+                and pd.notna(numeric_x)
+                and (float(numeric_x) < x_guard["lower"] or float(numeric_x) > x_guard["upper"])
+            )
+            y_extreme = bool(
+                y_guard
+                and pd.notna(numeric_y)
+                and (float(numeric_y) < y_guard["lower"] or float(numeric_y) > y_guard["upper"])
+            )
+            if not (x_extreme or y_extreme):
+                continue
+            details = []
+            if pd.notna(numeric_x) and isinstance(raw_x, (int, float, np.number)):
+                details.append(f"x={_compact_number(float(numeric_x))}")
+            elif raw_x is not None:
+                details.append(str(raw_x))
+            if pd.notna(numeric_y):
+                details.append(f"真实值={_compact_number(float(numeric_y))}")
+            indicator_text.append("<br>".join(details))
+
+    if indicator_text:
+        visible_details = indicator_text[:3]
+        remaining = len(indicator_text) - len(visible_details)
+        callout = "<b>极端值超出主体尺度</b><br>" + "<br>".join(
+            value.replace("<br>", " · ") for value in visible_details
+        )
+        if remaining > 0:
+            callout += f"<br>另有 {remaining} 个极端点"
+        fig.add_annotation(
+            xref="paper",
+            yref="paper",
+            x=0.012,
+            y=0.985,
+            xanchor="left",
+            yanchor="top",
+            text=callout,
+            showarrow=False,
+            align="left",
+            bgcolor="rgba(255,250,245,0.94)",
+            bordercolor="#D97745",
+            borderwidth=1,
+            borderpad=8,
+            font={"size": 11, "color": "#7A3728"},
+        )
+
+    robust_layout: dict[str, Any] = {}
+    full_layout: dict[str, Any] = {}
+    axis_ranges: dict[str, list[float]] = {}
+    if x_guard:
+        robust_layout.update({"xaxis.autorange": False, "xaxis.range": [x_guard["lower"], x_guard["upper"]]})
+        full_layout["xaxis.autorange"] = True
+        axis_ranges["x"] = [x_guard["lower"], x_guard["upper"]]
+        fig.update_xaxes(range=axis_ranges["x"], autorange=False)
+    if y_guard:
+        robust_layout.update({"yaxis.autorange": False, "yaxis.range": [y_guard["lower"], y_guard["upper"]]})
+        full_layout["yaxis.autorange"] = True
+        axis_ranges["y"] = [y_guard["lower"], y_guard["upper"]]
+        fig.update_yaxes(range=axis_ranges["y"], autorange=False)
+
+    indicator_count = max(
+        x_guard["extreme_count"] if x_guard else 0,
+        y_guard["extreme_count"] if y_guard else 0,
+    )
+    fig.update_layout(
+        updatemenus=[
+            {
+                "type": "buttons",
+                "direction": "right",
+                "x": 1,
+                "xanchor": "right",
+                "y": 1.16,
+                "yanchor": "top",
+                "showactive": True,
+                "active": 0,
+                "buttons": [
+                    {"label": "主体尺度", "method": "relayout", "args": [robust_layout]},
+                    {"label": "全量视图", "method": "relayout", "args": [full_layout]},
+                ],
+                "bgcolor": "#FFFFFF",
+                "bordercolor": "#CBD5D1",
+                "font": {"size": 12, "color": "#245C55"},
+            }
+        ],
+        meta={
+            "scale_mode": "robust",
+            "extreme_points": indicator_count,
+            "axis_ranges": axis_ranges,
+        },
+    )
+    original_title = fig.layout.title.text or "数据图表"
+    fig.update_layout(
+        title_text=(
+            f"{original_title}<br><sup>检测到 {indicator_count} 个极端点；默认显示主体尺度，"
+            "右上角可切换全量视图。原始数据未修改。</sup>"
+        )
+    )
+    return {"scale_mode": "robust", "extreme_points": indicator_count, "axis_ranges": axis_ranges}
 
 
 def _checked_columns(df: pd.DataFrame, columns: list[str] | None) -> list[str]:
@@ -525,6 +765,7 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         title: str | None = None,
         bins: int = 30,
         top_n: int | None = None,
+        scale_mode: Literal["auto", "full"] = "auto",
         export_png: bool = False,
     ) -> str:
         """Create an interactive Plotly chart and save a standalone HTML artifact.
@@ -532,7 +773,10 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         Supports standard and complex plots including 3D scatter, correlation heatmap, scatter
         matrix, sunburst and treemap. For bar/line/area, aggregation groups by x and optional
         color. heatmap expects x, y and numeric values. scatter_matrix uses dimensions.
-        sunburst/treemap use path_columns and values. export_png is best-effort and needs Chrome.
+        sunburst/treemap use path_columns and values. scale_mode="auto" detects scale-destroying
+        extreme values and adds readable main/full viewport controls without changing the data;
+        use scale_mode="full" only when the user explicitly wants the uncompressed raw scale.
+        export_png is best-effort and needs Chrome.
         """
         df = workspace.dataframe.copy()
         requested = [value for value in [x, y, color, z, size, values] if value]
@@ -558,7 +802,16 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                     raise ValueError(f"{aggregation} 聚合需要 y。")
                 df = df.groupby(group_columns, dropna=False)[y].agg(aggregation).reset_index()
 
-        common = {"data_frame": df, "title": title, "template": "plotly_white"}
+        labels = {column: _human_column_label(str(column)) for column in df.columns}
+        if y and aggregation in _AGGREGATION_LABELS:
+            labels[y] = f"{_human_column_label(y)}（{_AGGREGATION_LABELS[aggregation]}）"
+        common = {
+            "data_frame": df,
+            "title": title,
+            "template": "plotly_white",
+            "labels": labels,
+            "color_discrete_sequence": _CHART_COLORS,
+        }
         if chart_type == "bar":
             fig = px.bar(**common, x=x, y=y, color=color, barmode="group")
         elif chart_type == "line":
@@ -605,13 +858,51 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                 raise ValueError("treemap 需要 path_columns。")
             fig = px.treemap(**common, path=path_columns, values=values, color=color)
 
+        scale_details = _apply_outlier_scale_controls(fig, chart_type, scale_mode)
         fig.update_layout(
             font={"family": "IBM Plex Sans, Noto Sans SC, sans-serif", "color": "#102a2a"},
             paper_bgcolor="#fbfaf5",
             plot_bgcolor="#fbfaf5",
-            margin={"l": 40, "r": 30, "t": 70, "b": 40},
+            colorway=_CHART_COLORS,
+            margin={"l": 64, "r": 36, "t": 108 if scale_details["scale_mode"] == "robust" else 76, "b": 64},
             hoverlabel={"bgcolor": "#102a2a", "font_color": "white"},
+            title={"x": 0.01, "xanchor": "left", "font": {"size": 22, "color": "#102a2a"}},
+            legend={
+                "bgcolor": "rgba(255,255,255,0.82)",
+                "bordercolor": "#D9E1DE",
+                "borderwidth": 1,
+                "font": {"size": 12},
+            },
+            autosize=True,
         )
+        fig.update_xaxes(
+            showgrid=True,
+            gridcolor="#E5ECE9",
+            zerolinecolor="#C9D5D1",
+            linecolor="#BFCBC7",
+            tickfont={"size": 12},
+            title_font={"size": 14},
+            automargin=True,
+        )
+        fig.update_yaxes(
+            showgrid=True,
+            gridcolor="#E5ECE9",
+            zerolinecolor="#C9D5D1",
+            linecolor="#BFCBC7",
+            tickfont={"size": 12},
+            title_font={"size": 14},
+            automargin=True,
+            separatethousands=True,
+        )
+        if chart_type == "bar":
+            fig.update_traces(marker_line_color="rgba(16,42,42,0.16)", marker_line_width=0.8, selector={"type": "bar"})
+            if x and not pd.api.types.is_numeric_dtype(df[x]):
+                fig.update_xaxes(categoryorder="total descending")
+            fig.update_layout(bargap=0.26, bargroupgap=0.08)
+        elif chart_type == "scatter":
+            fig.update_traces(marker={"size": 9, "opacity": 0.82, "line": {"width": 0.7, "color": "white"}}, selector={"type": "scatter"})
+        if color:
+            fig.update_layout(legend_title_text=_human_column_label(color))
         stem = _safe_stem(title, chart_type)
         html_path = workspace.artifacts_dir / f"{stem}.html"
         shared_plotly = workspace.ensure_plotly_bundle()
@@ -620,13 +911,24 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             "<!doctype html><html><head><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
             "<title>{title}</title><script src='{script}'></script>"
-            "<style>html,body{{margin:0;background:#fbfaf5}}body{{min-height:100vh}}</style>"
+            "<style>html,body{{width:100%;height:100%;margin:0;background:#fbfaf5;overflow:hidden}}"
+            ".plotly-graph-div{{width:100% !important;height:100% !important;min-height:560px}}</style>"
             "</head><body>{div}</body></html>"
             if relative_script
             else None
         )
         if html_template is not None:
-            div = fig.to_html(full_html=False, include_plotlyjs=False)
+            div = fig.to_html(
+                full_html=False,
+                include_plotlyjs=False,
+                default_width="100%",
+                default_height="100%",
+                config={
+                    "responsive": True,
+                    "displaylogo": False,
+                    "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+                },
+            )
             html_path.write_text(
                 html_template.format(
                     title=escape(title or chart_type),
@@ -646,6 +948,7 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             "status": "ok",
             "chart_type": chart_type,
             "rows_plotted": len(df),
+            **scale_details,
             "html": html_path,
             "plotly_json": json_path,
         }

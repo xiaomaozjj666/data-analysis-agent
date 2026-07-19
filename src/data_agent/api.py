@@ -374,7 +374,13 @@ def _check_rate_limit(request: Request) -> None:
 @app.middleware("http")
 async def protect_api(request: Request, call_next):
     response = None
-    if request.url.path.startswith("/api/") and request.url.path not in {"/api/health", "/api/auth"}:
+    # CORS preflight requests do not carry the application token. Let
+    # CORSMiddleware answer OPTIONS before enforcing auth on the real request.
+    if (
+        request.method != "OPTIONS"
+        and request.url.path.startswith("/api/")
+        and request.url.path not in {"/api/health", "/api/auth"}
+    ):
         try:
             _check_access(request)
             _check_rate_limit(request)

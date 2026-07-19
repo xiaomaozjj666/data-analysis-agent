@@ -153,6 +153,24 @@ def test_access_token_protects_analysis_stream(monkeypatch):
     assert response.json()["detail"] == "需要有效的应用访问令牌。"
 
 
+def test_cors_preflight_is_not_blocked_by_access_token(monkeypatch):
+    monkeypatch.setenv("APP_ACCESS_TOKEN", "test-access-token")
+    client = TestClient(api.app)
+
+    response = client.options(
+        "/api/settings",
+        headers={
+            "Origin": "http://127.0.0.1:5173",
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "x-app-token",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
+    assert "x-app-token" in response.headers["access-control-allow-headers"].lower()
+
+
 def test_upload_stream_enforces_dataset_limits(tmp_path, monkeypatch):
     _isolate_runtime(tmp_path, monkeypatch)
     # 用 monkeypatch.setattr 而非直接赋值，确保测试结束后属性自动还原，
