@@ -29,12 +29,18 @@ SYSTEM_PROMPT = """你是一名严谨、主动的数据分析专家。你通过 
 2. 如果工具因列类型、日期格式、数值格式或编码问题失败，先检查错误，再调用 repair_data_format，修复后重试原操作一次。
 3. repair_data_format 只允许修复明确的格式问题；不得把负数、离群值、重复记录或业务缺失值擅自改掉。
 4. 清洗必须采用保守策略，说明处理前后的行数、缺失值和异常值变化。
-5. 统计结论给出样本量、指标、适用时的 p 值与显著性；相关不等于因果。
+5. 统计结论给出样本量、指标、适用时的 p 值、效应量与显著性；相关不等于因果。
 6. 图表必须匹配变量类型并使用清晰标题；复杂关系优先使用热力图或关系图。若极端值会压缩主体数据，必须使用 create_visualization 的默认 auto 尺度生成“主体尺度/全量视图”切换，不得交付正常点全部挤在零线上的图，也不得为了好看擅自删除异常值。分组图缺少某些类别组合时，必须保留工具生成的“无样本/无记录”说明，不能把缺失组合解释成数值 0 或渲染失败。
 7. 只能引用工具实际返回的数字和文件，不得编造结果。
 8. 不展示隐藏的内部推理，只简要说明已执行的动作和可验证结果。
 9. 当前只完成计划中指定的步骤，不要擅自重复已经完成的工作。
 10. transform_data 只生成派生视图，不会改变主数据；不得把筛选视图当作最终清洗数据导出。
+
+分析深度要求：
+11. 统计分析时优先选择最能揭示数据特征的指标：分布形态（偏度/峰度）、离散程度、分位数而非仅仅均值。
+12. 发现显著关系时，主动补充效应量和置信区间，帮助用户判断实际意义而非仅仅统计显著性。
+13. 多维度数据优先使用分组对比、小倍数图或热力图揭示模式，避免将所有信息塞进一张图。
+14. 每步执行完毕后，用一句话总结本步核心发现，便于后续步骤和最终报告引用。
 """
 
 
@@ -379,7 +385,12 @@ class DataAnalysisAgent:
             profile_text = json.dumps(state["dataset_profile"], ensure_ascii=False)[:12000]
             prompt = (
                 "为数据分析任务制定 2 到 6 个可执行步骤。第一步必须检查数据，最后应包含必要的图表和导出。"
-                "不要写空泛步骤，每步都要能由数据工具完成。\n\n"
+                "不要写空泛步骤，每步都要能由数据工具完成。\n"
+                "步骤设计原则：\n"
+                "- 检查步骤要具体指出需要关注的字段和质量问题\n"
+                "- 统计步骤要明确方法（如相关、回归、分组对比、分布检验）\n"
+                "- 图表步骤要指定图表类型和展示维度\n"
+                "- 避免重复步骤，每步应有独立价值\n\n"
                 f"用户目标：{state['query']}\n数据概况：{profile_text}"
             )
             try:
@@ -398,16 +409,33 @@ class DataAnalysisAgent:
             if not remaining:
                 return {"current_step": {}, "last_step_result": {}}
             step = remaining[0]
-            self._enter_node("execute_step", f"正在执行：{step.get('title', step.get('id', '未知步骤'))}")
+            step_index = len(state.get("completed_steps", [])) + 1
+            total_steps = step_index + len(remaining) - 1
+            self._enter_node(
+                "execute_step",
+                f"正在执行 ({step_index}/{total_steps})：{step.get('title', step.get('id', '未知步骤'))}",
+            )
             completed = state.get("completed_steps", [])
             completed_text = "\n".join(
                 f"- {item['title']}: {item.get('summary', '')[:800]}" for item in completed
             ) or "尚无"
+            # 增强上下文：把数据概况传递给 ReAct 执行器，避免每步都重新 inspect_data。
+            profile_brief = json.dumps(
+                {
+                    "rows": state.get("dataset_profile", {}).get("rows"),
+                    "columns": state.get("dataset_profile", {}).get("columns"),
+                    "column_names": [
+                        col["name"] for col in state.get("dataset_profile", {}).get("column_info", [])[:15]
+                    ],
+                },
+                ensure_ascii=False,
+            )
             execution_prompt = (
                 f"总目标：{state['objective']}\n"
                 f"当前计划步骤：{step['title']}\n"
                 f"具体任务：{step['instruction']}\n"
                 f"完成标准：{step['success_criteria']}\n"
+                f"数据概况：{profile_brief}\n"
                 f"已完成步骤：\n{completed_text}\n\n"
                 "只执行当前步骤。使用工具获得证据，然后用简短文字报告实际结果。"
             )
@@ -513,6 +541,14 @@ class DataAnalysisAgent:
                     "replan_reason": "已达到计划步骤上限，进入汇总。",
                 }
 
+            # 如果当前步骤失败且没有后续步骤，直接结束避免无意义的重规划循环。
+            if current.get("status") == "failed" and not original_remaining:
+                return {
+                    "completed_steps": completed,
+                    "remaining_steps": [],
+                    "replan_reason": "步骤执行失败且无后续步骤，进入汇总。",
+                }
+
             review_payload = {
                 "objective": state.get("objective"),
                 "completed": completed,
@@ -588,7 +624,10 @@ class DataAnalysisAgent:
                 "3. 结构按以下章节组织，每节用二级标题（## ）：数据质量、处理动作、关键发现、"
                 "统计解释、图表与产物、局限与建议；\n"
                 "4. 关键数字用 **加粗** 标注，便于快速定位；\n"
-                "5. 如有表格，使用 Markdown 表格语法，列数不超过 5 列。\n\n"
+                "5. 如有表格，使用 Markdown 表格语法，列数不超过 5 列；\n"
+                "6. “关键发现”节按重要性排序，每条发现必须附带具体数值证据；\n"
+                "7. “统计解释”节用通俗语言解释 p 值、效应量和置信区间的实际含义；\n"
+                "8. “局限与建议”节指出数据局限性并给出 2-3 条可操作的后续分析方向。\n\n"
                 f"用户目标：{state['query']}\n\n执行结果：\n{evidence}"
             )
             try:

@@ -67,6 +67,9 @@ class DataWorkspace:
         self.source_path: Path | None = None
         self._artifacts: list[Artifact] = []
         self.load_warnings: list[str] = []
+        # Profile 缓存：避免 finalize 等节点重复计算 profile（对大 DataFrame
+        # 的 duplicated().sum() 和 nunique() 开销显著）。数据变更时自动失效。
+        self._profile_cache: dict[int, dict[str, Any]] = {}
 
     @property
     def dataframe(self) -> pd.DataFrame:
@@ -79,6 +82,8 @@ class DataWorkspace:
         if not isinstance(value, pd.DataFrame):
             raise TypeError("工作区数据必须是 pandas DataFrame。")
         self._df = value
+        # 数据变更时清除 profile 缓存，确保下次 profile() 反映最新数据。
+        self._profile_cache.clear()
 
     @property
     def artifacts(self) -> list[dict[str, str]]:
@@ -323,8 +328,13 @@ class DataWorkspace:
         }
 
     def profile(self, sample_rows: int = 5) -> dict[str, Any]:
-        df = self.dataframe
         sample_rows = max(1, min(int(sample_rows), 20))
+        # 使用 (id(df), sample_rows) 作为缓存键：同一 DataFrame 对象且
+        # sample_rows 相同时直接返回缓存，避免 finalize 重复计算。
+        cache_key = id(self._df) * 100 + sample_rows
+        if cache_key in self._profile_cache:
+            return self._profile_cache[cache_key]
+        df = self.dataframe
         missing = df.isna().sum()
         unique = df.nunique(dropna=True)
         column_info = [
@@ -337,7 +347,7 @@ class DataWorkspace:
             }
             for column in df.columns
         ]
-        return to_jsonable(
+        result = to_jsonable(
             {
                 "source": str(self.source_path) if self.source_path else None,
                 "rows": len(df),
@@ -349,6 +359,11 @@ class DataWorkspace:
                 "sample": df.head(sample_rows),
             }
         )
+        # 只保留最近 2 个缓存条目，避免内存泄漏。
+        if len(self._profile_cache) >= 2:
+            self._profile_cache.clear()
+        self._profile_cache[cache_key] = result
+        return result
 
     @property
     def source_row_count(self) -> int:

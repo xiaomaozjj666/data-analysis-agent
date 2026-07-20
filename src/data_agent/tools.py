@@ -867,23 +867,49 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
 
         if method == "descriptive":
             selected = _checked_columns(df, columns)
-            result["result"] = df[selected].describe(include="all").transpose().reset_index(names="column")
+            desc = df[selected].describe(include="all").transpose().reset_index(names="column")
+            # 补充分布形态指标（偏度/峰度），帮助判断数据是否正态、是否有重尾。
+            numeric_selected = [c for c in selected if pd.api.types.is_numeric_dtype(df[c])]
+            if numeric_selected:
+                skew = df[numeric_selected].skew().rename("skewness")
+                kurt = df[numeric_selected].kurtosis().rename("kurtosis")
+                shape_df = pd.DataFrame({"column": numeric_selected, "skewness": skew.values, "kurtosis": kurt.values})
+                desc = desc.merge(shape_df, on="column", how="left")
+            result["result"] = desc
         elif method == "correlation":
             numeric = _numeric_columns(df, columns)
             result["columns"] = numeric
             result["result"] = df[numeric].corr().round(6).to_dict()
+            # 性能优化：预先提取数值子集，避免每对列重复索引和 dropna。
+            # 对 20+ 数值列，原实现每对都 df[[left,right]].dropna()，
+            # 产生大量中间 DataFrame 对象；改为一次性提取子集后按列对操作。
+            numeric_df = df[numeric]
             p_values: dict[str, dict[str, float | None]] = {column: {} for column in numeric}
             sample_sizes: dict[str, dict[str, int]] = {column: {} for column in numeric}
-            for left in numeric:
-                for right in numeric:
-                    pair = df[[left, right]].dropna()
-                    sample_sizes[left][right] = len(pair)
-                    if left == right:
-                        p_values[left][right] = 0.0
-                    elif len(pair) < 3 or pair[left].nunique() < 2 or pair[right].nunique() < 2:
+            for i, left in enumerate(numeric):
+                p_values[left][left] = 0.0
+                sample_sizes[left][left] = int(numeric_df[left].notna().sum())
+                left_series = numeric_df[left]
+                for right in numeric[i + 1:]:
+                    right_series = numeric_df[right]
+                    # 只对两列同时非空的行计算，避免全表 dropna。
+                    pair_mask = left_series.notna() & right_series.notna()
+                    n_valid = int(pair_mask.sum())
+                    sample_sizes[left][right] = n_valid
+                    sample_sizes[right][left] = n_valid
+                    if n_valid < 3:
                         p_values[left][right] = None
+                        p_values[right][left] = None
                     else:
-                        p_values[left][right] = float(stats.pearsonr(pair[left], pair[right]).pvalue)
+                        lv = left_series[pair_mask]
+                        rv = right_series[pair_mask]
+                        if lv.nunique() < 2 or rv.nunique() < 2:
+                            p_values[left][right] = None
+                            p_values[right][left] = None
+                        else:
+                            p_val = float(stats.pearsonr(lv, rv).pvalue)
+                            p_values[left][right] = p_val
+                            p_values[right][left] = p_val
             result["p_values"] = p_values
             result["sample_sizes"] = sample_sizes
         elif method == "groupby":
@@ -892,8 +918,12 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             _checked_columns(df, [group_by])
             values = _numeric_columns(df, columns) if aggregation != "count" else _checked_columns(df, columns)
             grouped = df.groupby(group_by, dropna=False)[values].agg(aggregation).reset_index()
+            # 补充每组样本量，帮助用户判断分组结果是否可靠。
+            group_sizes = df.groupby(group_by, dropna=False).size().rename("_group_n_").reset_index()
+            grouped = grouped.merge(group_sizes, on=group_by, how="left")
             result["result"] = grouped.head(500)
             result["truncated"] = len(grouped) > 500
+            result["group_count"] = int(df[group_by].nunique(dropna=False))
         elif method in {"ttest_ind", "ttest_paired"}:
             numeric = _numeric_columns(df, columns)
             if len(numeric) != 2:
@@ -938,7 +968,9 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                 p_value=float(test.pvalue),
                 significant=bool(test.pvalue < alpha),
                 groups=len(groups),
+                total_n=int(len(valid)),
                 eta_squared=float(between / total) if total else 0.0,
+                group_means={str(name): float(part[target].mean()) for name, part in df.groupby(group_by) if part[target].notna().sum() >= 2},
             )
         elif method == "chi_square":
             selected = _checked_columns(df, columns)
@@ -1010,7 +1042,21 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         use scale_mode="full" only when the user explicitly wants the uncompressed raw scale.
         export_png is best-effort and needs Chrome.
         """
-        df = workspace.dataframe.copy()
+        # 性能优化：只在确实需要修改数据时才 copy（聚合、布尔值本地化、
+        # top_n 筛选）。对大 DataFrame（100K+ 行）避免无谓的深拷贝。
+        # correlation_heatmap / scatter_matrix 等只读图表不需要 copy。
+        _raw_df = workspace.dataframe
+        _has_bool = any(
+            col and col in _raw_df.columns and pd.api.types.is_bool_dtype(_raw_df[col])
+            for col in (x, color)
+        )
+        needs_mutation = (
+            aggregation != "none"
+            or chart_type in {"bar", "line", "area", "pie", "sunburst", "treemap"}
+            or top_n is not None
+            or _has_bool
+        )
+        df = _raw_df.copy() if needs_mutation else _raw_df
         requested = [value for value in [x, y, color, z, size, values] if value]
         requested.extend(path_columns or [])
         requested.extend(dimensions or [])
