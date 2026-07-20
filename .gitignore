@@ -8,6 +8,7 @@ runs/
 .playwright-cli/
 .ruff_cache/
 .langgraph_api/
+.qoder/
 output/
 /dist/
 build/
