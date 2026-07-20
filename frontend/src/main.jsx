@@ -1,4 +1,4 @@
-import React, { Component, useEffect, useMemo, useRef, useState } from "react";
+import React, { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -8,7 +8,9 @@ import {
   BarChart3,
   Check,
   ChevronDown,
+  ChevronRight,
   Circle,
+  Clock,
   Database,
   Download,
   Eye,
@@ -18,6 +20,7 @@ import {
   FileChartColumn,
   FilePlus2,
   FileSpreadsheet,
+  History,
   KeyRound,
   LoaderCircle,
   Network,
@@ -39,8 +42,97 @@ const API_URL = (
 const ACCESS_TOKEN_KEY = "data-desk-access-token";
 const ACTIVE_ANALYSIS_STATES = new Set(["running", "cancelling"]);
 
+// Module-level constant: remarkPlugins array is recreated on every ReportView
+// render if declared inline, which forces ReactMarkdown to re-process the
+// markdown AST even when the content hasn't changed. Hoisting it to module
+// scope keeps the array identity stable across renders.
+const REMARK_PLUGINS = [remarkGfm];
+
+// Maximum upload size hint for client-side validation. The server enforces the
+// real limit (max_upload_bytes); this mirror lets us fail fast in the browser
+// instead of uploading 100MB before getting a 422.
+const MAX_UPLOAD_BYTES_CLIENT = 100 * 1024 * 1024;
+
 function wait(milliseconds) {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+// 把秒数格式化为细颗粒时长：
+//   < 60s    → "23 秒"   （直观，避免 "0:23" 显得突兀）
+//   < 1h     → "12:34"   （分秒，业界通用格式）
+//   ≥ 1h     → "1:23:45" （时:分:秒）
+// 参考了 GitHub Actions / Vercel deployment / Linear cycle 的显示风格。
+function formatDuration(seconds) {
+  if (seconds == null || seconds < 0 || !Number.isFinite(seconds)) return "";
+  const total = Math.floor(seconds);
+  if (total < 60) return `${total} 秒`;
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  }
+  return `${minutes}:${String(secs).padStart(2, "0")}`;
+}
+
+// 把时间戳（秒）格式化为相对时间（"3 分钟前"），用于历史会话列表。
+function formatRelativeTime(timestamp) {
+  if (!timestamp || !Number.isFinite(timestamp)) return "";
+  const now = Date.now() / 1000;
+  const diff = Math.max(0, now - timestamp);
+  if (!Number.isFinite(diff)) return "";
+  if (diff < 60) return "刚刚";
+  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
+  if (diff < 86400 * 7) return `${Math.floor(diff / 86400)} 天前`;
+  // 超过一周显示具体日期。
+  const date = new Date(timestamp * 1000);
+  if (Number.isNaN(date.getTime())) return "";
+  return `${date.getMonth() + 1}/${date.getDate()}`;
+}
+
+// 把会话按 created_at 分组：今天 / 昨天 / 本周 / 更早。
+// 参考 Linear / Notion / VSCode 的历史列表分组惯例——人类记不住具体时间，
+// 但能记住"昨天那次分析"，分组让用户快速定位。
+function groupSessionsByTime(sessions) {
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000;
+  const startOfYesterday = startOfToday - 86400;
+  // 本周从周一开始（中国惯例），getDay() 周日是 0 要转成 7。
+  const dayOfWeek = now.getDay() === 0 ? 7 : now.getDay();
+  const startOfWeek = startOfToday - (dayOfWeek - 1) * 86400;
+  const groups = { today: [], yesterday: [], thisWeek: [], earlier: [] };
+  for (const item of sessions || []) {
+    const ts = item.created_at || 0;
+    if (ts >= startOfToday) groups.today.push(item);
+    else if (ts >= startOfYesterday) groups.yesterday.push(item);
+    else if (ts >= startOfWeek) groups.thisWeek.push(item);
+    else groups.earlier.push(item);
+  }
+  return [
+    { label: "今天", items: groups.today },
+    { label: "昨天", items: groups.yesterday },
+    { label: "本周", items: groups.thisWeek },
+    { label: "更早", items: groups.earlier },
+  ].filter((group) => group.items.length > 0);
+}
+
+// 历史会话状态描述：圆点 class + 中文标签，供 list item 渲染。
+function describeHistoryStatus(status) {
+  switch (status) {
+    case "completed":
+      return { dot: "is-done", label: "已完成" };
+    case "running":
+      return { dot: "is-running", label: "运行中" };
+    case "cancelling":
+      return { dot: "is-cancelling", label: "取消中" };
+    case "cancelled":
+      return { dot: "is-cancelled", label: "已取消" };
+    case "failed":
+      return { dot: "is-failed", label: "失败" };
+    default:
+      return { dot: "is-idle", label: "未运行" };
+  }
 }
 
 function requestHeaders(headers = {}) {
@@ -222,7 +314,10 @@ function Metric({ label, value, unit }) {
 
 // 报告区独立组件：负责渲染最终 Markdown 报告，并附带时间戳、复制按钮、
 // 长 report-body 展开/收起。把这块从主组件拆出来也让 props 校验更清晰。
-function ReportView({ result }) {
+// React.memo：App 在用户输入 task、刷新历史等场景下会重渲染，但 result
+// 通常不变。memo 让 ReportView 跳过这些无关重渲染，避免 ReactMarkdown
+// 重新解析 markdown AST（report 可能长达数千字）。
+const ReportView = React.memo(function ReportView({ result }) {
   const [copied, setCopied] = useState(false);
   const [expanded, setExpanded] = useState(false);
 
@@ -259,7 +354,7 @@ function ReportView({ result }) {
         </div>
       </div>
       <div className={`report-body ${expanded ? "is-expanded" : ""}`}>
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{result.response}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={REMARK_PLUGINS}>{result.response}</ReactMarkdown>
       </div>
       <button
         type="button"
@@ -272,11 +367,16 @@ function ReportView({ result }) {
       </button>
     </article>
   );
-}
+});
 
-function PlanPanel({ plan, completed, running, currentNodeTitle }) {
+function PlanPanel({ plan, completed, running, currentNodeTitle, elapsedSeconds }) {
   const completedIds = new Set((completed || []).map((item) => item.id));
   const doneCount = plan.filter((item) => completedIds.has(item.id)).length;
+  // 显示耗时：运行中显示"已耗时"，完成时显示"总耗时"。
+  // 当 elapsedSeconds 为 null（如未运行且没有完成记录）时不显示。
+  const hasTiming = elapsedSeconds != null && elapsedSeconds >= 0;
+  const elapsedLabel = running ? "已耗时" : plan.length ? "总耗时" : "";
+  const isCompleted = !running && plan.length > 0;
 
   return (
     <aside className="plan-panel" aria-label="执行记录">
@@ -285,10 +385,28 @@ function PlanPanel({ plan, completed, running, currentNodeTitle }) {
           <span className="section-kicker">执行记录</span>
           <h2>分析进度</h2>
         </div>
-        <span className={`run-state ${running ? "is-running" : ""}`}>
-          {running ? <LoaderCircle size={13} className="spin" /> : <Circle size={9} />}
-          {running ? "运行中" : plan.length ? "已完成" : "待开始"}
-        </span>
+        <div className="panel-meta">
+          {hasTiming && elapsedLabel && (
+            <span
+              className={`elapsed-chip ${running ? "is-running" : isCompleted ? "is-done" : ""}`}
+              title={running ? "本次分析已运行时长" : "本次分析总耗时"}
+            >
+              <Clock size={11} />
+              <span className="elapsed-label">{elapsedLabel}</span>
+              <span className="elapsed-value">{formatDuration(elapsedSeconds)}</span>
+            </span>
+          )}
+          <span className={`run-state ${running ? "is-running" : isCompleted ? "is-done" : ""}`}>
+            {running ? (
+              <span className="status-dot" aria-hidden="true" />
+            ) : isCompleted ? (
+              <Check size={11} />
+            ) : (
+              <Circle size={7} />
+            )}
+            {running ? "运行中" : isCompleted ? "已完成" : "待开始"}
+          </span>
+        </div>
       </div>
 
       {running && currentNodeTitle && (
@@ -337,7 +455,94 @@ function PlanPanel({ plan, completed, running, currentNodeTitle }) {
   );
 }
 
-function DataTable({ rows }) {
+// 历史会话面板：可折叠的侧边栏组件，按时间分组列出最近会话并允许切换。
+// 关键设计：
+//   1. 时间分组（今天/昨天/本周/更早）—— Linear / Notion / VSCode 都这么做，
+//      人类记不住"5 小时前那次分析"，但能记住"今天上午那次"。
+//   2. 骨架屏加载（而非"加载中"文字）—— 让用户立即看到列表骨架，
+//      避免"什么都没有"的瞬间错愕。
+//   3. 状态圆点 + 中文标签 —— running 圆点带脉冲动画，completed 是绿色，
+//      failed 是红色，cancelled 是灰色，状态一眼可读。
+//   4. 当前会话用左侧竖条 + 浅蓝底高亮，比单纯背景色更醒目。
+function HistoryPanel({ sessions, currentSessionId, onSelect, onRefresh, loading, expanded, onToggle }) {
+  const groups = useMemo(() => groupSessionsByTime(sessions), [sessions]);
+  const isEmpty = !sessions?.length && !loading;
+
+  return (
+    <div className="sidebar-section history-section">
+      <button type="button" className="history-toggle" onClick={onToggle} aria-expanded={expanded}>
+        <History size={14} />
+        <span className="sidebar-label">历史会话</span>
+        {sessions?.length > 0 && <em className="history-total">{sessions.length}</em>}
+        <ChevronRight size={13} className={expanded ? "rot-90" : ""} />
+      </button>
+      {expanded && (
+        <>
+          <button type="button" className="history-refresh" onClick={onRefresh} disabled={loading} title="刷新历史">
+            <RefreshCw size={12} className={loading ? "spin" : ""} />
+            {loading ? "加载中" : "刷新"}
+          </button>
+          {isEmpty ? (
+            <div className="history-empty">
+              <History size={16} />
+              <p>还没有历史会话，上传数据后会自动出现在这里。</p>
+            </div>
+          ) : loading && !sessions?.length ? (
+            <ul className="history-list history-skeleton" aria-hidden="true">
+              {[0, 1, 2].map((index) => (
+                <li key={index}>
+                  <div className="skeleton-row">
+                    <span className="skeleton-icon" />
+                    <span className="skeleton-lines">
+                      <span className="skeleton-line skeleton-line-wide" />
+                      <span className="skeleton-line skeleton-line-narrow" />
+                    </span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            groups.map((group) => (
+              <div key={group.label} className="history-group">
+                <span className="history-group-label">{group.label}</span>
+                <ul className="history-list">
+                  {group.items.map((item) => {
+                    const active = item.id === currentSessionId;
+                    const status = describeHistoryStatus(item.analysis_status);
+                    return (
+                      <li key={item.id} className={active ? "is-active" : ""}>
+                        <button type="button" onClick={() => onSelect(item)} disabled={loading}>
+                          <FileSpreadsheet size={14} />
+                          <span>
+                            <strong>{item.filename}</strong>
+                            <small>
+                              <span className={`history-status-dot ${status.dot}`} aria-hidden="true" />
+                              <span className="history-status-text">{status.label}</span>
+                              {item.has_result && <span className="history-result">· 有报告</span>}
+                              <span className="history-time">· {formatRelativeTime(item.created_at)}</span>
+                            </small>
+                          </span>
+                          {item.artifact_count > 0 && (
+                            <em className="history-count">{item.artifact_count}</em>
+                          )}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ))
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// React.memo：rows 仅在 session 切换时变化，但 App 每次输入 task 或
+// 刷新历史都会重渲染。memo 让 DataTable 跳过这些场景，避免重新生成
+// 几百个 <td>。
+const DataTable = React.memo(function DataTable({ rows }) {
   const columns = useMemo(() => Object.keys(rows?.[0] || {}), [rows]);
   if (!rows?.length) return <div className="empty-row">没有可预览的数据</div>;
   return (
@@ -355,7 +560,7 @@ function DataTable({ rows }) {
       </table>
     </div>
   );
-}
+});
 
 function EmptyWorkspace({ uploading, onUpload }) {
   return (
@@ -377,7 +582,7 @@ function EmptyWorkspace({ uploading, onUpload }) {
   );
 }
 
-function DatasetOverview({ profile }) {
+const DatasetOverview = React.memo(function DatasetOverview({ profile }) {
   const columns = profile?.column_info?.slice(0, 6) || [];
   return (
     <section className="dataset-overview">
@@ -396,7 +601,7 @@ function DatasetOverview({ profile }) {
       </div>
     </section>
   );
-}
+});
 
 function formatBytes(value = 0) {
   if (!value) return "";
@@ -405,7 +610,10 @@ function formatBytes(value = 0) {
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function ArtifactCenter({ artifacts = [], onDownload, onPreview }) {
+// React.memo：artifacts 仅在 session 切换或分析完成时变化。memo 让产物
+// 列表跳过 task 输入、历史刷新等无关重渲染。onDownload/onPreview 用
+// useCallback 稳定身份，否则 memo 失效。
+const ArtifactCenter = React.memo(function ArtifactCenter({ artifacts = [], onDownload, onPreview }) {
   const charts = artifacts.filter((item) => item.kind === "visualization");
   const files = artifacts.filter((item) => item.kind !== "visualization");
   if (!artifacts.length) return <div className="empty-row">分析完成后，最终图表和数据文件会出现在这里。</div>;
@@ -452,7 +660,7 @@ function ArtifactCenter({ artifacts = [], onDownload, onPreview }) {
       )}
     </div>
   );
-}
+});
 
 function App() {
   const [authRequired, setAuthRequired] = useState(false);
@@ -480,6 +688,21 @@ function App() {
   const [currentNodeTitle, setCurrentNodeTitle] = useState("");
   const [retryOffer, setRetryOffer] = useState(null);
   const [retryChecking, setRetryChecking] = useState(false);
+  const [history, setHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyExpanded, setHistoryExpanded] = useState(false);
+  // 已耗时（秒）。running 时由 setInterval 每秒刷新；非 running 时
+  // 由 session.elapsed_seconds / completed - started 计算一次性赋值。
+  const [elapsedSeconds, setElapsedSeconds] = useState(null);
+  // 分析开始时间戳（秒）。startAnalysis 时用客户端时间立即赋值，
+  // 避免 useEffect 依赖 session.analysis_started_at —— 该字段只在
+  // 后端 set_running() 后存在，前端 session 对象在 SSE 期间不会刷新，
+  // 依赖它会导致 setInterval 永远不启动，计时停在 0。
+  const startedAtRef = useRef(null);
+  // 正在运行的 SSE 所属 session id。用户切换到历史会话时这个 ref 仍是原 session，
+  // SSE 帧到达时若 currentSession.id !== runningSessionId，说明用户在查看历史，
+  // 不应覆盖 plan/completed/result 等 UI 状态。
+  const runningSessionIdRef = useRef(null);
   const fileInput = useRef(null);
   const taskInput = useRef(null);
   const analysisController = useRef(null);
@@ -521,7 +744,131 @@ function App() {
       });
   }, []);
 
-  async function openArtifactPreview(item) {
+  // 拉取历史会话列表。鉴权通过后立即拉一次，让用户在初次进入时就能
+  // 看到之前的会话；上传/切换/分析完成时也会调用，保持列表新鲜。
+  const fetchHistory = async () => {
+    setHistoryLoading(true);
+    try {
+      const payload = await api("/api/sessions?limit=30");
+      setHistory(payload.sessions || []);
+    } catch {
+      // 历史列表加载失败不应阻塞主流程，静默忽略即可。
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (authReady && (!authRequired || authenticated)) fetchHistory();
+  }, [authReady, authRequired, authenticated]);
+
+  // 切换到历史会话：拉取完整 session payload，并恢复 result/plan/completed。
+  // 失败时（404 等）按 handleSessionLost 处理，避免遗留半残状态。
+  // 注意：running 时不覆盖 startedAtRef —— 当前 SSE 流仍在后台跑原分析，
+  // 计时应继续基于原分析的 started_at，否则会跳到新会话的 started_at
+  // 导致"已耗时"突然变成一个不相关的数字。
+  const selectSession = async (item) => {
+    if (!item?.id || item.id === session?.id) return;
+    setError("");
+    closeArtifactPreview();
+    try {
+      const latest = await api(`/api/sessions/${item.id}`);
+      setSession(latest);
+      setTask("");
+      setPlan([]);
+      setCompleted([]);
+      setResult(null);
+      setCurrentNodeTitle("");
+      setRetryOffer(null);
+      restoreCompletedAnalysis(latest);
+      if (!running) {
+        startedAtRef.current = latest.analysis_started_at ?? null;
+        setElapsedSeconds(latest.elapsed_seconds ?? null);
+      }
+      setActiveTab("analysis");
+      fetchHistory();
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        handleSessionLost("该历史会话已被服务端清理，请选择其他会话或重新上传数据。");
+      } else {
+        setError(`无法打开历史会话：${err.message}`);
+      }
+    }
+  };
+
+  // 实时耗时：running 时持续刷新 elapsed = now - startedAtRef。
+  // 关键设计：
+  //   1. 用 ref 而非 session.analysis_started_at 作依赖——后者在 SSE
+  //      期间不会刷新到前端，会让 setInterval 永远不启动。
+  //   2. tick 频率 250ms（rAF 级别流畅），但只在"显示秒数"变化时
+  //      setState，避免每秒一次的视觉跳变和不必要的 React 渲染。
+  //   3. 后台 tab 暂停 setInterval（visibilitychange hidden），节省
+  //      CPU 并避免 throttled timer 造成累积漂移；回到前台立即 tick
+  //      一次追上真实耗时。
+  //   4. running 转 false 时 effect cleanup 清 interval，自然停止。
+  //   5. tick 每次都重新读 startedAtRef.current，而不是闭包捕获 started。
+  //      complete 帧后 refresh 会用服务端精确 started_at 校正 ref，闭包
+  //      捕获的旧值会让校正失效（下一帧用旧 started 重新算 elapsed 覆盖）。
+  useEffect(() => {
+    if (!running) return undefined;
+    if (!startedAtRef.current) return undefined;
+    let lastDisplayedSecond = -1;
+    const tick = () => {
+      const started = startedAtRef.current;
+      if (!started) return;
+      const elapsed = Math.max(0, Date.now() / 1000 - started);
+      const currentSecond = Math.floor(elapsed);
+      // 只有秒数实际变化才 setState，250ms 的 tick 大多数时候是 no-op。
+      if (currentSecond !== lastDisplayedSecond) {
+        lastDisplayedSecond = currentSecond;
+        setElapsedSeconds(elapsed);
+      }
+    };
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        window.clearInterval(timer);
+        timer = null;
+      } else if (!timer) {
+        tick();
+        timer = window.setInterval(tick, 250);
+      }
+    };
+    tick();
+    let timer = window.setInterval(tick, 250);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      if (timer) window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [running]);
+
+  // 分析结束（running 转 false）时刷新历史，把当前会话的最新状态
+  // 同步到侧边栏（产物数、状态、相对时间）。
+  useEffect(() => {
+    if (!running && session) fetchHistory();
+  }, [running]);
+
+  // 历史会话列表自动轮询：默认 30 秒刷新一次（保持相对时间新鲜），
+  // 当本会话或其他会话正在 running 时缩短到 5 秒——让"运行中"圆点
+  // 能及时变成"已完成"。后台 tab 时暂停轮询节省请求。
+  // 不在 running 时也轮询是为了：用户在另一个 tab 启动分析，回到本 tab
+  // 时列表能反映最新状态；相对时间"3 分钟前"也需要定期刷新才准确。
+  useEffect(() => {
+    if (!authReady || (authRequired && !authenticated)) return undefined;
+    const interval = running ? 5000 : 30000;
+    const poll = () => {
+      if (document.hidden) return;
+      fetchHistory();
+    };
+    const timer = window.setInterval(poll, interval);
+    return () => window.clearInterval(timer);
+  }, [authReady, authRequired, authenticated, running]);
+
+  // useCallback：openArtifactPreview / downloadArtifact 作为 props 传给
+  // React.memo(ArtifactCenter)。若每次渲染都创建新函数，memo 比较失败，
+  // ArtifactCenter 仍然每次重渲染。useCallback 让函数身份稳定，memo 才
+  // 能真正跳过无关重渲染。
+  const openArtifactPreview = useCallback(async (item) => {
     if (!item.preview_url) return;
     previewController.current?.abort();
     const controller = new AbortController();
@@ -557,18 +904,18 @@ function App() {
     } finally {
       if (previewController.current === controller) previewController.current = null;
     }
-  }
+  }, []);
 
-  function closeArtifactPreview() {
+  const closeArtifactPreview = useCallback(() => {
     previewController.current?.abort();
     previewController.current = null;
     setPreviewItem(null);
     setPreviewHtml("");
     setPreviewLoading(false);
     setPreviewError("");
-  }
+  }, []);
 
-  async function downloadArtifact(item) {
+  const downloadArtifact = useCallback(async (item) => {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 120000);
     try {
@@ -596,7 +943,7 @@ function App() {
     } finally {
       window.clearTimeout(timeout);
     }
-  }
+  }, []);
 
   async function saveSettings() {
     setError("");
@@ -622,6 +969,15 @@ function App() {
 
   async function uploadFile(file) {
     if (!file) return;
+    // 客户端文件大小校验：服务端 max_upload_bytes 兜底，但提前检查可以
+    // 避免上传 100MB+ 才得到 422，浪费用户带宽和等待时间。Render 免费版
+    // 100MB 限制与 max_upload_bytes 默认值对齐。
+    if (file.size > MAX_UPLOAD_BYTES_CLIENT) {
+      const mb = Math.round(MAX_UPLOAD_BYTES_CLIENT / (1024 * 1024));
+      setError(`文件 ${file.name} 超过 ${mb}MB 上传上限，请拆分或精简后再上传。`);
+      if (fileInput.current) fileInput.current.value = "";
+      return;
+    }
     setUploading(true);
     setError("");
     // 上传新数据集时清理上一个会话的残留 UI 状态，避免预览/重试/进度泄漏到新会话。
@@ -638,6 +994,9 @@ function App() {
     try {
       const value = await api("/api/sessions", { method: "POST", body: form });
       setSession(value);
+      startedAtRef.current = value.analysis_started_at ?? null;
+      setElapsedSeconds(value.elapsed_seconds ?? null);
+      fetchHistory();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -673,6 +1032,15 @@ function App() {
     setCompleted([]);
     setCurrentNodeTitle("");
     setRetryOffer(null);
+    // 立即用客户端时间戳启动计时。setInterval 会每秒刷新 elapsedSeconds。
+    // complete 帧后用后端返回的精确 elapsed_seconds 覆盖一次，消除客户端
+    // 与服务端时钟漂移带来的误差（通常 < 1 秒）。
+    startedAtRef.current = Date.now() / 1000;
+    // 记录正在运行的 session id，SSE 帧到达时据此判断是否仍在前台查看该会话。
+    // 用户切换到历史会话后，runningSessionIdRef 与 session.id 不一致，
+    // SSE 处理器跳过 UI 覆盖，避免历史视图被运行中的分析数据覆盖。
+    runningSessionIdRef.current = session.id;
+    setElapsedSeconds(0);
     setTask(nextTask);
     lastTaskRef.current = nextTask;
     const controller = new AbortController();
@@ -714,37 +1082,46 @@ function App() {
           if (!event || !dataText) continue;
           sawEvent = true;
           const data = JSON.parse(dataText);
+          // 用户切换到历史会话后，SSE 帧仍会到达（后台分析未中断），但 UI 已展示
+          // 历史会话的内容。此时不应覆盖 plan/completed/result/currentNodeTitle/session，
+          // 否则历史视图会被运行中的分析数据污染。complete 帧仍需记录 completedPayload
+          // 以便结束后 setRunning(false) 和刷新 history，让历史列表反映新状态。
+          const isViewingRunningSession = session.id === runningSessionIdRef.current;
           if (event === "started") {
-            // 任务已被后端接收，确认运行中。
-            setCurrentNodeTitle("后端已接收任务");
+            if (isViewingRunningSession) setCurrentNodeTitle("后端已接收任务");
           } else if (event === "progress") {
-            // 节点级进度（如"正在检查数据集结构"），立即更新 UI。
-            setCurrentNodeTitle(data.title || "正在分析");
+            if (isViewingRunningSession) setCurrentNodeTitle(data.title || "正在分析");
           } else if (event === "validate_dataset") {
-            setCurrentNodeTitle("正在检查数据集结构");
+            if (isViewingRunningSession) setCurrentNodeTitle("正在检查数据集结构");
           } else if (event === "plan_analysis") {
-            setPlan(data.plan || []);
-            setCurrentNodeTitle("正在规划分析步骤");
+            if (isViewingRunningSession) {
+              setPlan(data.plan || []);
+              setCurrentNodeTitle("正在规划分析步骤");
+            }
           } else if (event === "execute_step") {
-            // execute_step 的 data 是节点状态更新，标题已由前一帧 progress 给出；
-            // 若没有 progress 帧兜底，使用一个通用文案。
-            setCurrentNodeTitle((current) => current || "正在执行分析步骤");
+            if (isViewingRunningSession) {
+              setCurrentNodeTitle((current) => current || "正在执行分析步骤");
+            }
           } else if (event === "replan") {
-            setCompleted(data.completed_steps || []);
-            setCurrentNodeTitle("正在审查进度并重规划");
+            if (isViewingRunningSession) {
+              setCompleted(data.completed_steps || []);
+              setCurrentNodeTitle("正在审查进度并重规划");
+            }
           } else if (event === "finalize") {
-            setCurrentNodeTitle("正在汇总最终报告");
+            if (isViewingRunningSession) setCurrentNodeTitle("正在汇总最终报告");
           } else if (event === "complete") {
             completedPayload = data;
-            setResult(data);
-            setPlan(data.plan || []);
-            setCompleted(data.completed_steps || []);
-            // 乐观更新 artifacts，refresh 失败时仍能看到产物。
-            setSession((current) => (current ? { ...current, artifacts: data.artifacts || [] } : current));
-            setCurrentNodeTitle("");
+            if (isViewingRunningSession) {
+              setResult(data);
+              setPlan(data.plan || []);
+              setCompleted(data.completed_steps || []);
+              // 乐观更新 artifacts，refresh 失败时仍能看到产物。
+              setSession((current) => (current ? { ...current, artifacts: data.artifacts || [] } : current));
+              setCurrentNodeTitle("");
+            }
           } else if (event === "cancelled") {
             // 仅在用户未通过 stopAnalysis 主动取消时显示后端取消消息，避免重复 setError。
-            if (!cancelRequested.current) {
+            if (!cancelRequested.current && isViewingRunningSession) {
               setError(data.message || "分析已取消。");
             }
           } else if (event === "error") {
@@ -756,9 +1133,20 @@ function App() {
         if (done) break;
       }
       if (completedPayload) {
+        // 仅在用户仍在查看运行 session 时才 refresh + 更新 UI；用户切换到
+        // 历史会话后不需要把当前 session 的最新状态刷到 UI（历史会话有自己的数据）。
+        const stillViewingRunningSession = session.id === runningSessionIdRef.current;
         try {
           const refreshed = await api(`/api/sessions/${session.id}`);
-          setSession(refreshed);
+          if (stillViewingRunningSession) {
+            setSession(refreshed);
+            // 用服务端精确的 started_at / elapsed_seconds 校正客户端估算，
+            // 消除时钟漂移带来的 1 秒以内误差。
+            if (refreshed.analysis_started_at) {
+              startedAtRef.current = refreshed.analysis_started_at;
+            }
+            setElapsedSeconds(refreshed.elapsed_seconds ?? null);
+          }
         } catch {
           // refresh 失败时保留 complete 帧的乐观更新，不阻塞用户。
         }
@@ -861,17 +1249,27 @@ function App() {
         setRunning(true);
         setCurrentNodeTitle("原分析仍在后台运行，正在等待结果");
         setError("连接已恢复，原分析仍在运行；不会重复提交任务。");
+        // 进入轮询前立即同步 startedAtRef，让 setInterval 用服务端的
+        // started_at 开始计时（避免用客户端的 Date.now() 把已运行的
+        // 几分钟全部算成"刚开始"）。
+        startedAtRef.current = latest.analysis_started_at ?? Date.now() / 1000;
+        setElapsedSeconds(latest.elapsed_seconds ?? 0);
         const deadline = Date.now() + 5 * 60 * 1000;
         while (ACTIVE_ANALYSIS_STATES.has(latest.analysis_status) && Date.now() < deadline) {
           await wait(3000);
           if (controller.signal.aborted) break;
           latest = await api(`/api/sessions/${session.id}`, { timeoutMs: 8000, signal: controller.signal });
           setSession(latest);
+          // 每 3 秒由后端返回的 elapsed_seconds 同步一次，比 setInterval
+          // 的客户端估算更准（客户端时钟漂移、tab 后台限流都会影响）。
+          setElapsedSeconds(latest.elapsed_seconds ?? null);
         }
       }
 
       setRunning(false);
       setCurrentNodeTitle("");
+      startedAtRef.current = latest.analysis_started_at ?? null;
+      setElapsedSeconds(latest.elapsed_seconds ?? null);
       if (controller.signal.aborted) {
         // 用户主动取消轮询，不修改 error（stopAnalysis 已设过消息）。
         return;
@@ -965,6 +1363,16 @@ function App() {
             onChange={(event) => uploadFile(event.target.files?.[0])}
           />
         </div>
+
+        <HistoryPanel
+          sessions={history}
+          currentSessionId={session?.id}
+          onSelect={selectSession}
+          onRefresh={fetchHistory}
+          loading={historyLoading}
+          expanded={historyExpanded}
+          onToggle={() => setHistoryExpanded((value) => !value)}
+        />
 
         <div className="sidebar-spacer" />
 
@@ -1134,7 +1542,13 @@ function App() {
                     <DatasetOverview profile={profile} />
                   )}
                 </section>
-                <PlanPanel plan={plan} completed={completed} running={running} currentNodeTitle={currentNodeTitle} />
+                <PlanPanel
+                  plan={plan}
+                  completed={completed}
+                  running={running && session?.id === runningSessionIdRef.current}
+                  currentNodeTitle={currentNodeTitle}
+                  elapsedSeconds={session?.id === runningSessionIdRef.current ? elapsedSeconds : null}
+                />
               </div>
             )}
 

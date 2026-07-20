@@ -64,3 +64,48 @@ def test_dataframe_export_formats(workspace, suffix):
     path = workspace.save_dataframe(f"result.{suffix}")
     assert path.exists() and path.stat().st_size > 0
     assert workspace.artifacts[-1]["kind"] == "dataset"
+
+
+def test_count_artifacts_filters_by_kind(workspace):
+    """count_artifacts replaces private _artifacts access from tools.py.
+
+    The chart-numbering logic in create_visualization relies on counting
+    existing visualization artifacts; this test pins the contract so a
+    future refactor doesn't silently break the file-name sequence.
+    """
+    assert workspace.count_artifacts() == 0
+    assert workspace.count_artifacts("visualization") == 0
+    assert workspace.count_artifacts("dataset") == 0
+
+    workspace.save_dataframe("result.csv")
+    assert workspace.count_artifacts() == 1
+    assert workspace.count_artifacts("dataset") == 1
+    assert workspace.count_artifacts("visualization") == 0
+
+
+def test_atomic_write_text_replaces_existing_file(tmp_path):
+    """_atomic_write_text must leave a complete file even when overwriting.
+
+    A direct write_text truncates then writes; if interrupted we'd see a
+    partial file. The tmp+rename pattern guarantees the destination is
+    either the old content or the new content, never a mix.
+    """
+    from data_agent.workspace import _atomic_write_text
+
+    target = tmp_path / "out.html"
+    target.write_text("<old>previous</old>", encoding="utf-8")
+    _atomic_write_text(target, "<new>replacement</new>")
+    assert target.read_text(encoding="utf-8") == "<new>replacement</new>"
+    # Tmp file must be cleaned up regardless of success.
+    assert not target.with_suffix(target.suffix + ".tmp").exists()
+
+
+def test_atomic_write_text_cleans_up_tmp_on_failure(tmp_path):
+    """If the rename fails the tmp file must not be left behind."""
+    from data_agent.workspace import _atomic_write_text
+
+    target = tmp_path / "subdir" / "missing.html"
+    # Parent dir doesn't exist -> write_text raises -> tmp must be cleaned.
+    with pytest.raises(OSError):
+        _atomic_write_text(target, "content")
+    assert not target.with_suffix(target.suffix + ".tmp").exists()

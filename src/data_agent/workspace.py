@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import shutil
 from dataclasses import dataclass
@@ -14,6 +15,25 @@ from data_agent.serialization import to_jsonable
 SUPPORTED_EXTENSIONS = {".csv", ".tsv", ".xlsx", ".xls", ".json", ".jsonl", ".parquet"}
 PLOTLY_BUNDLE_NAME = "plotly.min.js"
 WORKSPACE_STATE_NAME = "workspace_state.parquet"
+
+
+def _atomic_write_text(path: Path, content: str, *, encoding: str = "utf-8") -> None:
+    """Write text atomically: write to a sibling .tmp file then rename.
+
+    A direct ``path.write_text`` truncates the destination before writing; if
+    the process is killed mid-write (OOM, deploy restart, disk full) we leave
+    a corrupt partial file that subsequent reads will fail on. The tmp + rename
+    pattern guarantees readers either see the old file or the new file, never
+    a half-written one. ``os.replace`` is atomic on POSIX and Windows for
+    same-filesystem renames.
+    """
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    try:
+        temporary.write_text(content, encoding=encoding)
+        os.replace(temporary, path)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +83,17 @@ class DataWorkspace:
     @property
     def artifacts(self) -> list[dict[str, str]]:
         return [item.as_dict() for item in self._artifacts]
+
+    def count_artifacts(self, kind: str | None = None) -> int:
+        """Count registered artifacts, optionally filtered by kind.
+
+        Public accessor so tools and API code don't need to reach into the
+        private ``_artifacts`` list. Filtering by kind lets callers answer
+        "how many charts exist?" without materialising the full dict list.
+        """
+        if kind is None:
+            return len(self._artifacts)
+        return sum(1 for item in self._artifacts if item.kind == kind)
 
     def register_artifact(self, path: str | Path, kind: str, description: str) -> Artifact:
         resolved = Path(path).resolve()

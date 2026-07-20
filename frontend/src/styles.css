@@ -237,8 +237,22 @@ i.warning { background: var(--amber); box-shadow: 0 0 0 3px rgba(184, 119, 25, .
 .plan-panel { min-width: 0; align-self: start; position: sticky; top: 86px; background: var(--paper); border: 1px solid var(--line); border-radius: 5px; }
 .panel-heading { min-height: 67px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 15px; }
 .panel-heading h2 { margin: 5px 0 0; font-size: 14px; font-weight: 650; }
-.run-state { min-height: 24px; display: flex; align-items: center; gap: 5px; padding: 0 8px; border-radius: 3px; background: #f0f2f4; color: var(--muted); font-size: 11px; }
+.panel-meta { display: flex; align-items: center; gap: 6px; }
+.elapsed-chip { display: inline-flex; align-items: center; gap: 5px; padding: 0 9px; height: 22px; border-radius: 11px; background: #f0f2f4; color: var(--muted); font-size: 10.5px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; transition: background .25s, color .25s; }
+.elapsed-chip svg { color: inherit; flex-shrink: 0; }
+.elapsed-chip .elapsed-label { opacity: .75; font-weight: 500; }
+.elapsed-chip .elapsed-value { font-weight: 650; letter-spacing: 0.01em; }
+.elapsed-chip.is-running { background: linear-gradient(135deg, #eef3ff 0%, #dde6ff 100%); color: var(--blue); box-shadow: 0 0 0 1px rgba(49, 87, 213, .08); }
+.elapsed-chip.is-done { background: linear-gradient(135deg, #ecf6f0 0%, #dbefe2 100%); color: var(--green); box-shadow: 0 0 0 1px rgba(33, 132, 90, .08); }
+.run-state { min-height: 24px; display: inline-flex; align-items: center; gap: 5px; padding: 0 8px; border-radius: 11px; background: #f0f2f4; color: var(--muted); font-size: 10.5px; font-weight: 600; }
 .run-state.is-running { background: var(--blue-soft); color: var(--blue); }
+.run-state.is-done { background: var(--green-soft); color: var(--green); }
+.run-state .status-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; position: relative; flex: 0 0 auto; }
+.run-state.is-running .status-dot { animation: status-pulse 1.4s ease-in-out infinite; }
+@keyframes status-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(49, 87, 213, .55); }
+  70% { box-shadow: 0 0 0 5px rgba(49, 87, 213, 0); }
+}
 .current-node { display: flex; align-items: center; gap: 7px; padding: 8px 15px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--blue-soft); color: var(--blue); font-size: 11px; font-weight: 600; }
 .current-node svg { flex: 0 0 auto; }
 .current-node span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -305,6 +319,65 @@ i.warning { background: var(--amber); box-shadow: 0 0 0 3px rgba(184, 119, 25, .
 .report-toggle:hover { background: #f4f5f7; color: var(--ink); }
 .report-toggle svg { transition: transform .2s ease; }
 .rot-180 { transform: rotate(180deg); }
+.rot-90 { transform: rotate(90deg); }
+
+/* 历史会话面板：可折叠的侧边栏列表，与"当前数据"分块对齐。 */
+.history-section { position: relative; }
+.history-toggle { width: 100%; min-height: 32px; display: flex; align-items: center; gap: 8px; padding: 4px 8px; border: 0; border-radius: 4px; background: transparent; color: var(--ink); text-align: left; }
+.history-toggle:hover { background: #e8eaec; }
+.history-toggle svg:first-child { color: var(--faint); flex: 0 0 auto; }
+.history-toggle .sidebar-label { margin: 0; flex: 1; }
+.history-toggle .history-total { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 17px; padding: 0 6px; margin-right: 4px; border-radius: 9px; background: #dde0e4; color: #5a636e; font-size: 10px; font-style: normal; font-weight: 650; }
+.history-toggle svg:last-child { color: var(--faint); flex: 0 0 auto; transition: transform .15s ease; }
+.history-refresh { position: absolute; top: 4px; right: 8px; display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 7px; border: 0; border-radius: 3px; background: transparent; color: var(--muted); font-size: 10px; font-weight: 600; }
+.history-refresh:hover:not(:disabled) { background: #e8eaec; color: var(--ink); }
+.history-empty { display: grid; justify-items: center; gap: 6px; margin: 8px 8px 12px; padding: 18px 12px; color: var(--faint); text-align: center; }
+.history-empty p { margin: 0; font-size: 11px; line-height: 1.55; }
+
+/* 时间分组：组标题用极淡灰，与列表项形成层级。 */
+.history-group { margin-top: 6px; }
+.history-group-label { display: block; padding: 4px 12px 2px; color: var(--faint); font-size: 10px; font-weight: 650; letter-spacing: 0.04em; text-transform: uppercase; }
+.history-group:first-of-type { margin-top: 4px; }
+
+.history-list { margin: 2px 0 4px; padding: 0 4px; list-style: none; max-height: 360px; overflow-y: auto; scrollbar-width: thin; }
+.history-list li { margin: 0; position: relative; }
+.history-list li > button { width: 100%; display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 8px; border: 0; border-radius: 4px; background: transparent; text-align: left; transition: background .12s; }
+.history-list li > button:hover { background: #e8eaec; }
+/* 当前会话高亮：左侧竖条 + 浅蓝底，比单纯背景色更醒目。 */
+.history-list li.is-active > button { background: var(--blue-soft); }
+.history-list li.is-active::before { content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 2px; border-radius: 1px; background: var(--blue); }
+.history-list li > button > svg:first-child { color: var(--blue); flex: 0 0 auto; }
+.history-list li > button > span { min-width: 0; flex: 1; }
+.history-list li strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; font-weight: 650; color: var(--ink); }
+.history-list li small { display: flex; align-items: center; flex-wrap: wrap; gap: 3px; margin-top: 3px; color: var(--muted); font-size: 10px; }
+
+/* 状态圆点：复用 panel heading 的 pulse 动画，颜色按状态区分。 */
+.history-status-dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; }
+.history-status-dot.is-done { background: var(--green); }
+.history-status-dot.is-running { background: var(--blue); animation: status-pulse 1.4s ease-in-out infinite; }
+.history-status-dot.is-cancelling { background: var(--amber); animation: status-pulse 1.4s ease-in-out infinite; }
+.history-status-dot.is-cancelled { background: #9ba2ab; }
+.history-status-dot.is-failed { background: var(--danger); }
+.history-status-dot.is-idle { background: #c2c7cd; }
+.history-status-text { font-weight: 600; }
+.history-result { color: var(--green); font-weight: 600; }
+.history-time { color: var(--faint); }
+.history-count { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: #e1e4e8; color: var(--muted); font-size: 10px; font-style: normal; font-weight: 650; flex: 0 0 auto; }
+.history-list li.is-active .history-count { background: var(--blue); color: white; }
+
+/* 骨架屏：列表初次加载时显示 3 行占位，shimmer 渐变从左到右扫过。 */
+.history-skeleton { padding: 4px 8px; }
+.history-skeleton li { padding: 0 !important; }
+.skeleton-row { display: flex; align-items: center; gap: 8px; padding: 10px 6px; }
+.skeleton-icon { width: 14px; height: 14px; border-radius: 3px; background: #e3e6e9; flex-shrink: 0; }
+.skeleton-lines { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+.skeleton-line { height: 8px; border-radius: 4px; background: linear-gradient(90deg, #e8eaec 25%, #f2f4f6 50%, #e8eaec 75%); background-size: 200% 100%; animation: skeleton-shimmer 1.4s ease-in-out infinite; }
+.skeleton-line-wide { width: 70%; }
+.skeleton-line-narrow { width: 45%; }
+@keyframes skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
 
 .data-view, .artifact-view { padding-top: 24px; }
 .section-title { min-height: 42px; display: flex; align-items: start; justify-content: space-between; }
@@ -429,4 +502,8 @@ tr:hover td { background: #f3f6ff !important; }
   .empty-workspace { min-height: 610px; padding: 45px 0; }
   .empty-grid { width: 88vw; }
   .empty-grid i { min-height: 40px; }
+  /* 历史列表在移动端不再限高，让用户能整屏滚动浏览。 */
+  .history-list { max-height: none; }
+  /* panel-meta 在窄屏时把"已耗时"换行到 run-state 下方，避免挤压标题。 */
+  .panel-meta { flex-wrap: wrap; justify-content: flex-end; }
 }

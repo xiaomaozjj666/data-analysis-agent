@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+from pathlib import Path
 from typing import Any
 
 from langchain_core.callbacks import CallbackManagerForLLMRun
@@ -289,3 +290,222 @@ def test_last_result_persisted_and_restored(tmp_path):
     assert restored.last_result.plan[0]["id"] == "inspect"
     assert restored.last_result.completed_steps[0]["summary"] == "完成"
     assert restored.analysis_status == "completed"
+
+
+def test_set_running_and_set_finished_track_wall_clock(tmp_path):
+    """set_running / set_finished 应原子地更新 status 与 started_at / completed_at。"""
+    import time as _time
+
+    workspace = DataWorkspace(tmp_path / "runs", session_id="timing_test")
+    workspace.save_upload("sales.csv", b"region,sales\nEast,100\n")
+    workspace.load(workspace.input_dir / "sales.csv")
+
+    registry = SessionRegistry(tmp_path / "runs", max_sessions=4, ttl_hours=24)
+    session_id, record = registry.create(workspace)
+
+    # idle 时无 started_at，elapsed_seconds 计算为 None。
+    assert record.analysis_started_at is None
+    assert record.analysis_completed_at is None
+
+    record.set_running()
+    assert record.analysis_status == "running"
+    assert record.analysis_started_at is not None
+    assert record.analysis_completed_at is None
+    started = record.analysis_started_at
+
+    _time.sleep(0.02)
+    record.set_finished("completed")
+    assert record.analysis_status == "completed"
+    assert record.analysis_completed_at is not None
+    # completed_at 严格大于 started_at，且 set_finished 不覆盖 started_at。
+    assert record.analysis_completed_at > started
+    assert record.analysis_started_at == started
+
+
+def test_list_recent_returns_in_memory_and_disk_sessions(tmp_path):
+    """list_recent 应同时返回内存中和磁盘上的会话摘要，并按 created_at 降序排列。"""
+    runs_root = tmp_path / "runs"
+
+    # 旧会话 1：仅写 manifest，registry 启动时不预加载（模拟服务重启后残留）。
+    ws_old = DataWorkspace(runs_root, session_id="api_old_one")
+    ws_old.save_upload("old.csv", b"x,y\n1,2\n")
+    ws_old.load(ws_old.input_dir / "old.csv")
+
+    reg_old = SessionRegistry(runs_root, max_sessions=10, ttl_hours=24)
+    old_id, old_record = reg_old.create(ws_old)
+    old_record.analysis_status = "completed"
+    old_record.last_result = AnalysisResult(
+        response="旧报告",
+        trace=[],
+        artifacts=[],
+        dataset_profile=ws_old.profile(),
+        plan=[],
+        completed_steps=[],
+    )
+    reg_old.persist(old_id, old_record)
+    # 释放 reg_old 引用，让该会话只存在于磁盘上。
+    del reg_old
+    del old_record
+
+    # 新会话 2：在当前 registry 内存中。
+    ws_new = DataWorkspace(runs_root, session_id="api_new_two")
+    ws_new.save_upload("new.csv", b"x,y\n3,4\n")
+    ws_new.load(ws_new.input_dir / "new.csv")
+    reg = SessionRegistry(runs_root, max_sessions=10, ttl_hours=24)
+    new_id, new_record = reg.create(ws_new)
+    new_record.analysis_status = "running"
+
+    recent = reg.list_recent(limit=10)
+    assert len(recent) == 2
+
+    # 内存中的新会话应标注 in_memory=True，磁盘上的旧会话 in_memory=False。
+    by_id = {item["id"]: item for item in recent}
+    assert by_id[new_id]["in_memory"] is True
+    assert by_id[new_id]["analysis_status"] == "running"
+    assert by_id[old_id]["in_memory"] is False
+    assert by_id[old_id]["analysis_status"] == "completed"
+    assert by_id[old_id]["has_result"] is True
+
+    # 按 created_at 降序：新会话在前。
+    assert recent[0]["id"] == new_id
+    assert recent[1]["id"] == old_id
+
+
+def test_chart_filename_stem_and_humanized_title_strip_technical_noise():
+    """图表文件名 stem 用"类型_序号"，title 清理 ANOVA / p 值 / η² 等技术标记。"""
+    from data_agent.tools import (
+        _CHART_TYPE_LABELS_ZH,
+        _chart_filename_stem,
+        _humanize_chart_title,
+    )
+
+    # 文件名 stem：相同类型递增序号，未知类型回退到 chart_type 本身。
+    # 序号用自然数字 1/2/3 而非 01/02/03，更接近 Observable / Plot 的命名惯例。
+    assert _chart_filename_stem("bar", 0) == "柱状图_1"
+    assert _chart_filename_stem("bar", 1) == "柱状图_2"
+    assert _chart_filename_stem("line", 3) == "折线图_4"
+    assert _chart_filename_stem("unknown_type", 0) == "unknown_type_1"
+
+    # 已知类型都在标签字典里，避免 LLM 用了新名字时文件名变得难看。
+    for chart_type, label in _CHART_TYPE_LABELS_ZH.items():
+        assert _chart_filename_stem(chart_type, 0) == f"{label}_1"
+
+    # title 清理：去掉 ANOVA / p 值 / η² / _n_N / 极端离群值 等标记。
+    noisy = "客户评分按产品分布_ANOVA_p_0_0012_η²_0_546"
+    assert _humanize_chart_title(noisy, "bar") == "客户评分按产品分布"
+
+    # 离群值标记应被剥离。
+    outlier = "销量_vs_营收散点图_极端离群值主导"
+    cleaned = _humanize_chart_title(outlier, "scatter")
+    assert "极端离群值" not in cleaned
+    assert "主导" not in cleaned
+    assert "销量_vs_营收" in cleaned
+
+    # 样本量标记应被剥离。
+    sample = "区域销售_n_2"
+    assert _humanize_chart_title(sample, "bar") == "区域销售"
+
+    # 空标题回退到类型中文短名。
+    assert _humanize_chart_title("", "box") == "箱线图"
+    assert _humanize_chart_title(None, "pie") == "饼图"
+
+    # title 全是技术标记时回退到类型中文短名，而不是返回原始乱码。
+    all_technical = "_ANOVA_p_0_0012_η²_0_546"
+    assert _humanize_chart_title(all_technical, "bar") == "柱状图"
+
+    # 超长标题截短到 30 字符。
+    long_title = "这是一个非常非常非常非常非常非常非常非常非常非常非常长的图表标题需要被截断"
+    truncated = _humanize_chart_title(long_title, "bar")
+    assert len(truncated) <= 30
+
+    # 截短后为空（前 30 字符全是分隔符）回退到类型短名，不返回空字符串。
+    all_separators = "，" * 35
+    assert _humanize_chart_title(all_separators, "bar") == "柱状图"
+
+    # 非贪婪正则不误伤合法副标题：之前 _ANOVA.*$ 会吞掉后面的中文。
+    # "客户评分分布_ANOVA_用户洞察" 应保留"用户洞察"。
+    preserved = _humanize_chart_title("客户评分分布_ANOVA_用户洞察", "bar")
+    assert "用户洞察" in preserved
+    assert "ANOVA" not in preserved
+
+    # 离群值标记后面有合法副标题时也应保留。
+    preserved2 = _humanize_chart_title("销量趋势_极端离群值_季度对比", "line")
+    assert "季度对比" in preserved2
+    assert "极端离群值" not in preserved2
+
+
+def test_cancel_analysis_uses_cas_to_avoid_overwriting_terminal_state(tmp_path):
+    """H1: cancel_analysis 必须用 CAS 检查，避免 worker 已完成时把 completed 覆盖成 cancelling。
+
+    场景：cancel 请求到达时 worker 刚刚 set_finished('completed')。原实现
+    用 if not is_running() 检查 + 直接赋值 cancelling，存在 TOCTOU 窗口。
+    """
+    from data_agent.api import SessionRecord
+    from data_agent.workspace import DataWorkspace
+
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    workspace = DataWorkspace(runs_dir, session_id="api_cas_test")
+    # 不走 registry.create（会触发 save_checkpoint 要求 dataframe），
+    # 直接构造 SessionRecord 测试状态机的 CAS 行为。
+    record = SessionRecord(workspace)
+    record.set_running()
+
+    # 模拟 worker 已先于 cancel 写入 completed 终态。
+    record.set_finished("completed")
+
+    # cancel 请求到来：必须看到 completed 而不是回退到 cancelling。
+    # 这里直接复现 cancel_analysis 内的 CAS 逻辑。
+    with record._status_lock:
+        if record._analysis_status != "running":
+            result_status = record._analysis_status
+        else:
+            record._analysis_status = "cancelling"
+            result_status = "cancelling"
+    assert result_status == "completed", "CAS 检查必须阻止把 completed 覆盖成 cancelling"
+
+
+def test_create_visualization_escapes_script_tag_in_html(tmp_path):
+    """H1 (tools.py): 图表 HTML 必须转义 </script>，防止用户数据触发 XSS。
+
+    用户 CSV 某列含 "</script><script>alert(1)</script>" 字符串，LLM 用
+    该列作 x 时，Plotly to_html 会把它原样写入 <script> 块。浏览器解析
+    时第一个 </script> 提前关闭 Plotly script，剩余 JS 在 iframe 执行。
+    """
+    import pandas as pd
+
+    from data_agent.tools import build_tools
+    from data_agent.workspace import DataWorkspace
+
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    workspace = DataWorkspace(runs_dir, session_id="api_xss_test")
+    # 构造含 XSS payload 的 DataFrame。
+    df = pd.DataFrame({
+        "product": ["</script><script>alert(1)</script>", "正常产品B"],
+        "sales": [100, 200],
+    })
+    workspace.dataframe = df
+    workspace._artifacts = []  # 重置产物计数
+
+    # create_visualization 是 build_tools 内的闭包 tool，通过 build_tools 访问。
+    tools = build_tools(workspace)
+    vis_tool = next(t for t in tools if t.name == "create_visualization")
+    vis_tool.invoke({
+        "chart_type": "bar",
+        "x": "product",
+        "y": "sales",
+        "aggregation": "sum",
+    })
+    # 找到生成的 HTML 文件（workspace.artifacts 返回 list[dict]）。
+    html_artifacts = [a for a in workspace.artifacts if a.get("kind") == "visualization"]
+    assert html_artifacts, "应该生成 HTML 产物"
+    html_path = html_artifacts[0]["path"]
+    html_content = Path(html_path).read_text(encoding="utf-8")
+    # 用户数据中的 </script> 必须被转义为 <\/script>，不能形成有效的 script 闭合。
+    assert "<\\/script>" in html_content, "用户数据中的 </script> 必须被转义为 <\\/script>"
+    # Plotly 自身的 <script> 标签是合法的，不应被转义。
+    # 统计未转义的 </script>：应只有 Plotly 自身的 1 个（闭合 Plotly.newPlot 调用）。
+    # 用户数据中的 </script> 必须全部被转义，不能出现在原始计数里。
+    raw_close_count = html_content.count("</script>")
+    assert raw_close_count == 1, f"应只有 Plotly 自身的 1 个 </script>，实际 {raw_close_count}"

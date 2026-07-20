@@ -69,6 +69,11 @@ class SessionRecord:
         self._analysis_status = "idle"
         self.current_task = ""
         self.created_at = time.time()
+        # 分析开始/结束的墙钟时间，用于前端显示"已耗时 / 总耗时"。
+        # 使用 _status_lock 与 status 一起更新，避免读到一个新 status
+        # 但旧 started_at 的瞬间状态。
+        self.analysis_started_at: float | None = None
+        self.analysis_completed_at: float | None = None
 
     @property
     def analysis_status(self) -> str:
@@ -79,6 +84,17 @@ class SessionRecord:
     def analysis_status(self, value: str) -> None:
         with self._status_lock:
             self._analysis_status = value
+
+    def set_running(self) -> None:
+        with self._status_lock:
+            self._analysis_status = "running"
+            self.analysis_started_at = time.time()
+            self.analysis_completed_at = None
+
+    def set_finished(self, status: str) -> None:
+        with self._status_lock:
+            self._analysis_status = status
+            self.analysis_completed_at = time.time()
 
     def is_running(self) -> bool:
         """Whether an analysis is currently active (running or being cancelled)."""
@@ -163,6 +179,8 @@ class SessionRegistry:
             "filename": record.workspace.source_path.name if record.workspace.source_path else "dataset",
             "chat": record.chat[-40:],
             "analysis_status": record.analysis_status,
+            "analysis_started_at": record.analysis_started_at,
+            "analysis_completed_at": record.analysis_completed_at,
             "last_result": last_result,
             "artifacts": [
                 {
@@ -244,6 +262,12 @@ class SessionRegistry:
         record.created_at = float(payload.get("created_at", record.created_at))
         saved_status = str(payload.get("analysis_status", "idle"))
         record.analysis_status = saved_status if saved_status in {"completed", "cancelled", "failed"} else "idle"
+        # 恢复墙钟时间；若 manifest 缺字段则基于 created_at 退化为 None，
+        # 前端会判断没有 elapsed 数据时不显示。
+        started_raw = payload.get("analysis_started_at")
+        completed_raw = payload.get("analysis_completed_at")
+        record.analysis_started_at = float(started_raw) if isinstance(started_raw, (int, float)) else None
+        record.analysis_completed_at = float(completed_raw) if isinstance(completed_raw, (int, float)) else None
         saved_result = payload.get("last_result")
         if isinstance(saved_result, dict) and isinstance(saved_result.get("response"), str):
             record.last_result = AnalysisResult(
@@ -280,6 +304,80 @@ class SessionRegistry:
         if record is None:
             raise HTTPException(status_code=404, detail="分析会话不存在或服务已经重启。")
         return record
+
+    def list_recent(self, limit: int = 30) -> list[dict[str, Any]]:
+        """Return metadata of recent sessions for the history sidebar.
+
+        扫描 runs_dir 下所有 ``api_*`` 子目录的 session.json，按 created_at
+        降序返回。优先复用内存中已 restore 的 SessionRecord，避免每次都
+        反序列化 manifest；对未在内存中的会话仅读取 manifest 字段，不
+        恢复 DataFrame/checkpoint，保持列表接口轻量。
+
+        锁策略：仅在取内存快照和目录列表时持锁，磁盘 manifest 读取在锁外
+        执行——几十个会话 × 1-50KB manifest 的 I/O 若持 RLock 会阻塞所有
+        get/create 调用。session 被并发 prune 删除时 manifest 读会失败，
+        try/except 已兜底，下一次轮询自然消失。
+        """
+        if limit <= 0:
+            return []
+        with self._lock:
+            removed_ids = self._prune_locked()
+            # 内存中已有的会话先取一份快照，避免磁盘上的 manifest 与活动
+            # 状态不一致（例如正在 running 的会话 manifest 还是 idle）。
+            in_memory: dict[str, dict[str, Any]] = {}
+            for session_id, record in self._items.items():
+                in_memory[session_id] = {
+                    "id": session_id,
+                    "filename": record.workspace.source_path.name if record.workspace.source_path else "dataset",
+                    "analysis_status": record.analysis_status,
+                    "created_at": record.created_at,
+                    "has_result": record.last_result is not None,
+                    "artifact_count": len(record.workspace.artifacts),
+                    "updated_at": record.last_access,
+                    "in_memory": True,
+                }
+            # 锁内仅取目录名列表（iterdir 是 O(1) 系统调用），避免锁外
+            # 再 iterdir 时遇到刚被 prune 的目录抛 FileNotFoundError。
+            disk_session_ids: list[str] = []
+            if self.runs_dir.is_dir():
+                for entry in self.runs_dir.iterdir():
+                    if entry.is_dir() and entry.name.startswith("api_"):
+                        disk_session_ids.append(entry.name)
+        # 锁外读 manifest：几十个 JSON 文件的 I/O 不再阻塞 get/create。
+        seen_ids = set(in_memory.keys())
+        disk_results: list[dict[str, Any]] = []
+        for session_id in disk_session_ids:
+            if session_id in seen_ids:
+                continue
+            manifest = self.runs_dir / session_id / "session.json"
+            if not manifest.is_file():
+                continue
+            try:
+                payload = json.loads(manifest.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                # 并发 prune 可能已删除 manifest；跳过，下次轮询不再列出。
+                continue
+            if not isinstance(payload, dict):
+                continue
+            artifacts = payload.get("artifacts") or []
+            last_result = payload.get("last_result")
+            disk_results.append({
+                "id": session_id,
+                "filename": str(payload.get("filename") or "dataset"),
+                "analysis_status": str(payload.get("analysis_status") or "idle"),
+                "created_at": float(payload.get("created_at") or 0.0),
+                "has_result": isinstance(last_result, dict) and isinstance(last_result.get("response"), str),
+                "artifact_count": len(artifacts) if isinstance(artifacts, list) else 0,
+                "updated_at": float(payload.get("updated_at") or payload.get("created_at") or 0.0),
+                "in_memory": False,
+            })
+        results: list[dict[str, Any]] = list(in_memory.values()) + disk_results
+        results.sort(key=lambda item: item.get("created_at") or 0.0, reverse=True)
+        # S3/R2 远端清理放在锁外执行（网络 I/O 不持锁），与 get/create 保持一致。
+        # 之前丢弃 _prune_locked 返回值会导致被裁剪的会话在远端永久残留。
+        if removed_ids:
+            self._cleanup_remote(removed_ids)
+        return results[:limit]
 
 
 bootstrap_settings = AgentSettings.from_env(provider="deepseek")
@@ -339,21 +437,61 @@ def _check_access(request: Request) -> None:
         raise HTTPException(status_code=401, detail="需要有效的应用访问令牌。")
 
 
+# Rate-limit bucket dictionary hard cap. An attacker spoofing X-Forwarded-For
+# can otherwise manufacture unlimited unique keys and OOM the process. 10K
+# entries × ~60 floats each stays under 5MB and is plenty for legitimate load.
+MAX_RATE_LIMIT_BUCKETS = 10_000
+
+# Number of trusted reverse-proxy hops in front of this process. Each trusted
+# proxy appends the IP it received the request from to X-Forwarded-For. We
+# therefore trust the Nth-from-last entry; taking the leftmost entry when no
+# proxy is declared would let attackers forge the header and bypass limits.
+# Default 0 means "direct exposure, ignore XFF"; set 1 for Render/Nginx.
+_trusted_proxy_hops = max(0, int(os.getenv("DATA_AGENT_TRUSTED_PROXY_HOPS", "0")))
+
+
 def _client_identifier(request: Request) -> str:
     """Best-effort client identifier for rate limiting.
 
-    Prefer the first hop of ``X-Forwarded-For`` when the request reaches us
-    through a trusted reverse proxy (Render, Nginx, etc.). Fall back to the
-    direct socket address so the limiter always has a stable key.
+    Only consults ``X-Forwarded-For`` when ``DATA_AGENT_TRUSTED_PROXY_HOPS`` is
+    set, taking the Nth-from-last entry so an attacker cannot forge a header
+    to spin up fresh identities. Falls back to the direct socket address so
+    the limiter always has a stable key.
     """
-    forwarded = request.headers.get("x-forwarded-for", "")
-    if forwarded:
-        first = forwarded.split(",", 1)[0].strip()
-        if first:
-            return first
+    if _trusted_proxy_hops > 0:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            parts = [item.strip() for item in forwarded.split(",") if item.strip()]
+            if len(parts) >= _trusted_proxy_hops:
+                return parts[-_trusted_proxy_hops]
+            # XFF has fewer entries than declared hops — likely an internal
+            # health check that bypassed the proxy. Fall through to direct host.
     if request.client:
         return request.client.host
     return "unknown"
+
+
+def _prune_rate_buckets_locked(now: float) -> None:
+    """Bound the rate-limit dict size. Caller must hold request_buckets_lock."""
+    if len(request_buckets) < MAX_RATE_LIMIT_BUCKETS:
+        return
+    # Drop buckets with no activity in the last 60s (the common case).
+    stale = [
+        key for key, bucket in request_buckets.items()
+        if not bucket or now - bucket[-1] >= 60
+    ]
+    for key in stale:
+        del request_buckets[key]
+    # If still over the cap, evict the oldest 25% by last-seen timestamp to
+    # amortise the cost across many writes instead of scanning every request.
+    if len(request_buckets) >= MAX_RATE_LIMIT_BUCKETS:
+        ordered = sorted(
+            request_buckets.items(),
+            key=lambda kv: kv[1][-1] if kv[1] else 0.0,
+        )
+        excess = len(request_buckets) - MAX_RATE_LIMIT_BUCKETS // 2
+        for key, _ in ordered[:max(excess, 0)]:
+            del request_buckets[key]
 
 
 def _check_rate_limit(request: Request) -> None:
@@ -363,6 +501,7 @@ def _check_rate_limit(request: Request) -> None:
     now = time.monotonic()
     key = _client_identifier(request)
     with request_buckets_lock:
+        _prune_rate_buckets_locked(now)
         bucket = request_buckets[key]
         while bucket and now - bucket[0] >= 60:
             bucket.popleft()
@@ -480,6 +619,26 @@ def _artifact_payload(session_id: str, artifacts: list[dict[str, str]]) -> list[
     return result
 
 
+def _elapsed_seconds(record: SessionRecord) -> float | None:
+    """Return the analysis duration in seconds, or None when no timing data.
+
+    - running / cancelling: now - started_at
+    - completed / cancelled / failed: completed_at - started_at
+    - idle: None
+    """
+    with record._status_lock:  # noqa: SLF001 - 同模块内访问
+        status = record._analysis_status  # noqa: SLF001
+        started = record.analysis_started_at
+        completed = record.analysis_completed_at
+    if not started:
+        return None
+    if status in {"running", "cancelling"}:
+        return max(0.0, time.time() - started)
+    if completed:
+        return max(0.0, completed - started)
+    return None
+
+
 def _session_payload(session_id: str, record: SessionRecord) -> dict[str, Any]:
     workspace = record.workspace
     profile = workspace.profile(sample_rows=8)
@@ -491,6 +650,9 @@ def _session_payload(session_id: str, record: SessionRecord) -> dict[str, Any]:
         "chat": record.chat,
         "artifacts": _artifact_payload(session_id, workspace.artifacts),
         "analysis_status": record.analysis_status,
+        "analysis_started_at": record.analysis_started_at,
+        "analysis_completed_at": record.analysis_completed_at,
+        "elapsed_seconds": _elapsed_seconds(record),
         "last_result": (
             _result_payload(session_id, record.last_result)
             if record.last_result is not None
@@ -590,6 +752,17 @@ def delete_key() -> dict[str, bool]:
     return {"configured": configured}
 
 
+@app.get("/api/sessions")
+def list_sessions(limit: int = 30) -> dict[str, Any]:
+    """List recent sessions for the sidebar history panel.
+
+    仅返回 manifest 摘要（id、filename、status、created_at、has_result），
+    不加载 DataFrame，确保接口在 runs/ 有几十上百个会话时仍然很快。
+    """
+    capped = max(1, min(int(limit), 100))
+    return {"sessions": registry.list_recent(limit=capped)}
+
+
 @app.post("/api/sessions", status_code=201)
 async def create_session(file: Annotated[UploadFile, File()]) -> dict[str, Any]:
     # Resource limits and the run directory are process-level deployment
@@ -606,9 +779,17 @@ async def create_session(file: Annotated[UploadFile, File()]) -> dict[str, Any]:
         rows, columns = len(workspace.dataframe), len(workspace.dataframe.columns)
         if rows > settings.max_rows or rows * columns > settings.max_cells:
             raise ValueError(f"数据规模超过限制：最多 {settings.max_rows:,} 行或 {settings.max_cells:,} 个单元格。")
-    except (ValueError, OSError) as exc:
+    except Exception as exc:
+        # pd.read_parquet 损坏文件抛 pyarrow.ArrowInvalid，pd.read_excel 抛
+        # openpyxl.exceptions.InvalidFileException，都不在 ValueError/OSError 子类内。
+        # 之前只捕获 (ValueError, OSError) 会漏掉这些异常，留下孤儿 workspace 目录
+        # （registry.create 未执行，TTL prune 也清理不到）。通用 Exception 兜底确保
+        # 任何 load 失败都会清理临时目录。
         workspace.cleanup()
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        # 已知的业务错误返回 422，未知异常返回 500 避免暴露内部细节。
+        if isinstance(exc, ValueError):
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail="数据文件解析失败，请检查格式。") from exc
     actual_id, record = registry.create(workspace)
     return _session_payload(actual_id, record)
 
@@ -631,18 +812,29 @@ def analyze(session_id: str, request: AnalyzeRequest) -> dict[str, Any]:
         record.run_lock.release()
         raise HTTPException(status_code=429, detail="当前服务正在处理其他分析，请稍后再试。")
     record.cancel_event.clear()
-    record.analysis_status = "running"
+    record.set_running()
     record.current_task = request.task
     try:
         agent = DataAnalysisAgent(record.workspace, settings, cancel_event=record.cancel_event)
         result = agent.run(request.task, history=history)
-        record.analysis_status = "completed"
+        # 在持有 run_lock 的窗口内完成 chat/last_result/persist，避免另一线程
+        # 在 release 与 persist 之间拿到锁并基于旧 chat 启动新分析。cancelled
+        # 和 failed 分支没有 result，不需要写 chat，直接落到对应 except 持久化。
+        record.chat.extend(
+            [
+                {"role": "user", "content": request.task},
+                {"role": "assistant", "content": result.response},
+            ]
+        )
+        record.last_result = result
+        record.set_finished("completed")
+        registry.persist(session_id, record)
     except AnalysisCancelled as exc:
-        record.analysis_status = "cancelled"
+        record.set_finished("cancelled")
         registry.persist(session_id, record)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
-        record.analysis_status = "failed"
+        record.set_finished("failed")
         registry.persist(session_id, record)
         raise HTTPException(status_code=502, detail=f"分析执行失败：{exc}") from exc
     finally:
@@ -650,14 +842,6 @@ def analyze(session_id: str, request: AnalyzeRequest) -> dict[str, Any]:
         record.cancel_event.clear()
         analysis_slots.release()
         record.run_lock.release()
-    record.chat.extend(
-        [
-            {"role": "user", "content": request.task},
-            {"role": "assistant", "content": result.response},
-        ]
-    )
-    record.last_result = result
-    registry.persist(session_id, record)
     return _result_payload(session_id, result)
 
 
@@ -678,7 +862,7 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
         record.run_lock.release()
         raise HTTPException(status_code=429, detail="当前服务正在处理其他分析，请稍后再试。")
     record.cancel_event.clear()
-    record.analysis_status = "running"
+    record.set_running()
     record.current_task = request.task
 
     loop = asyncio.get_running_loop()
@@ -722,15 +906,15 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
                 ]
             )
             record.last_result = result
-            record.analysis_status = "completed"
+            record.set_finished("completed")
             registry.persist(session_id, record)
             loop.call_soon_threadsafe(queue.put_nowait, ("complete", _result_payload(session_id, result)))
         except AnalysisCancelled:
-            record.analysis_status = "cancelled"
+            record.set_finished("cancelled")
             registry.persist(session_id, record)
             loop.call_soon_threadsafe(queue.put_nowait, ("cancelled", {"message": "分析已取消。"}))
         except Exception as exc:
-            record.analysis_status = "failed"
+            record.set_finished("failed")
             registry.persist(session_id, record)
             loop.call_soon_threadsafe(queue.put_nowait, ("error", {"message": str(exc)}))
         finally:
@@ -739,11 +923,35 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
             # session starts from a clean state, even if the client aborted
             # mid-stream and set the event after the worker already finished.
             record.cancel_event.clear()
-            loop.call_soon_threadsafe(queue.put_nowait, None)
+            # 关键：先释放 slot 和 lock，再 call_soon_threadsafe。
+            # call_soon_threadsafe 在事件循环已关闭时会抛 RuntimeError
+            # （进程关闭、ASGI worker 被 kill 等场景），若放在 release 之前，
+            # 异常会跳过 release 导致 analysis_slots 和 run_lock 永久泄漏
+            # —— max_concurrent_analyses=2 时泄漏 2 次后整个服务无法启动新分析。
             analysis_slots.release()
             record.run_lock.release()
+            try:
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+            except RuntimeError:
+                # 事件循环已关闭（客户端断连后 ASGI 关闭 loop），队列无人消费，
+                # 直接吞掉异常——slot 和 lock 已释放，状态已 persist，无副作用。
+                pass
 
     worker = threading.Thread(target=_run_analysis, name=f"analysis-{session_id}", daemon=True)
+
+    async def _await_worker_exit(timeout: float) -> bool:
+        """Poll worker.is_alive() without blocking the event loop.
+
+        ``threading.Thread.join`` is a blocking call; invoking it directly in a
+        coroutine stalls the event loop for the entire timeout window, which
+        means other HTTP requests (history polling, new uploads, cancels) are
+        frozen while we wait for a possibly-stuck LLM call to unwind. Polling
+        with ``asyncio.sleep`` keeps the loop responsive.
+        """
+        deadline = loop.time() + timeout
+        while worker.is_alive() and loop.time() < deadline:
+            await asyncio.sleep(0.1)
+        return not worker.is_alive()
 
     async def generate():
         yield _sse("started", {"task": request.task})
@@ -761,22 +969,38 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
                 yield _sse(event, data)
         except asyncio.CancelledError:
             record.cancel_event.set()
-            record.analysis_status = "cancelling"
-            # Persist cancelling so a process restart during the unwind does
-            # not leave the manifest stuck on "running"; the retry poller on
-            # the client can then recognize the interrupted state instead of
-            # waiting the full deadline for a dead worker.
-            registry.persist(session_id, record)
-            # Give the worker a chance to observe the cancel event and unwind
-            # gracefully before we leave; a single LLM call may take 60+ s so
-            # we only wait a short while and let the daemon thread finish on
-            # its own afterwards.
-            if worker.is_alive():
-                worker.join(timeout=5.0)
+            # CAS 式转换：只在当前仍是 running 时才写 cancelling 过渡态。
+            # 若 worker 已先于本块写入 completed/cancelled/failed 终态，不能覆盖。
+            # 之前的实现无条件赋值 cancelling，会把已完成的会话回退到 cancelling，
+            # 而 worker 已退出不会推进到 cancelled，会话永久卡死。
+            with record._status_lock:
+                already_terminal = record._analysis_status not in {"running", "cancelling"}
+                if not already_terminal:
+                    record._analysis_status = "cancelling"
+            if not already_terminal:
+                registry.persist(session_id, record)
+            # 给 worker 最多 5 秒优雅退出时间。单次 LLM 调用可能 60+ 秒，
+            # 5 秒内未退出属正常——worker 是 daemon 线程，会通过自己的 finally
+            # 释放 slot/lock 并 persist 终态，无需本协程继续等待。
+            # 用 asyncio.sleep 轮询而非 worker.join，避免阻塞事件循环导致
+            # 其他请求（历史上传、取消、健康检查）被冻结 5 秒。
+            exited = await _await_worker_exit(timeout=5.0)
+            if not exited:
+                logger.warning(
+                    "Analysis worker for session %s did not exit within 5s of cancel; "
+                    "slot will be released when the current LLM call returns.",
+                    session_id,
+                )
             raise
         finally:
+            # 正常完成路径下 worker 已通过 finally put None 退出，无需 join。
+            # CancelledError 路径已在 except 内等待 5s，这里不再重复等待。
             if worker.is_alive():
-                worker.join(timeout=1.0)
+                logger.debug(
+                    "Worker still running at stream teardown for session %s; "
+                    "daemon thread will release resources via its own finally.",
+                    session_id,
+                )
 
     return StreamingResponse(
         generate(),
@@ -788,12 +1012,18 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
 @app.post("/api/sessions/{session_id}/cancel")
 def cancel_analysis(session_id: str) -> dict[str, str]:
     record = registry.get(session_id)
-    # ``run_lock.locked()`` is unreliable (a thread may have just released it
-    # but not yet cleared the status); use the explicit status field instead.
-    if not record.is_running():
-        return {"status": record.analysis_status}
+    # CAS 式状态转换：在 _status_lock 内原子地检查并切换 running → cancelling，
+    # 避免"检查通过后 worker 已 set_finished('completed') 覆盖终态"的 TOCTOU 竞态。
+    # 直接用 record.analysis_status = "cancelling" 会在 worker 已写入 completed 后
+    # 把状态回退到 cancelling，而此时 worker 已退出，没有任何线程会再推进到 cancelled，
+    # 导致会话永久卡在 cancelling。
+    with record._status_lock:
+        if record._analysis_status != "running":
+            return {"status": record._analysis_status}
+        record._analysis_status = "cancelling"
+    # cancel_event 必须在锁外 set：worker 等待 event 时不会持有 _status_lock，
+    # 但持锁调用 event.set() 不会带来收益，反而拉长锁持有时间。
     record.cancel_event.set()
-    record.analysis_status = "cancelling"
     # Persist so a restart between this call and the worker's unwind does
     # not leave the manifest stuck on "running"; the retry poller relies on
     # seeing "cancelling" to recognize an interrupted analysis.

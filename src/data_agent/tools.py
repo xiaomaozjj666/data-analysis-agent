@@ -5,7 +5,6 @@ import re
 from html import escape
 from pathlib import Path
 from typing import Any, Literal
-from uuid import uuid4
 
 import numpy as np
 import pandas as pd
@@ -17,7 +16,12 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 from data_agent.serialization import json_text
-from data_agent.workspace import DataWorkspace
+from data_agent.workspace import DataWorkspace, _atomic_write_text
+
+# Upper bound on the cross-product reindex in _aggregate_for_chart. A 50×50
+# grid is already 2500 cells; beyond that the chart becomes unreadable and
+# the reindex dominates memory. Callers see the observed combinations only.
+_MAX_REINDEX_COMBINATIONS = 2_500
 
 _CHART_COLORS = [
     "#245C55",
@@ -130,6 +134,20 @@ def _aggregate_for_chart(
     x_levels = list(pd.unique(df[x].dropna()))
     color_levels = list(pd.unique(df[color].dropna()))
     if not x_levels or not color_levels:
+        return result, y, coverage
+    # Cap the cross-product: a 100×100 grid would produce 10K rows of mostly
+    # NaN, dominate memory, and render as visual noise. Skip reindex and let
+    # the chart render only observed combinations; the coverage note below
+    # already discloses the missing-count when reindex is feasible.
+    if len(x_levels) * len(color_levels) > _MAX_REINDEX_COMBINATIONS:
+        coverage = {
+            "complete": True,
+            "observed_combinations": len(result),
+            "total_combinations": len(result),
+            "missing_combinations": [],
+            "color_levels": color_levels,
+            "skipped_reindex": True,
+        }
         return result, y, coverage
     combinations = pd.MultiIndex.from_product([x_levels, color_levels], names=[x, color])
     result = result.set_index([x, color]).reindex(combinations).reset_index()
@@ -268,25 +286,34 @@ def _apply_outlier_scale_controls(
         fig.update_layout(meta={"scale_mode": "full", "extreme_points": 0})
         return {"scale_mode": "full", "extreme_points": 0, "axis_ranges": {}}
 
+    # 性能优化：原实现对每个数据点单独 pd.to_numeric(pd.Series([raw_x]))，
+    # 1M 点会创建 2M 个 1 元素 Series 对象，GC 压力极大实测卡死数十秒。
+    # 改为每个 trace 批量 to_numeric 一次，然后用 numpy 向量化比较找极端点。
     indicator_text: list[str] = []
     for trace in fig.data:
         xs = list(trace.x) if getattr(trace, "x", None) is not None else []
         ys = list(trace.y) if getattr(trace, "y", None) is not None else []
-        for raw_x, raw_y in zip(xs, ys, strict=False):
-            numeric_x = pd.to_numeric(pd.Series([raw_x]), errors="coerce").iloc[0]
-            numeric_y = pd.to_numeric(pd.Series([raw_y]), errors="coerce").iloc[0]
-            x_extreme = bool(
-                x_guard
-                and pd.notna(numeric_x)
-                and (float(numeric_x) < x_guard["lower"] or float(numeric_x) > x_guard["upper"])
-            )
-            y_extreme = bool(
-                y_guard
-                and pd.notna(numeric_y)
-                and (float(numeric_y) < y_guard["lower"] or float(numeric_y) > y_guard["upper"])
-            )
-            if not (x_extreme or y_extreme):
-                continue
+        if not xs and not ys:
+            continue
+        # 批量转换，避免逐点创建 Series。
+        nx = pd.to_numeric(pd.Series(xs, dtype="object"), errors="coerce").to_numpy() if xs else np.array([])
+        ny = pd.to_numeric(pd.Series(ys, dtype="object"), errors="coerce").to_numpy() if ys else np.array([])
+        # 预计算极端点 mask，向量化避免 Python 层循环。
+        if x_guard and len(nx) > 0:
+            x_extreme_mask = np.isfinite(nx) & ((nx < x_guard["lower"]) | (nx > x_guard["upper"]))
+        else:
+            x_extreme_mask = np.zeros(len(nx), dtype=bool) if len(nx) > 0 else np.array([], dtype=bool)
+        if y_guard and len(ny) > 0:
+            y_extreme_mask = np.isfinite(ny) & ((ny < y_guard["lower"]) | (ny > y_guard["upper"]))
+        else:
+            y_extreme_mask = np.zeros(len(ny), dtype=bool) if len(ny) > 0 else np.array([], dtype=bool)
+        # 取并集；zip 长度按较短者截断，与原 zip 行为一致。
+        n = min(len(x_extreme_mask), len(y_extreme_mask))
+        extreme_indices = np.where(x_extreme_mask[:n] | y_extreme_mask[:n])[0]
+        for i in extreme_indices:
+            raw_x = xs[i] if i < len(xs) else None
+            numeric_x = nx[i] if i < len(nx) else np.nan
+            numeric_y = ny[i] if i < len(ny) else np.nan
             details = []
             if pd.notna(numeric_x) and isinstance(raw_x, (int, float, np.number)):
                 details.append(f"x={_compact_number(float(numeric_x))}")
@@ -390,9 +417,100 @@ def _numeric_columns(df: pd.DataFrame, columns: list[str] | None = None) -> list
 
 
 def _safe_stem(title: str | None, fallback: str) -> str:
+    """Legacy stem helper; new charts use ``_chart_filename_stem`` instead."""
     raw = title or fallback
     stem = re.sub(r"[^\w\-\u4e00-\u9fff]+", "_", raw).strip("_")[:50]
-    return f"{stem or fallback}_{uuid4().hex[:8]}"
+    import uuid as _uuid
+    return f"{stem or fallback}_{_uuid.uuid4().hex[:8]}"
+
+
+# 图表类型的中文短名，用于生成"柱状图_01"这种简洁文件名。
+# 用户在前端看到的产物名仍以 LLM 给的 title 为准（经 _humanize_chart_title 清理），
+# 文件名 stem 仅作为磁盘上的稳定标识，不再把整段标题塞进去。
+_CHART_TYPE_LABELS_ZH: dict[str, str] = {
+    "bar": "柱状图",
+    "line": "折线图",
+    "area": "面积图",
+    "scatter": "散点图",
+    "scatter_3d": "三维散点",
+    "histogram": "直方图",
+    "box": "箱线图",
+    "violin": "小提琴图",
+    "pie": "饼图",
+    "heatmap": "热力图",
+    "correlation_heatmap": "相关性热力图",
+    "scatter_matrix": "散点矩阵",
+    "sunburst": "旭日图",
+    "treemap": "矩形树图",
+}
+
+# LLM 常在 title 后面追加的内部技术标记，例如：
+#   "客户评分按产品分布_ANOVA_p_0_0012_η²_0_546"
+#   "销量_vs_营收散点图_极端离群值主导"
+#   "区域销售_n_2"
+# 这些前缀在 UI 上展示给用户会造成"看不懂"。下面这些正则用来把第一段
+# 人类可读部分取出来，并去掉所有 _n_N、_样本_N、ANOVA、p=、η² 等标记。
+# 注意：之前用 _ANOVA.*$ 贪婪匹配到字符串末尾，会误删 LLM 可能给的合法
+# 副标题（如 "客户评分分布_ANOVA_用户洞察" → "客户评分分布" 丢了"用户洞察"）。
+# 现在的非贪婪模式只匹配技术标记本身（数字、p 值、η² 等已知后缀），不
+# 会吞掉后面的可读内容。
+_CHART_TITLE_TECHNICAL_PATTERNS = [
+    re.compile(r"_n_\d+", re.IGNORECASE),
+    re.compile(r"_样本_\d+", re.IGNORECASE),
+    # _ANOVA 后面跟可选的 p 值/η²/effect_size/F 值等数字串，但不吞掉中文。
+    re.compile(r"_ANOVA(?:_[a-zA-Z0-9_]+)?(?=_|$)", re.IGNORECASE),
+    re.compile(r"_(?:p|p_value|pvalue)\s*[=:]?\s*[\d._-]+", re.IGNORECASE),
+    re.compile(r"_η²\s*[\d._-]+", re.IGNORECASE),
+    re.compile(r"_effect_size\s*[\d._-]+", re.IGNORECASE),
+    re.compile(r"_F\s*[\d._-]+", re.IGNORECASE),
+    # 离群值标记只删标记本身（"极端离群值主导" / "含离群值"），不吞后面内容。
+    re.compile(r"_极端离群值(?:主导)?(?=_|$)", re.IGNORECASE),
+    re.compile(r"_离群值(?:主导)?(?=_|$)", re.IGNORECASE),
+    re.compile(r"_主导$", re.IGNORECASE),
+    re.compile(r"_含异常值(?=_|$)", re.IGNORECASE),
+    re.compile(r"_含离群值(?=_|$)", re.IGNORECASE),
+]
+
+
+def _humanize_chart_title(title: str | None, chart_type: str) -> str:
+    """Strip technical noise from LLM-provided chart titles.
+
+    LLM 经常把 ANOVA / p 值 / η² / _n_2 / 极端离群值主导 等内部标记塞进
+    title。这些在 UI 上展示给用户会变成"看不懂的乱码"。本函数取 title
+    第一段可读部分，去掉技术标记并截短，文件名 stem 单独用 chart_type
+    中文短名 + 序号生成（见 ``_chart_filename_stem``），磁盘文件名不再
+    嵌入 LLM 自由发挥的标题。
+    """
+    raw = (title or "").strip()
+    if not raw:
+        return _CHART_TYPE_LABELS_ZH.get(chart_type, chart_type or "数据图表")
+    cleaned = raw
+    for pattern in _CHART_TITLE_TECHNICAL_PATTERNS:
+        cleaned = pattern.sub("", cleaned)
+    cleaned = re.sub(r"_{2,}", "_", cleaned).strip("_ ").strip()
+    # 如果清理后为空（title 全是技术标记），回退到类型中文短名，
+    # 而不是返回原始乱码 title —— 那正是用户"看不懂"的根源。
+    if not cleaned:
+        return _CHART_TYPE_LABELS_ZH.get(chart_type, chart_type or "数据图表")
+    # 截短到 30 个字符（按 Unicode 字符计数）以避免前端溢出。
+    if len(cleaned) > 30:
+        cleaned = cleaned[:30].rstrip("_ ,，;；-—")
+    # 截短后可能再次为空（前 30 字符全是分隔符），二次回退到类型短名。
+    if not cleaned:
+        return _CHART_TYPE_LABELS_ZH.get(chart_type, chart_type or "数据图表")
+    return cleaned
+
+
+def _chart_filename_stem(chart_type: str, existing_count: int) -> str:
+    """Build a short, stable filename stem like ``柱状图_1``.
+
+    ``existing_count`` is the number of charts already registered in this
+    workspace so each new chart of the same type gets a unique incrementing
+    suffix instead of a uuid hash. 用自然数字 1/2/3 而非 01/02/03：前者
+    读起来更像人话（"柱状图 1"），与 Observable / Plot 等业界惯例一致。
+    """
+    label = _CHART_TYPE_LABELS_ZH.get(chart_type, chart_type or "图表")
+    return f"{label}_{existing_count + 1}"
 
 
 def _normalize_column_names(
@@ -1061,7 +1179,12 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             fig.update_traces(marker={"size": 9, "opacity": 0.82, "line": {"width": 0.7, "color": "white"}}, selector={"type": "scatter"})
         if color:
             fig.update_layout(legend_title_text=_human_column_label(color))
-        stem = _safe_stem(title, chart_type)
+        # 文件名用"类型_序号"格式（如 柱状图_01），不再把 LLM 给的整段标题
+        # 塞进文件名——以前会出现"客户评分按产品分布_ANOVA_p_0_0012_η²_..."
+        # 这种看不懂的乱码文件名。display_title 才是 UI 上展示的人话标题。
+        existing_chart_count = workspace.count_artifacts("visualization")
+        stem = _chart_filename_stem(chart_type, existing_chart_count)
+        display_title = _humanize_chart_title(title, chart_type)
         html_path = workspace.artifacts_dir / f"{stem}.html"
         shared_plotly = workspace.ensure_plotly_bundle()
         relative_script = shared_plotly.relative_to(workspace.artifacts_dir).as_posix() if shared_plotly else None
@@ -1087,17 +1210,25 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                     "modeBarButtonsToRemove": ["lasso2d", "select2d"],
                 },
             )
-            html_path.write_text(
+            # XSS 防护：Plotly to_html 把 figure 数据序列化进 <script> 标签，
+            # json.dumps 默认不转义 </script>。若用户 CSV 某列含
+            # "</script><script>alert(1)</script>"，LLM 用该列作 x/color，
+            # 浏览器解析时第一个 </script> 会提前关闭 Plotly 的 script 块，
+            # 剩余 JS 在 iframe 上下文执行。统一转义 <\/script> 避免注入。
+            div = div.replace("</script>", "<\\/script>")
+            # 原子写：进程被 kill / 磁盘满时不会留下半截 HTML 让预览 iframe
+            # 加载到损坏页面。tmp + os.replace 对同目录文件是原子的。
+            _atomic_write_text(
+                html_path,
                 html_template.format(
-                    title=escape(title or chart_type),
+                    title=escape(display_title),
                     script=relative_script,
                     div=div,
                 ),
-                encoding="utf-8",
             )
         else:
             fig.write_html(html_path, include_plotlyjs=True, full_html=True)
-        workspace.register_artifact(html_path, "visualization", title or chart_type)
+        workspace.register_artifact(html_path, "visualization", display_title)
         json_path = workspace.artifacts_dir / f"{stem}.plotly.json"
         fig.write_json(json_path)
         workspace.register_artifact(json_path, "chart_data", "Plotly figure JSON")

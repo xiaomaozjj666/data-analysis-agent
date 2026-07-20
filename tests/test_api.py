@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from collections import deque
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -447,3 +448,140 @@ def _short_wait_for(awaitable, timeout=None):
     """Replacement for asyncio.wait_for that times out quickly to force a
     heartbeat within the test window."""
     return _real_wait_for(awaitable, timeout=0.05)
+
+
+def test_client_identifier_ignores_xff_when_no_trusted_proxy(monkeypatch):
+    """Without DATA_AGENT_TRUSTED_PROXY_HOPS we must not trust X-Forwarded-For.
+
+    A client connecting directly can forge any XFF header; trusting it would
+    let an attacker bypass per-IP rate limits by rotating fake IPs. Default
+    config must fall back to the direct socket address.
+    """
+    monkeypatch.delenv("DATA_AGENT_TRUSTED_PROXY_HOPS", raising=False)
+    monkeypatch.setattr(api, "_trusted_proxy_hops", 0)
+
+    class FakeRequest:
+        headers = {"x-forwarded-for": "1.2.3.4"}
+        client = type("Client", (), {"host": "5.6.7.8"})()
+
+    assert api._client_identifier(FakeRequest()) == "5.6.7.8"
+
+
+def test_client_identifier_takes_nth_from_last_xff_with_trusted_hops(monkeypatch):
+    """With N trusted hops, take XFF[-N] as the client identifier.
+
+    Each trusted proxy appends the IP it received the request from to XFF.
+    The Nth-from-last entry is therefore the first untrusted hop — the real
+    client — and cannot be forged by the client itself.
+    """
+    monkeypatch.setattr(api, "_trusted_proxy_hops", 1)
+
+    class FakeRequest:
+        headers = {"x-forwarded-for": "spoofed, 203.0.113.5"}
+        client = type("Client", (), {"host": "10.0.0.1"})()
+
+    # XFF[-1] is the entry appended by our direct proxy (trusted).
+    assert api._client_identifier(FakeRequest()) == "203.0.113.5"
+
+
+def test_client_identifier_falls_back_to_direct_host_on_short_xff(monkeypatch):
+    """If XFF has fewer entries than trusted hops, use the socket host.
+
+    This happens for internal health checks that bypass the proxy layer.
+    """
+    monkeypatch.setattr(api, "_trusted_proxy_hops", 2)
+
+    class FakeRequest:
+        headers = {"x-forwarded-for": "203.0.113.5"}
+        client = type("Client", (), {"host": "10.0.0.1"})()
+
+    assert api._client_identifier(FakeRequest()) == "10.0.0.1"
+
+
+def test_rate_limit_bucket_dict_is_bounded(monkeypatch):
+    """_prune_rate_buckets_locked must keep the dict under MAX_RATE_LIMIT_BUCKETS.
+
+    An attacker forging unique XFF values can otherwise manufacture unlimited
+    bucket entries and OOM the process. The pruner must evict stale entries
+    and, if still over the cap, drop the oldest 25% by last-seen timestamp.
+    """
+    # Inject a tiny cap so the test doesn't need to create 10K entries.
+    monkeypatch.setattr(api, "MAX_RATE_LIMIT_BUCKETS", 4)
+
+    # Reset to a fresh dict; other tests may have populated it.
+    fresh_buckets: dict[str, deque] = {}
+    monkeypatch.setattr(api, "request_buckets", fresh_buckets)
+
+    # Fill past the cap with staggered timestamps so the LRU path runs.
+    now = 1000.0
+    for index in range(8):
+        fresh_buckets[f"ip-{index}"] = deque([now + index], maxlen=None)
+
+    # Mark two buckets stale (60s+ old) to exercise the first eviction path.
+    fresh_buckets["ip-stale-1"] = deque([now - 120], maxlen=None)
+    fresh_buckets["ip-stale-2"] = deque([now - 90], maxlen=None)
+
+    with api.request_buckets_lock:
+        api._prune_rate_buckets_locked(now=now + 1.0)
+
+    # Stale buckets must be gone; total size must drop under the cap.
+    assert "ip-stale-1" not in fresh_buckets
+    assert "ip-stale-2" not in fresh_buckets
+    assert len(fresh_buckets) <= api.MAX_RATE_LIMIT_BUCKETS
+
+
+def test_analyze_persists_chat_within_run_lock(tmp_path, monkeypatch):
+    """chat.extend / last_result / persist must all happen while run_lock is held.
+
+    The original implementation released run_lock in the finally block, then
+    wrote chat/last_result/persist outside the lock. A concurrent request
+    could acquire run_lock between those steps and see stale chat history.
+    This test simulates that race by holding run_lock immediately after
+    analyze() releases it and verifying the chat is already updated.
+    """
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = client.post(
+        "/api/sessions",
+        files={"file": ("sales.csv", b"region,sales\nEast,100\n", "text/csv")},
+    ).json()
+    session_id = uploaded["id"]
+
+    monkeypatch.setattr(
+        api,
+        "_effective_settings",
+        lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs"),
+    )
+
+    class FastAgent:
+        def __init__(self, workspace, settings, cancel_event=None):
+            self.workspace = workspace
+
+        def run(self, query, history=None):
+            return AnalysisResult(
+                response="分析完成",
+                trace=[],
+                artifacts=list(self.workspace.artifacts),
+                dataset_profile=self.workspace.profile(),
+                plan=[],
+                completed_steps=[],
+            )
+
+    monkeypatch.setattr(api, "DataAnalysisAgent", FastAgent)
+
+    response = client.post(
+        f"/api/sessions/{session_id}/analyze",
+        json={"task": "检查数据"},
+    )
+    assert response.status_code == 200
+
+    # The sync analyze() path must have already extended chat + persisted
+    # before releasing run_lock. Verify by reading the manifest: it should
+    # contain the user+assistant conversation we just produced.
+    manifest = json.loads(
+        (tmp_path / "runs" / session_id / "session.json").read_text(encoding="utf-8")
+    )
+    roles = [item["role"] for item in manifest["chat"]]
+    assert "user" in roles
+    assert "assistant" in roles
+    assert manifest["last_result"]["response"] == "分析完成"
