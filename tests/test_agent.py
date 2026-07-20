@@ -242,7 +242,7 @@ def test_finalize_fallback_message_when_model_fails(workspace):
         def _generate(self, messages, stop=None, run_manager=None, **kwargs):
             # finalize 的 prompt 通常是 str（非 tool call），检测到就返回空内容。
             for message in messages:
-                if isinstance(message.content, str) and "最终中文数据分析报告" in message.content:
+                if isinstance(message.content, str) and "中文数据分析报告" in message.content:
                     self._finalize_called = True
                     return ChatResult(generations=[ChatGeneration(message=AIMessage(content=""))])
             return super()._generate(messages, stop, run_manager, **kwargs)
