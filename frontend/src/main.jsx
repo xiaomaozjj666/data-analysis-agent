@@ -1433,7 +1433,7 @@ function App() {
         <header className="topbar">
           <div className="breadcrumb">
             <span>分析工作区</span>
-            <ChevronDown size={13} />
+            <ChevronRight size={13} />
             <strong>{session?.filename || "未命名分析"}</strong>
           </div>
           <div className="api-status"><i className={settings ? "online" : ""} />{settings ? "服务正常" : "连接中"}</div>
@@ -1441,7 +1441,7 @@ function App() {
 
         {error && (
           <div className="error-banner" role="alert">
-            <Activity size={16} />
+            <AlertTriangle size={16} />
             <span>{error}</span>
             {retryOffer && !running && (
               <button
