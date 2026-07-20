@@ -1,3 +1,18 @@
+"""环境变量驱动的 Agent 运行时配置。
+
+所有配置项均可通过环境变量覆盖，优先级：
+    代码显式赋值 > 环境变量 > dataclass 默认值
+
+支持的模型提供商：
+- deepseek: 使用 langchain-deepseek SDK，支持 thinking mode。
+- openai: 使用 langchain-openai SDK，兼容任何 OpenAI API 格式的服务。
+
+典型用法::
+
+    settings = AgentSettings.from_env()  # 从 .env 和环境变量加载
+    settings.validate_for_model()        # 创建模型前验证必填项
+"""
+
 from __future__ import annotations
 
 import os
@@ -6,13 +21,41 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+#: DeepSeek 官方 API 地址。
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+
+#: 支持的模型提供商集合。
 SUPPORTED_PROVIDERS = {"deepseek", "openai"}
 
 
 @dataclass(slots=True)
 class AgentSettings:
-    """Runtime configuration for the model and graph."""
+    """模型和图运行时配置。
+
+    所有字段均可通过环境变量覆盖，见 ``from_env()`` 中的映射关系。
+    资源限制类字段（max_rows、max_cells、max_upload_bytes 等）用于
+    API 层的输入验证，防止意外资源耗尽。
+
+    Attributes:
+        provider: 模型提供商（deepseek / openai）。
+        api_key: 模型 API 密钥。
+        model: 模型名称。
+        base_url: API 基础地址（None 表示使用提供商默认）。
+        thinking_enabled: 是否启用 DeepSeek thinking mode。
+        reasoning_effort: 推理努力程度（high / max）。
+        temperature: 采样温度（thinking mode 下忽略）。
+        max_iterations: ReAct 执行器单步最大迭代数。
+        max_plan_steps: 计划最大步骤数。
+        timeout_seconds: 单次 LLM 调用超时。
+        runs_dir: 工作区根目录。
+        max_upload_bytes: 上传文件大小上限。
+        max_rows: 数据最大行数。
+        max_cells: 数据最大单元格数。
+        max_active_sessions: 最大活跃会话数。
+        session_ttl_hours: 会话过期时间。
+        rate_limit_per_minute: 每客户端每分钟请求上限。
+        max_concurrent_analyses: 全局并发分析上限。
+    """
 
     provider: str = "deepseek"
     api_key: str = ""
@@ -39,6 +82,15 @@ class AgentSettings:
         env_file: str | Path | None = None,
         provider: str | None = None,
     ) -> AgentSettings:
+        """从环境变量和 .env 文件加载配置。
+
+        Args:
+            env_file: 可选的 .env 文件路径，默认自动查找项目根目录。
+            provider: 强制指定提供商，覆盖 MODEL_PROVIDER 环境变量。
+
+        Returns:
+            填充完毕的 AgentSettings 实例（未验证，需调用 validate_for_model）。
+        """
         load_dotenv(env_file)
         selected_provider = (provider or os.getenv("MODEL_PROVIDER", "deepseek")).strip().lower()
         if selected_provider == "deepseek":
@@ -75,6 +127,11 @@ class AgentSettings:
         )
 
     def validate_for_model(self) -> None:
+        """验证创建 Chat Model 所需的必填配置项。
+
+        Raises:
+            ValueError: 当 provider、api_key、model 或其他配置不合法时。
+        """
         if self.provider not in SUPPORTED_PROVIDERS:
             raise ValueError(f"不支持的模型提供商：{self.provider}。可用值：deepseek、openai。")
         if not self.api_key:

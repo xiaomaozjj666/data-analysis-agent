@@ -1,3 +1,13 @@
+"""命令行接口：通过 Typer 提供本地数据分析能力。
+
+用法::
+
+    data-agent analyze data.csv --task "分析销售趋势"
+    data-agent analyze data.xlsx --provider openai --model gpt-4.1-mini
+
+输出为 Markdown 格式的分析报告，产物路径打印在报告下方。
+"""
+
 from __future__ import annotations
 
 from pathlib import Path

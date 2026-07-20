@@ -1,5 +1,20 @@
+"""数据工作区管理：为每个分析会话提供隔离的文件系统和 DataFrame 生命周期管理。
+
+核心职责：
+- 文件加载：支持 CSV/TSV/Excel/JSON/JSONL/Parquet，自动探测编码和分隔符。
+- 产物管理：图表、清洗数据、导出文件统一注册在 artifacts 目录。
+- 状态快照/回滚：每步执行前 snapshot，失败时 restore，保证数据一致性。
+- 持久化：checkpoint 保存活动 DataFrame，重启后可恢复。
+- Profile 缓存：避免 finalize 等节点重复计算开销显著的概况统计。
+
+线程安全：
+    DataWorkspace 不是线程安全的。API 层通过 SessionRecord.run_lock
+    保证同一会话同一时刻只有一个分析线程在操作 workspace。
+"""
+
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shutil
@@ -12,9 +27,32 @@ import pandas as pd
 
 from data_agent.serialization import to_jsonable
 
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# 命名常量
+# ---------------------------------------------------------------------------
+
+#: 支持的数据文件扩展名集合。
 SUPPORTED_EXTENSIONS = {".csv", ".tsv", ".xlsx", ".xls", ".json", ".jsonl", ".parquet"}
+
+#: 共享 Plotly.js 束缚文件名，每个工作区只写一次，所有图表复用。
 PLOTLY_BUNDLE_NAME = "plotly.min.js"
+
+#: 活动 DataFrame 的 checkpoint 文件名，用于重启后恢复。
 WORKSPACE_STATE_NAME = "workspace_state.parquet"
+
+#: 流式上传时的分块大小（1 MB），平衡内存占用和 I/O 次数。
+_UPLOAD_CHUNK_SIZE = 1024 * 1024
+
+#: 拒绝加载的最大列数，防止意外资源耗尽。
+_MAX_COLUMNS = 1000
+
+#: Profile 缓存最大条目数，超过后清空重建。
+_PROFILE_CACHE_MAX_ENTRIES = 2
+
+#: CSV 编码探测顺序：UTF-8 BOM → UTF-8 → GB18030（覆盖中文 Windows 场景）。
+_CSV_ENCODING_CANDIDATES = ("utf-8-sig", "utf-8", "gb18030")
 
 
 def _atomic_write_text(path: Path, content: str, *, encoding: str = "utf-8") -> None:
@@ -38,6 +76,15 @@ def _atomic_write_text(path: Path, content: str, *, encoding: str = "utf-8") -> 
 
 @dataclass(frozen=True, slots=True)
 class Artifact:
+    """工作区中已注册的产物文件元数据。
+
+    Attributes:
+        name: 文件名（不含目录）。
+        kind: 产物类型（visualization / dataset / image / chart_data）。
+        path: 绝对路径。
+        description: 面向用户的简短描述。
+    """
+
     name: str
     kind: str
     path: Path
@@ -53,7 +100,22 @@ class Artifact:
 
 
 class DataWorkspace:
-    """Owns one analysis session, its active DataFrame and generated artifacts."""
+    """单个分析会话的数据工作区，管理活动 DataFrame 和生成的产物文件。
+
+    目录结构::
+
+        <root>/<session_id>/
+        ├── input/          # 上传的原始数据文件
+        ├── artifacts/      # 图表、清洗数据、导出文件等产物
+        └── workspace_state.parquet  # 活动 DataFrame 的 checkpoint
+
+    生命周期：
+        1. 构造时创建目录结构。
+        2. load() 加载数据文件到内存。
+        3. Agent 工具通过 dataframe 属性读写数据。
+        4. save_checkpoint() / restore_checkpoint() 支持重启恢复。
+        5. cleanup() 在会话过期时删除整个目录。
+    """
 
     def __init__(self, root: str | Path, session_id: str | None = None) -> None:
         safe_id = re.sub(r"[^a-zA-Z0-9_-]", "_", session_id or uuid4().hex)
@@ -118,7 +180,22 @@ class DataWorkspace:
         return destination
 
     def save_upload_stream(self, filename: str, stream: Any, max_bytes: int) -> Path:
-        """Write an uploaded file incrementally so the request does not duplicate it in RAM."""
+        """流式写入上传文件，避免在内存中复制整个文件。
+
+        以 _UPLOAD_CHUNK_SIZE 分块读取，超过 max_bytes 时立即报错并清理
+        已写入的部分文件。
+
+        Args:
+            filename: 原始文件名。
+            stream: 文件类对象（支持 read(size)）。
+            max_bytes: 允许的最大字节数。
+
+        Returns:
+            写入的目标文件路径。
+
+        Raises:
+            ValueError: 文件类型不支持或超过大小限制。
+        """
         safe_name = re.sub(r"[^\w.\-()\u4e00-\u9fff]", "_", Path(filename).name)
         if Path(safe_name).suffix.lower() not in SUPPORTED_EXTENSIONS:
             raise ValueError(f"不支持的文件类型。支持：{', '.join(sorted(SUPPORTED_EXTENSIONS))}")
@@ -127,7 +204,7 @@ class DataWorkspace:
         try:
             with destination.open("wb") as target:
                 while True:
-                    chunk = stream.read(1024 * 1024)
+                    chunk = stream.read(_UPLOAD_CHUNK_SIZE)
                     if not chunk:
                         break
                     total += len(chunk)
@@ -140,6 +217,22 @@ class DataWorkspace:
         return destination
 
     def load(self, source: str | Path, copy_into_workspace: bool = False) -> dict[str, Any]:
+        """加载数据文件到工作区并返回数据概况。
+
+        支持 CSV/TSV（自动探测编码和分隔符）、Excel、Parquet、JSON/JSONL。
+        加载失败时抛出 ValueError 或 FileNotFoundError，不会留下部分状态。
+
+        Args:
+            source: 数据文件路径。
+            copy_into_workspace: 是否将文件复制到 input/ 目录（部署场景用）。
+
+        Returns:
+            数据概况字典（同 profile() 返回值）。
+
+        Raises:
+            FileNotFoundError: 文件不存在。
+            ValueError: 格式不支持、解析失败、列数超限。
+        """
         path = Path(source).expanduser().resolve()
         if not path.is_file():
             raise FileNotFoundError(f"数据文件不存在：{path}")
@@ -171,17 +264,22 @@ class DataWorkspace:
 
         if df.empty and len(df.columns) == 0:
             raise ValueError("数据文件为空或无法识别出列。")
-        if len(df.columns) > 1000:
-            raise ValueError("列数超过 1000，拒绝加载以防止意外资源耗尽。")
+        if len(df.columns) > _MAX_COLUMNS:
+            raise ValueError(f"列数超过 {_MAX_COLUMNS}，拒绝加载以防止意外资源耗尽。")
         self._df = df
         self._source_row_count = len(df)
         self.source_path = path
         return self.profile(sample_rows=5)
 
     def _read_delimited(self, path: Path, suffix: str) -> pd.DataFrame:
+        """读取分隔符文件，按 _CSV_ENCODING_CANDIDATES 顺序探测编码。
+
+        首次尝试严格模式（on_bad_lines='error'），失败后回退到跳过坏行
+        并记录警告，确保尽可能多地保留有效数据。
+        """
         sep = "\t" if suffix == ".tsv" else None
         last_error: Exception | None = None
-        for encoding in ("utf-8-sig", "utf-8", "gb18030"):
+        for encoding in _CSV_ENCODING_CANDIDATES:
             try:
                 return pd.read_csv(path, sep=sep, engine="python", encoding=encoding, on_bad_lines="error")
             except pd.errors.ParserError as exc:
@@ -328,6 +426,19 @@ class DataWorkspace:
         }
 
     def profile(self, sample_rows: int = 5) -> dict[str, Any]:
+        """计算并返回数据集概况，包含缓存机制避免重复计算。
+
+        缓存策略：以 (id(df), sample_rows) 为键，同一 DataFrame 对象且
+        sample_rows 相同时直接返回缓存。dataframe setter 会自动清除缓存。
+        最多保留 _PROFILE_CACHE_MAX_ENTRIES 个条目，超过后清空重建。
+
+        Args:
+            sample_rows: 返回的样例行数（1-20）。
+
+        Returns:
+            包含 rows、columns、column_info、duplicate_rows、memory_mb、
+            sample 等字段的字典。
+        """
         sample_rows = max(1, min(int(sample_rows), 20))
         # 使用 (id(df), sample_rows) 作为缓存键：同一 DataFrame 对象且
         # sample_rows 相同时直接返回缓存，避免 finalize 重复计算。
@@ -359,8 +470,8 @@ class DataWorkspace:
                 "sample": df.head(sample_rows),
             }
         )
-        # 只保留最近 2 个缓存条目，避免内存泄漏。
-        if len(self._profile_cache) >= 2:
+        # 只保留最近 _PROFILE_CACHE_MAX_ENTRIES 个缓存条目，避免内存泄漏。
+        if len(self._profile_cache) >= _PROFILE_CACHE_MAX_ENTRIES:
             self._profile_cache.clear()
         self._profile_cache[cache_key] = result
         return result

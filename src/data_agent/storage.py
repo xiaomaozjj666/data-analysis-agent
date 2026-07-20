@@ -1,3 +1,18 @@
+"""会话持久化存储层：支持本地和 S3 兼容对象存储两种后端。
+
+架构设计：
+- ``SessionStorage`` Protocol 定义统一接口，便于扩展新后端。
+- ``LocalSessionStorage``: 无操作实现，会话仅存在于进程内存和本地磁盘。
+- ``S3SessionStorage``: 将整个会话目录打包为 ZIP 上传到 S3/R2 bucket，
+  支持跨重启恢复。下载时带路径穿越检查，防止恶意归档注入。
+- ``build_session_storage()``: 工厂函数，根据 DATA_AGENT_STORAGE_BACKEND
+  环境变量选择后端。
+
+线程安全：
+    S3SessionStorage 的 boto3 client 是线程安全的（botocore 内部有
+    连接池和锁）。LocalSessionStorage 无状态，天然线程安全。
+"""
+
 from __future__ import annotations
 
 import os
@@ -7,6 +22,15 @@ from typing import Protocol
 
 
 class SessionStorage(Protocol):
+    """会话持久化存储接口。
+
+    实现类必须提供以下能力：
+    - sync_session: 将本地会话目录同步到远端。
+    - restore_session: 从远端恢复会话到本地。
+    - delete_session: 删除远端会话归档。
+    - healthcheck: 返回后端健康状态。
+    """
+
     backend: str
     persistent: bool
 
@@ -20,6 +44,11 @@ class SessionStorage(Protocol):
 
 
 class LocalSessionStorage:
+    """本地存储后端：无操作实现，会话仅存在于进程内存和本地磁盘。
+
+    适用于开发环境和单机部署，重启后会话不可恢复（但本地文件仍在）。
+    """
+
     backend = "local"
     persistent = False
 
@@ -37,7 +66,17 @@ class LocalSessionStorage:
 
 
 class S3SessionStorage:
-    """Persist an isolated session directory as one archive in an S3-compatible bucket."""
+    """S3 兼容对象存储后端：将会话目录打包为 ZIP 归档存储。
+
+    支持 Cloudflare R2、AWS S3、MinIO 等任何 S3 兼容服务。
+    每次 sync 生成临时 ZIP 上传后立即删除，不占用额外磁盘。
+    restore 时带路径穿越检查，拒绝包含 ``..`` 或绝对路径的恶意归档。
+
+    Attributes:
+        bucket: 存储桶名称。
+        endpoint_url: S3 服务端点。
+        prefix: 归档对象的键前缀。
+    """
 
     backend = "s3"
     persistent = True
@@ -136,6 +175,23 @@ class S3SessionStorage:
 
 
 def build_session_storage() -> SessionStorage:
+    """根据环境变量构建会话存储后端。
+
+    环境变量：
+    - DATA_AGENT_STORAGE_BACKEND: "local"（默认）或 "s3"。
+    - DATA_AGENT_R2_ACCOUNT_ID: Cloudflare R2 账户 ID（自动生成 endpoint）。
+    - DATA_AGENT_STORAGE_ENDPOINT_URL: 显式 S3 端点（优先于 R2 自动生成）。
+    - DATA_AGENT_STORAGE_BUCKET: 存储桶名称。
+    - AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY: 认证凭据。
+    - DATA_AGENT_STORAGE_PREFIX: 对象键前缀。
+    - AWS_DEFAULT_REGION: 区域（默认 "auto"）。
+
+    Returns:
+        SessionStorage 实现实例。
+
+    Raises:
+        ValueError: 后端配置不完整或不支持的 backend 值。
+    """
     backend = os.getenv("DATA_AGENT_STORAGE_BACKEND", "local").strip().lower()
     if backend in {"", "local"}:
         return LocalSessionStorage()

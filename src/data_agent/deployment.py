@@ -1,3 +1,18 @@
+"""LangSmith Agent Server 部署适配层。
+
+本模块将 DataAnalysisAgent 包装为 LangGraph 图，通过 langgraph.json 中的
+``graphs.data_analysis_agent`` 导出给 LangSmith Deployment 使用。
+
+与本地 API 的区别：
+- 每次调用创建全新的隔离工作区，不复用已有会话。
+- 数据集通过 dataset_id（引用已有会话）或受控的 dataset_path 提供。
+- 分析完成后自动同步到对象存储（若配置了 S3 后端）。
+
+安全约束：
+- dataset_path 禁止绝对路径和 ``..`` 穿越，必须解析在 runs_dir 内。
+- dataset_id 必须匹配 ``[a-zA-Z0-9_-]{1,80}`` 格式。
+"""
+
 from __future__ import annotations
 
 import re

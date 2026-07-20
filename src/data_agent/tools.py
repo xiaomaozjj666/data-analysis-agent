@@ -1,5 +1,26 @@
+"""数据分析工具集：为 ReAct 执行器提供会话绑定的数据操作能力。
+
+本模块通过 ``build_tools(workspace)`` 工厂函数生成一组 LangChain BaseTool，
+包括：
+- inspect_data: 数据集概况检查（形状、类型、缺失、重复、样例）
+- repair_data_format: 保守的格式修复（不触碰业务数据）
+- clean_data: 带安全护栏的数据清洗
+- transform_data: 非破坏性筛选/排序视图
+- statistical_analysis: 描述统计、相关、分组、假设检验、回归
+- create_visualization: Plotly 交互式图表生成
+- export_data: 数据导出
+
+设计原则：
+- 所有工具通过闭包绑定同一个 DataWorkspace 实例，确保状态一致性。
+- 清洗和变换操作带有严格的安全护栏（最小行数、最大删除比例）。
+- 可视化自动检测极端值并提供主体尺度/全量视图切换，不修改原始数据。
+- 工具返回 JSON 字符串，由 json_text() 统一序列化，确保 NaN/Infinity
+  等非法 JSON 值被转为 null。
+"""
+
 from __future__ import annotations
 
+import logging
 import operator
 import re
 from html import escape
@@ -18,10 +39,30 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from data_agent.serialization import json_text
 from data_agent.workspace import DataWorkspace, _atomic_write_text
 
-# Upper bound on the cross-product reindex in _aggregate_for_chart. A 50×50
-# grid is already 2500 cells; beyond that the chart becomes unreadable and
-# the reindex dominates memory. Callers see the observed combinations only.
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# 命名常量
+# ---------------------------------------------------------------------------
+
+#: 分组图表 reindex 笛卡尔积上限。50×50 = 2500 单元格已足够，
+#: 超过此值图表不可读且 reindex 主导内存。调用方仅看到实际观测组合。
 _MAX_REINDEX_COMBINATIONS = 2_500
+
+#: 散点矩阵支持的最大维度数，超过后图表不可读且渲染性能急剧下降。
+_SCATTER_MATRIX_MAX_DIMENSIONS = 8
+
+#: 卡方检验拒绝的最大基数，超过此值应建议用户合并类别。
+_CHI_SQUARE_MAX_CARDINALITY = 100
+
+#: groupby 结果返回的最大行数，防止高基数分组擑爆 context window。
+_GROUPBY_MAX_ROWS = 500
+
+#: 图表标题清理后的最大字符数，避免前端溢出。
+_CHART_TITLE_MAX_CHARS = 30
+
+#: transform_data 的 limit 参数上限。
+_TRANSFORM_LIMIT_MAX = 1_000_000
 
 _CHART_COLORS = [
     "#245C55",
@@ -67,12 +108,14 @@ _HAS_RECORDS_COLUMN = "__has_records__"
 
 
 def _human_column_label(column: str | None) -> str:
+    """将英文列名映射为中文可读标签，未知列名用下划线转空格回退。"""
     if not column:
         return ""
     return _COLUMN_LABELS.get(column, str(column).replace("_", " ").strip())
 
 
 def _compact_number(value: float) -> str:
+    """将数值格式化为紧凑显示（如 1.2M、35.6K），用于图表标注。"""
     absolute = abs(value)
     if absolute >= 1_000_000:
         return f"{value / 1_000_000:.2f}M"
@@ -401,6 +444,7 @@ def _apply_outlier_scale_controls(
 
 
 def _checked_columns(df: pd.DataFrame, columns: list[str] | None) -> list[str]:
+    """验证并返回列名列表，列不存在时抛出带可用列提示的 ValueError。"""
     result = list(df.columns) if not columns else columns
     missing = [column for column in result if column not in df.columns]
     if missing:
@@ -409,6 +453,7 @@ def _checked_columns(df: pd.DataFrame, columns: list[str] | None) -> list[str]:
 
 
 def _numeric_columns(df: pd.DataFrame, columns: list[str] | None = None) -> list[str]:
+    """筛选数值类型列，无可用数值列时抛出 ValueError。"""
     candidates = _checked_columns(df, columns) if columns else list(df.select_dtypes(include=np.number))
     result = [column for column in candidates if pd.api.types.is_numeric_dtype(df[column])]
     if not result:
@@ -493,8 +538,8 @@ def _humanize_chart_title(title: str | None, chart_type: str) -> str:
     if not cleaned:
         return _CHART_TYPE_LABELS_ZH.get(chart_type, chart_type or "数据图表")
     # 截短到 30 个字符（按 Unicode 字符计数）以避免前端溢出。
-    if len(cleaned) > 30:
-        cleaned = cleaned[:30].rstrip("_ ,，;；-—")
+    if len(cleaned) > _CHART_TITLE_MAX_CHARS:
+        cleaned = cleaned[:_CHART_TITLE_MAX_CHARS].rstrip("_ ,，;；-—")
     # 截短后可能再次为空（前 30 字符全是分隔符），二次回退到类型短名。
     if not cleaned:
         return _CHART_TYPE_LABELS_ZH.get(chart_type, chart_type or "数据图表")
@@ -636,7 +681,17 @@ def _handle_outliers(
 
 
 def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
-    """Create session-bound tools used by the ReAct agent."""
+    """创建绑定到指定工作区的工具集，供 ReAct Agent 使用。
+
+    所有工具通过闭包捕获同一个 workspace 实例，确保数据状态一致性。
+    工具列表的顺序即为 Agent 看到的工具顺序。
+
+    Args:
+        workspace: 当前分析会话的数据工作区。
+
+    Returns:
+        7 个 BaseTool 实例的列表。
+    """
 
     @tool
     def inspect_data(sample_rows: int = 5) -> str:
@@ -824,8 +879,8 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             _checked_columns(df, select_columns)
             df = df[select_columns].copy()
         if limit is not None:
-            if not 1 <= limit <= 1_000_000:
-                raise ValueError("limit 必须在 1 到 1,000,000 之间。")
+            if not 1 <= limit <= _TRANSFORM_LIMIT_MAX:
+                raise ValueError(f"limit 必须在 1 到 {_TRANSFORM_LIMIT_MAX:,} 之间。")
             df = df.head(limit).copy()
         df = df.reset_index(drop=True)
         output = workspace.save_dataframe(
@@ -921,8 +976,8 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             # 补充每组样本量，帮助用户判断分组结果是否可靠。
             group_sizes = df.groupby(group_by, dropna=False).size().rename("_group_n_").reset_index()
             grouped = grouped.merge(group_sizes, on=group_by, how="left")
-            result["result"] = grouped.head(500)
-            result["truncated"] = len(grouped) > 500
+            result["result"] = grouped.head(_GROUPBY_MAX_ROWS)
+            result["truncated"] = len(grouped) > _GROUPBY_MAX_ROWS
             result["group_count"] = int(df[group_by].nunique(dropna=False))
         elif method in {"ttest_ind", "ttest_paired"}:
             numeric = _numeric_columns(df, columns)
@@ -978,7 +1033,7 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                 raise ValueError("卡方检验需要恰好两个分类列。")
             cardinality = {column: int(df[column].nunique(dropna=True)) for column in selected}
             max_cardinality = max(cardinality.values())
-            if max_cardinality > 100:
+            if max_cardinality > _CHI_SQUARE_MAX_CARDINALITY:
                 raise ValueError(
                     f"卡方检验拒绝高基数列：{cardinality}。"
                     "请对类别做合并、分组或改用其他统计方法。"
@@ -1143,8 +1198,8 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             fig = px.imshow(corr, text_auto=".2f", aspect="auto", title=title or "Correlation heatmap", color_continuous_scale="RdBu_r", zmin=-1, zmax=1)
         elif chart_type == "scatter_matrix":
             numeric = _numeric_columns(df, dimensions)
-            if len(numeric) > 8:
-                raise ValueError("scatter_matrix 最多支持 8 个维度，请缩小 dimensions。")
+            if len(numeric) > _SCATTER_MATRIX_MAX_DIMENSIONS:
+                raise ValueError(f"scatter_matrix 最多支持 {_SCATTER_MATRIX_MAX_DIMENSIONS} 个维度，请缩小 dimensions。")
             fig = px.scatter_matrix(**common, dimensions=numeric, color=color)
             fig.update_traces(diagonal_visible=False)
         elif chart_type == "sunburst":

@@ -1,3 +1,25 @@
+"""FastAPI 服务层：提供数据分析 Agent 的 HTTP API 和 SSE 流式接口。
+
+核心端点：
+- POST /api/sessions: 上传数据文件创建分析会话。
+- POST /api/sessions/{id}/analyze: 同步执行分析。
+- POST /api/sessions/{id}/analyze/stream: SSE 流式分析（前端主用）。
+- POST /api/sessions/{id}/cancel: 取消正在运行的分析。
+- GET  /api/sessions/{id}/artifacts/{name}/preview: 图表在线预览。
+- GET  /api/sessions/{id}/artifacts/{name}: 产物下载。
+
+安全机制：
+- APP_ACCESS_TOKEN 环境变量启用 Bearer Token 认证。
+- 滑动窗口速率限制（每客户端每分钟 N 次）。
+- 安全响应头（CSP、X-Frame-Options、Permissions-Policy 等）。
+- 产物预览通过 CSP 沙箱限制为纯脚本+样式文档。
+
+并发模型：
+- 分析在独立 daemon 线程中执行，通过 BoundedSemaphore 控制全局并发数。
+- SSE 流通过 asyncio.Queue 在工作线程和事件循环之间传递事件。
+- 取消通过 threading.Event + CancelCallback 实现亚秒级响应。
+"""
+
 from __future__ import annotations
 
 import asyncio

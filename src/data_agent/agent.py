@@ -1,6 +1,25 @@
+"""Plan-and-Execute + ReAct 双范式数据分析工作流引擎。
+
+本模块实现基于 LangGraph StateGraph 的五节点有向无环工作流：
+    validate_dataset → plan_analysis → execute_step ⇄ replan → finalize
+
+核心设计决策：
+- 规划器（Planner）使用 LLM structured output 生成 AnalysisPlan，失败时回退到
+  内置的 _fallback_plan，确保任何情况下都有可执行步骤。
+- 执行器（Executor）是一个 ReAct Agent，每步独立运行并带有 snapshot/rollback
+  保护，步骤失败不会污染主数据。
+- 重规划器（Replanner）在每步结束后审查进度，可提前终止或补充步骤。
+- 取消机制通过 CancelCallback 注入到每次 LLM/Tool 调用，实现亚秒级响应。
+
+线程安全：
+    DataAnalysisAgent 实例本身不是线程安全的。API 层通过 run_lock 保证
+    同一会话同一时刻只有一个分析在运行。
+"""
+
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from threading import Event
@@ -20,6 +39,30 @@ from pydantic import BaseModel, Field
 from data_agent.config import AgentSettings
 from data_agent.tools import build_tools
 from data_agent.workspace import DataWorkspace
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# 命名常量：消除散落在各节点中的魔法数字
+# ---------------------------------------------------------------------------
+
+#: 工具调用结果写入 trace 时的最大字符数，防止单条 trace 膨胀到 MB 级。
+_TRACE_DETAIL_MAX_CHARS = 4_000
+
+#: 规划提示词中数据概况的最大字符数，避免超大 profile 撑爆 context window。
+_PLAN_PROFILE_MAX_CHARS = 12_000
+
+#: 重规划审查载荷的最大字符数。
+_REPLAN_PAYLOAD_MAX_CHARS = 16_000
+
+#: 最终报告汇总时所有步骤 summary 的总字符预算。
+_FINALIZE_EVIDENCE_BUDGET = 30_000
+
+#: 每步 summary 在 finalize 中至少保留的字符数。
+_FINALIZE_PER_STEP_MIN_CHARS = 800
+
+#: 格式修复重试时展示给 LLM 的错误文本最大字符数。
+_FORMAT_ERROR_DISPLAY_MAX_CHARS = 3_000
 
 SYSTEM_PROMPT = """你是一名严谨、主动的数据分析专家。你通过 ReAct 循环选择下一项最小必要行动，
 并且只能使用提供的工具读取和变更数据。
@@ -45,6 +88,15 @@ SYSTEM_PROMPT = """你是一名严谨、主动的数据分析专家。你通过 
 
 
 class PlanStep(BaseModel):
+    """分析计划中的单个可执行步骤。
+
+    Attributes:
+        id: 稳定的短标识符（如 ``inspect``、``visualize``），用于去重和引用。
+        title: 面向用户展示的中文短标题。
+        instruction: 传递给 ReAct 执行器的具体任务指令。
+        success_criteria: 可观测的完成标准，供重规划器判断是否达标。
+    """
+
     id: str = Field(description="Stable short step id, for example inspect or visualize")
     title: str = Field(description="Short Chinese title shown to the user")
     instruction: str = Field(description="Concrete instruction for the ReAct executor")
@@ -52,17 +104,37 @@ class PlanStep(BaseModel):
 
 
 class AnalysisPlan(BaseModel):
+    """LLM 结构化输出的完整分析计划。
+
+    Attributes:
+        objective: 一句话分析目标，贯穿所有步骤。
+        steps: 2-8 个有序步骤，第一步必须是数据检查。
+    """
+
     objective: str = Field(description="One-sentence analysis objective")
     steps: list[PlanStep] = Field(min_length=1, max_length=8)
 
 
 class ReplanDecision(BaseModel):
+    """重规划器的结构化决策输出。
+
+    Attributes:
+        done: 是否已有足够证据结束分析。
+        rationale: 简短理由（不暴露内部推理链）。
+        remaining_steps: 若未结束，返回仍需执行的后续步骤。
+    """
+
     done: bool = Field(description="Whether enough evidence exists to finish")
     rationale: str = Field(description="Brief reason without hidden chain of thought")
     remaining_steps: list[PlanStep] = Field(default_factory=list, max_length=8)
 
 
 class WorkflowState(TypedDict, total=False):
+    """LangGraph 工作流的全局状态字典。
+
+    所有节点通过返回 partial dict 来更新状态（reducer 语义为覆盖）。
+    """
+
     query: str
     input_messages: list[BaseMessage]
     dataset_profile: dict[str, Any]
@@ -80,6 +152,17 @@ class WorkflowState(TypedDict, total=False):
 
 @dataclass(slots=True)
 class AnalysisResult:
+    """一次完整分析的最终输出，由 finalize 节点组装。
+
+    Attributes:
+        response: Markdown 格式的中文分析报告。
+        trace: 工具调用与结果的审计轨迹。
+        artifacts: 生成的图表、数据文件等产物元数据。
+        dataset_profile: 数据集概况快照。
+        plan: 原始计划步骤列表。
+        completed_steps: 各步骤执行结果（含 status 和 summary）。
+    """
+
     response: str
     trace: list[dict[str, str]]
     artifacts: list[dict[str, str]]
@@ -121,7 +204,20 @@ class CancelCallback(BaseCallbackHandler):
 
 
 def create_chat_model(settings: AgentSettings) -> BaseChatModel:
-    """Create the provider-native chat model required for reliable tool calling."""
+    """根据配置创建提供商原生的 Chat Model 实例。
+
+    使用提供商原生 SDK（ChatDeepSeek / ChatOpenAI）而非通用 ChatLiteLLM，
+    以确保 tool calling 的可靠性和 streaming 兼容性。
+
+    Args:
+        settings: 已验证的运行时配置。
+
+    Returns:
+        绑定了 API Key、超时和重试策略的 BaseChatModel 实例。
+
+    Raises:
+        ValueError: 当 provider/api_key/model 配置不合法时。
+    """
     settings.validate_for_model()
     if settings.provider == "deepseek":
         deepseek_args: dict[str, Any] = {
@@ -150,6 +246,11 @@ def create_chat_model(settings: AgentSettings) -> BaseChatModel:
 
 
 def _message_text(message: BaseMessage | None) -> str:
+    """从 LangChain 消息对象中提取纯文本内容。
+
+    兼容 str 和 list[dict] 两种 content 格式（后者出现在多模态/
+    thinking-mode 响应中）。返回空字符串表示无有效文本。
+    """
     if message is None:
         return ""
     content = message.content
@@ -244,6 +345,11 @@ def _apply_query_constraints(query: str, plan: AnalysisPlan) -> AnalysisPlan:
 
 
 def _tool_trace(messages: list[BaseMessage]) -> list[dict[str, str]]:
+    """从 ReAct 执行器的消息序列中提取工具调用审计轨迹。
+
+    每条 ToolMessage 的 detail 截断到 _TRACE_DETAIL_MAX_CHARS，
+    防止单条工具输出（如 inspect_data 返回的大 profile）撑爆 trace。
+    """
     trace: list[dict[str, str]] = []
     for message in messages:
         if isinstance(message, AIMessage) and message.tool_calls:
@@ -260,7 +366,7 @@ def _tool_trace(messages: list[BaseMessage]) -> list[dict[str, str]]:
                 {
                     "type": "tool_result",
                     "name": message.name or "tool",
-                    "detail": _message_text(message)[:4000],
+                    "detail": _message_text(message)[:_TRACE_DETAIL_MAX_CHARS],
                 }
             )
     return trace
@@ -276,6 +382,11 @@ def _format_error_text(messages: list[BaseMessage]) -> str:
 
 
 def _is_recoverable_format_error(text: str) -> bool:
+    """判断工具错误是否属于可通过 repair_data_format 自动修复的格式问题。
+
+    仅匹配明确的类型/编码/日期格式错误标记；业务数据异常（如离群值、
+    负数）不在此列，避免 Agent 擅自修改有效数据。
+    """
     markers = (
         "dtype",
         "datetime",
@@ -316,7 +427,18 @@ def _handle_tool_error(request: Any, handler: Any) -> ToolMessage:
 
 
 class DataAnalysisAgent:
-    """Plan-and-Execute LangGraph workflow with a ReAct executor."""
+    """Plan-and-Execute LangGraph 工作流，内嵌 ReAct 执行器。
+
+    生命周期：
+        1. 构造时绑定 workspace、settings、model 和 tools。
+        2. 调用 run() 或 stream() 启动一次完整分析。
+        3. 分析结束后通过 AnalysisResult 获取报告和产物。
+
+    取消语义：
+        外部通过 cancel_event.set() 请求取消；CancelCallback 在每次
+        LLM/Tool 调用入口检查 event，节点边界也会检查。取消后抛出
+        AnalysisCancelled，workspace 自动回滚到步骤开始前的快照。
+    """
 
     def __init__(
         self,
@@ -382,7 +504,7 @@ class DataAnalysisAgent:
         def plan_analysis(state: WorkflowState) -> dict[str, Any]:
             ensure_not_cancelled()
             self._enter_node("plan_analysis", "正在规划分析步骤")
-            profile_text = json.dumps(state["dataset_profile"], ensure_ascii=False)[:12000]
+            profile_text = json.dumps(state["dataset_profile"], ensure_ascii=False)[:_PLAN_PROFILE_MAX_CHARS]
             prompt = (
                 "为数据分析任务制定 2 到 6 个可执行步骤。第一步必须检查数据，最后应包含必要的图表和导出。"
                 "不要写空泛步骤，每步都要能由数据工具完成。\n"
@@ -455,7 +577,7 @@ class DataAnalysisAgent:
                         repair_result = repair_tool.invoke({})
                         recovery_note = f"已执行一次安全格式修复并重试：{repair_result}"
                         retry_prompt = (
-                            f"{execution_prompt}\n\n上一次工具调用失败：{format_error[:3000]}\n"
+                            f"{execution_prompt}\n\n上一次工具调用失败：{format_error[:_FORMAT_ERROR_DISPLAY_MAX_CHARS]}\n"
                             f"自动修复结果：{repair_result}\n请只重试当前步骤，不要扩大任务范围。"
                         )
                         retry = self.react_agent.invoke(
@@ -479,7 +601,7 @@ class DataAnalysisAgent:
                     "last_step_result": step_result,
                     "trace": [
                         *state.get("trace", []),
-                        {"type": "error", "name": step["id"], "detail": error[:4000]},
+                        {"type": "error", "name": step["id"], "detail": error[:_TRACE_DETAIL_MAX_CHARS]},
                     ],
                     "artifacts": list(self.workspace.artifacts),
                 }
@@ -560,7 +682,7 @@ class DataAnalysisAgent:
                 decision = self.replanner.invoke(
                     "审查数据分析计划的执行进度。根据已经获得的证据判断是否可以结束；"
                     "否则只返回仍然必要的后续步骤，删除重复或没有价值的步骤。\n"
-                    + json.dumps(review_payload, ensure_ascii=False)[:16000],
+                    + json.dumps(review_payload, ensure_ascii=False)[:_REPLAN_PAYLOAD_MAX_CHARS],
                     config=self._invoke_config(),
                 )
                 if not isinstance(decision, ReplanDecision):
@@ -595,8 +717,8 @@ class DataAnalysisAgent:
             # 按步数分配 evidence 预算，避免硬截断 30k 时把后面步骤的 summary 整段丢掉。
             # 每步至少保留 800 字符（短 summary 不受影响），剩余预算按步均分。
             completed_steps = state.get("completed_steps", []) or []
-            total_budget = 30000
-            per_step_min = 800
+            total_budget = _FINALIZE_EVIDENCE_BUDGET
+            per_step_min = _FINALIZE_PER_STEP_MIN_CHARS
             if completed_steps:
                 reserved = min(total_budget, per_step_min * len(completed_steps))
                 remaining = max(0, total_budget - reserved)
@@ -681,6 +803,19 @@ class DataAnalysisAgent:
         return {"query": query.strip(), "input_messages": messages}
 
     def run(self, query: str, history: list[BaseMessage] | None = None) -> AnalysisResult:
+        """同步执行完整分析流程并返回最终结果。
+
+        Args:
+            query: 用户的分析任务描述（中文）。
+            history: 可选的多轮对话历史，用于上下文续接。
+
+        Returns:
+            包含报告、轨迹、产物和计划执行情况的 AnalysisResult。
+
+        Raises:
+            ValueError: query 为空时。
+            AnalysisCancelled: 外部请求取消时。
+        """
         result = self.graph.invoke(
             self._input_state(query, history),
             config={
@@ -700,6 +835,18 @@ class DataAnalysisAgent:
     def stream(
         self, query: str, history: list[BaseMessage] | None = None
     ) -> Iterator[dict[str, Any]]:
+        """流式执行分析，逐节点 yield 中间状态更新。
+
+        每次 yield 一个 ``{"node": <节点名>, "data": <状态增量>}`` 字典，
+        API 层将其转换为 SSE 事件推送给前端。
+
+        Args:
+            query: 用户的分析任务描述。
+            history: 可选的多轮对话历史。
+
+        Yields:
+            包含节点名和状态增量的字典。
+        """
         config = {
             "configurable": {"thread_id": uuid4().hex},
             "recursion_limit": self.settings.max_plan_steps * 3 + 10,

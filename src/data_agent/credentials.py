@@ -1,3 +1,13 @@
+"""操作系统凭据存储集成：通过 keyring 安全持久化 API Key。
+
+使用操作系统原生凭据存储（Windows Credential Manager / macOS Keychain /
+Linux Secret Service），避免将明文 Key 写入磁盘文件。
+
+降级策略：
+    当凭据后端不可用时（无头 Linux 服务器、沙箱环境等），所有函数
+    优雅降级而非抛出异常，确保 API 服务仍可依赖内存中的 Key 运行。
+"""
+
 from __future__ import annotations
 
 import logging
