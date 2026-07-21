@@ -1,4 +1,4 @@
-import React, { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { Component, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -322,11 +322,22 @@ function Metric({ label, value, unit }) {
 // React.memo：App 在用户输入 task、刷新历史等场景下会重渲染，但 result
 // 通常不变。memo 让 ReportView 跳过这些无关重渲染，避免 ReactMarkdown
 // 重新解析 markdown AST（report 可能长达数千字）。
-const ReportView = React.memo(function ReportView({ result }) {
+const ReportView = React.memo(function ReportView({ result, streaming, onPreview, artifacts }) {
   // copyState: "idle" | "copied" | "failed"。之前只有 copied boolean，
   // 复制失败时静默吞掉错误，用户切到其他应用粘贴才发现是旧内容。
   const [copyState, setCopyState] = useState("idle");
   const [expanded, setExpanded] = useState(false);
+  const reportBodyRef = useRef(null);
+  // useDeferredValue: 流式追加时 ReactMarkdown 重解析整个 AST 会卡顿，
+  // defer 让高优先级更新（输入框交互）先走，Markdown 渲染延后。
+  const deferredResponse = useDeferredValue(result.response || "");
+
+  // 流式时自动滚动到底部，让用户看到最新生成的文字
+  useEffect(() => {
+    if (streaming && reportBodyRef.current) {
+      reportBodyRef.current.scrollTop = reportBodyRef.current.scrollHeight;
+    }
+  }, [deferredResponse, streaming]);
 
   const handleCopy = async () => {
     try {
@@ -347,7 +358,11 @@ const ReportView = React.memo(function ReportView({ result }) {
         <div className="report-title">
           <FileChartColumn size={15} />
           <span>分析报告</span>
-          <small className="report-count">{result.artifacts?.length || 0} 个产物</small>
+          {streaming ? (
+            <small className="report-count is-streaming"><LoaderCircle size={11} className="spin" />生成中</small>
+          ) : (
+            <small className="report-count">{result.artifacts?.length || 0} 个产物</small>
+          )}
         </div>
         <div className="report-actions">
           <button
@@ -356,29 +371,67 @@ const ReportView = React.memo(function ReportView({ result }) {
             onClick={handleCopy}
             title="复制全文"
             aria-label="复制报告全文"
+            disabled={streaming}
           >
             {copyState === "copied" ? <Check size={13} /> : <FileSpreadsheet size={13} />}
             {copyState === "copied" ? "已复制" : copyState === "failed" ? "复制失败" : "复制"}
           </button>
         </div>
       </div>
-      <div className={`report-body ${expanded ? "is-expanded" : ""}`}>
-        <ReactMarkdown remarkPlugins={REMARK_PLUGINS}>{result.response}</ReactMarkdown>
+      <div className={`report-body ${expanded ? "is-expanded" : ""} ${streaming ? "is-streaming" : ""}`} ref={reportBodyRef}>
+        {streaming && !deferredResponse ? (
+          <div className="report-placeholder"><LoaderCircle size={14} className="spin" />正在生成报告…</div>
+        ) : (
+          <>
+            <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={markdownComponents(artifacts, onPreview)}>
+              {deferredResponse}
+            </ReactMarkdown>
+            {streaming && <span className="report-cursor" aria-hidden="true" />}
+          </>
+        )}
       </div>
-      <button
-        type="button"
-        className="report-toggle"
-        onClick={() => setExpanded((value) => !value)}
-        aria-expanded={expanded}
-      >
-        <ChevronDown size={13} className={expanded ? "rot-180" : ""} />
-        {expanded ? "收起报告" : "展开完整报告"}
-      </button>
+      {!streaming && (
+        <button
+          type="button"
+          className="report-toggle"
+          onClick={() => setExpanded((value) => !value)}
+          aria-expanded={expanded}
+        >
+          <ChevronDown size={13} className={expanded ? "rot-180" : ""} />
+          {expanded ? "收起报告" : "展开完整报告"}
+        </button>
+      )}
     </article>
   );
 });
 
-function PlanPanel({ plan, completed, running, currentNodeTitle, elapsedSeconds }) {
+// ReactMarkdown 自定义 components：识别 ![描述](artifact:图表文件名) 语法，
+// 把图表占位符渲染为可点击的内嵌图表卡片，点击在模态框打开交互版。
+// 让图表直接嵌在报告正文中图文混排，而不是只能切到产物 tab 查看。
+function markdownComponents(artifacts, onPreview) {
+  return {
+    img: ({ src, alt }) => {
+      if (typeof src === "string" && src.startsWith("artifact:")) {
+        const name = src.slice("artifact:".length);
+        const artifact = artifacts?.find((a) => a.name === name);
+        if (artifact) {
+          const { Icon, label } = pickChartIcon(artifact.name);
+          return (
+            <button type="button" className="embedded-chart" onClick={() => onPreview?.(artifact)}>
+              <Icon size={18} />
+              <span>{alt || label || artifact.description || artifact.name}</span>
+              <ExternalLink size={12} />
+            </button>
+          );
+        }
+        return <em className="embedded-chart-missing">图表 {name} 已丢失</em>;
+      }
+      return <img src={src} alt={alt} />;
+    },
+  };
+}
+
+function PlanPanel({ plan, completed, running, currentNodeTitle, elapsedSeconds, toolTrace }) {
   const completedIds = new Set((completed || []).map((item) => item.id));
   const doneCount = plan.filter((item) => completedIds.has(item.id)).length;
   // 显示耗时：运行中显示"已耗时"，完成时显示"总耗时"。
@@ -386,6 +439,8 @@ function PlanPanel({ plan, completed, running, currentNodeTitle, elapsedSeconds 
   const hasTiming = elapsedSeconds != null && elapsedSeconds >= 0;
   const elapsedLabel = running ? "已耗时" : plan.length ? "总耗时" : "";
   const isCompleted = !running && plan.length > 0;
+  // 工具调用时间线：显示最近 8 条，让用户看到 ReAct 内部正在做什么
+  const recentTools = (toolTrace || []).slice(-8);
 
   return (
     <aside className="plan-panel" aria-label="执行记录">
@@ -454,6 +509,31 @@ function PlanPanel({ plan, completed, running, currentNodeTitle, elapsedSeconds 
         </ol>
       )}
 
+      {/* 工具调用时间线：实时展示 ReAct 内部工具调用，让用户看到"正在读取数据
+          → 正在清洗 → 正在生成图表"的过程，而不是只看到"正在执行 (2/4)"等 30 秒 */}
+      {recentTools.length > 0 && (
+        <div className="tool-trace" aria-label="工具调用时间线">
+          <div className="tool-trace-label">
+            <Activity size={12} />
+            <span>工具调用</span>
+            <small>{recentTools.length}</small>
+          </div>
+          <ul className="tool-trace-list">
+            {recentTools.map((tool) => (
+              <li key={tool.call_id} className={tool.status === "running" ? "is-running" : "is-done"}>
+                <span className="tool-dot" aria-hidden="true" />
+                <span className="tool-name">{TOOL_LABELS[tool.name] || tool.name}</span>
+                {tool.status === "running" ? (
+                  <LoaderCircle size={10} className="spin" />
+                ) : (
+                  <span className="tool-duration">{tool.duration_ms ? `${tool.duration_ms}ms` : ""}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <div className="architecture-note">
         <Network size={14} />
         <span>Plan &amp; Execute</span>
@@ -463,6 +543,131 @@ function PlanPanel({ plan, completed, running, currentNodeTitle, elapsedSeconds 
     </aside>
   );
 }
+
+// 多轮对话线程：在主报告下方展示追问历史 + 追问输入框。
+// 设计参考 ChatGPT / Claude / Linear 的对话流：
+//   - 用户气泡右对齐 + 主色底，assistant 气泡左对齐 + 卡片底
+//   - assistant 气泡内嵌 Markdown 渲染 + 工具调用 mini 时间线
+//   - 流式时显示闪烁光标，让用户知道回答正在写出
+//   - 底部固定追问输入框，支持 Ctrl+Enter 提交
+const ConversationThread = React.memo(function ConversationThread({
+  messages, input, onInputChange, onSubmit, onStop, running, disabled, onPreview, artifacts,
+}) {
+  const listRef = useRef(null);
+  const deferredLastContent = useDeferredValue(
+    messages.length ? messages[messages.length - 1].content || "" : ""
+  );
+
+  // 流式时自动滚动到底部，让用户看到最新生成的文字
+  useEffect(() => {
+    if (listRef.current) {
+      listRef.current.scrollTop = listRef.current.scrollHeight;
+    }
+  }, [deferredLastContent, messages.length, running]);
+
+  const handleKeyDown = (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+      event.preventDefault();
+      if (!running && input.trim() && !disabled) onSubmit();
+    }
+  };
+
+  return (
+    <section className="conversation-thread" aria-label="追问对话">
+      <div className="conversation-header">
+        <div>
+          <span className="section-kicker">继续对话</span>
+          <h2>追问与补充分析</h2>
+        </div>
+        <small>基于当前数据集直接回答，无需重跑完整流程</small>
+      </div>
+      {messages.length > 0 && (
+        <div className="conversation-list" ref={listRef}>
+          {messages.map((msg, index) => (
+            <ConversationBubble
+              key={index}
+              message={msg}
+              onPreview={onPreview}
+              artifacts={artifacts}
+            />
+          ))}
+        </div>
+      )}
+      <div className="follow-up-composer">
+        <textarea
+          value={input}
+          onChange={(event) => onInputChange(event.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder={disabled ? "请先配置 API Key 后再追问" : "追问任何关于数据的问题，如：把刚才那张图改成红色 / 解释这个 p 值（⌘/Ctrl+Enter 发送）"}
+          rows={2}
+          disabled={disabled}
+        />
+        <div className="follow-up-actions">
+          {running ? (
+            <button className="cancel-button" type="button" onClick={onStop} disabled={false}>
+              <Square size={12} fill="currentColor" />停止
+            </button>
+          ) : (
+            <button
+              className="run-button"
+              type="button"
+              onClick={onSubmit}
+              disabled={!input.trim() || disabled}
+            >
+              <Play size={14} fill="currentColor" />发送追问
+            </button>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+});
+
+// 单条对话气泡：用户右对齐主色，助手左对齐卡片+Markdown
+const ConversationBubble = React.memo(function ConversationBubble({ message, onPreview, artifacts }) {
+  if (message.role === "user") {
+    return (
+      <div className="chat-bubble is-user">
+        <div className="chat-bubble-content">{message.content}</div>
+      </div>
+    );
+  }
+  // assistant 气泡：Markdown 渲染 + 工具时间线 + 流式光标
+  const isStreaming = message.streaming;
+  const hasContent = !!message.content;
+  return (
+    <div className="chat-bubble is-assistant">
+      {message.tools?.length > 0 && (
+        <div className="chat-tools" aria-label="本次追问工具调用">
+          {message.tools.map((tool) => (
+            <span key={tool.call_id} className={`chat-tool-chip ${tool.status === "running" ? "is-running" : "is-done"}`}>
+              <span className="tool-dot" aria-hidden="true" />
+              {TOOL_LABELS[tool.name] || tool.name}
+              {tool.status === "running" ? (
+                <LoaderCircle size={9} className="spin" />
+              ) : (
+                <em>{tool.duration_ms ? `${tool.duration_ms}ms` : ""}</em>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
+      <div className={`chat-bubble-content ${isStreaming ? "is-streaming" : ""}`}>
+        {isStreaming && !hasContent ? (
+          <div className="report-placeholder"><LoaderCircle size={13} className="spin" />正在思考…</div>
+        ) : (
+          <>
+            <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={markdownComponents(artifacts, onPreview)}>
+              {message.content || ""}
+            </ReactMarkdown>
+            {isStreaming && <span className="report-cursor" aria-hidden="true" />}
+          </>
+        )}
+      </div>
+      {message.error && <div className="chat-bubble-error"><AlertTriangle size={12} />{message.error}</div>}
+    </div>
+  );
+});
 
 // 历史会话面板：可折叠的侧边栏组件，按时间分组列出最近会话并允许切换。
 // 关键设计：
@@ -649,6 +854,19 @@ function formatBytes(value = 0) {
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+// 后端工具名 → 中文短标签。PlanPanel 工具调用时间线用它把 inspect_data
+// 这种程序化名字翻译成"检查数据"，让用户看懂 ReAct 内部在做什么。
+// 缺失映射时回退到原始工具名，保证新工具上线也不会显示 undefined。
+const TOOL_LABELS = {
+  inspect_data: "检查数据",
+  repair_data_format: "修复格式",
+  clean_data: "清洗数据",
+  transform_data: "派生变换",
+  statistical_analysis: "统计分析",
+  create_visualization: "生成图表",
+  export_data: "导出数据",
+};
+
 // React.memo：artifacts 仅在 session 切换或分析完成时变化。memo 让产物
 // 列表跳过 task 输入、历史刷新等无关重渲染。onDownload/onPreview 用
 // useCallback 稳定身份，否则 memo 失效。
@@ -755,6 +973,18 @@ function App() {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState("");
   const [currentNodeTitle, setCurrentNodeTitle] = useState("");
+  // toolTrace: 工具调用时间线。ReAct 执行器内部每次工具调用实时推送，
+  // 让用户看到"正在读取数据→正在清洗→正在生成图表"的过程，
+  // 而不是只看到"正在执行 (2/4)"一行字等 30 秒。
+  const [toolTrace, setToolTrace] = useState([]);
+  // 多轮对话：followUps 存储报告之后的追问消息对（user+assistant），
+  // 让用户基于已有分析结果继续提问，不必每次都触发完整 plan→execute→finalize。
+  // 结构：[{role, content, streaming?, tools?, error?}]
+  const [followUps, setFollowUps] = useState([]);
+  const [followUpInput, setFollowUpInput] = useState("");
+  const [chatRunning, setChatRunning] = useState(false);
+  const followUpInputRef = useRef(null);
+  const chatControllerRef = useRef(null);
   const [retryOffer, setRetryOffer] = useState(null);
   const [retryChecking, setRetryChecking] = useState(false);
   // 保存设置 / 停止分析的 busy 状态：防止连点发多请求，给用户即时反馈
@@ -874,6 +1104,7 @@ function App() {
       setCurrentNodeTitle("");
       setRetryOffer(null);
       restoreCompletedAnalysis(latest);
+      restoreFollowUps(latest);
       if (!running) {
         startedAtRef.current = latest.analysis_started_at ?? null;
         setElapsedSeconds(latest.elapsed_seconds ?? null);
@@ -1095,6 +1326,7 @@ function App() {
       setSession(value);
       startedAtRef.current = value.analysis_started_at ?? null;
       setElapsedSeconds(value.elapsed_seconds ?? null);
+      setFollowUps([]);
       fetchHistory();
     } catch (err) {
       setError(err.message);
@@ -1124,13 +1356,170 @@ function App() {
     setError("已发送停止请求；如果模型正在响应，会在本轮响应结束后安全停止。");
   }
 
-  async function startAnalysis(nextTask = task) {
+  // 轻量追问：基于已有分析结果继续提问，走 /chat/stream 端点。
+  // 与 startAnalysis 的区别：
+  //   - 不触发 plan→execute→finalize 工作流，单次 ReAct 循环回答
+  //   - 回答渲染为对话气泡（而非主报告区），保留主报告不动
+  //   - 工具调用时间线内嵌在气泡内，不占用 PlanPanel 的全局 toolTrace
+  //   - 新产物追加到 session.artifacts，让产物中心即时更新
+  async function startFollowUp() {
+    const message = followUpInput.trim();
+    if (!session || !message || chatRunning || running) return;
+    setChatRunning(true);
+    setError("");
+    setFollowUpInput("");
+    // 乐观插入用户气泡 + 空壳 assistant 气泡，让用户立即看到自己的提问
+    const userBubble = { role: "user", content: message };
+    const assistantBubble = { role: "assistant", content: "", streaming: true, tools: [] };
+    setFollowUps((prev) => [...prev, userBubble, assistantBubble]);
+    const controller = new AbortController();
+    chatControllerRef.current = controller;
+    let idleTimeout = null;
+    const resetIdleTimeout = () => {
+      if (idleTimeout) window.clearTimeout(idleTimeout);
+      idleTimeout = window.setTimeout(() => controller.abort(), 120000);
+    };
+    resetIdleTimeout();
+    try {
+      const response = await fetch(`${API_URL}/api/sessions/${session.id}/chat/stream`, {
+        method: "POST",
+        headers: requestHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ task: message }),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new ApiError(describeApiError(payload, response.status), response.status);
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (!done) resetIdleTimeout();
+        buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+        const blocks = buffer.split("\n\n");
+        buffer = blocks.pop() || "";
+        for (const block of blocks) {
+          const lines = block.split("\n").filter((line) => line.length > 0 && !line.startsWith(":"));
+          const event = lines.find((line) => line.startsWith("event:"))?.slice(6).trim();
+          const dataText = lines.find((line) => line.startsWith("data:"))?.slice(5).trim();
+          if (!event || !dataText) continue;
+          const data = JSON.parse(dataText);
+          if (event === "chat_chunk") {
+            // 流式追加到最后一个 assistant 气泡
+            setFollowUps((prev) => {
+              const next = [...prev];
+              const last = next[next.length - 1];
+              if (last && last.role === "assistant") {
+                next[next.length - 1] = { ...last, content: (last.content || "") + (data.chunk || "") };
+              }
+              return next;
+            });
+          } else if (event === "tool_call") {
+            setFollowUps((prev) => {
+              const next = [...prev];
+              const last = next[next.length - 1];
+              if (last && last.role === "assistant") {
+                next[next.length - 1] = {
+                  ...last,
+                  tools: [...(last.tools || []), {
+                    call_id: data.call_id, name: data.name,
+                    status: "running", started_at: data.started_at,
+                  }],
+                };
+              }
+              return next;
+            });
+          } else if (event === "tool_result") {
+            setFollowUps((prev) => {
+              const next = [...prev];
+              const last = next[next.length - 1];
+              if (last && last.role === "assistant") {
+                next[next.length - 1] = {
+                  ...last,
+                  tools: (last.tools || []).map((t) => t.call_id === data.call_id
+                    ? { ...t, status: "done", duration_ms: data.duration_ms }
+                    : t),
+                };
+              }
+              return next;
+            });
+          } else if (event === "chat_done") {
+            // 终态：写入完整回复（防止 chunk 丢失），标记非流式，追加新产物
+            setFollowUps((prev) => {
+              const next = [...prev];
+              const last = next[next.length - 1];
+              if (last && last.role === "assistant") {
+                next[next.length - 1] = { ...last, content: data.response || last.content, streaming: false };
+              }
+              return next;
+            });
+            if (data.artifacts?.length) {
+              setSession((current) => current
+                ? { ...current, artifacts: [...(current.artifacts || []), ...data.artifacts] }
+                : current);
+            }
+          } else if (event === "cancelled") {
+            setFollowUps((prev) => {
+              const next = [...prev];
+              const last = next[next.length - 1];
+              if (last && last.role === "assistant") {
+                next[next.length - 1] = { ...last, streaming: false, error: data.message || "追问已取消。" };
+              }
+              return next;
+            });
+          } else if (event === "error") {
+            throw new Error(data.message || "追问失败");
+          }
+        }
+        if (done) break;
+      }
+    } catch (err) {
+      if (err.name === "AbortError") {
+        setFollowUps((prev) => {
+          const next = [...prev];
+          const last = next[next.length - 1];
+          if (last && last.role === "assistant" && last.streaming) {
+            next[next.length - 1] = { ...last, streaming: false, error: "追问已取消或超时。" };
+          }
+          return next;
+        });
+      } else {
+        setFollowUps((prev) => {
+          const next = [...prev];
+          const last = next[next.length - 1];
+          if (last && last.role === "assistant") {
+            next[next.length - 1] = { ...last, streaming: false, error: err.message };
+          }
+          return next;
+        });
+      }
+    } finally {
+      if (idleTimeout) window.clearTimeout(idleTimeout);
+      if (chatControllerRef.current === controller) chatControllerRef.current = null;
+      setChatRunning(false);
+    }
+  }
+
+  function stopFollowUp() {
+    chatControllerRef.current?.abort();
+  }
+
+  async function startAnalysis(nextTask = task, resumeFrom = null) {
     if (!session || !nextTask.trim() || running) return;
     setRunning(true);
     setError("");
-    setResult(null);
-    setPlan([]);
-    setCompleted([]);
+    // 断点续跑时不清空 plan/completed，让用户看到已完成的步骤保持绿色对勾状态；
+    // 全新分析时才清空。
+    if (!resumeFrom) {
+      setResult(null);
+      setPlan([]);
+      setCompleted([]);
+    } else {
+      // 续跑时保留已有 plan 和 completed，只清空 result（旧报告不再适用）
+      setResult(null);
+    }
     setCurrentNodeTitle("");
     setRetryOffer(null);
     // 立即用客户端时间戳启动计时。setInterval 会每秒刷新 elapsedSeconds。
@@ -1142,6 +1531,11 @@ function App() {
     // SSE 处理器跳过 UI 覆盖，避免历史视图被运行中的分析数据覆盖。
     runningSessionIdRef.current = session.id;
     setElapsedSeconds(0);
+    // 清空上次的工具调用时间线和报告，为新分析腾出空间
+    setToolTrace([]);
+    setResult(null);
+    // 新分析开始时清空追问历史，避免上轮的追问残留混淆当前分析
+    setFollowUps([]);
     // 任务已提交运行，清空输入框，避免用户以为还没发起分析。
     // lastTaskRef 仍保留实际任务文本，供 retry 与日志追踪使用。
     setTask("");
@@ -1161,7 +1555,7 @@ function App() {
       const response = await fetch(`${API_URL}/api/sessions/${session.id}/analyze/stream`, {
         method: "POST",
         headers: requestHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({ task: nextTask }),
+        body: JSON.stringify({ task: nextTask, resume_from: resumeFrom }),
         signal: controller.signal,
       });
       if (!response.ok) {
@@ -1211,7 +1605,39 @@ function App() {
               setCurrentNodeTitle("正在审查进度并重规划");
             }
           } else if (event === "finalize") {
-            if (isViewingRunningSession) setCurrentNodeTitle("正在汇总最终报告");
+            if (isViewingRunningSession) {
+              setCurrentNodeTitle("正在汇总最终报告");
+              // 创建空壳 result，让 ReportView 立即显示"正在生成报告…"占位，
+              // 后续 report_chunk 事件会逐字追加 response，实现流式打字效果。
+              setResult((prev) => prev || { response: "", artifacts: [], plan, completed_steps: completed });
+            }
+          } else if (event === "report_chunk") {
+            // 流式报告：逐字追加，用户看着报告逐字写出，而不是等 30-60 秒看完整报告。
+            if (isViewingRunningSession) {
+              setResult((prev) => prev
+                ? { ...prev, response: (prev.response || "") + (data.chunk || "") }
+                : { response: data.chunk || "", artifacts: [], plan, completed_steps: completed }
+              );
+            }
+          } else if (event === "tool_call") {
+            // 工具调用开始：追加到时间线，让用户看到 ReAct 内部正在做什么
+            if (isViewingRunningSession) {
+              setToolTrace((prev) => [...prev, {
+                call_id: data.call_id,
+                name: data.name,
+                input_preview: data.input_preview,
+                status: "running",
+                started_at: data.started_at,
+              }]);
+            }
+          } else if (event === "tool_result") {
+            // 工具调用结束：更新对应 call_id 的状态和耗时
+            if (isViewingRunningSession) {
+              setToolTrace((prev) => prev.map((item) => item.call_id === data.call_id
+                ? { ...item, status: "done", output_preview: data.output_preview, duration_ms: data.duration_ms }
+                : item
+              ));
+            }
           } else if (event === "complete") {
             completedPayload = data;
             if (isViewingRunningSession) {
@@ -1226,6 +1652,10 @@ function App() {
             // 仅在用户未通过 stopAnalysis 主动取消时显示后端取消消息，避免重复 setError。
             if (!cancelRequested.current && isViewingRunningSession) {
               setError(data.message || "分析已取消。");
+            }
+            // 断点续跑：取消时若有已完成步骤，提供"继续分析"入口
+            if (completed.length > 0) {
+              setRetryOffer({ task: nextTask, reason: "cancelled", canResume: true, plan, completed });
             }
           } else if (event === "error") {
             throw new Error(data.message || "分析失败");
@@ -1255,22 +1685,27 @@ function App() {
         }
       }
     } catch (err) {
+      // 通用：取消/失败时若有已完成步骤，附加 canResume 标记让重试栏显示"继续分析"
+      const resumePayload = completed.length > 0
+        ? { task: nextTask, canResume: true, plan, completed }
+        : null;
       if (err.name === "AbortError" && cancelRequested.current) {
         setError("分析已取消，已完成的步骤不会继续扩展。");
+        if (resumePayload) setRetryOffer({ ...resumePayload, reason: "cancelled" });
       } else if (err.name === "AbortError") {
         // idle timeout：长时间未收到事件。
         setError("长时间未收到分析进度，连接已断开。");
-        setRetryOffer({ task: nextTask, reason: "idle" });
+        setRetryOffer(resumePayload ? { ...resumePayload, reason: "idle" } : { task: nextTask, reason: "idle" });
       } else if (!sawEvent && err.name === "TypeError") {
         // fetch 网络层错误（DNS/CORS/离线），尚未收到任何 SSE 帧。
         setError(`无法连接分析服务：${err.message}`);
-        setRetryOffer({ task: nextTask, reason: "network" });
+        setRetryOffer(resumePayload ? { ...resumePayload, reason: "network" } : { task: nextTask, reason: "network" });
       } else if (err instanceof ApiError && err.status === 404) {
         // 重运行时服务端 session 已被清理，引导用户重新上传。
         handleSessionLost("会话已失效（服务端数据已被清理），请重新上传数据集后再开始分析。");
       } else {
         setError(err.message);
-        setRetryOffer({ task: nextTask, reason: "error" });
+        setRetryOffer(resumePayload ? { ...resumePayload, reason: "error" } : { task: nextTask, reason: "error" });
       }
     } finally {
       if (idleTimeout) window.clearTimeout(idleTimeout);
@@ -1313,6 +1748,15 @@ function App() {
     return true;
   }
 
+  // 从 session.chat 恢复追问历史。chat 数组结构为
+  // [user(分析任务), assistant(分析报告), user(追问1), assistant(追问1回答), ...]，
+  // 跳过前两条（首轮分析对），后续的都是追问。
+  function restoreFollowUps(latest) {
+    const chat = latest?.chat || [];
+    const tail = chat.length > 2 ? chat.slice(2) : [];
+    setFollowUps(tail.map((item) => ({ role: item.role, content: item.content || "" })));
+  }
+
   // 会话失效（404）时清空前端状态，引导用户回到上传界面。
   // Render 免费实例重启会清空 /tmp，session 数据不可恢复，与其让用户
   // 反复点"检查状态"得到 404，不如明确告知并重置。
@@ -1323,8 +1767,10 @@ function App() {
     setCompleted([]);
     setCurrentNodeTitle("");
     setRetryOffer(null);
+    setFollowUps([]);
     retryController.current?.abort();
     analysisController.current?.abort();
+    chatControllerRef.current?.abort();
     setError(message || "会话已失效，请重新上传数据集后再开始分析。");
   }
 
@@ -1415,6 +1861,18 @@ function App() {
       if (retryController.current === controller) retryController.current = null;
       setRetryChecking(false);
     }
+  }
+
+  // 断点续跑：从上次中断的步骤继续分析，跳过已完成的步骤。
+  // 与 retryAnalysis（重新运行）的区别：
+  //   - retryAnalysis 从头开始，所有步骤重新执行
+  //   - resumeAnalysis 复用已有 plan，跳过 completed 中的步骤，从中断处继续
+  function resumeAnalysis() {
+    if (!retryOffer?.canResume) return;
+    const { task, plan: savedPlan, completed: savedCompleted } = retryOffer;
+    setRetryOffer(null);
+    setError("");
+    startAnalysis(task, { plan: savedPlan, completed_steps: savedCompleted });
   }
 
   const profile = session?.profile;
@@ -1550,6 +2008,16 @@ function App() {
           <div className="error-banner" role="alert">
             <AlertTriangle size={16} />
             <span>{error}</span>
+            {retryOffer && !running && retryOffer.canResume && (
+              <button
+                type="button"
+                className="resume-button"
+                onClick={resumeAnalysis}
+                title={`从已完成的 ${retryOffer.completed?.length || 0} 个步骤继续，跳过已完成部分`}
+              >
+                <Play size={13} fill="currentColor" />继续分析
+              </button>
+            )}
             {retryOffer && !running && (
               <button
                 type="button"
@@ -1567,11 +2035,26 @@ function App() {
         )}
 
         {/* retryOffer 独立恢复入口：用户关掉错误横幅后仍能重试，
-            避免之前 setError("") 同时清空 retryOffer 导致彻底失去恢复入口 */}
+            避免之前 setError("") 同时清空 retryOffer 导致彻底失去恢复入口。
+            canResume 时优先展示"继续分析"（绿色主操作），"重新运行"降为次操作。 */}
         {!error && retryOffer && !running && (
           <div className="retry-bar" role="status">
             <RefreshCw size={13} />
-            <span>上次分析未完成，可以重新运行</span>
+            <span>
+              {retryOffer.canResume
+                ? `上次分析完成了 ${retryOffer.completed?.length || 0} 个步骤后中断，可以继续或重新运行`
+                : "上次分析未完成，可以重新运行"}
+            </span>
+            {retryOffer.canResume && (
+              <button
+                type="button"
+                className="resume-button"
+                onClick={resumeAnalysis}
+                title="从已完成的步骤继续，跳过已完成部分"
+              >
+                <Play size={13} fill="currentColor" />继续分析
+              </button>
+            )}
             <button
               type="button"
               className="retry-button"
@@ -1680,7 +2163,25 @@ function App() {
               <div className="analysis-grid">
                 <section className="analysis-column">
                   {result ? (
-                    <ReportView result={result} />
+                    <>
+                      <ReportView
+                        result={result}
+                        streaming={running && !!result}
+                        artifacts={result.artifacts || session?.artifacts}
+                        onPreview={openArtifactPreview}
+                      />
+                      <ConversationThread
+                        messages={followUps}
+                        input={followUpInput}
+                        onInputChange={setFollowUpInput}
+                        onSubmit={startFollowUp}
+                        onStop={stopFollowUp}
+                        running={chatRunning}
+                        disabled={running || !settings?.configured}
+                        onPreview={openArtifactPreview}
+                        artifacts={session?.artifacts}
+                      />
+                    </>
                   ) : (
                     <DatasetOverview profile={profile} />
                   )}
@@ -1691,6 +2192,7 @@ function App() {
                   running={running && session?.id === runningSessionIdRef.current}
                   currentNodeTitle={currentNodeTitle}
                   elapsedSeconds={session?.id === runningSessionIdRef.current ? elapsedSeconds : null}
+                  toolTrace={session?.id === runningSessionIdRef.current ? toolTrace : []}
                 />
               </div>
             )}
