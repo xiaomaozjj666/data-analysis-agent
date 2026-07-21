@@ -323,17 +323,21 @@ function Metric({ label, value, unit }) {
 // 通常不变。memo 让 ReportView 跳过这些无关重渲染，避免 ReactMarkdown
 // 重新解析 markdown AST（report 可能长达数千字）。
 const ReportView = React.memo(function ReportView({ result }) {
-  const [copied, setCopied] = useState(false);
+  // copyState: "idle" | "copied" | "failed"。之前只有 copied boolean，
+  // 复制失败时静默吞掉错误，用户切到其他应用粘贴才发现是旧内容。
+  const [copyState, setCopyState] = useState("idle");
   const [expanded, setExpanded] = useState(false);
 
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(result.response || "");
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1800);
+      setCopyState("copied");
+      window.setTimeout(() => setCopyState("idle"), 1800);
     } catch {
-      // 浏览器禁用 clipboard（HTTP 部署、iframe 受限）时静默失败，
-      // 不阻塞用户阅读报告。
+      // HTTP 部署、iframe 受限或浏览器禁用 clipboard 时明确告知用户，
+      // 让用户知道需要手动选择文本复制，而不是以为复制成功了。
+      setCopyState("failed");
+      window.setTimeout(() => setCopyState("idle"), 3000);
     }
   };
 
@@ -348,13 +352,13 @@ const ReportView = React.memo(function ReportView({ result }) {
         <div className="report-actions">
           <button
             type="button"
-            className="report-copy"
+            className={`report-copy ${copyState === "failed" ? "is-failed" : ""}`}
             onClick={handleCopy}
             title="复制全文"
             aria-label="复制报告全文"
           >
-            {copied ? <Check size={13} /> : <FileSpreadsheet size={13} />}
-            {copied ? "已复制" : "复制"}
+            {copyState === "copied" ? <Check size={13} /> : <FileSpreadsheet size={13} />}
+            {copyState === "copied" ? "已复制" : copyState === "failed" ? "复制失败" : "复制"}
           </button>
         </div>
       </div>
@@ -469,7 +473,7 @@ function PlanPanel({ plan, completed, running, currentNodeTitle, elapsedSeconds 
 //   3. 状态圆点 + 中文标签 —— running 圆点带脉冲动画，completed 是绿色，
 //      failed 是红色，cancelled 是灰色，状态一眼可读。
 //   4. 当前会话用左侧竖条 + 浅蓝底高亮，比单纯背景色更醒目。
-function HistoryPanel({ sessions, currentSessionId, onSelect, onRefresh, loading, expanded, onToggle }) {
+function HistoryPanel({ sessions, currentSessionId, onSelect, onRefresh, loading, expanded, onToggle, historyError, switchingSessionId }) {
   const groups = useMemo(() => groupSessionsByTime(sessions), [sessions]);
   const isEmpty = !sessions?.length && !loading;
 
@@ -483,14 +487,21 @@ function HistoryPanel({ sessions, currentSessionId, onSelect, onRefresh, loading
       </button>
       {expanded && (
         <>
-          <button type="button" className="history-refresh" onClick={onRefresh} disabled={loading} title="刷新历史">
+          <button type="button" className="history-refresh" onClick={onRefresh} disabled={loading} title="刷新历史" aria-label="刷新历史会话列表">
             <RefreshCw size={12} className={loading ? "spin" : ""} />
             {loading ? "加载中" : "刷新"}
           </button>
           {isEmpty ? (
             <div className="history-empty">
               <History size={16} />
-              <p>还没有历史会话，上传数据后会自动出现在这里。</p>
+              {historyError ? (
+                <>
+                  <p>历史会话加载失败，请检查网络后重试。</p>
+                  <button type="button" className="history-retry" onClick={onRefresh}>重新加载</button>
+                </>
+              ) : (
+                <p>还没有历史会话，上传数据后会自动出现在这里。</p>
+              )}
             </div>
           ) : loading && !sessions?.length ? (
             <ul className="history-list history-skeleton" aria-hidden="true">
@@ -516,7 +527,7 @@ function HistoryPanel({ sessions, currentSessionId, onSelect, onRefresh, loading
                     const status = describeHistoryStatus(item.analysis_status);
                     return (
                       <li key={item.id} className={active ? "is-active" : ""}>
-                        <button type="button" onClick={() => onSelect(item)} disabled={loading}>
+                        <button type="button" onClick={() => onSelect(item)} disabled={switchingSessionId != null}>
                           <FileSpreadsheet size={14} />
                           <span>
                             <strong>{item.filename}</strong>
@@ -527,9 +538,11 @@ function HistoryPanel({ sessions, currentSessionId, onSelect, onRefresh, loading
                               <span className="history-time">· {formatRelativeTime(item.created_at)}</span>
                             </small>
                           </span>
-                          {item.artifact_count > 0 && (
+                          {switchingSessionId === item.id ? (
+                            <LoaderCircle size={13} className="spin" />
+                          ) : item.artifact_count > 0 ? (
                             <em className="history-count">{item.artifact_count}</em>
-                          )}
+                          ) : null}
                         </button>
                       </li>
                     );
@@ -744,8 +757,13 @@ function App() {
   const [currentNodeTitle, setCurrentNodeTitle] = useState("");
   const [retryOffer, setRetryOffer] = useState(null);
   const [retryChecking, setRetryChecking] = useState(false);
+  // 保存设置 / 停止分析的 busy 状态：防止连点发多请求，给用户即时反馈
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  // 历史加载错误状态：区分"没数据"和"加载失败"，避免用户误以为数据丢失
+  const [historyError, setHistoryError] = useState(false);
   const [historyExpanded, setHistoryExpanded] = useState(false);
   // 已耗时（秒）。running 时由 setInterval 每秒刷新；非 running 时
   // 由 session.elapsed_seconds / completed - started 计算一次性赋值。
@@ -766,16 +784,24 @@ function App() {
   const retryController = useRef(null);
   const cancelRequested = useRef(false);
   const lastTaskRef = useRef("");
+  // 按 sessionId 保存草稿：切换历史会话时不丢失当前正在输入的任务
+  const taskDraftsRef = useRef({});
+  // 切换历史会话的 loading：让被点击的项立即有反馈，避免用户重复点击
+  const [switchingSessionId, setSwitchingSessionId] = useState(null);
 
-  // Esc 键关闭预览模态框（P0-4）。
+  // Esc 键关闭预览模态框或设置面板（P0-4）。
+  // 之前 Esc 只对 previewItem 生效，设置面板打开时按 Esc 没反应，
+  // 用户必须移动鼠标到右上角点 X，破坏键盘操作流。
   useEffect(() => {
-    if (!previewItem) return;
+    if (!previewItem && !keyOpen) return;
     const onKey = (event) => {
-      if (event.key === "Escape") closeArtifactPreview();
+      if (event.key !== "Escape") return;
+      if (previewItem) closeArtifactPreview();
+      else if (keyOpen) { setKeyOpen(false); setApiKey(""); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [previewItem]);
+  }, [previewItem, keyOpen]);
 
   useEffect(() => {
     api("/api/auth")
@@ -802,15 +828,22 @@ function App() {
 
   // 拉取历史会话列表。鉴权通过后立即拉一次，让用户在初次进入时就能
   // 看到之前的会话；上传/切换/分析完成时也会调用，保持列表新鲜。
-  const fetchHistory = async () => {
-    setHistoryLoading(true);
+  // manual=true 表示用户主动触发（点刷新按钮），才设置 historyLoading
+  // 让刷新按钮转圈；轮询调用 manual=false，不触发按钮 disabled，避免
+  // 30 秒一次的轮询让整个历史列表短暂瘫痪（用户正要点击时被禁用）。
+  const fetchHistory = async (manual = false) => {
+    if (manual) setHistoryLoading(true);
     try {
       const payload = await api("/api/sessions?limit=30");
       setHistory(payload.sessions || []);
+      setHistoryError(false);
     } catch {
-      // 历史列表加载失败不应阻塞主流程，静默忽略即可。
+      // 加载失败不阻塞主流程，但记录错误状态，让用户能区分"没数据"
+      // 和"加载失败"，并提供重试入口（之前是完全静默，用户有几十个
+      // 会话却看到"还没有历史会话"，会以为数据丢了）。
+      setHistoryError(true);
     } finally {
-      setHistoryLoading(false);
+      if (manual) setHistoryLoading(false);
     }
   };
 
@@ -824,13 +857,17 @@ function App() {
   // 计时应继续基于原分析的 started_at，否则会跳到新会话的 started_at
   // 导致"已耗时"突然变成一个不相关的数字。
   const selectSession = async (item) => {
-    if (!item?.id || item.id === session?.id) return;
+    if (!item?.id || item.id === session?.id || switchingSessionId) return;
+    // 保存当前会话的草稿，切换后还能恢复（用户输入了一半任务还没运行）
+    if (session?.id) taskDraftsRef.current[session.id] = task;
     setError("");
     closeArtifactPreview();
+    setSwitchingSessionId(item.id);
     try {
       const latest = await api(`/api/sessions/${item.id}`);
       setSession(latest);
-      setTask("");
+      // 恢复目标会话的草稿（若有），否则清空
+      setTask(taskDraftsRef.current[item.id] || "");
       setPlan([]);
       setCompleted([]);
       setResult(null);
@@ -849,6 +886,8 @@ function App() {
       } else {
         setError(`无法打开历史会话：${err.message}`);
       }
+    } finally {
+      setSwitchingSessionId(null);
     }
   };
 
@@ -1002,7 +1041,9 @@ function App() {
   }, []);
 
   async function saveSettings() {
+    if (savingSettings) return;
     setError("");
+    setSavingSettings(true);
     try {
       const payload = await api("/api/settings", {
         method: "PUT",
@@ -1020,6 +1061,8 @@ function App() {
       if (payload.warning) setError(payload.warning);
     } catch (err) {
       setError(err.message);
+    } finally {
+      setSavingSettings(false);
     }
   }
 
@@ -1062,8 +1105,9 @@ function App() {
   }
 
   async function stopAnalysis() {
-    if (!session || !running) return;
+    if (!session || !running || stopping) return;
     cancelRequested.current = true;
+    setStopping(true);
     const cancelRequest = api(`/api/sessions/${session.id}/cancel`, {
       method: "POST",
       timeoutMs: 10000,
@@ -1073,6 +1117,7 @@ function App() {
     retryController.current?.abort();
     await cancelRequest;
     setRunning(false);
+    setStopping(false);
     setRetryChecking(false);
     setCurrentNodeTitle("");
     setRetryOffer(null);
@@ -1426,10 +1471,12 @@ function App() {
           sessions={history}
           currentSessionId={session?.id}
           onSelect={selectSession}
-          onRefresh={fetchHistory}
+          onRefresh={() => fetchHistory(true)}
           loading={historyLoading}
           expanded={historyExpanded}
           onToggle={() => setHistoryExpanded((value) => !value)}
+          historyError={historyError}
+          switchingSessionId={switchingSessionId}
         />
 
         <div className="sidebar-spacer" />
@@ -1447,7 +1494,7 @@ function App() {
             <form className="settings-form" onSubmit={(event) => { event.preventDefault(); saveSettings(); }}>
               <div className="settings-title">
                 <strong>模型设置</strong>
-                <button type="button" title="收起设置" onClick={() => setKeyOpen(false)}><X size={15} /></button>
+                <button type="button" title="收起设置（Esc）" aria-label="收起设置" onClick={() => { setKeyOpen(false); setApiKey(""); }}><X size={15} /></button>
               </div>
               <label>API Key</label>
               <div className="secret-input">
@@ -1456,7 +1503,7 @@ function App() {
                   type={showKey ? "text" : "password"}
                   value={apiKey}
                   onChange={(event) => setApiKey(event.target.value)}
-                  placeholder={settings?.configured ? "已安全保存" : "输入 DeepSeek Key"}
+                  placeholder={settings?.configured ? "已安全保存，留空则不变" : "输入 DeepSeek Key"}
                 />
                 <button type="button" title={showKey ? "隐藏 Key" : "显示 Key"} onClick={() => setShowKey((value) => !value)}>
                   {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
@@ -1468,11 +1515,13 @@ function App() {
               </label>
               <label>推理强度</label>
               <div className="segment">
-                {["high", "max"].map((value) => (
-                  <button type="button" key={value} className={effort === value ? "selected" : ""} onClick={() => setEffort(value)}>{value}</button>
+                {[{ value: "high", label: "标准" }, { value: "max", label: "深度" }].map(({ value, label }) => (
+                  <button type="button" key={value} title={value === "high" ? "标准推理速度，适合大多数场景" : "最深推理，效果更好但更慢"} className={effort === value ? "selected" : ""} onClick={() => setEffort(value)}>{label}</button>
                 ))}
               </div>
-              <button type="submit" className="save-button"><Check size={14} />保存设置</button>
+              <button type="submit" className="save-button" disabled={savingSettings}>
+                {savingSettings ? <><LoaderCircle size={14} className="spin" />保存中…</> : <><Check size={14} />保存设置</>}
+              </button>
             </form>
           )}
         </div>
@@ -1510,10 +1559,30 @@ function App() {
                 aria-busy={retryChecking}
               >
                 <RefreshCw size={13} className={retryChecking ? "spin" : ""} />
-                {retryChecking ? "确认中" : retryOffer.reason === "ready" ? "重新运行" : "检查状态"}
+                {retryChecking ? "检查中…" : retryOffer.reason === "ready" ? "重新运行" : "检查状态"}
               </button>
             )}
-            <button type="button" title="关闭" className="error-close" onClick={() => { setError(""); setRetryOffer(null); }}><X size={15} /></button>
+            <button type="button" title="关闭" aria-label="关闭错误提示" className="error-close" onClick={() => setError("")}><X size={15} /></button>
+          </div>
+        )}
+
+        {/* retryOffer 独立恢复入口：用户关掉错误横幅后仍能重试，
+            避免之前 setError("") 同时清空 retryOffer 导致彻底失去恢复入口 */}
+        {!error && retryOffer && !running && (
+          <div className="retry-bar" role="status">
+            <RefreshCw size={13} />
+            <span>上次分析未完成，可以重新运行</span>
+            <button
+              type="button"
+              className="retry-button"
+              onClick={retryAnalysis}
+              disabled={retryChecking}
+              aria-busy={retryChecking}
+            >
+              <RefreshCw size={13} className={retryChecking ? "spin" : ""} />
+              {retryChecking ? "检查中…" : retryOffer.reason === "ready" ? "重新运行" : "检查状态"}
+            </button>
+            <button type="button" title="放弃恢复" aria-label="放弃恢复" className="error-close" onClick={() => setRetryOffer(null)}><X size={13} /></button>
           </div>
         )}
 
@@ -1548,13 +1617,27 @@ function App() {
                   <span className="section-kicker">分析任务</span>
                   <h2>你想从数据中了解什么？</h2>
                 </div>
-                {running && <span><LoaderCircle className="spin" size={14} />正在分析</span>}
+                {running && (
+                  <span className="task-running-hint">
+                    <LoaderCircle className="spin" size={14} />
+                    {currentNodeTitle ? `正在：${currentNodeTitle}` : "正在分析"}
+                    {elapsedSeconds != null && ` · ${formatDuration(elapsedSeconds)}`}
+                  </span>
+                )}
               </div>
               <textarea
                 ref={taskInput}
                 value={task}
                 onChange={(event) => setTask(event.target.value)}
-                placeholder="例如：比较各区域销售表现，解释异常波动并生成趋势图"
+                onKeyDown={(event) => {
+                  // Ctrl/Cmd+Enter 快捷提交：与几乎所有聊天/搜索框一致，
+                  // 避免用户输入完只能移动鼠标点按钮，破坏键盘操作流。
+                  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                    event.preventDefault();
+                    if (!running && task.trim() && settings?.configured) startAnalysis();
+                  }
+                }}
+                placeholder="例如：比较各区域销售表现，解释异常波动并生成趋势图（⌘/Ctrl+Enter 运行）"
                 rows={3}
               />
               <div className="task-actions">
@@ -1562,7 +1645,7 @@ function App() {
                   {presets.map(({ title, detail, icon: Icon, task: presetTask }) => (
                     <button
                       key={title}
-                      title={detail}
+                      title={settings?.configured ? detail : "请先在左下角配置 API Key"}
                       onClick={() => {
                         setTask(presetTask);
                         window.setTimeout(() => taskInput.current?.focus(), 0);
@@ -1574,8 +1657,8 @@ function App() {
                   ))}
                 </div>
                 {running ? (
-                  <button className="cancel-button" onClick={stopAnalysis}>
-                    <Square size={13} fill="currentColor" />停止分析
+                  <button className="cancel-button" onClick={stopAnalysis} disabled={stopping}>
+                    <Square size={13} fill="currentColor" />{stopping ? "停止中…" : "停止分析"}
                   </button>
                 ) : (
                   <button className="run-button" onClick={() => startAnalysis()} disabled={!task.trim() || !settings?.configured}>
