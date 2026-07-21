@@ -563,11 +563,32 @@ const DataTable = React.memo(function DataTable({ rows }) {
 });
 
 function EmptyWorkspace({ uploading, onUpload }) {
+  // 鼠标跟随光斑：跟踪鼠标在 grid 上的相对位置，更新 CSS 变量，
+  // 由 styles.css 的 radial-gradient 渲染柔和光晕。参考 Linear/Vercel
+  // 空状态的 spotlight 效果——比静态装饰更有"活物感"。
+  const gridRef = useRef(null);
+  const handleMouseMove = useCallback((event) => {
+    const grid = gridRef.current;
+    if (!grid) return;
+    const rect = grid.getBoundingClientRect();
+    const x = ((event.clientX - rect.left) / rect.width) * 100;
+    const y = ((event.clientY - rect.top) / rect.height) * 100;
+    grid.style.setProperty("--mouse-x", `${x}%`);
+    grid.style.setProperty("--mouse-y", `${y}%`);
+  }, []);
+
   return (
     <section className="empty-workspace">
-      <div className="empty-grid" aria-hidden="true">
+      <div
+        className="empty-grid"
+        aria-hidden="true"
+        ref={gridRef}
+        onMouseMove={handleMouseMove}
+      >
         <span className="grid-tab" />
-        {Array.from({ length: 20 }, (_, index) => <i key={index} />)}
+        {Array.from({ length: 20 }, (_, index) => (
+          <i key={index} style={{ "--cell-index": index }} />
+        ))}
       </div>
       <div className="empty-copy">
         <span className="section-kicker">新建分析</span>

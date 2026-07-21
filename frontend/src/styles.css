@@ -1,82 +1,93 @@
 /* ==========================================================================
-   Data Desk 设计系统 · GitHub Primer 风格
+   Data Desk 设计系统 · 沉稳商务风（v2 升级）
    --------------------------------------------------------------------------
    设计原则：
-   1. 中性灰画布 + 单一品牌蓝点缀，状态色仅承载语义（成功/警告/危险）；
-   2. 6px 主圆角 + 1px 细边框 + 极浅阴影，层级靠留白与对齐而非色块；
+   1. 沉稳商务色系：深海军蓝主色 + 暖灰画布，状态色仅承载语义；
+   2. 8px 主圆角 + 1px 细边框 + 柔和阴影，层级靠留白与对齐而非色块；
    3. 全部交互元素共享同一组过渡曲线，hover 有反馈、active 有按压感；
-   4. 字号收敛为 7 档阶梯（11–24px），字重仅用 500/600/700。
+   4. 字号收敛为 7 档阶梯（11–26px），字重仅用 500/600/700；
+   5. 留白节奏：4/8/12/16/24/32/48 八档标尺，消除拥挤与错落。
    ========================================================================== */
 
 /* ---------- 设计令牌 ---------- */
 :root {
   font-family: "IBM Plex Sans", "Noto Sans SC", -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", sans-serif;
-  color: #1f2328;
-  background: #f6f8fa;
+  color: #1a2332;
+  background: #f4f6f9;
   font-synthesis: none;
   letter-spacing: 0;
 
   /* 文本色（对白底均满足 WCAG AA 4.5:1） */
-  --fg-default: #1f2328;   /* 标题、正文主色 */
-  --fg-muted: #59636e;     /* 次级说明文字 */
-  --fg-subtle: #8b949e;    /* 辅助标签、占位符 */
+  --fg-default: #1a2332;   /* 标题、正文主色（加深，提升权威感） */
+  --fg-muted: #5a6577;     /* 次级说明文字 */
+  --fg-subtle: #8a94a6;    /* 辅助标签、占位符 */
 
-  /* 画布色 */
+  /* 画布色（暖灰调，比纯灰更柔和） */
   --canvas-default: #ffffff;  /* 卡片、弹层 */
-  --canvas-subtle: #f6f8fa;   /* 页面底色、表头、侧栏 */
-  --canvas-inset: #eff1f4;    /* 分段控件槽、内凹底 */
+  --canvas-subtle: #f4f6f9;   /* 页面底色、表头、侧栏 */
+  --canvas-inset: #eaeef3;    /* 分段控件槽、内凹底 */
 
   /* 边框色 */
-  --border-default: #d0d8e0;
-  --border-muted: #e2e8ee;
-  --border-strong: #a8b2bd;  /* hover 加深 */
+  --border-default: #d4dae3;
+  --border-muted: #e6eaf0;
+  --border-strong: #a8b2c0;  /* hover 加深 */
 
-  /* 品牌蓝（GitHub accent） */
-  --accent-fg: #0969da;
-  --accent-hover: #0860ca;
-  --accent-subtle: #ddf4ff;
-  --accent-ring: rgba(9, 105, 218, 0.14);
+  /* 品牌色：深海军蓝（比 GitHub 蓝更沉稳，适合正式报告） */
+  --accent-fg: #1e40af;
+  --accent-hover: #1e3a8a;
+  --accent-subtle: #dbeafe;
+  --accent-ring: rgba(30, 64, 175, 0.14);
 
-  /* 语义状态色 */
-  --success-fg: #1a7f37;
-  --success-subtle: #dafbe1;
-  --attention-fg: #9a6700;
-  --danger-fg: #cf222e;
-  --danger-subtle: #ffebe9;
-  --danger-border: #ffc9c5;
+  /* 语义状态色（保持，已满足语义） */
+  --success-fg: #15803d;
+  --success-subtle: #dcfce7;
+  --attention-fg: #854d0e;
+  --danger-fg: #b91c1c;
+  --danger-subtle: #fef2f2;
+  --danger-border: #fecaca;
 
   /* 中性控件底（列表 hover / 徽章 / 骨架屏） */
-  --control-hover: #e9edf1;
-  --control-active: #dfe4ea;
-  --neutral-muted: #eaeef2;
+  --control-hover: #e9edf3;
+  --control-active: #dde3ec;
+  --neutral-muted: #eaeef3;
 
-  /* 圆角 */
+  /* 圆角（主圆角从 6px 提到 8px，更柔和现代） */
   --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 10px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
   --radius-full: 999px;
 
-  /* 阴影（极浅，层级主要靠边框与留白） */
-  --shadow-xs: 0 1px 0 rgba(31, 35, 40, 0.04);
-  --shadow-sm: 0 1px 2px rgba(31, 35, 40, 0.07);
-  --shadow-md: 0 4px 14px rgba(140, 149, 159, 0.18);
-  --shadow-lg: 0 10px 32px rgba(140, 149, 159, 0.22);
-  --shadow-xl: 0 20px 56px rgba(140, 149, 159, 0.3);
+  /* 阴影（更柔和、更有深度，分层更清晰） */
+  --shadow-xs: 0 1px 2px rgba(26, 35, 50, 0.04);
+  --shadow-sm: 0 2px 4px rgba(26, 35, 50, 0.06), 0 1px 2px rgba(26, 35, 50, 0.04);
+  --shadow-md: 0 6px 16px rgba(26, 35, 50, 0.08), 0 2px 4px rgba(26, 35, 50, 0.04);
+  --shadow-lg: 0 12px 32px rgba(26, 35, 50, 0.12), 0 4px 8px rgba(26, 35, 50, 0.06);
+  --shadow-xl: 0 24px 64px rgba(26, 35, 50, 0.16), 0 8px 16px rgba(26, 35, 50, 0.08);
 
   /* 动效：同一组缓动曲线 + 三档时长 */
   --ease-out: cubic-bezier(0.2, 0, 0.13, 1);
   --duration-fast: 0.12s;
-  --duration: 0.16s;
-  --duration-slow: 0.24s;
+  --duration: 0.18s;
+  --duration-slow: 0.26s;
 
-  /* 字号阶梯 */
+  /* 字号阶梯（标题加大，强化层级） */
   --text-xs: 11px;
   --text-sm: 12px;
   --text-base: 13px;
   --text-md: 14px;
   --text-lg: 16px;
   --text-xl: 20px;
-  --text-2xl: 24px;
+  --text-2xl: 26px;
+
+  /* 间距标尺：8 档，消除拥挤与错落 */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
 
   /* 等宽字体：编号、代码、强调数字 */
   --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -223,7 +234,7 @@ i.online { background: var(--success-fg); box-shadow: 0 0 0 3px rgba(26, 127, 55
 i.warning { background: var(--attention-fg); box-shadow: 0 0 0 3px rgba(154, 103, 0, 0.12); }
 
 /* ---------- 布局骨架 ---------- */
-.app-shell { min-height: 100vh; display: grid; grid-template-columns: 248px minmax(0, 1fr); }
+.app-shell { min-height: 100vh; display: grid; grid-template-columns: 256px minmax(0, 1fr); }
 .sidebar {
   position: sticky;
   top: 0;
@@ -231,13 +242,13 @@ i.warning { background: var(--attention-fg); box-shadow: 0 0 0 3px rgba(154, 103
   height: 100vh;
   display: flex;
   flex-direction: column;
-  padding: 16px 12px 12px;
+  padding: 20px 14px 14px;
   background: var(--canvas-subtle);
   border-right: 1px solid var(--border-muted);
   overflow-y: auto;
 }
-/* 主区限宽居中，宽屏下比例更协调 */
-.main { min-width: 0; width: 100%; max-width: 1360px; margin: 0 auto; padding: 0 40px 56px; }
+/* 主区限宽居中，宽屏下比例更协调；padding 加大提升留白节奏 */
+.main { min-width: 0; width: 100%; max-width: 1360px; margin: 0 auto; padding: 0 48px 64px; }
 
 /* ---------- 侧栏 ---------- */
 .wordmark { height: 44px; display: flex; align-items: center; gap: 9px; padding: 0 8px; }
@@ -419,29 +430,99 @@ i.warning { background: var(--attention-fg); box-shadow: 0 0 0 3px rgba(154, 103
 
 /* ---------- 空工作台 ---------- */
 .empty-workspace { min-height: calc(100vh - 112px); display: grid; grid-template-columns: minmax(360px, 560px) minmax(270px, 380px); align-items: center; justify-content: center; gap: 7vw; overflow: hidden; }
-.empty-grid { position: relative; display: grid; grid-template-columns: repeat(5, 1fr); width: min(42vw, 540px); aspect-ratio: 1.35; overflow: hidden; background: var(--canvas-default); border: 1px solid var(--border-default); border-radius: var(--radius-md); box-shadow: var(--shadow-lg); }
-.empty-grid::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 36px; background: var(--canvas-subtle); border-right: 1px solid var(--border-muted); }
-.empty-grid::after { content: ""; position: absolute; inset: 0 0 auto; height: 34px; background: var(--canvas-subtle); border-bottom: 1px solid var(--border-muted); }
-.empty-grid i { min-height: 58px; border-right: 1px solid var(--border-muted); border-bottom: 1px solid var(--border-muted); }
-.empty-grid i:nth-child(7), .empty-grid i:nth-child(13), .empty-grid i:nth-child(19) { background: var(--accent-subtle); }
-.grid-tab { position: absolute; z-index: 2; top: 11px; left: 50px; width: 66px; height: 11px; border-radius: var(--radius-full); background: var(--border-default); }
+.empty-grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  width: min(42vw, 540px);
+  aspect-ratio: 1.35;
+  overflow: hidden;
+  background: var(--canvas-default);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  /* 鼠标跟随光斑：默认在右上角，JS 更新 --mouse-x/y */
+  --mouse-x: 80%;
+  --mouse-y: 20%;
+}
+/* 光斑层：柔和的径向渐变跟随鼠标，模拟 Linear/Vercel spotlight */
+.empty-grid::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 36px;
+  background: var(--canvas-subtle);
+  border-right: 1px solid var(--border-muted);
+  z-index: 1;
+}
+.empty-grid::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 34px;
+  background: var(--canvas-subtle);
+  border-bottom: 1px solid var(--border-muted);
+  z-index: 1;
+}
+/* 鼠标光斑覆盖层：独立伪元素避免与表头/首列冲突 */
+.empty-grid {
+  background-image: radial-gradient(
+    circle 180px at var(--mouse-x) var(--mouse-y),
+    rgba(30, 64, 175, 0.10),
+    transparent 70%
+  );
+  background-repeat: no-repeat;
+}
+.empty-grid i {
+  position: relative;
+  min-height: 58px;
+  border-right: 1px solid var(--border-muted);
+  border-bottom: 1px solid var(--border-muted);
+  z-index: 2;
+  /* 对角线波浪呼吸：每个格子按 --cell-index 计算 delay，
+     从左上到右下依次亮起，形成对角波浪。
+     参考 Vercel deployment 动画 / Stripe 按钮涟漪。 */
+  animation: cell-breathe 3.6s ease-in-out infinite;
+  animation-delay: calc(var(--cell-index, 0) * 0.12s);
+  transition: background-color var(--duration) var(--ease-out), transform var(--duration) var(--ease-out);
+}
+/* 高亮格子：原本的 accent-subtle 保留，作为"数据已填充"的视觉暗示 */
+.empty-grid i:nth-child(7), .empty-grid i:nth-child(13), .empty-grid i:nth-child(19) {
+  background: var(--accent-subtle);
+}
+/* 悬浮涟漪：鼠标 hover 的格子高亮 + 微缩放，相邻格子通过 :has 选择器
+   实现涟漪扩散（现代浏览器支持，不支持的降级为仅当前格子高亮）。 */
+.empty-grid i:hover {
+  background: var(--accent-subtle);
+  transform: scale(1.04);
+  z-index: 3;
+  box-shadow: 0 4px 12px rgba(30, 64, 175, 0.18);
+}
+.grid-tab { position: absolute; z-index: 4; top: 11px; left: 50px; width: 66px; height: 11px; border-radius: var(--radius-full); background: var(--border-default); }
 .empty-copy { align-self: center; }
 .empty-copy h2 { margin: 10px 0 8px; font-size: clamp(28px, 3vw, 40px); line-height: 1.15; font-weight: 700; letter-spacing: -0.01em; }
 .empty-copy p { margin: 0 0 24px; color: var(--fg-muted); font-size: var(--text-md); }
 
+/* 格子波浪呼吸动画：透明度从 0.6 到 1.0 循环，staggered delay 形成对角波浪 */
+@keyframes cell-breathe {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
 /* ---------- 数据集头部 / 指标带 / 标签页 ---------- */
-.dataset-header { min-height: 96px; display: flex; align-items: center; justify-content: space-between; gap: 24px; }
-.dataset-header h1 { max-width: 60vw; margin: 6px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-2xl); line-height: 1.25; font-weight: 600; }
+.dataset-header { min-height: 104px; display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 8px 0; }
+.dataset-header h1 { max-width: 60vw; margin: 8px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-2xl); line-height: 1.25; font-weight: 700; letter-spacing: -0.01em; }
 .dataset-warning { display: flex; align-items: center; gap: 6px; margin: 8px 0 0; color: var(--attention-fg); font-size: var(--text-sm); }
 .dataset-warning svg { flex: 0 0 auto; }
-.change-file { height: 34px; padding: 0 12px; flex: 0 0 auto; }
+.change-file { height: 36px; padding: 0 14px; flex: 0 0 auto; }
 
 .metrics-band { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid var(--border-muted); border-bottom: 1px solid var(--border-muted); }
-.metric { min-height: 78px; display: flex; flex-direction: column; justify-content: center; padding: 14px 24px; border-right: 1px solid var(--border-muted); }
+.metric { min-height: 88px; display: flex; flex-direction: column; justify-content: center; padding: 18px 28px; border-right: 1px solid var(--border-muted); transition: background var(--duration-fast) var(--ease-out); }
 .metric:first-child { padding-left: 0; }
 .metric:last-child { border-right: 0; }
-.metric span { color: var(--fg-muted); font-size: var(--text-xs); font-weight: 500; letter-spacing: 0.02em; }
-.metric strong { margin-top: 6px; font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.metric:hover { background: var(--canvas-subtle); }
+.metric span { color: var(--fg-muted); font-size: var(--text-xs); font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; }
+.metric strong { margin-top: 8px; font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
 .metric small { margin-left: 4px; color: var(--fg-subtle); font-family: inherit; font-size: var(--text-sm); font-weight: 500; }
 
 /* GitHub 式下划线标签页 */
