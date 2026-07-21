@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import shutil
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -48,8 +49,11 @@ _UPLOAD_CHUNK_SIZE = 1024 * 1024
 #: 拒绝加载的最大列数，防止意外资源耗尽。
 _MAX_COLUMNS = 1000
 
-#: Profile 缓存最大条目数，超过后清空重建。
-_PROFILE_CACHE_MAX_ENTRIES = 2
+#: Profile 缓存最大条目数，超过后按 LRU 策略淘汰最旧条目。
+#: 值为 4：覆盖常见场景（validate_dataset 用 sample_rows=5，finalize 用
+#: sample_rows=5，inspect_data 工具可能用不同 sample_rows），留余量避免
+#: 频繁淘汰导致缓存命中率下降。
+_PROFILE_CACHE_MAX_ENTRIES = 4
 
 #: CSV 编码探测顺序：UTF-8 BOM → UTF-8 → GB18030（覆盖中文 Windows 场景）。
 _CSV_ENCODING_CANDIDATES = ("utf-8-sig", "utf-8", "gb18030")
@@ -131,7 +135,8 @@ class DataWorkspace:
         self.load_warnings: list[str] = []
         # Profile 缓存：避免 finalize 等节点重复计算 profile（对大 DataFrame
         # 的 duplicated().sum() 和 nunique() 开销显著）。数据变更时自动失效。
-        self._profile_cache: dict[int, dict[str, Any]] = {}
+        # 用 OrderedDict 实现 LRU：命中时 move_to_end，超容量时 popitem(last=False)。
+        self._profile_cache: OrderedDict[int, dict[str, Any]] = OrderedDict()
 
     @property
     def dataframe(self) -> pd.DataFrame:
@@ -428,11 +433,12 @@ class DataWorkspace:
         }
 
     def profile(self, sample_rows: int = 5) -> dict[str, Any]:
-        """计算并返回数据集概况，包含缓存机制避免重复计算。
+        """计算并返回数据集概况，包含 LRU 缓存避免重复计算。
 
         缓存策略：以 (id(df), sample_rows) 为键，同一 DataFrame 对象且
         sample_rows 相同时直接返回缓存。dataframe setter 会自动清除缓存。
-        最多保留 _PROFILE_CACHE_MAX_ENTRIES 个条目，超过后清空重建。
+        最多保留 _PROFILE_CACHE_MAX_ENTRIES 个条目，超过后按 LRU 策略
+        淘汰最久未使用的条目（而非全清重建），提升缓存命中率。
 
         Args:
             sample_rows: 返回的样例行数（1-20）。
@@ -445,8 +451,11 @@ class DataWorkspace:
         # 使用 (id(df), sample_rows) 作为缓存键：同一 DataFrame 对象且
         # sample_rows 相同时直接返回缓存，避免 finalize 重复计算。
         cache_key = id(self._df) * 100 + sample_rows
-        if cache_key in self._profile_cache:
-            return self._profile_cache[cache_key]
+        cached = self._profile_cache.get(cache_key)
+        if cached is not None:
+            # LRU：命中时移到末尾，标记为最近使用。
+            self._profile_cache.move_to_end(cache_key)
+            return cached
         df = self.dataframe
         missing = df.isna().sum()
         unique = df.nunique(dropna=True)
@@ -472,9 +481,10 @@ class DataWorkspace:
                 "sample": df.head(sample_rows),
             }
         )
-        # 只保留最近 _PROFILE_CACHE_MAX_ENTRIES 个缓存条目，避免内存泄漏。
-        if len(self._profile_cache) >= _PROFILE_CACHE_MAX_ENTRIES:
-            self._profile_cache.clear()
+        # LRU 淘汰：超容量时移除最旧条目（OrderedDict 首项），而非全清。
+        # 全清会导致相邻两次不同 sample_rows 的调用互相淘汰，命中率归零。
+        while len(self._profile_cache) >= _PROFILE_CACHE_MAX_ENTRIES:
+            self._profile_cache.popitem(last=False)
         self._profile_cache[cache_key] = result
         return result
 

@@ -283,7 +283,20 @@ def test_grouped_bars_explain_absent_category_combinations(tmp_path):
     assert "组合覆盖 3/4" in rating.layout.title.text
     assert "不是数值为 0，也不是漏画" in rating.layout.title.text
     assert any(annotation.text == "无样本" for annotation in rating.layout.annotations)
-    assert all("样本数" in trace.hovertemplate for trace in rating.data)
+    # hovertemplate 使用预计算的 hover 文本（customdata[2]），避免无记录 bar 显示 nan。
+    assert all("customdata[2]" in (trace.hovertemplate or "") for trace in rating.data)
+    # 验证预计算文本内容：有记录 bar 包含 "样本数"，无记录 bar 包含 "无样本"。
+    all_hover_texts: list[str] = []
+    for trace in rating.data:
+        cd = trace.customdata
+        if cd is None:
+            continue
+        for row in cd:
+            # customdata 每行结构：[sample_count, has_records, hover_text]
+            if len(row) >= 3:
+                all_hover_texts.append(str(row[2]))
+    assert any("样本数" in text for text in all_hover_texts)
+    assert any("无样本" in text for text in all_hover_texts)
 
     channel_result = json.loads(
         visualization.invoke(
