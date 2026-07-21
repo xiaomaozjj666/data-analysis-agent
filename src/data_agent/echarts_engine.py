@@ -431,24 +431,26 @@ def _echarts_bar(
 
 def _bar_tooltip_formatter(x_label: str, y_label: str, agg_suffix: str):
     """柱状图 tooltip 自定义 formatter：展示 x、各系列值、合计。"""
-    # 返回 JS 函数字符串，前端 echarts 会 eval
-    js = (
+    # 返回 JS 函数字符串，前端 echarts 会 eval。
+    # x_label / y_label 来自 CSV 列名，用 json.dumps 转义后拼入 JS 字符串字面量，
+    # 防止列名含 ' / " / </script> 等字符导致 JS 语法错误或 XSS 注入。
+    x_label_js = json.dumps(x_label, ensure_ascii=False)
+    return (
         "function(params){"
-        f"var html='<div style=\"font-weight:600;margin-bottom:6px;\">{x_label}：'+params[0].axisValue+'</div>';"
+        f"var html='<div style=\"font-weight:600;margin-bottom:6px;\">'+{x_label_js}+'：'+params[0].axisValue+'</div>';"
         "var total=0;"
         "params.forEach(function(p){"
         "total+=p.value||0;"
-        f"html+='<div style=\"display:flex;align-items:center;gap:8px;margin:4px 0;\">';"
+        "html+='<div style=\"display:flex;align-items:center;gap:8px;margin:4px 0;\">';"
         "html+='<span style=\"width:8px;height:8px;border-radius:50%;background:'+p.color+';\"></span>';"
         "html+='<span style=\"flex:1;\">'+p.seriesName+'</span>';"
-        f"html+='<span style=\"font-weight:500;\">'+(p.value==null?'—':p.value.toLocaleString())+'</span>';"
+        "html+='<span style=\"font-weight:500;\">'+(p.value==null?'—':p.value.toLocaleString())+'</span>';"
         "html+='</div>';"
         "});"
         "if(params.length>1){html+='<div style=\"margin-top:6px;border-top:1px solid #e5e7eb;padding-top:6px;\">合计：'+total.toLocaleString()+'</div>';}"
         "return html;"
         "}"
     )
-    return js
 
 
 def _echarts_line(
@@ -624,15 +626,20 @@ def _size_func(size: str | None):
 
 
 def _scatter_tooltip_formatter(x_label: str, y_label: str, size: str | None):
+    # x_label / y_label / size_label 来自 CSV 列名，用 json.dumps 转义后拼入 JS
+    # 字符串字面量，防止列名含特殊字符导致 XSS 注入（与 _bar_tooltip_formatter 一致）
+    x_label_js = json.dumps(x_label, ensure_ascii=False)
+    y_label_js = json.dumps(y_label, ensure_ascii=False)
     size_label = _build_axis_label(size) if size else None
-    size_line = f"<span style='color:#6b7280;'>{size_label}：</span><b>'+val[2]+'</b><br/>'" if size_label else "''"
+    size_label_js = json.dumps(size_label, ensure_ascii=False) if size_label else "null"
+    size_line = f"html+='<span style=\"color:#6b7280;\">'+{size_label_js}+'：</span><b>'+val[2]+'</b><br/>';" if size_label else ""
     return (
         "function(params){"
         "var val=params.value;"
         f"var html='<div style=\"font-weight:600;margin-bottom:6px;\">'+params.seriesName+'</div>';"
-        f"html+='<span style=\"color:#6b7280;\">{x_label}：</span><b>'+val[0]+'</b><br/>';"
-        f"html+='<span style=\"color:#6b7280;\">{y_label}：</span><b>'+val[1]+'</b><br/>';"
-        f"html+={size_line};"
+        f"html+='<span style=\"color:#6b7280;\">'+{x_label_js}+'：</span><b>'+val[0]+'</b><br/>';"
+        f"html+='<span style=\"color:#6b7280;\">'+{y_label_js}+'：</span><b>'+val[1]+'</b><br/>';"
+        f"{size_line}"
         "return html;"
         "}"
     )

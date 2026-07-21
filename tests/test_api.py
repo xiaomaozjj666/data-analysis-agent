@@ -627,6 +627,8 @@ def test_chat_stream_appends_followup_to_chat_history(tmp_path, monkeypatch):
         def __init__(self, workspace, settings, cancel_event=None, progress_callback=None, event_callback=None):
             self.workspace = workspace
             self.event_callback = event_callback
+            self._last_usage = None
+            self._last_reasoning = ""
 
         def chat(self, query, history=None):
             # 模拟流式 token 推送

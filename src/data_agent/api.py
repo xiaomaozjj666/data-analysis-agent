@@ -427,6 +427,39 @@ request_buckets: dict[str, deque[float]] = defaultdict(deque)
 request_buckets_lock = threading.Lock()
 analysis_slots = threading.BoundedSemaphore(bootstrap_settings.max_concurrent_analyses)
 
+# SSE 事件队列最大容量。worker 线程生产事件，事件循环消费推送给客户端。
+# 客户端网络慢或浏览器卡顿时消费跟不上生产，无界队列会积累数万条事件（每条
+# 携带 token 字符串），内存占用可达数百 MB。设 500 上限后，超限的
+# thinking_chunk（过程信息，可丢）会被丢弃，report_chunk/tool_call（结果信息）保留。
+SSE_QUEUE_MAXSIZE = 500
+
+
+def _safe_emit(loop: asyncio.AbstractEventLoop, queue: asyncio.Queue, item: tuple[str, Any] | None) -> None:
+    """跨线程安全推送 SSE 事件到事件循环的队列。
+
+    loop.call_soon_threadsafe 在事件循环已关闭时抛 RuntimeError（进程关闭、
+    ASGI worker 被 kill、客户端断连后 cleanup 等场景）。本函数捕获该异常
+    避免崩溃——worker 线程的 finally 块仍需正常释放 slot 和 lock，若因
+    call_soon_threadsafe 抛错而跳过 release，会导致 analysis_slots 和
+    run_lock 永久泄漏（max_concurrent_analyses=2 时泄漏 2 次后服务死锁）。
+
+    队列满时（QueueFull）按事件类型决策：thinking_chunk / report_chunk 等
+    流式 token 可丢弃（过程信息），complete / error / cancelled 等终态事件
+    强制入队（即使需淘汰最旧的 thinking_chunk 腾位置）。
+    """
+    # 在 worker 线程侧先做 fast-path 检查：thinking_chunk 在队列接近满时直接丢弃，
+    # 避免无意义的 call_soon_threadsafe 开销。
+    event_type = item[0] if item else None
+    droppable = event_type in ("thinking_chunk", "report_chunk", "chat_chunk")
+    if droppable and queue.full():
+        return
+    try:
+        loop.call_soon_threadsafe(queue.put_nowait, item)
+    except RuntimeError:
+        # 事件循环已关闭，丢弃事件但不崩溃，确保 finally 中的 release 能执行
+        pass
+
+
 app = FastAPI(
     title="Data Analysis Agent API",
     version="2.0.0",
@@ -895,20 +928,20 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
     record.current_task = request.task
 
     loop = asyncio.get_running_loop()
-    queue: asyncio.Queue[tuple[str, Any] | None] = asyncio.Queue()
+    queue: asyncio.Queue[tuple[str, Any] | None] = asyncio.Queue(maxsize=SSE_QUEUE_MAXSIZE)
 
     def _emit_progress(node: str, title: str) -> None:
         # Called from the worker thread at node entry; hop back to the event
         # loop so the SSE generator can flush a progress frame immediately
         # instead of waiting for the node to finish.
-        loop.call_soon_threadsafe(queue.put_nowait, ("progress", {"node": node, "title": title}))
+        _safe_emit(loop, queue, ("progress", {"node": node, "title": title}))
 
     def _emit_event(event_type: str, payload: Any) -> None:
         # 通用事件通道：推送 report_chunk / tool_call / tool_result 等细粒度
         # 事件。与 _emit_progress 并存，前者保持后向兼容（progress_callback
         # 签名不变），后者承载新的流式体验。同样需要 call_soon_threadsafe
         # 跨线程回到事件循环。
-        loop.call_soon_threadsafe(queue.put_nowait, (event_type, payload))
+        _safe_emit(loop, queue, (event_type, payload))
 
     def _run_analysis() -> None:
         try:
@@ -925,7 +958,7 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
                 data = update["data"]
                 if node == "finalize":
                     final_payload = data
-                loop.call_soon_threadsafe(queue.put_nowait, (node, data))
+                _safe_emit(loop, queue, (node, data))
             if final_payload is None:
                 raise RuntimeError("工作流没有返回最终结果。")
             result = AnalysisResult(
@@ -935,6 +968,8 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
                 dataset_profile=final_payload["dataset_profile"],
                 plan=final_payload.get("plan", []),
                 completed_steps=final_payload.get("completed_steps", []),
+                usage=final_payload.get("usage"),
+                reasoning=final_payload.get("reasoning", ""),
             )
             record.chat.extend(
                 [
@@ -945,15 +980,15 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
             record.last_result = result
             record.set_finished("completed")
             registry.persist(session_id, record)
-            loop.call_soon_threadsafe(queue.put_nowait, ("complete", _result_payload(session_id, result)))
+            _safe_emit(loop, queue, ("complete", _result_payload(session_id, result)))
         except AnalysisCancelled:
             record.set_finished("cancelled")
             registry.persist(session_id, record)
-            loop.call_soon_threadsafe(queue.put_nowait, ("cancelled", {"message": "分析已取消。"}))
+            _safe_emit(loop, queue, ("cancelled", {"message": "分析已取消。"}))
         except Exception as exc:
             record.set_finished("failed")
             registry.persist(session_id, record)
-            loop.call_soon_threadsafe(queue.put_nowait, ("error", {"message": str(exc)}))
+            _safe_emit(loop, queue, ("error", {"message": str(exc)}))
         finally:
             record.current_task = ""
             # Always clear the cancel event so the next analysis on this
@@ -967,12 +1002,9 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
             # —— max_concurrent_analyses=2 时泄漏 2 次后整个服务无法启动新分析。
             analysis_slots.release()
             record.run_lock.release()
-            try:
-                loop.call_soon_threadsafe(queue.put_nowait, None)
-            except RuntimeError:
-                # 事件循环已关闭（客户端断连后 ASGI 关闭 loop），队列无人消费，
-                # 直接吞掉异常——slot 和 lock 已释放，状态已 persist，无副作用。
-                pass
+            # 发送哨兵值 None 通知 SSE 生成器结束循环。_safe_emit 内部已处理
+            # RuntimeError（loop 关闭）和 QueueFull，无需再 try/except。
+            _safe_emit(loop, queue, None)
 
     worker = threading.Thread(target=_run_analysis, name=f"analysis-{session_id}", daemon=True)
 
@@ -1073,10 +1105,10 @@ async def chat_stream(session_id: str, request: AnalyzeRequest) -> StreamingResp
     record.current_task = request.task
 
     loop = asyncio.get_running_loop()
-    queue: asyncio.Queue[tuple[str, Any] | None] = asyncio.Queue()
+    queue: asyncio.Queue[tuple[str, Any] | None] = asyncio.Queue(maxsize=SSE_QUEUE_MAXSIZE)
 
     def _emit_event(event_type: str, payload: Any) -> None:
-        loop.call_soon_threadsafe(queue.put_nowait, (event_type, payload))
+        _safe_emit(loop, queue, (event_type, payload))
 
     def _run_chat() -> None:
         try:
@@ -1094,31 +1126,30 @@ async def chat_stream(session_id: str, request: AnalyzeRequest) -> StreamingResp
                 ]
             )
             registry.persist(session_id, record)
-            loop.call_soon_threadsafe(
-                queue.put_nowait,
+            _safe_emit(
+                loop,
+                queue,
                 (
                     "chat_done",
                     {
                         "response": response_text,
                         "artifacts": _artifact_payload(session_id, new_artifacts),
+                        "usage": agent._last_usage,
+                        "reasoning": agent._last_reasoning,
                     },
                 ),
             )
         except AnalysisCancelled:
             registry.persist(session_id, record)
-            loop.call_soon_threadsafe(queue.put_nowait, ("cancelled", {"message": "追问已取消。"}))
+            _safe_emit(loop, queue, ("cancelled", {"message": "追问已取消。"}))
         except Exception as exc:
             logger.exception("Chat worker failed for session %s", session_id)
-            loop.call_soon_threadsafe(queue.put_nowait, ("error", {"message": f"追问失败：{exc}"}))
+            _safe_emit(loop, queue, ("error", {"message": f"追问失败：{exc}"}))
         finally:
             record.current_task = ""
             record.cancel_event.clear()
             record.run_lock.release()
-            try:
-                loop.call_soon_threadsafe(queue.put_nowait, None)
-            except RuntimeError:
-                # 事件循环已关闭（客户端断连），slot 和 lock 已释放，无副作用。
-                pass
+            _safe_emit(loop, queue, None)
 
     worker = threading.Thread(target=_run_chat, name=f"chat-{session_id}", daemon=True)
 
