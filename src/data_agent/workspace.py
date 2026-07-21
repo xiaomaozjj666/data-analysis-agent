@@ -39,6 +39,12 @@ SUPPORTED_EXTENSIONS = {".csv", ".tsv", ".xlsx", ".xls", ".json", ".jsonl", ".pa
 
 #: 共享 Plotly.js 束缚文件名，每个工作区只写一次，所有图表复用。
 PLOTLY_BUNDLE_NAME = "plotly.min.js"
+#: ECharts 引擎所需的前端 bundle 文件名，与 plotly.min.js 同目录共存。
+#: 双引擎互不冲突：HTML 通过相对路径引用各自的 bundle。
+ECHARTS_BUNDLE_NAME = "echarts.min.js"
+#: ECharts 官方稳定版 CDN，首次生成 echarts 图表时下载到 artifacts_dir，
+#: 后续复用。下载失败时 fallback 到 CDN URL 直接引用（在线场景）。
+ECHARTS_CDN_URL = "https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"
 
 #: 活动 DataFrame 的 checkpoint 文件名，用于重启后恢复。
 WORKSPACE_STATE_NAME = "workspace_state.parquet"
@@ -530,6 +536,30 @@ class DataWorkspace:
         if not bundle.exists():
             bundle.write_text(get_plotlyjs(), encoding="utf-8")
         return bundle
+
+    def ensure_echarts_bundle(self) -> Path | None:
+        """Write the bundled ECharts.js once per workspace and reuse it.
+
+        首次调用时从官方 CDN 下载 ``echarts.min.js`` 到 artifacts_dir，
+        后续复用。下载失败时返回 None，调用方需 fallback 到 CDN URL
+        直接引用（在线场景可用，离线场景报错）。与 plotly bundle 同目录
+        共存，互不冲突。
+        """
+        import urllib.request
+
+        bundle = (self.artifacts_dir / ECHARTS_BUNDLE_NAME).resolve()
+        if bundle.exists() and bundle.stat().st_size > 0:
+            return bundle
+        try:
+            with urllib.request.urlopen(ECHARTS_CDN_URL, timeout=15) as response:  # noqa: S310
+                content = response.read()
+            if not content or len(content) < 1024:
+                return None
+            bundle.write_bytes(content)
+            return bundle
+        except Exception:
+            # 离线 / 网络受限场景：返回 None，调用方走 CDN 直引 fallback。
+            return None
 
     def snapshot_state(self) -> tuple[pd.DataFrame, set[Path]]:
         """Capture the active data and artifact files before one agent step."""
