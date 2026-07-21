@@ -105,6 +105,8 @@ _AGGREGATION_LABELS = {
 _BOOLEAN_VALUE_LABELS = {False: "未退货", True: "已退货"}
 _SAMPLE_COUNT_COLUMN = "__sample_count__"
 _HAS_RECORDS_COLUMN = "__has_records__"
+#: 预计算的 hover 文本列，避免无记录 bar 在 hover 中显示 nan。
+_HOVER_TEXT_COLUMN = "__hover_text__"
 
 
 def _human_column_label(column: str | None) -> str:
@@ -906,7 +908,13 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         columns. t-tests: exactly two numeric columns. anova: numeric target grouped by group_by.
         chi_square: exactly two categorical columns. linear_regression: target plus numeric feature
         columns. Returns statistics, p-values, effect/model metrics and plain decision fields.
+
+        只读契约：此工具不 copy DataFrame，所有下游操作（describe / corr /
+        groupby / dropna / crosstab）都返回新对象，不修改 workspace.dataframe。
+        若未来需要在此工具中修改数据，必须先 ``df = workspace.dataframe.copy()``
+        以免污染主数据。
         """
+        # 只读引用：所有下游操作都返回新 DataFrame，不修改 workspace.dataframe。
         df = workspace.dataframe
         if not 0 < alpha < 1:
             raise ValueError("alpha 必须在 0 到 1 之间。")
@@ -1153,11 +1161,29 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             "color_discrete_sequence": _CHART_COLORS,
         }
         if chart_type == "bar":
-            custom_data = (
-                [_SAMPLE_COUNT_COLUMN, _HAS_RECORDS_COLUMN]
-                if aggregation != "none" and _SAMPLE_COUNT_COLUMN in df.columns
-                else None
-            )
+            # 预计算 hover 文本：对无记录 bar（reindex 产生的空白组合）显示
+            # "无样本/无记录"，而非让 Plotly 把 y=NaN 格式化成 "nan"。
+            # 聚合后行数通常很少（x_levels × color_levels），iterrows 开销可忽略。
+            if aggregation != "none" and _SAMPLE_COUNT_COLUMN in df.columns:
+                x_label_hover = _human_column_label(x)
+                y_label_hover = _human_column_label(y) if y else ""
+                hover_lines: list[str] = []
+                for _, row in df.iterrows():
+                    if row[_HAS_RECORDS_COLUMN]:
+                        lines = [f"{x_label_hover}：{row[x]}"]
+                        if y:
+                            y_val = row[y]
+                            y_text = f"{float(y_val):,.2f}" if pd.notna(y_val) else "—"
+                            lines.append(f"{y_label_hover}：{y_text}")
+                        lines.append(f"样本数：{int(row[_SAMPLE_COUNT_COLUMN])}")
+                        hover_lines.append("<br>".join(lines))
+                    else:
+                        missing_label = "无样本" if aggregation in {"mean", "median", "min", "max"} else "无记录"
+                        hover_lines.append(f"{x_label_hover}：{row[x]}<br>{missing_label}")
+                df[_HOVER_TEXT_COLUMN] = hover_lines
+                custom_data = [_SAMPLE_COUNT_COLUMN, _HAS_RECORDS_COLUMN, _HOVER_TEXT_COLUMN]
+            else:
+                custom_data = None
             fig = px.bar(**common, x=x, y=y, color=color, barmode="group", custom_data=custom_data)
         elif chart_type == "line":
             fig = px.line(**common, x=x, y=y, color=color, markers=True)
@@ -1256,13 +1282,11 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         )
         if chart_type == "bar":
             fig.update_traces(marker_line_color="rgba(16,42,42,0.16)", marker_line_width=0.8, selector={"type": "bar"})
-            if aggregation != "none" and _SAMPLE_COUNT_COLUMN in df.columns:
+            if aggregation != "none" and _HOVER_TEXT_COLUMN in df.columns:
+                # 用预计算的 hover 文本（customdata[2]），避免无记录 bar 显示 nan。
+                # customdata 结构：[sample_count, has_records, hover_text]
                 fig.update_traces(
-                    hovertemplate=(
-                        f"{_human_column_label(x)}：%{{x}}<br>"
-                        f"{_human_column_label(y)}：%{{y:,.2f}}<br>"
-                        "样本数：%{customdata[0]}<extra>%{fullData.name}</extra>"
-                    ),
+                    hovertemplate="%{customdata[2]}<extra>%{fullData.name}</extra>",
                     selector={"type": "bar"},
                 )
             if x and not pd.api.types.is_numeric_dtype(df[x]):
