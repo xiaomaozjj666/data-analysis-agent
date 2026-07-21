@@ -204,6 +204,80 @@ class CancelCallback(BaseCallbackHandler):
         self._ensure()
 
 
+class ReportStreamCallback(BaseCallbackHandler):
+    """流式文本回调：把 LLM 生成的 token 实时推送到前端。
+
+    主流 Agent 体验的核心在于"边生成边出字"。之前 finalize 用 model.invoke
+    阻塞调用，用户要等完整报告生成才能看到任何文字（可能 30-60 秒）。
+    本回调通过 on_llm_new_token 钩子把每个 token 通过 event_callback 推送，
+    前端逐字拼接渲染，体验从"等 30 秒看完整报告"变为"看着报告逐字写出"。
+
+    event_type 区分用途：
+    - ``report_chunk``：finalize 节点的最终报告流式输出。
+    - ``chat_chunk``：轻量追问（chat）节点的回答流式输出。
+    前端用不同事件类型区分渲染区域（报告区 vs 对话气泡）。
+    """
+
+    def __init__(
+        self,
+        event_callback: Callable[[str, dict[str, Any]], None],
+        event_type: str = "report_chunk",
+    ) -> None:
+        self.event_callback = event_callback
+        self.event_type = event_type
+
+    def on_llm_new_token(self, token: str, **kwargs: Any) -> Any:
+        if token:
+            try:
+                self.event_callback(self.event_type, {"chunk": token})
+            except Exception:
+                pass
+
+
+class ToolTraceCallback(BaseCallbackHandler):
+    """工具追踪回调：把 ReAct 执行器内部每次工具调用实时推送到前端。
+
+    之前 execute_step 整个 ReAct 循环（可能 5-25 次工具调用）聚合为一次
+    yield，用户只看到"正在执行 (2/4)"一行字，完全不知道内部在做什么。
+    本回调通过 on_tool_start/on_tool_end 钩子推送 tool_call/tool_result
+    事件，前端在步骤卡片内展开工具调用时间线，让用户看到"正在读取数据
+    → 正在清洗 → 正在生成图表"的实时过程。
+    """
+
+    def __init__(self, event_callback: Callable[[str, dict[str, Any]], None]) -> None:
+        self.event_callback = event_callback
+        self._tool_starts: dict[str, float] = {}
+
+    def on_tool_start(self, serialized: dict[str, Any] | None = None, input_str: str = "", **kwargs: Any) -> Any:
+        import time
+        tool_name = (serialized or {}).get("name", "unknown") if serialized else "unknown"
+        run_id = str(kwargs.get("run_id", ""))
+        self._tool_starts[run_id] = time.time()
+        try:
+            self.event_callback("tool_call", {
+                "call_id": run_id,
+                "name": tool_name,
+                "input_preview": (input_str or "")[:200],
+                "started_at": self._tool_starts[run_id],
+            })
+        except Exception:
+            pass
+
+    def on_tool_end(self, output: str = "", **kwargs: Any) -> Any:
+        import time
+        run_id = str(kwargs.get("run_id", ""))
+        started = self._tool_starts.pop(run_id, None)
+        duration_ms = int((time.time() - started) * 1000) if started else 0
+        try:
+            self.event_callback("tool_result", {
+                "call_id": run_id,
+                "output_preview": (str(output) if output else "")[:300],
+                "duration_ms": duration_ms,
+            })
+        except Exception:
+            pass
+
+
 def create_chat_model(settings: AgentSettings) -> BaseChatModel:
     """根据配置创建提供商原生的 Chat Model 实例。
 
@@ -448,6 +522,7 @@ class DataAnalysisAgent:
         model: BaseChatModel | None = None,
         cancel_event: Event | None = None,
         progress_callback: Callable[[str, str], None] | None = None,
+        event_callback: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         self.workspace = workspace
         self.settings = settings or AgentSettings.from_env()
@@ -455,6 +530,9 @@ class DataAnalysisAgent:
         self.cancel_event = cancel_event or Event()
         self.cancel_callback = CancelCallback(self.cancel_event)
         self.progress_callback = progress_callback or (lambda node, title: None)
+        # event_callback: 通用事件通道，用于推送 report_chunk/tool_call/tool_result
+        # 等细粒度事件。与 progress_callback(node, title) 并存，后者保持后向兼容。
+        self.event_callback = event_callback or (lambda event_type, payload: None)
         self.tools = build_tools(workspace)
         self.react_agent = create_agent(
             model=self.model,
@@ -467,10 +545,17 @@ class DataAnalysisAgent:
         self.replanner = self.model.with_structured_output(ReplanDecision)
         self.graph = self._build_workflow()
 
-    def _invoke_config(self, **extra: Any) -> dict[str, Any]:
+    def _invoke_config(self, *extra_callbacks: BaseCallbackHandler, **extra: Any) -> dict[str, Any]:
         """Build a RunnableConfig that wires the cancel callback into every
-        LLM/tool call inside a node so cancellation takes effect promptly."""
-        return {"callbacks": [self.cancel_callback], **extra}
+        LLM/tool call inside a node so cancellation takes effect promptly.
+
+        Args:
+            *extra_callbacks: 额外的 callback handler（如 ReportStreamCallback、
+                ToolTraceCallback），会与 cancel_callback 一起注入。
+            **extra: 其他 RunnableConfig 字段。
+        """
+        callbacks: list[BaseCallbackHandler] = [self.cancel_callback, *extra_callbacks]
+        return {"callbacks": callbacks, **extra}
 
     def _enter_node(self, node: str, title: str) -> None:
         """Emit a progress signal at node entry so the SSE stream can surface
@@ -494,16 +579,34 @@ class DataAnalysisAgent:
             messages = list(state.get("input_messages", []))
             if not messages:
                 messages = [HumanMessage(content=state["query"])]
+            # 断点续跑：保留已有的 completed_steps / plan / remaining_steps / objective，
+            # 否则会被覆盖为空导致 plan_analysis 重新规划。
             return {
                 "dataset_profile": profile,
                 "input_messages": messages,
                 "trace": list(state.get("trace", [])),
                 "artifacts": list(self.workspace.artifacts),
-                "completed_steps": [],
+                "completed_steps": list(state.get("completed_steps", [])),
+                "plan": list(state.get("plan", [])),
+                "remaining_steps": list(state.get("remaining_steps", [])),
+                "objective": state.get("objective", ""),
             }
 
         def plan_analysis(state: WorkflowState) -> dict[str, Any]:
             ensure_not_cancelled()
+            # 断点续跑：如果已有 plan（从 resume_from 注入），跳过 LLM 规划直接复用。
+            # 这样 execute_step 会从 remaining_steps 的第一项开始，跳过已完成的步骤。
+            existing_plan = state.get("plan") or []
+            existing_completed = state.get("completed_steps") or []
+            if existing_plan and existing_completed:
+                completed_ids = {item.get("id") for item in existing_completed if item.get("id")}
+                remaining = [step for step in existing_plan if step.get("id") not in completed_ids]
+                self._enter_node("plan_analysis", "正在恢复分析进度")
+                return {
+                    "objective": state.get("objective") or state["query"],
+                    "plan": existing_plan,
+                    "remaining_steps": remaining,
+                }
             self._enter_node("plan_analysis", "正在规划分析步骤")
             profile_text = json.dumps(state["dataset_profile"], ensure_ascii=False)[:_PLAN_PROFILE_MAX_CHARS]
             prompt = (
@@ -565,10 +668,14 @@ class DataAnalysisAgent:
             messages: list[BaseMessage] = []
             recovery_note = ""
             snapshot = self.workspace.snapshot_state()
+            # 工具追踪：ToolTraceCallback 把 ReAct 循环内每次工具调用实时
+            # 推送到前端，让用户看到"正在读取数据→正在清洗→正在生成图表"，
+            # 而不是只看到"正在执行 (2/4)"一行字等 30 秒。
+            tool_tracer = ToolTraceCallback(self.event_callback)
             try:
                 result = self.react_agent.invoke(
                     {"messages": [*state.get("input_messages", []), HumanMessage(content=execution_prompt)]},
-                    config=self._invoke_config(recursion_limit=self.settings.max_iterations * 2 + 5),
+                    config=self._invoke_config(tool_tracer, recursion_limit=self.settings.max_iterations * 2 + 5),
                 )
                 messages = result["messages"]
                 format_error = _format_error_text(messages)
@@ -583,7 +690,7 @@ class DataAnalysisAgent:
                         )
                         retry = self.react_agent.invoke(
                             {"messages": [*state.get("input_messages", []), HumanMessage(content=retry_prompt)]},
-                            config=self._invoke_config(recursion_limit=self.settings.max_iterations * 2 + 5),
+                            config=self._invoke_config(tool_tracer, recursion_limit=self.settings.max_iterations * 2 + 5),
                         )
                         messages = [*messages, *retry["messages"]]
                 ensure_not_cancelled()
@@ -763,7 +870,10 @@ class DataAnalysisAgent:
                 f"用户目标：{state['query']}\n\n执行结果：\n{evidence}"
             )
             try:
-                final_message = self.model.invoke(prompt, config=self._invoke_config())
+                # 流式报告：ReportStreamCallback 把每个 token 通过 event_callback
+                # 推送到前端，用户看着报告逐字写出，而不是等 30-60 秒看完整报告。
+                report_streamer = ReportStreamCallback(self.event_callback)
+                final_message = self.model.invoke(prompt, config=self._invoke_config(report_streamer))
                 response = _message_text(final_message)
             except Exception:
                 response = ""
@@ -804,20 +914,50 @@ class DataAnalysisAgent:
         return graph.compile()
 
     def _input_state(
-        self, query: str, history: list[BaseMessage] | None = None
+        self,
+        query: str,
+        history: list[BaseMessage] | None = None,
+        resume_from: dict[str, Any] | None = None,
     ) -> WorkflowState:
+        """构建工作流初始状态。
+
+        Args:
+            query: 用户的分析任务描述。
+            history: 可选的多轮对话历史。
+            resume_from: 断点续跑的恢复点，包含 ``plan`` 和 ``completed_steps``。
+                提供时，``plan_analysis`` 节点会跳过 LLM 规划直接复用已有计划，
+                ``execute_step`` 会跳过已完成的步骤，从中断处继续。
+        """
         if not query.strip():
             raise ValueError("分析任务不能为空。")
         messages = list(history or [])
         messages.append(HumanMessage(content=query.strip()))
-        return {"query": query.strip(), "input_messages": messages}
+        state: WorkflowState = {"query": query.strip(), "input_messages": messages}
+        if resume_from:
+            # 注入已有计划与完成步骤，plan_analysis 和 execute_step 会据此跳过
+            existing_plan = resume_from.get("plan") or []
+            completed = resume_from.get("completed_steps") or []
+            completed_ids = {item.get("id") for item in completed if item.get("id")}
+            remaining = [step for step in existing_plan if step.get("id") not in completed_ids]
+            state["plan"] = existing_plan
+            state["completed_steps"] = completed
+            state["remaining_steps"] = remaining
+            state["objective"] = resume_from.get("objective") or query.strip()
+        return state
 
-    def run(self, query: str, history: list[BaseMessage] | None = None) -> AnalysisResult:
+    def run(
+        self,
+        query: str,
+        history: list[BaseMessage] | None = None,
+        resume_from: dict[str, Any] | None = None,
+    ) -> AnalysisResult:
         """同步执行完整分析流程并返回最终结果。
 
         Args:
             query: 用户的分析任务描述（中文）。
             history: 可选的多轮对话历史，用于上下文续接。
+            resume_from: 断点续跑的恢复点，包含 ``plan`` 和 ``completed_steps``。
+                提供时跳过已完成步骤，从中断处继续。
 
         Returns:
             包含报告、轨迹、产物和计划执行情况的 AnalysisResult。
@@ -827,7 +967,7 @@ class DataAnalysisAgent:
             AnalysisCancelled: 外部请求取消时。
         """
         result = self.graph.invoke(
-            self._input_state(query, history),
+            self._input_state(query, history, resume_from=resume_from),
             config={
                 "configurable": {"thread_id": uuid4().hex},
                 "recursion_limit": self.settings.max_plan_steps * 3 + 10,
@@ -843,7 +983,10 @@ class DataAnalysisAgent:
         )
 
     def stream(
-        self, query: str, history: list[BaseMessage] | None = None
+        self,
+        query: str,
+        history: list[BaseMessage] | None = None,
+        resume_from: dict[str, Any] | None = None,
     ) -> Iterator[dict[str, Any]]:
         """流式执行分析，逐节点 yield 中间状态更新。
 
@@ -853,6 +996,7 @@ class DataAnalysisAgent:
         Args:
             query: 用户的分析任务描述。
             history: 可选的多轮对话历史。
+            resume_from: 断点续跑的恢复点，包含 ``plan`` 和 ``completed_steps``。
 
         Yields:
             包含节点名和状态增量的字典。
@@ -861,6 +1005,61 @@ class DataAnalysisAgent:
             "configurable": {"thread_id": uuid4().hex},
             "recursion_limit": self.settings.max_plan_steps * 3 + 10,
         }
-        for update in self.graph.stream(self._input_state(query, history), config=config):
+        for update in self.graph.stream(
+            self._input_state(query, history, resume_from=resume_from), config=config
+        ):
             node, payload = next(iter(update.items()))
             yield {"node": node, "data": payload}
+
+    def chat(
+        self,
+        query: str,
+        history: list[BaseMessage] | None = None,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """轻量追问：不走 plan-and-execute 工作流，直接用 ReAct 执行器回答。
+
+        用于多轮对话中的快速追问场景（如"把刚才那张图改成红色"、
+        "再分析一下年龄分布"、"解释一下这个相关系数"），避免每次追问都触发
+        完整的 plan→execute→finalize 流程（动辄 30-60 秒）。
+
+        回答过程中的 token 通过 event_callback 以 ``chat_chunk`` 事件实时推送，
+        工具调用通过 ``tool_call``/``tool_result`` 事件推送，前端渲染为对话气泡 +
+        工具时间线，体验与 ChatGPT/Claude 追问一致。
+
+        Args:
+            query: 用户的追问内容。
+            history: 之前的对话历史，用于上下文续接。
+
+        Returns:
+            ``(response_text, new_artifacts)`` 元组。``new_artifacts`` 是本次
+            追问期间通过工具调用新生成的产物（图表、导出数据等）元数据。
+
+        Raises:
+            ValueError: query 为空时。
+            AnalysisCancelled: 外部请求取消时。
+        """
+        if not query.strip():
+            raise ValueError("追问不能为空。")
+        messages = list(history or [])
+        messages.append(HumanMessage(content=query.strip()))
+
+        # 记录追问前的产物数量，事后 diff 出本次新增的产物。
+        artifact_before = len(self.workspace._artifacts)
+        tool_tracer = ToolTraceCallback(self.event_callback)
+        chat_streamer = ReportStreamCallback(self.event_callback, event_type="chat_chunk")
+
+        result = self.react_agent.invoke(
+            {"messages": messages},
+            config=self._invoke_config(
+                tool_tracer,
+                chat_streamer,
+                recursion_limit=self.settings.max_iterations * 2 + 5,
+            ),
+        )
+        final_ai = next(
+            (message for message in reversed(result["messages"]) if isinstance(message, AIMessage)),
+            None,
+        )
+        response_text = _message_text(final_ai) or "（未生成回复）"
+        new_artifacts = list(self.workspace.artifacts)[artifact_before:]
+        return response_text, new_artifacts

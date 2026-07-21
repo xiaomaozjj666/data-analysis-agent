@@ -94,7 +94,7 @@ def test_analyze_endpoint_returns_plan(tmp_path, monkeypatch):
         def __init__(self, workspace, settings, **kwargs):
             self.workspace = workspace
 
-        def run(self, task, history=None):
+        def run(self, task, history=None, resume_from=None):
             return AnalysisResult(
                 response="分析完成",
                 trace=[{"type": "tool_call", "name": "inspect_data", "detail": "{}"}],
@@ -382,12 +382,13 @@ def test_sse_stream_emits_progress_and_heartbeat(tmp_path, monkeypatch):
     class SlowAgent:
         """Mimics DataAnalysisAgent.stream: emits one progress + one finalize."""
 
-        def __init__(self, workspace, settings, cancel_event=None, progress_callback=None):
+        def __init__(self, workspace, settings, cancel_event=None, progress_callback=None, event_callback=None):
             self.workspace = workspace
             self.progress_callback = progress_callback
+            self.event_callback = event_callback
             self.cancel_event = cancel_event
 
-        def stream(self, query, history=None):
+        def stream(self, query, history=None, resume_from=None):
             if self.progress_callback:
                 self.progress_callback("validate_dataset", "正在检查数据集结构")
             import time
@@ -404,8 +405,8 @@ def test_sse_stream_emits_progress_and_heartbeat(tmp_path, monkeypatch):
                 "completed_steps": [],
             }}
 
-        def run(self, query, history=None):
-            for _update in self.stream(query, history=history):
+        def run(self, query, history=None, resume_from=None):
+            for _update in self.stream(query, history=history, resume_from=resume_from):
                 pass
             return AnalysisResult(
                 response="done",
@@ -557,7 +558,7 @@ def test_analyze_persists_chat_within_run_lock(tmp_path, monkeypatch):
         def __init__(self, workspace, settings, cancel_event=None):
             self.workspace = workspace
 
-        def run(self, query, history=None):
+        def run(self, query, history=None, resume_from=None):
             return AnalysisResult(
                 response="分析完成",
                 trace=[],
@@ -585,3 +586,99 @@ def test_analyze_persists_chat_within_run_lock(tmp_path, monkeypatch):
     assert "user" in roles
     assert "assistant" in roles
     assert manifest["last_result"]["response"] == "分析完成"
+
+
+def test_chat_stream_appends_followup_to_chat_history(tmp_path, monkeypatch):
+    """The /chat/stream endpoint must append the user+assistant follow-up pair
+    to record.chat and persist it, without altering analysis_status or
+    last_result.
+
+    The follow-up is a lightweight ReAct answer that reuses the existing
+    workspace; it must not trigger plan→execute→finalize or occupy
+    analysis_slots. This test verifies the contract by mocking
+    DataAnalysisAgent.chat() and checking the persisted manifest.
+    """
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = client.post(
+        "/api/sessions",
+        files={"file": ("sales.csv", b"region,sales\nEast,100\n", "text/csv")},
+    ).json()
+    session_id = uploaded["id"]
+
+    monkeypatch.setattr(
+        api,
+        "_effective_settings",
+        lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs"),
+    )
+
+    # 预填一条分析对话，模拟已完成的首轮分析
+    record = api.registry.get(session_id)
+    record.chat = [
+        {"role": "user", "content": "检查销售数据"},
+        {"role": "assistant", "content": "分析完成：华东区销售最高。"},
+    ]
+    record.analysis_status = "completed"
+    api.registry.persist(session_id, record)
+
+    chat_response_text = "华东区销售额 100，是唯一有数据的区域。"
+
+    class ChatAgent:
+        def __init__(self, workspace, settings, cancel_event=None, progress_callback=None, event_callback=None):
+            self.workspace = workspace
+            self.event_callback = event_callback
+
+        def chat(self, query, history=None):
+            # 模拟流式 token 推送
+            if self.event_callback:
+                self.event_callback("chat_chunk", {"chunk": chat_response_text})
+            return chat_response_text, []
+
+    monkeypatch.setattr(api, "DataAnalysisAgent", ChatAgent)
+
+    with client.stream(
+        "POST",
+        f"/api/sessions/{session_id}/chat/stream",
+        json={"task": "哪个区域销售最高？"},
+    ) as response:
+        assert response.status_code == 200
+        events = []
+        for line in response.iter_lines():
+            if line.startswith("event: "):
+                events.append(line[len("event: "):])
+
+    # 必须收到 started + chat_chunk + chat_done 事件
+    assert "started" in events
+    assert "chat_chunk" in events
+    assert "chat_done" in events
+
+    # 持久化的 chat 必须包含 4 条（首轮 2 + 追问 2）
+    manifest = json.loads(
+        (tmp_path / "runs" / session_id / "session.json").read_text(encoding="utf-8")
+    )
+    assert len(manifest["chat"]) == 4
+    assert manifest["chat"][2] == {"role": "user", "content": "哪个区域销售最高？"}
+    assert manifest["chat"][3] == {"role": "assistant", "content": chat_response_text}
+    # 追问不得改变 analysis_status
+    assert manifest["analysis_status"] == "completed"
+
+
+def test_chat_stream_rejects_concurrent_analysis(tmp_path, monkeypatch):
+    """/chat/stream must 409 when the session has a running analysis,
+    preventing concurrent writes to the workspace."""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = client.post(
+        "/api/sessions",
+        files={"file": ("sales.csv", b"region,sales\nEast,100\n", "text/csv")},
+    ).json()
+    record = api.registry.get(uploaded["id"])
+    record.analysis_status = "running"
+
+    response = client.post(
+        f"/api/sessions/{uploaded['id']}/chat/stream",
+        json={"task": "追问"},
+    )
+    assert response.status_code == 409
+    assert "正在运行" in response.json()["detail"]
+

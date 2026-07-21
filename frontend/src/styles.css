@@ -540,6 +540,13 @@ i.warning { background: var(--attention-fg); box-shadow: 0 0 0 3px rgba(154, 103
 .retry-bar .error-close { width: 26px; height: 26px; display: grid; place-items: center; margin-left: auto; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--fg-muted); }
 .retry-bar .error-close:hover { background: rgba(59, 108, 179, 0.12); color: var(--accent-fg); }
 
+/* resume-button：断点续跑主操作按钮（绿色，与"重新运行"区分）。
+   canResume 时优先展示此按钮，让用户一眼看出"可以继续"而非只能重来。 */
+.resume-button { min-height: 28px; margin: 0 4px; padding: 0 12px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--success-fg); border-radius: var(--radius-md); background: var(--success-fg); color: #fff; font-size: var(--text-xs); font-weight: 600; cursor: pointer; transition: all var(--duration-fast) var(--ease-out); box-shadow: 0 1px 3px rgba(21, 128, 61, 0.25); }
+.resume-button:hover { background: #16a34a; border-color: #16a34a; transform: translateY(-1px); box-shadow: 0 2px 6px rgba(21, 128, 61, 0.3); }
+.resume-button:active { transform: translateY(0); }
+.resume-button svg { flex-shrink: 0; }
+
 /* history-retry：历史加载失败时的重试按钮 */
 .history-empty .history-retry { margin-top: 8px; padding: 6px 14px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--canvas-default); color: var(--fg-default); font-size: var(--text-sm); font-weight: 500; box-shadow: var(--shadow-xs); transition: background-color var(--duration) var(--ease-out), border-color var(--duration) var(--ease-out); }
 .history-empty .history-retry:hover { background: var(--canvas-subtle); border-color: var(--border-strong); }
@@ -737,6 +744,26 @@ i.warning { background: var(--attention-fg); box-shadow: 0 0 0 3px rgba(154, 103
 .architecture-note svg { color: var(--accent-fg); }
 .architecture-note i { width: 3px; height: 3px; border-radius: 50%; background: var(--border-strong); }
 
+/* ---------- 工具调用时间线（PlanPanel 内） ---------- */
+/* 让用户看到 ReAct 执行器内部"正在读取数据 → 正在清洗 → 正在生成图表"的实时过程，
+   而不是只看到"正在执行 (2/4)"等 30 秒。容器紧贴 plan-list 下方，独立成块。 */
+.tool-trace { padding: 12px 18px 14px; border-top: 1px dashed var(--border-muted); background: var(--canvas-subtle); }
+.tool-trace-label { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; color: var(--fg-muted); font-size: var(--text-xs); font-weight: 600; letter-spacing: 0.02em; }
+.tool-trace-label svg { color: var(--accent-fg); }
+.tool-trace-label small { margin-left: 2px; min-width: 16px; padding: 0 6px; height: 16px; display: inline-flex; align-items: center; justify-content: center; border-radius: var(--radius-full); background: var(--accent-subtle); color: var(--accent-fg); font-size: 10px; font-weight: 700; }
+.tool-trace-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
+.tool-trace-list li { display: grid; grid-template-columns: 10px 1fr auto; align-items: center; gap: 8px; padding: 4px 6px; border-radius: var(--radius-sm); font-size: var(--text-xs); transition: background var(--duration-fast) var(--ease-out); }
+.tool-trace-list li.is-running { background: var(--accent-subtle); }
+.tool-trace-list li.is-running .tool-name { color: var(--accent-fg); font-weight: 600; }
+.tool-trace-list li.is-running svg { color: var(--accent-fg); animation: spin 0.9s linear infinite; }
+.tool-trace-list li.is-done .tool-name { color: var(--fg-muted); }
+.tool-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border-strong); transition: background var(--duration-fast) var(--ease-out); }
+.tool-trace-list li.is-running .tool-dot { background: var(--accent-fg); box-shadow: 0 0 0 3px var(--accent-subtle); animation: pulse-dot 1.2s var(--ease-out) infinite; }
+.tool-trace-list li.is-done .tool-dot { background: var(--success-fg); }
+.tool-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); }
+.tool-duration { color: var(--fg-subtle); font-size: 10px; font-variant-numeric: tabular-nums; font-weight: 500; }
+@keyframes pulse-dot { 0% { box-shadow: 0 0 0 0 rgba(59, 108, 179, 0.4); } 70% { box-shadow: 0 0 0 5px rgba(59, 108, 179, 0); } 100% { box-shadow: 0 0 0 0 rgba(59, 108, 179, 0); } }
+
 /* ---------- 分析报告 ---------- */
 .report { margin-top: 28px; overflow: hidden; background: var(--canvas-default); border: 1px solid var(--border-default); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); animation: rise var(--duration-slow) var(--ease-out); }
 .report-meta { min-height: 52px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; border-bottom: 1px solid var(--border-muted); background: var(--canvas-subtle); }
@@ -744,6 +771,9 @@ i.warning { background: var(--attention-fg); box-shadow: 0 0 0 3px rgba(154, 103
 .report-title svg { color: var(--accent-fg); flex-shrink: 0; }
 .report-title span { font-size: var(--text-sm); font-weight: 700; color: var(--fg-default); }
 .report-count { margin-left: 4px; padding: 2px 9px; border-radius: var(--radius-full); background: var(--accent-subtle); color: var(--accent-fg); font-size: var(--text-xs); font-weight: 600; }
+/* 流式生成中徽章：柔蓝底 + 旋转图标，与"产物数"徽章区分，让用户一眼看出正在写 */
+.report-count.is-streaming { display: inline-flex; align-items: center; gap: 4px; background: linear-gradient(90deg, var(--accent-subtle), #d4e4f7); color: var(--accent-fg); }
+.report-count.is-streaming svg { animation: spin 0.9s linear infinite; }
 .report-actions { display: flex; align-items: center; gap: 6px; }
 .report-copy { height: 30px; padding: 0 12px; gap: 5px; color: var(--fg-muted); font-size: var(--text-xs); }
 .report-copy:hover { color: var(--accent-fg); border-color: var(--accent-fg); background: var(--accent-subtle); }
@@ -755,6 +785,23 @@ i.warning { background: var(--attention-fg); box-shadow: 0 0 0 3px rgba(154, 103
 .report-body.is-expanded { max-height: none; }
 /* 折叠状态时底部渐隐遮罩，提示下方还有内容 */
 .report-body:not(.is-expanded)::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 72px; background: linear-gradient(180deg, rgba(255, 255, 255, 0) 0%, var(--canvas-default) 90%); pointer-events: none; }
+/* 流式生成：解除折叠遮罩（用户要看到新字），自动滚动到底部 */
+.report-body.is-streaming { max-height: none; overflow-y: auto; animation: rise var(--duration) var(--ease-out); }
+.report-body.is-streaming:not(.is-expanded)::after { display: none; }
+/* 占位提示：报告还没出第一个字时显示，配合旋转图标让等待不那么焦虑 */
+.report-placeholder { display: flex; align-items: center; gap: 8px; color: var(--fg-muted); font-size: var(--text-sm); }
+.report-placeholder svg { color: var(--accent-fg); }
+/* 闪烁光标：模拟打字机效果，让用户知道报告正在写出 */
+.report-cursor { display: inline-block; width: 7px; height: 16px; margin-left: 2px; vertical-align: text-bottom; background: var(--accent-fg); border-radius: 1px; animation: blink 1s steps(2, start) infinite; }
+@keyframes blink { to { visibility: hidden; } }
+/* 图表内嵌卡片：报告正文中的 ![描述](artifact:文件名) 渲染为可点击的紧凑卡片，
+   让图表直接图文混排在报告流中，点击在模态框打开交互版。 */
+.embedded-chart { display: inline-flex; align-items: center; gap: 6px; margin: 6px 2px; padding: 6px 12px; background: var(--canvas-subtle); border: 1px solid var(--accent-emphasis, #b6cce8); border-radius: var(--radius-md); color: var(--accent-fg); font-size: var(--text-sm); font-weight: 600; cursor: pointer; transition: all var(--duration-fast) var(--ease-out); vertical-align: middle; }
+.embedded-chart:hover { background: var(--accent-subtle); border-color: var(--accent-fg); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+.embedded-chart svg { flex-shrink: 0; }
+.embedded-chart svg:last-child { color: var(--fg-subtle); }
+.embedded-chart:hover svg:last-child { color: var(--accent-fg); }
+.embedded-chart-missing { display: inline-block; margin: 6px 2px; padding: 4px 10px; background: var(--danger-subtle); border: 1px dashed var(--danger-border); border-radius: var(--radius-sm); color: var(--danger-fg); font-size: var(--text-xs); font-style: italic; }
 .report-body > :first-child { margin-top: 0; }
 .report-body > :last-child { margin-bottom: 0; }
 .report-body h1 { margin: 0 0 22px; color: var(--fg-default); font-size: var(--text-xl); line-height: 1.3; font-weight: 700; letter-spacing: -0.01em; }
@@ -789,6 +836,55 @@ i.warning { background: var(--attention-fg); box-shadow: 0 0 0 3px rgba(154, 103
 .report-toggle svg { transition: transform var(--duration) var(--ease-out); }
 .rot-180 { transform: rotate(180deg); }
 .rot-90 { transform: rotate(90deg); }
+
+/* ---------- 多轮对话线程（追问） ---------- */
+/* 在主报告下方，让用户基于已有分析结果继续提问，参考 ChatGPT/Claude 对话流。
+   用户气泡右对齐主色，助手气泡左对齐卡片底 + Markdown 渲染 + 工具 mini 时间线。 */
+.conversation-thread { margin-top: 20px; background: var(--canvas-default); border: 1px solid var(--border-default); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); overflow: hidden; animation: rise var(--duration) var(--ease-out); }
+.conversation-header { min-height: 56px; display: flex; align-items: center; justify-content: space-between; padding: 0 24px; border-bottom: 1px solid var(--border-muted); background: var(--canvas-subtle); }
+.conversation-header h2 { margin: 2px 0 0; font-size: var(--text-base); font-weight: 700; color: var(--fg-default); }
+.conversation-header small { color: var(--fg-muted); font-size: var(--text-xs); }
+.conversation-list { max-height: 640px; overflow-y: auto; padding: 20px 24px; display: flex; flex-direction: column; gap: 16px; scroll-behavior: smooth; }
+.conversation-list:empty { display: none; }
+/* 用户气泡：右对齐 + 主色底 + 白字，与 ChatGPT 用户消息风格一致 */
+.chat-bubble.is-user { align-self: flex-end; max-width: 80%; }
+.chat-bubble.is-user .chat-bubble-content { padding: 10px 14px; background: var(--accent-fg); color: #fff; border-radius: var(--radius-md) var(--radius-md) var(--radius-sm) var(--radius-md); font-size: var(--text-sm); line-height: 1.65; box-shadow: var(--shadow-sm); word-break: break-word; }
+/* 助手气泡：左对齐 + 卡片底 + Markdown，宽度撑满，让图表和表格有空间 */
+.chat-bubble.is-assistant { align-self: stretch; display: flex; flex-direction: column; gap: 8px; }
+.chat-bubble.is-assistant .chat-bubble-content { padding: 14px 16px; background: var(--canvas-subtle); border: 1px solid var(--border-muted); border-radius: var(--radius-sm) var(--radius-md) var(--radius-md) var(--radius-md); color: #2a3441; font-size: var(--text-sm); line-height: 1.75; word-break: break-word; }
+.chat-bubble.is-assistant .chat-bubble-content.is-streaming { border-color: var(--accent-fg); box-shadow: 0 0 0 2px var(--accent-subtle); }
+/* 助手气泡内的 Markdown 排版：复用 report-body 的字号但稍微收紧 */
+.chat-bubble.is-assistant .chat-bubble-content p { margin: 8px 0; }
+.chat-bubble.is-assistant .chat-bubble-content p:first-child { margin-top: 0; }
+.chat-bubble.is-assistant .chat-bubble-content p:last-child { margin-bottom: 0; }
+.chat-bubble.is-assistant .chat-bubble-content ul, .chat-bubble.is-assistant .chat-bubble-content ol { margin: 8px 0; padding-left: 20px; }
+.chat-bubble.is-assistant .chat-bubble-content li { margin: 3px 0; }
+.chat-bubble.is-assistant .chat-bubble-content code { padding: 1px 5px; border-radius: var(--radius-sm); background: var(--neutral-muted); color: var(--accent-fg); font-family: var(--font-mono); font-size: 0.88em; }
+.chat-bubble.is-assistant .chat-bubble-content pre { margin: 8px 0; padding: 10px 12px; background: var(--canvas-default); border: 1px solid var(--border-muted); border-radius: var(--radius-sm); overflow: auto; font-size: var(--text-xs); }
+.chat-bubble.is-assistant .chat-bubble-content pre code { padding: 0; background: transparent; }
+.chat-bubble.is-assistant .chat-bubble-content strong { color: var(--fg-default); font-weight: 700; }
+.chat-bubble.is-assistant .chat-bubble-content table { margin: 10px 0; width: 100%; border-collapse: collapse; font-size: var(--text-xs); }
+.chat-bubble.is-assistant .chat-bubble-content thead th { padding: 6px 10px; background: var(--canvas-default); border: 1px solid var(--border-default); font-weight: 700; text-align: left; }
+.chat-bubble.is-assistant .chat-bubble-content tbody td { padding: 5px 10px; border: 1px solid var(--border-muted); }
+.chat-bubble.is-assistant .chat-bubble-content img { max-width: 100%; height: auto; border-radius: var(--radius-sm); }
+/* 工具调用 mini 时间线：内嵌在助手气泡顶部，chip 形式紧凑展示 */
+.chat-tools { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 2px; }
+.chat-tool-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; background: var(--canvas-default); border: 1px solid var(--border-muted); border-radius: var(--radius-full); font-size: 10px; font-weight: 500; color: var(--fg-muted); font-family: var(--font-mono); transition: all var(--duration-fast) var(--ease-out); }
+.chat-tool-chip.is-running { border-color: var(--accent-fg); color: var(--accent-fg); background: var(--accent-subtle); }
+.chat-tool-chip.is-running .tool-dot { background: var(--accent-fg); animation: pulse-dot 1.2s var(--ease-out) infinite; }
+.chat-tool-chip.is-running svg { color: var(--accent-fg); }
+.chat-tool-chip.is-done { color: var(--fg-subtle); }
+.chat-tool-chip.is-done .tool-dot { background: var(--success-fg); }
+.chat-tool-chip em { font-style: normal; font-size: 9px; color: var(--fg-subtle); font-variant-numeric: tabular-nums; }
+/* 错误提示 */
+.chat-bubble-error { display: flex; align-items: center; gap: 6px; padding: 8px 12px; background: var(--danger-subtle); border: 1px solid var(--danger-border); border-radius: var(--radius-sm); color: var(--danger-fg); font-size: var(--text-xs); }
+/* 追问输入框：紧贴对话列表底部，与主任务输入框风格统一但更紧凑 */
+.follow-up-composer { padding: 14px 20px 18px; border-top: 1px solid var(--border-muted); background: var(--canvas-subtle); }
+.follow-up-composer textarea { width: 100%; padding: 10px 14px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--canvas-default); color: var(--fg-default); font-size: var(--text-sm); line-height: 1.6; font-family: inherit; resize: vertical; min-height: 42px; max-height: 200px; transition: border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out); }
+.follow-up-composer textarea:focus { outline: none; border-color: var(--accent-fg); box-shadow: 0 0 0 3px var(--accent-subtle); }
+.follow-up-composer textarea:disabled { background: var(--canvas-subtle); color: var(--fg-subtle); cursor: not-allowed; }
+.follow-up-actions { display: flex; justify-content: flex-end; margin-top: 8px; }
+.follow-up-actions .run-button, .follow-up-actions .cancel-button { height: 32px; padding: 0 14px; font-size: var(--text-xs); }
 
 /* ---------- 数据预览表 ---------- */
 .data-view, .artifact-view { padding-top: 28px; }

@@ -82,6 +82,8 @@ def _save_runtime_api_key(value: str, persist_key: bool) -> bool:
 
 class AnalyzeRequest(BaseModel):
     task: str = Field(min_length=1, max_length=8000)
+    # 断点续跑：提供 plan + completed_steps 时，跳过已完成步骤从中断处继续。
+    resume_from: dict[str, Any] | None = None
 
 
 class SessionRecord:
@@ -843,7 +845,7 @@ def analyze(session_id: str, request: AnalyzeRequest) -> dict[str, Any]:
     record.current_task = request.task
     try:
         agent = DataAnalysisAgent(record.workspace, settings, cancel_event=record.cancel_event)
-        result = agent.run(request.task, history=history)
+        result = agent.run(request.task, history=history, resume_from=request.resume_from)
         # 在持有 run_lock 的窗口内完成 chat/last_result/persist，避免另一线程
         # 在 release 与 persist 之间拿到锁并基于旧 chat 启动新分析。cancelled
         # 和 failed 分支没有 result，不需要写 chat，直接落到对应 except 持久化。
@@ -901,6 +903,13 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
         # instead of waiting for the node to finish.
         loop.call_soon_threadsafe(queue.put_nowait, ("progress", {"node": node, "title": title}))
 
+    def _emit_event(event_type: str, payload: Any) -> None:
+        # 通用事件通道：推送 report_chunk / tool_call / tool_result 等细粒度
+        # 事件。与 _emit_progress 并存，前者保持后向兼容（progress_callback
+        # 签名不变），后者承载新的流式体验。同样需要 call_soon_threadsafe
+        # 跨线程回到事件循环。
+        loop.call_soon_threadsafe(queue.put_nowait, (event_type, payload))
+
     def _run_analysis() -> None:
         try:
             agent = DataAnalysisAgent(
@@ -908,9 +917,10 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
                 settings,
                 cancel_event=record.cancel_event,
                 progress_callback=_emit_progress,
+                event_callback=_emit_event,
             )
             final_payload: dict[str, Any] | None = None
-            for update in agent.stream(request.task, history=history):
+            for update in agent.stream(request.task, history=history, resume_from=request.resume_from):
                 node = update["node"]
                 data = update["data"]
                 if node == "finalize":
@@ -1026,6 +1036,114 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
                 logger.debug(
                     "Worker still running at stream teardown for session %s; "
                     "daemon thread will release resources via its own finally.",
+                    session_id,
+                )
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/api/sessions/{session_id}/chat/stream")
+async def chat_stream(session_id: str, request: AnalyzeRequest) -> StreamingResponse:
+    """轻量追问 SSE 端点：不走 plan-and-execute，直接用 ReAct 执行器回答。
+
+    与 ``analyze/stream`` 的区别：
+    - 不触发 validate→plan→execute→finalize 完整工作流，单次 ReAct 循环即可回答。
+    - 不占用 ``analysis_slots``（追问更轻量，不与全量分析竞争全局并发槽）。
+    - 仍持有 ``run_lock``，防止追问与全量分析在同一会话并发写 workspace。
+    - 事件类型用 ``chat_chunk``（而非 ``report_chunk``），前端渲染到对话气泡。
+    - 终态事件为 ``chat_done``（而非 ``complete``），携带回答文本和新增产物。
+
+    适合场景：基于已有分析结果的快速追问，如"把刚才那张图改成红色"、
+    "解释一下这个 p 值"、"再做一个年龄分布图"。
+    """
+    record = registry.get(session_id)
+    settings = _effective_settings()
+    if not settings.api_key:
+        raise HTTPException(status_code=409, detail="请先配置 DeepSeek API Key。")
+    if record.analysis_status == "running":
+        raise HTTPException(status_code=409, detail="当前会话有分析正在运行，请等待完成后再追问。")
+    if not record.run_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="当前会话正在处理其他请求，请稍后再试。")
+    history = _history(record)
+    record.cancel_event.clear()
+    record.current_task = request.task
+
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[tuple[str, Any] | None] = asyncio.Queue()
+
+    def _emit_event(event_type: str, payload: Any) -> None:
+        loop.call_soon_threadsafe(queue.put_nowait, (event_type, payload))
+
+    def _run_chat() -> None:
+        try:
+            agent = DataAnalysisAgent(
+                record.workspace,
+                settings,
+                cancel_event=record.cancel_event,
+                event_callback=_emit_event,
+            )
+            response_text, new_artifacts = agent.chat(request.task, history=history)
+            record.chat.extend(
+                [
+                    {"role": "user", "content": request.task},
+                    {"role": "assistant", "content": response_text},
+                ]
+            )
+            registry.persist(session_id, record)
+            loop.call_soon_threadsafe(
+                queue.put_nowait,
+                (
+                    "chat_done",
+                    {
+                        "response": response_text,
+                        "artifacts": _artifact_payload(session_id, new_artifacts),
+                    },
+                ),
+            )
+        except AnalysisCancelled:
+            registry.persist(session_id, record)
+            loop.call_soon_threadsafe(queue.put_nowait, ("cancelled", {"message": "追问已取消。"}))
+        except Exception as exc:
+            logger.exception("Chat worker failed for session %s", session_id)
+            loop.call_soon_threadsafe(queue.put_nowait, ("error", {"message": f"追问失败：{exc}"}))
+        finally:
+            record.current_task = ""
+            record.cancel_event.clear()
+            record.run_lock.release()
+            try:
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+            except RuntimeError:
+                # 事件循环已关闭（客户端断连），slot 和 lock 已释放，无副作用。
+                pass
+
+    worker = threading.Thread(target=_run_chat, name=f"chat-{session_id}", daemon=True)
+
+    async def generate():
+        yield _sse("started", {"task": request.task})
+        worker.start()
+        try:
+            while True:
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=15)
+                except TimeoutError:
+                    yield _sse("heartbeat", {"status": record.analysis_status})
+                    continue
+                if item is None:
+                    break
+                event, data = item
+                yield _sse(event, data)
+        except asyncio.CancelledError:
+            record.cancel_event.set()
+            raise
+        finally:
+            if worker.is_alive():
+                logger.debug(
+                    "Chat worker still running at stream teardown for session %s; "
+                    "daemon thread will release run_lock via its own finally.",
                     session_id,
                 )
 
