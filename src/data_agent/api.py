@@ -1029,7 +1029,7 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
             while True:
                 try:
                     item = await asyncio.wait_for(queue.get(), timeout=15)
-                except TimeoutError:
+                except asyncio.TimeoutError:
                     yield _sse("heartbeat", {"status": record.analysis_status})
                     continue
                 if item is None:
@@ -1160,7 +1160,7 @@ async def chat_stream(session_id: str, request: AnalyzeRequest) -> StreamingResp
             while True:
                 try:
                     item = await asyncio.wait_for(queue.get(), timeout=15)
-                except TimeoutError:
+                except asyncio.TimeoutError:
                     yield _sse("heartbeat", {"status": record.analysis_status})
                     continue
                 if item is None:
