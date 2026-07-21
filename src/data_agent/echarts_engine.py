@@ -942,7 +942,10 @@ _ECHARTS_HTML_TEMPLATE = """<!doctype html>
 <style>
   * {{ box-sizing: border-box; margin: 0; padding: 0; }}
   html, body {{ width: 100%; height: 100%; background: {bg}; font-family: {font}; color: {text}; overflow: hidden; }}
-  #chart {{ width: 100%; height: 100%; min-height: 560px; }}
+  /* 图表区域自适应容器尺寸：去掉 min-height: 560px 强制撑高，
+     改为 min-height: 320px 保证小屏可读，高度 100% 填满预览模态。
+     这样预览模态（840px 高）里图表会完整显示，不再溢出看不见。 */
+  #chart {{ width: 100%; height: 100%; min-height: 320px; }}
   .interpretation {{
     border-top: 1px solid #e5e7eb;
     padding: 16px 24px;
