@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   Activity,
   BarChart3,
+  Boxes,
   Check,
   ChevronDown,
   ChevronRight,
@@ -20,13 +21,17 @@ import {
   FileChartColumn,
   FilePlus2,
   FileSpreadsheet,
+  Grid3x3,
   History,
   KeyRound,
+  LineChart,
   LoaderCircle,
   Network,
+  PieChart,
   Play,
   RefreshCw,
   Rows3,
+  ScatterChart,
   Settings2,
   Square,
   Table2,
@@ -634,6 +639,33 @@ function formatBytes(value = 0) {
 // React.memo：artifacts 仅在 session 切换或分析完成时变化。memo 让产物
 // 列表跳过 task 输入、历史刷新等无关重渲染。onDownload/onPreview 用
 // useCallback 稳定身份，否则 memo 失效。
+// 根据图表文件名前缀推断图表类型，选择对应的有意义图标。
+// 后端 _chart_filename_stem 用中文标签命名（如 "柱状图_1.html"），
+// 前端据此匹配 lucide 图标，让用户一眼看出图表类型。
+const CHART_ICON_BY_PREFIX = [
+  { prefix: "柱状图", Icon: BarChart3, label: "柱状图" },
+  { prefix: "折线图", Icon: LineChart, label: "折线图" },
+  { prefix: "面积图", Icon: LineChart, label: "面积图" },
+  { prefix: "散点矩阵", Icon: Grid3x3, label: "散点矩阵" },
+  { prefix: "散点图", Icon: ScatterChart, label: "散点图" },
+  { prefix: "三维散点", Icon: ScatterChart, label: "三维散点" },
+  { prefix: "直方图", Icon: Activity, label: "直方图" },
+  { prefix: "箱线图", Icon: Boxes, label: "箱线图" },
+  { prefix: "小提琴图", Icon: Boxes, label: "小提琴图" },
+  { prefix: "饼图", Icon: PieChart, label: "饼图" },
+  { prefix: "相关性热力图", Icon: Grid3x3, label: "相关性热力图" },
+  { prefix: "热力图", Icon: Grid3x3, label: "热力图" },
+  { prefix: "旭日图", Icon: Network, label: "旭日图" },
+  { prefix: "矩形树图", Icon: Network, label: "矩形树图" },
+];
+
+function pickChartIcon(name = "") {
+  for (const entry of CHART_ICON_BY_PREFIX) {
+    if (name.startsWith(entry.prefix)) return entry;
+  }
+  return { prefix: "", Icon: FileChartColumn, label: "图表" };
+}
+
 const ArtifactCenter = React.memo(function ArtifactCenter({ artifacts = [], onDownload, onPreview }) {
   const charts = artifacts.filter((item) => item.kind === "visualization");
   const files = artifacts.filter((item) => item.kind !== "visualization");
@@ -644,24 +676,27 @@ const ArtifactCenter = React.memo(function ArtifactCenter({ artifacts = [], onDo
         <section className="artifact-section">
           <div className="artifact-section-label"><span>交互图表</span><small>{charts.length} 张精选结果</small></div>
           <div className="chart-grid">
-            {charts.map((item, index) => (
-              <article className="chart-card" key={item.name}>
-                <div className="chart-index">{String(index + 1).padStart(2, "0")}</div>
-                <FileChartColumn size={20} />
-                <div>
-                  <strong>{item.description || item.name}</strong>
-                  <small>{formatBytes(item.size_bytes)} · HTML 交互图</small>
-                </div>
-                <div className="artifact-actions">
-                  <button className="preview-button" onClick={() => onPreview(item)}>
-                    <ExternalLink size={14} />在线查看
-                  </button>
-                  <button className="icon-button" title={`下载 ${item.name}`} onClick={() => onDownload(item)}>
-                    <Download size={15} />
-                  </button>
-                </div>
-              </article>
-            ))}
+            {charts.map((item, index) => {
+              const { Icon, label } = pickChartIcon(item.name);
+              return (
+                <article className="chart-card" key={item.name}>
+                  <div className="chart-index">{String(index + 1).padStart(2, "0")}</div>
+                  <Icon size={20} />
+                  <div>
+                    <strong>{item.description || item.name}</strong>
+                    <small>{label} · {formatBytes(item.size_bytes)} · 点击查看交互</small>
+                  </div>
+                  <div className="artifact-actions">
+                    <button className="preview-button" onClick={() => onPreview(item)}>
+                      <ExternalLink size={14} />在线查看
+                    </button>
+                    <button className="icon-button" title={`下载 ${item.name}`} onClick={() => onDownload(item)}>
+                      <Download size={15} />
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
           </div>
         </section>
       )}
@@ -1062,7 +1097,9 @@ function App() {
     // SSE 处理器跳过 UI 覆盖，避免历史视图被运行中的分析数据覆盖。
     runningSessionIdRef.current = session.id;
     setElapsedSeconds(0);
-    setTask(nextTask);
+    // 任务已提交运行，清空输入框，避免用户以为还没发起分析。
+    // lastTaskRef 仍保留实际任务文本，供 retry 与日志追踪使用。
+    setTask("");
     lastTaskRef.current = nextTask;
     const controller = new AbortController();
     analysisController.current = controller;
@@ -1504,6 +1541,52 @@ function App() {
               <Metric label="分析产物" value={session.artifacts?.length || 0} unit="项" />
             </section>
 
+            {/* task-box 常驻顶部：无论切到哪个 tab 都能直接发起新分析 */}
+            <div className={`task-box ${running ? "is-running" : ""}`}>
+              <div className="task-heading">
+                <div>
+                  <span className="section-kicker">分析任务</span>
+                  <h2>你想从数据中了解什么？</h2>
+                </div>
+                {running && <span><LoaderCircle className="spin" size={14} />正在分析</span>}
+              </div>
+              <textarea
+                ref={taskInput}
+                value={task}
+                onChange={(event) => setTask(event.target.value)}
+                placeholder="例如：比较各区域销售表现，解释异常波动并生成趋势图"
+                rows={3}
+              />
+              <div className="task-actions">
+                <div className="preset-row">
+                  {presets.map(({ title, detail, icon: Icon, task: presetTask }) => (
+                    <button
+                      key={title}
+                      title={detail}
+                      onClick={() => {
+                        setTask(presetTask);
+                        window.setTimeout(() => taskInput.current?.focus(), 0);
+                      }}
+                      disabled={running || !settings?.configured}
+                    >
+                      <Icon size={14} />{title}
+                    </button>
+                  ))}
+                </div>
+                {running ? (
+                  <button className="cancel-button" onClick={stopAnalysis}>
+                    <Square size={13} fill="currentColor" />停止分析
+                  </button>
+                ) : (
+                  <button className="run-button" onClick={() => startAnalysis()} disabled={!task.trim() || !settings?.configured}>
+                    <Play size={15} fill="currentColor" />运行分析
+                  </button>
+                )}
+              </div>
+            </div>
+            {!settings?.configured && <p className="composer-note">请先在左侧配置 DeepSeek API Key。</p>}
+
+            {/* tabs 紧贴 task-box 下方：切换分析/数据/产物三个视图 */}
             <nav className="tabs" aria-label="工作区视图">
               <button className={activeTab === "analysis" ? "active" : ""} onClick={() => setActiveTab("analysis")}><BarChart3 size={15} />分析</button>
               <button className={activeTab === "data" ? "active" : ""} onClick={() => setActiveTab("data")}><Table2 size={15} />数据</button>
@@ -1513,50 +1596,6 @@ function App() {
             {activeTab === "analysis" && (
               <div className="analysis-grid">
                 <section className="analysis-column">
-                  <div className={`task-box ${running ? "is-running" : ""}`}>
-                    <div className="task-heading">
-                      <div>
-                        <span className="section-kicker">分析任务</span>
-                        <h2>你想从数据中了解什么？</h2>
-                      </div>
-                      {running && <span><LoaderCircle className="spin" size={14} />正在分析</span>}
-                    </div>
-                    <textarea
-                      ref={taskInput}
-                      value={task}
-                      onChange={(event) => setTask(event.target.value)}
-                      placeholder="例如：比较各区域销售表现，解释异常波动并生成趋势图"
-                      rows={3}
-                    />
-                    <div className="task-actions">
-                      <div className="preset-row">
-                        {presets.map(({ title, detail, icon: Icon, task: presetTask }) => (
-                          <button
-                            key={title}
-                            title={detail}
-                            onClick={() => {
-                              setTask(presetTask);
-                              window.setTimeout(() => taskInput.current?.focus(), 0);
-                            }}
-                            disabled={running || !settings?.configured}
-                          >
-                            <Icon size={14} />{title}
-                          </button>
-                        ))}
-                      </div>
-                      {running ? (
-                        <button className="cancel-button" onClick={stopAnalysis}>
-                          <Square size={13} fill="currentColor" />停止分析
-                        </button>
-                      ) : (
-                        <button className="run-button" onClick={() => startAnalysis()} disabled={!task.trim() || !settings?.configured}>
-                          <Play size={15} fill="currentColor" />运行分析
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                  {!settings?.configured && <p className="composer-note">请先在左侧配置 DeepSeek API Key。</p>}
-
                   {result ? (
                     <ReportView result={result} />
                   ) : (
