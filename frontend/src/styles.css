@@ -533,6 +533,17 @@ i.warning { background: var(--attention-fg); box-shadow: 0 0 0 3px rgba(154, 103
 .error-banner .error-close { width: 28px; height: 28px; display: grid; place-items: center; margin-left: auto; border: 0; border-radius: var(--radius-sm); background: transparent; color: inherit; }
 .error-banner .error-close:hover { background: rgba(207, 34, 46, 0.12); }
 
+/* retry-bar：用户关掉错误横幅后，独立保留的恢复入口（柔蓝底，非错误色） */
+.retry-bar { min-height: 40px; display: flex; align-items: center; gap: 10px; margin: 12px 0; padding: 8px 12px; background: var(--accent-subtle); border: 1px solid #c5dbf3; border-radius: var(--radius-md); color: var(--accent-hover); font-size: var(--text-sm); animation: banner-in var(--duration) var(--ease-out); }
+.retry-bar > svg { color: var(--accent-fg); flex: 0 0 auto; }
+.retry-bar span { min-width: 0; flex: 1; }
+.retry-bar .error-close { width: 26px; height: 26px; display: grid; place-items: center; margin-left: auto; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--fg-muted); }
+.retry-bar .error-close:hover { background: rgba(59, 108, 179, 0.12); color: var(--accent-fg); }
+
+/* history-retry：历史加载失败时的重试按钮 */
+.history-empty .history-retry { margin-top: 8px; padding: 6px 14px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--canvas-default); color: var(--fg-default); font-size: var(--text-sm); font-weight: 500; box-shadow: var(--shadow-xs); transition: background-color var(--duration) var(--ease-out), border-color var(--duration) var(--ease-out); }
+.history-empty .history-retry:hover { background: var(--canvas-subtle); border-color: var(--border-strong); }
+
 /* ---------- 鉴权页 ---------- */
 .auth-gate { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: linear-gradient(135deg, #f2f5f9 0%, #eaeef4 45%, #eef2f7 100%); }
 .auth-card { width: min(100%, 380px); padding: 32px; border: 1px solid var(--border-default); border-radius: var(--radius-lg); background: var(--canvas-default); box-shadow: var(--shadow-lg); }
@@ -661,6 +672,10 @@ i.warning { background: var(--attention-fg); box-shadow: 0 0 0 3px rgba(154, 103
 .task-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 20px 24px 0; }
 .task-heading h2 { margin: 6px 0 0; font-size: var(--text-lg); font-weight: 700; letter-spacing: -0.005em; }
 .task-heading > span { display: flex; align-items: center; gap: 6px; color: var(--accent-fg); font-size: var(--text-sm); font-weight: 600; }
+/* task-running-hint：运行中在 task-box 顶部显示当前步骤+已耗时，
+   切到数据/产物 tab 时也能看到进度，避免用户以为分析停了 */
+.task-running-hint { display: flex; align-items: center; gap: 6px; color: var(--accent-fg); font-size: var(--text-sm); font-weight: 600; max-width: 60%; }
+.task-running-hint > svg { flex-shrink: 0; }
 .task-box textarea { width: 100%; min-height: 104px; display: block; resize: vertical; padding: 16px 24px; border: 0; outline: 0; background: transparent; color: var(--fg-default); font-size: var(--text-md); line-height: 1.7; }
 .task-box textarea::placeholder { color: var(--fg-subtle); }
 .task-actions { min-height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px 10px 16px; border-top: 1px solid var(--border-muted); }
@@ -733,6 +748,9 @@ i.warning { background: var(--attention-fg); box-shadow: 0 0 0 3px rgba(154, 103
 .report-copy { height: 30px; padding: 0 12px; gap: 5px; color: var(--fg-muted); font-size: var(--text-xs); }
 .report-copy:hover { color: var(--accent-fg); border-color: var(--accent-fg); background: var(--accent-subtle); }
 .report-copy svg { flex-shrink: 0; }
+/* 复制失败状态：柔红底 + 红字，让用户知道需要手动选择文本复制 */
+.report-copy.is-failed { color: var(--danger-fg); border-color: var(--danger-border); background: var(--danger-subtle); }
+.report-copy.is-failed:hover { color: var(--danger-fg); border-color: var(--danger-fg); background: #fee2e2; }
 .report-body { padding: 28px 32px 36px; color: #2a3441; font-size: var(--text-md); line-height: 1.8; max-height: 760px; overflow: hidden; position: relative; transition: max-height var(--duration-slow) var(--ease-out); }
 .report-body.is-expanded { max-height: none; }
 /* 折叠状态时底部渐隐遮罩，提示下方还有内容 */
