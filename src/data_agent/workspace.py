@@ -266,7 +266,9 @@ class DataWorkspace:
             raise ValueError("数据文件为空或无法识别出列。")
         if len(df.columns) > _MAX_COLUMNS:
             raise ValueError(f"列数超过 {_MAX_COLUMNS}，拒绝加载以防止意外资源耗尽。")
-        self._df = df
+        # 通过 setter 赋值，确保 _profile_cache 被清除（虽然 load 是首次设置，
+        # 缓存此时为空，但走 setter 保持一致性，避免未来重构引入缓存失效 bug）。
+        self.dataframe = df
         self._source_row_count = len(df)
         self.source_path = path
         return self.profile(sample_rows=5)
