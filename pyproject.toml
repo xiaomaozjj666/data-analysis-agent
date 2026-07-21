@@ -60,4 +60,6 @@ target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
-ignore = ["E501"]
+# UP041: 保留 asyncio.TimeoutError 以兼容 Python 3.10（asyncio.TimeoutError
+# 与内置 TimeoutError 在 3.11+ 才统一为同一类型）。
+ignore = ["E501", "UP041"]
