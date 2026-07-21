@@ -162,6 +162,10 @@ class AnalysisResult:
         dataset_profile: 数据集概况快照。
         plan: 原始计划步骤列表。
         completed_steps: 各步骤执行结果（含 status 和 summary）。
+        usage: 本次分析累计的 token 用量（prompt/completion/total_tokens），
+            由 UsageAccumulator 在 LLM 调用结束时累计。None 表示未采集。
+        reasoning: DeepSeek reasoning_content 的完整思考过程文本，
+            由 ReasoningStreamCallback 累计。空字符串表示无思考过程。
     """
 
     response: str
@@ -170,6 +174,8 @@ class AnalysisResult:
     dataset_profile: dict[str, Any]
     plan: list[dict[str, str]]
     completed_steps: list[dict[str, Any]]
+    usage: dict[str, int] | None = None
+    reasoning: str = ""
 
 
 class AnalysisCancelled(RuntimeError):
@@ -276,6 +282,98 @@ class ToolTraceCallback(BaseCallbackHandler):
             })
         except Exception:
             pass
+
+
+class ReasoningStreamCallback(BaseCallbackHandler):
+    """思考过程流式回调：把 DeepSeek reasoning_content 实时推送到前端。
+
+    DeepSeek thinking 模式下，LLM 输出分两段：先是 reasoning_content（思考过程），
+    然后是 content（最终回答）。ReportStreamCallback 只捕获 content token，
+    reasoning_content 被丢弃，用户完全看不到 Agent 的推理链路。
+
+    本回调通过 on_llm_new_token 钩子检查 chunk.additional_kwargs.reasoning_content，
+    把思考过程以 thinking_chunk 事件实时推送，前端 ReasoningBlock 流式展示，
+    让用户看到"Agent 正在想什么"，减少黑盒等待焦虑（与 DeepSeek 官网 / Claude
+    思考过程展示体验一致）。
+
+    同时把 reasoning 累计到 buffer 列表，供 finalize/chat 返回时一次性给出完整文本。
+    """
+
+    def __init__(
+        self,
+        event_callback: Callable[[str, dict[str, Any]], None],
+        buffer: list[str] | None = None,
+        event_type: str = "thinking_chunk",
+    ) -> None:
+        self.event_callback = event_callback
+        self.buffer = buffer if buffer is not None else []
+        self.event_type = event_type
+
+    def on_llm_new_token(self, token: str, **kwargs: Any) -> Any:
+        # DeepSeek 的 reasoning_content 在 chunk.additional_kwargs 中，不在 token 参数里。
+        # chunk 可能是 ChatGenerationChunk（有 .message）或 AIMessageChunk（直接有 .additional_kwargs）。
+        chunk = kwargs.get("chunk")
+        reasoning = ""
+        if chunk is not None:
+            message = getattr(chunk, "message", chunk)
+            additional_kwargs = getattr(message, "additional_kwargs", None) or {}
+            reasoning = additional_kwargs.get("reasoning_content", "") or ""
+        if not reasoning:
+            return
+        self.buffer.append(reasoning)
+        try:
+            self.event_callback(self.event_type, {"chunk": reasoning})
+        except Exception:
+            pass
+
+
+class UsageAccumulator(BaseCallbackHandler):
+    """Token 用量累计回调：在每次 LLM 调用结束时累计 prompt/completion/total tokens。
+
+    一次完整分析可能包含 plan + 多次 ReAct LLM 调用 + finalize，每调用一次
+    on_llm_end 触发一次。本回调把所有调用的用量求和，分析结束后通过 snapshot()
+    一次性给出总用量，前端在报告底部以 chip 形式展示（与 ChatGPT/Claude 用量
+    展示一致）。
+
+    兼容两种用量来源：
+    1. response.llm_output["token_usage"]（OpenAI/DeepSeek 原生格式，prompt_tokens 字段）
+    2. generation.message.usage_metadata（LangChain 标准格式，input_tokens 字段）
+    """
+
+    def __init__(self) -> None:
+        self.total_input = 0
+        self.total_output = 0
+        self.total_total = 0
+
+    def on_llm_end(self, response: Any, **kwargs: Any) -> Any:
+        # 优先从 llm_output 提取（OpenAI/DeepSeek 原生格式）
+        llm_output = getattr(response, "llm_output", None) or {}
+        token_usage = llm_output.get("token_usage") or llm_output.get("usage") or {}
+        if token_usage:
+            self.total_input += int(token_usage.get("prompt_tokens", 0) or 0)
+            self.total_output += int(token_usage.get("completion_tokens", 0) or 0)
+            self.total_total += int(token_usage.get("total_tokens", 0) or 0)
+            return
+        # 回退到 generation 级别的 usage_metadata（LangChain 标准格式）
+        generations = getattr(response, "generations", None) or []
+        for batch in generations:
+            for generation in batch or []:
+                message = getattr(generation, "message", None)
+                if message is None:
+                    continue
+                usage = getattr(message, "usage_metadata", None) or {}
+                if usage:
+                    self.total_input += int(usage.get("input_tokens", 0) or 0)
+                    self.total_output += int(usage.get("output_tokens", 0) or 0)
+                    self.total_total += int(usage.get("total_tokens", 0) or 0)
+
+    def snapshot(self) -> dict[str, int]:
+        """返回当前累计的 token 用量快照。"""
+        return {
+            "prompt_tokens": self.total_input,
+            "completion_tokens": self.total_output,
+            "total_tokens": self.total_total,
+        }
 
 
 def create_chat_model(settings: AgentSettings) -> BaseChatModel:
@@ -544,6 +642,11 @@ class DataAnalysisAgent:
         self.planner = self.model.with_structured_output(AnalysisPlan)
         self.replanner = self.model.with_structured_output(ReplanDecision)
         self.graph = self._build_workflow()
+        # 上一次 chat() 调用累计的 token 用量与思考过程，供 API 层在 chat_done
+        # 事件中读取。每次 chat() 调用会覆盖。stream()/run() 不使用这两个属性
+        # （其用量通过 AnalysisResult 返回）。
+        self._last_usage: dict[str, int] | None = None
+        self._last_reasoning: str = ""
 
     def _invoke_config(self, *extra_callbacks: BaseCallbackHandler, **extra: Any) -> dict[str, Any]:
         """Build a RunnableConfig that wires the cancel callback into every
@@ -872,11 +975,24 @@ class DataAnalysisAgent:
             try:
                 # 流式报告：ReportStreamCallback 把每个 token 通过 event_callback
                 # 推送到前端，用户看着报告逐字写出，而不是等 30-60 秒看完整报告。
+                # ReasoningStreamCallback 把 DeepSeek reasoning_content 以 thinking_chunk
+                # 事件实时推送，让用户看到 Agent 的思考过程。
+                # UsageAccumulator 累计 finalize 节点的 token 用量。
+                reasoning_buffer: list[str] = []
                 report_streamer = ReportStreamCallback(self.event_callback)
-                final_message = self.model.invoke(prompt, config=self._invoke_config(report_streamer))
+                reasoning_streamer = ReasoningStreamCallback(
+                    self.event_callback, buffer=reasoning_buffer
+                )
+                usage_acc = UsageAccumulator()
+                final_message = self.model.invoke(
+                    prompt,
+                    config=self._invoke_config(report_streamer, reasoning_streamer, usage_acc),
+                )
                 response = _message_text(final_message)
             except Exception:
                 response = ""
+                reasoning_buffer = []
+                usage_acc = None
             if not response:
                 # LLM 汇总失败时，把各步骤的标题与摘要作为兜底返回，避免用户看到空白。
                 if evidence:
@@ -893,6 +1009,8 @@ class DataAnalysisAgent:
                 "plan": state.get("plan", []),
                 "completed_steps": state.get("completed_steps", []),
                 "trace": state.get("trace", []),
+                "usage": usage_acc.snapshot() if usage_acc else None,
+                "reasoning": "".join(reasoning_buffer),
             }
 
         graph = StateGraph(WorkflowState)
@@ -980,6 +1098,8 @@ class DataAnalysisAgent:
             dataset_profile=result["dataset_profile"],
             plan=result.get("plan", []),
             completed_steps=result.get("completed_steps", []),
+            usage=result.get("usage"),
+            reasoning=result.get("reasoning", ""),
         )
 
     def stream(
@@ -1026,6 +1146,10 @@ class DataAnalysisAgent:
         工具调用通过 ``tool_call``/``tool_result`` 事件推送，前端渲染为对话气泡 +
         工具时间线，体验与 ChatGPT/Claude 追问一致。
 
+        思考过程通过 ``thinking_chunk`` 事件实时推送，token 用量累计到
+        ``self._last_usage``，思考过程文本累计到 ``self._last_reasoning``，
+        供 API 层在 ``chat_done`` 事件中读取。
+
         Args:
             query: 用户的追问内容。
             history: 之前的对话历史，用于上下文续接。
@@ -1033,6 +1157,8 @@ class DataAnalysisAgent:
         Returns:
             ``(response_text, new_artifacts)`` 元组。``new_artifacts`` 是本次
             追问期间通过工具调用新生成的产物（图表、导出数据等）元数据。
+            调用后可通过 ``self._last_usage`` 和 ``self._last_reasoning``
+            获取本次追问的 token 用量和思考过程。
 
         Raises:
             ValueError: query 为空时。
@@ -1047,12 +1173,21 @@ class DataAnalysisAgent:
         artifact_before = len(self.workspace._artifacts)
         tool_tracer = ToolTraceCallback(self.event_callback)
         chat_streamer = ReportStreamCallback(self.event_callback, event_type="chat_chunk")
+        # 思考过程 + 用量：与 finalize 节点一致的回调注入，让追问也具备
+        # reasoning_content 流式展示和 token 用量统计。
+        reasoning_buffer: list[str] = []
+        reasoning_streamer = ReasoningStreamCallback(
+            self.event_callback, buffer=reasoning_buffer
+        )
+        usage_acc = UsageAccumulator()
 
         result = self.react_agent.invoke(
             {"messages": messages},
             config=self._invoke_config(
                 tool_tracer,
                 chat_streamer,
+                reasoning_streamer,
+                usage_acc,
                 recursion_limit=self.settings.max_iterations * 2 + 5,
             ),
         )
@@ -1062,4 +1197,7 @@ class DataAnalysisAgent:
         )
         response_text = _message_text(final_ai) or "（未生成回复）"
         new_artifacts = list(self.workspace.artifacts)[artifact_before:]
+        # 存储到实例属性，供 API 层在 chat_done 事件中读取
+        self._last_usage = usage_acc.snapshot()
+        self._last_reasoning = "".join(reasoning_buffer)
         return response_text, new_artifacts

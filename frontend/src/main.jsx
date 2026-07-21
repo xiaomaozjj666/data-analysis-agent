@@ -2,16 +2,37 @@ import React, { Component, useCallback, useDeferredValue, useEffect, useMemo, us
 import { createRoot } from "react-dom/client";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { PrismLight as SyntaxHighlighter } from "react-syntax-highlighter";
+import { oneLight, oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
+// 按需注册 Prism 语言：数据分析场景仅涉及 SQL/Python/JSON/JS/Bash 等。
+// 全量导入 Prism 会注册 200+ 语言定义（gzip 后数百 KB），PrismLight 只注册
+// 用到的语言，可减少 bundle 体积 200-400KB（gzip）。
+import python from "react-syntax-highlighter/dist/esm/languages/prism/python";
+import sql from "react-syntax-highlighter/dist/esm/languages/prism/sql";
+import json from "react-syntax-highlighter/dist/esm/languages/prism/json";
+import javascript from "react-syntax-highlighter/dist/esm/languages/prism/javascript";
+import bash from "react-syntax-highlighter/dist/esm/languages/prism/bash";
+import markdown from "react-syntax-highlighter/dist/esm/languages/prism/markdown";
+
+SyntaxHighlighter.registerLanguage("python", python);
+SyntaxHighlighter.registerLanguage("sql", sql);
+SyntaxHighlighter.registerLanguage("json", json);
+SyntaxHighlighter.registerLanguage("javascript", javascript);
+SyntaxHighlighter.registerLanguage("bash", bash);
+SyntaxHighlighter.registerLanguage("markdown", markdown);
 import {
   AlertTriangle,
   Activity,
   BarChart3,
   Boxes,
+  Brain,
   Check,
   ChevronDown,
   ChevronRight,
   Circle,
   Clock,
+  Command,
+  CornerDownLeft,
   Database,
   Download,
   Eye,
@@ -24,16 +45,20 @@ import {
   Grid3x3,
   History,
   KeyRound,
+  Keyboard,
   LineChart,
   LoaderCircle,
+  Moon,
   Network,
   PieChart,
   Play,
   RefreshCw,
   Rows3,
   ScatterChart,
+  Search,
   Settings2,
   Square,
+  Sun,
   Table2,
   Upload,
   X,
@@ -45,7 +70,109 @@ const API_URL = (
   (import.meta.env.PROD ? window.location.origin : "http://127.0.0.1:8000")
 ).replace(/\/$/, "");
 const ACCESS_TOKEN_KEY = "data-desk-access-token";
+const THEME_KEY = "data-desk-theme";
 const ACTIVE_ANALYSIS_STATES = new Set(["running", "cancelling"]);
+
+// 快捷键帮助面板的内容定义。集中维护，避免散落在多处 JSX。
+// 每条快捷键对应一个真实可用的全局或上下文快捷键（见 App 内的 keydown 监听）。
+const HELP_SHORTCUTS = [
+  {
+    section: "通用",
+    items: [
+      { keys: ["⌘", "K"], desc: "打开命令面板" },
+      { keys: ["?"], desc: "查看键盘快捷键" },
+      { keys: ["⌘", "B"], desc: "展开/收起历史会话侧栏" },
+      { keys: ["Esc"], desc: "关闭当前弹层" },
+    ],
+  },
+  {
+    section: "分析",
+    items: [
+      { keys: ["⌘", "Enter"], desc: "运行分析任务 / 发送追问" },
+      { keys: ["⌘", "."], desc: "停止正在运行的分析" },
+      { keys: ["T"], desc: "切换亮色 / 暗色主题" },
+      { keys: ["1", "2", "3"], desc: "切换 分析 / 数据 / 产物 三个 Tab" },
+    ],
+  },
+];
+
+// 命令面板可执行的动作。每个动作的 run 接收 App 上下文所需的回调。
+// 这里只声明静态元数据，动态回调通过 props 注入。
+const COMMAND_ACTIONS = [
+  { id: "new-analysis", icon: FilePlus2, title: "新建分析", subtitle: "上传新的数据集", section: "操作" },
+  { id: "toggle-theme", icon: Moon, title: "切换主题", subtitle: "亮色 ↔ 暗色", section: "操作" },
+  { id: "open-settings", icon: Settings2, title: "打开模型设置", subtitle: "API Key、推理强度", section: "操作" },
+  { id: "tab-analysis", icon: BarChart3, title: "切换到分析视图", subtitle: "报告与对话", section: "导航" },
+  { id: "tab-data", icon: Table2, title: "切换到数据视图", subtitle: "原始记录预览", section: "导航" },
+  { id: "tab-artifacts", icon: FileSpreadsheet, title: "切换到产物视图", subtitle: "图表与导出文件", section: "导航" },
+  { id: "show-help", icon: Keyboard, title: "查看键盘快捷键", subtitle: "全部快捷键列表", section: "帮助" },
+];
+
+// 主题 hook：管理 light/dark 切换，首次进入时读取 localStorage，若无则跟随系统。
+// 通过 document.documentElement.dataset.theme 设置 CSS 变量覆盖范围。
+// 跟随系统模式下（localStorage 无值），监听 prefers-color-scheme 变化实时切换，
+// 让 macOS 自动深色模式等场景能即时响应。用户手动切换后写入 localStorage，
+// 不再跟随系统。
+function useTheme() {
+  const [theme, setTheme] = useState(() => {
+    const saved = window.localStorage.getItem(THEME_KEY);
+    if (saved === "light" || saved === "dark") return saved;
+    return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  });
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    window.localStorage.setItem(THEME_KEY, theme);
+  }, [theme]);
+  // 跟随系统模式：localStorage 被清除后，监听系统主题变化
+  useEffect(() => {
+    const mediaQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
+    if (!mediaQuery) return;
+    const handler = (e) => {
+      // 仅在用户未手动选择（localStorage 无值）时跟随系统
+      if (!window.localStorage.getItem(THEME_KEY)) {
+        setTheme(e.matches ? "dark" : "light");
+      }
+    };
+    mediaQuery.addEventListener?.("change", handler);
+    return () => mediaQuery.removeEventListener?.("change", handler);
+  }, []);
+  const toggle = useCallback(() => setTheme((t) => (t === "dark" ? "light" : "dark")), []);
+  return { theme, toggle, setTheme };
+}
+
+// 把任意字符串尝试格式化为缩进 JSON；若不是合法 JSON 则原样返回。
+// 用于工具调用 input_preview / output_preview 的展示：很多 LangChain 工具
+// 的输入输出本身就是 JSON 字符串，缩进后可读性大幅提升。
+function tryFormatJson(text) {
+  if (!text) return "";
+  const trimmed = String(text).trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return text;
+  try {
+    return JSON.stringify(JSON.parse(trimmed), null, 2);
+  } catch {
+    return text;
+  }
+}
+
+// 简单的 token 用量格式化：< 1000 显示原数，≥ 1000 显示 1.0k 形式
+function formatTokens(n) {
+  if (!Number.isFinite(n) || n <= 0) return "0";
+  if (n < 1000) return String(n);
+  return `${(n / 1000).toFixed(1)}k`;
+}
+
+// 安全解析 SSE 事件的 data 字段。服务端偶尔会推送畸形 JSON（如被代理截断、
+// chunked 编码错误），若直接 JSON.parse 抛 SyntaxError 会中断整个 SSE 流，
+// 导致后续事件全部丢失、分析卡死。这里包一层 try/catch，解析失败时跳过该
+// 事件并 console.warn 记录原始文本供调试，保证流的健壮性。
+function parseSSEData(dataText) {
+  try {
+    return JSON.parse(dataText);
+  } catch (err) {
+    console.warn("SSE 事件 JSON 解析失败，已跳过该事件：", err, dataText?.slice(0, 200));
+    return null;
+  }
+}
 
 // Module-level constant: remarkPlugins array is recreated on every ReportView
 // render if declared inline, which forces ReactMarkdown to re-process the
@@ -244,7 +371,9 @@ class ApiError extends Error {
 async function api(path, options = {}) {
   const { timeoutMs = 30000, signal: providedSignal, ...fetchOptions } = options;
   const controller = providedSignal ? null : new AbortController();
-  const timeout = controller ? window.setTimeout(() => controller.abort(), timeoutMs) : null;
+  // 标记是否为内部超时触发的 abort，用于区分用户主动取消（providedSignal.aborted）
+  let timedOut = false;
+  const timeout = controller ? window.setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs) : null;
   try {
     const response = await fetch(`${API_URL}${path}`, {
       ...fetchOptions,
@@ -256,7 +385,12 @@ async function api(path, options = {}) {
     if (!response.ok) throw new ApiError(describeApiError(payload, response.status), response.status);
     return payload;
   } catch (error) {
-    if (error.name === "AbortError") throw new Error("连接服务超时，请刷新页面后重试。Render 免费实例首次唤醒可能需要几十秒。");
+    if (error.name === "AbortError") {
+      // 用户通过 providedSignal 主动取消（如停止轮询）：直接抛 AbortError，不替换消息
+      if (providedSignal?.aborted) throw error;
+      // 内部超时取消：给通用超时提示，不硬编码部署平台名称
+      throw new Error("连接服务超时，请检查网络后重试。");
+    }
     throw error;
   } finally {
     if (timeout) window.clearTimeout(timeout);
@@ -322,7 +456,7 @@ function Metric({ label, value, unit }) {
 // React.memo：App 在用户输入 task、刷新历史等场景下会重渲染，但 result
 // 通常不变。memo 让 ReportView 跳过这些无关重渲染，避免 ReactMarkdown
 // 重新解析 markdown AST（report 可能长达数千字）。
-const ReportView = React.memo(function ReportView({ result, streaming, onPreview, artifacts }) {
+const ReportView = React.memo(function ReportView({ result, streaming, onPreview, artifacts, reasoning, reasoningStreaming, theme, usage }) {
   // copyState: "idle" | "copied" | "failed"。之前只有 copied boolean，
   // 复制失败时静默吞掉错误，用户切到其他应用粘贴才发现是旧内容。
   const [copyState, setCopyState] = useState("idle");
@@ -331,6 +465,14 @@ const ReportView = React.memo(function ReportView({ result, streaming, onPreview
   // useDeferredValue: 流式追加时 ReactMarkdown 重解析整个 AST 会卡顿，
   // defer 让高优先级更新（输入框交互）先走，Markdown 渲染延后。
   const deferredResponse = useDeferredValue(result.response || "");
+  const deferredReasoning = useDeferredValue(reasoning || "");
+
+  // useMemo 缓存 markdownComponents：否则每次渲染都返回新对象，ReactMarkdown
+  // 会因 components prop 引用变化而全量重解析 AST，流式时每个 chunk 都重解析。
+  const mdComponents = useMemo(
+    () => markdownComponents(artifacts, onPreview, theme),
+    [artifacts, onPreview, theme]
+  );
 
   // 流式时自动滚动到底部，让用户看到最新生成的文字
   useEffect(() => {
@@ -365,6 +507,7 @@ const ReportView = React.memo(function ReportView({ result, streaming, onPreview
           )}
         </div>
         <div className="report-actions">
+          {!streaming && <UsageChip usage={usage} />}
           <button
             type="button"
             className={`report-copy ${copyState === "failed" ? "is-failed" : ""}`}
@@ -378,12 +521,13 @@ const ReportView = React.memo(function ReportView({ result, streaming, onPreview
           </button>
         </div>
       </div>
+      <ReasoningBlock content={deferredReasoning} streaming={reasoningStreaming} />
       <div className={`report-body ${expanded ? "is-expanded" : ""} ${streaming ? "is-streaming" : ""}`} ref={reportBodyRef}>
         {streaming && !deferredResponse ? (
           <div className="report-placeholder"><LoaderCircle size={14} className="spin" />正在生成报告…</div>
         ) : (
           <>
-            <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={markdownComponents(artifacts, onPreview)}>
+            <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={mdComponents}>
               {deferredResponse}
             </ReactMarkdown>
             {streaming && <span className="report-cursor" aria-hidden="true" />}
@@ -405,10 +549,311 @@ const ReportView = React.memo(function ReportView({ result, streaming, onPreview
   );
 });
 
+// 代码块组件：Prism 语法高亮 + 一键复制 + 语言标签。
+// 替代 ReactMarkdown 默认的 <pre><code> 渲染，让报告中的 SQL/Python/JSON
+// 代码块具备 IDE 级别的可读性。主题随当前 theme 切换 oneLight/oneDark。
+const CodeBlock = React.memo(function CodeBlock({ language, value, theme }) {
+  const [copyState, setCopyState] = useState("idle");
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(value || "");
+      setCopyState("copied");
+      window.setTimeout(() => setCopyState("idle"), 1800);
+    } catch {
+      setCopyState("failed");
+      window.setTimeout(() => setCopyState("idle"), 3000);
+    }
+  };
+  const lang = (language || "").toLowerCase() || "text";
+  return (
+    <div className="code-block">
+      <div className="code-block-header">
+        <span className="code-block-lang">{lang}</span>
+        <button
+          type="button"
+          className={`code-block-copy ${copyState === "copied" ? "is-copied" : ""}`}
+          onClick={handleCopy}
+          aria-label="复制代码"
+        >
+          {copyState === "copied" ? <Check size={11} /> : <FileSpreadsheet size={11} />}
+          {copyState === "copied" ? "已复制" : copyState === "failed" ? "失败" : "复制"}
+        </button>
+      </div>
+      <SyntaxHighlighter
+        language={lang}
+        style={theme === "dark" ? oneDark : oneLight}
+        customStyle={{ margin: 0, padding: "12px 14px", background: "transparent", fontSize: "12.5px" }}
+        codeTagProps={{ style: { fontFamily: "var(--font-mono)" } }}
+        wrapLongLines
+      >
+        {value || ""}
+      </SyntaxHighlighter>
+    </div>
+  );
+});
+
+// 工具调用展开/折叠项：点击行展开 input_preview / output_preview JSON。
+// 之前 toolTrace 已经携带这两段数据但 UI 没渲染，是"半成品"。
+// 这里补上交互，让用户能像 Claude/ChatGPT 那样点开看工具实际做了什么。
+const ToolTraceItem = React.memo(function ToolTraceItem({ tool, defaultExpanded = false }) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
+  const hasDetail = !!(tool.input_preview || tool.output_preview);
+  return (
+    <li className={`tool-trace-item ${expanded ? "is-expanded" : ""}`}>
+      <div
+        className="tool-trace-row"
+        onClick={() => hasDetail && setExpanded((v) => !v)}
+        onKeyDown={(e) => {
+          if (hasDetail && (e.key === "Enter" || e.key === " ")) {
+            e.preventDefault();
+            setExpanded((v) => !v);
+          }
+        }}
+        role={hasDetail ? "button" : undefined}
+        tabIndex={hasDetail ? 0 : undefined}
+        aria-expanded={hasDetail ? expanded : undefined}
+      >
+        {hasDetail ? <ChevronRight size={11} className="tool-chevron" /> : <span style={{ width: 11 }} />}
+        <span className="tool-dot" aria-hidden="true" />
+        <span className="tool-name">{TOOL_LABELS[tool.name] || tool.name}</span>
+        {tool.status === "running" ? (
+          <LoaderCircle size={10} className="spin" />
+        ) : (
+          <span className="tool-duration">{tool.duration_ms ? `${tool.duration_ms}ms` : ""}</span>
+        )}
+      </div>
+      {expanded && hasDetail && (
+        <div className="tool-trace-detail">
+          {tool.input_preview && (
+            <div className="tool-trace-detail-section">
+              <span className="tool-trace-detail-label">输入</span>
+              <pre>{tryFormatJson(tool.input_preview)}</pre>
+            </div>
+          )}
+          {tool.output_preview && (
+            <div className="tool-trace-detail-section">
+              <span className="tool-trace-detail-label">输出</span>
+              <pre>{tryFormatJson(tool.output_preview)}</pre>
+            </div>
+          )}
+        </div>
+      )}
+    </li>
+  );
+});
+
+// 命令面板（Cmd+K）：参考 Linear / Raycast / VSCode 的命令面板体验。
+// 输入框 + 动作列表 + 会话搜索结果。键盘上下选择，Enter 执行，Esc 关闭。
+const CommandPalette = React.memo(function CommandPalette({
+  query, onQueryChange, actions, sessions, onAction, onSelectSession, onClose, theme,
+}) {
+  const inputRef = useRef(null);
+  const [activeIndex, setActiveIndex] = useState(0);
+  useEffect(() => { inputRef.current?.focus(); }, []);
+  useEffect(() => { setActiveIndex(0); }, [query]);
+
+  const q = query.trim().toLowerCase();
+  const filteredActions = !q ? actions : actions.filter((a) =>
+    a.title.toLowerCase().includes(q) || a.subtitle.toLowerCase().includes(q));
+  const filteredSessions = !q ? [] : (sessions || []).filter((s) =>
+    (s.filename || "").toLowerCase().includes(q)).slice(0, 5);
+
+  const flat = [
+    ...filteredActions.map((a) => ({ type: "action", value: a })),
+    ...filteredSessions.map((s) => ({ type: "session", value: s })),
+  ];
+  const total = flat.length;
+
+  const handleKeyDown = (e) => {
+    if (e.key === "ArrowDown") { e.preventDefault(); setActiveIndex((i) => (i + 1) % Math.max(total, 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setActiveIndex((i) => (i - 1 + Math.max(total, 1)) % Math.max(total, 1)); }
+    else if (e.key === "Enter") {
+      e.preventDefault();
+      const item = flat[activeIndex];
+      if (!item) return;
+      if (item.type === "action") onAction(item.value);
+      else onSelectSession(item.value);
+    } else if (e.key === "Escape") { e.preventDefault(); onClose(); }
+  };
+
+  // 按 section 分组动作
+  const actionGroups = useMemo(() => {
+    const map = new Map();
+    for (const a of filteredActions) {
+      if (!map.has(a.section)) map.set(a.section, []);
+      map.get(a.section).push(a);
+    }
+    return Array.from(map.entries());
+  }, [filteredActions]);
+
+  return (
+    <div className="command-palette-backdrop" role="dialog" aria-modal="true" aria-label="命令面板" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="command-palette">
+        <div className="command-input-row">
+          <Search size={16} />
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={(e) => onQueryChange(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="搜索操作或历史会话…"
+          />
+          <kbd className="command-item-kbd">ESC</kbd>
+        </div>
+        <div className="command-list">
+          {total === 0 && <div className="command-empty">没有匹配项</div>}
+          {actionGroups.map(([section, items]) => (
+            <div key={section}>
+              <div className="command-section-label">{section}</div>
+              {items.map((a) => {
+                const idx = flat.findIndex((f) => f.type === "action" && f.value.id === a.id);
+                return (
+                  <button
+                    key={a.id}
+                    type="button"
+                    className={`command-item ${idx === activeIndex ? "is-active" : ""}`}
+                    onMouseEnter={() => setActiveIndex(idx)}
+                    onClick={() => onAction(a)}
+                  >
+                    <a.icon size={16} className="command-item-icon" />
+                    <span className="command-item-text">
+                      <strong>{a.title}</strong>
+                      <small>{a.subtitle}</small>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+          {filteredSessions.length > 0 && (
+            <div>
+              <div className="command-section-label">历史会话</div>
+              {filteredSessions.map((s) => {
+                const idx = flat.findIndex((f) => f.type === "session" && f.value.id === s.id);
+                return (
+                  <button
+                    key={s.id}
+                    type="button"
+                    className={`command-item ${idx === activeIndex ? "is-active" : ""}`}
+                    onMouseEnter={() => setActiveIndex(idx)}
+                    onClick={() => onSelectSession(s)}
+                  >
+                    <FileSpreadsheet size={16} className="command-item-icon" />
+                    <span className="command-item-text">
+                      <strong>{s.filename}</strong>
+                      <small>{formatRelativeTime(s.created_at)} · {describeHistoryStatus(s.analysis_status).label}</small>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+        <div className="command-footer">
+          <span><kbd>↑</kbd><kbd>↓</kbd> 选择</span>
+          <span><kbd>Enter</kbd> 执行</span>
+          <span><kbd>Esc</kbd> 关闭</span>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+// 快捷键帮助面板（? 唤起）：完整列出所有可用快捷键。
+// 集中在 HELP_SHORTCUTS 常量维护，避免文档与实现脱节。
+const HelpPanel = React.memo(function HelpPanel({ onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return (
+    <div className="help-panel-backdrop" role="dialog" aria-modal="true" aria-label="键盘快捷键" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="help-panel">
+        <div className="help-panel-header">
+          <h2>键盘快捷键</h2>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="关闭"><X size={16} /></button>
+        </div>
+        <div className="help-panel-body">
+          {HELP_SHORTCUTS.map((group) => (
+            <div key={group.section} className="help-section">
+              <h3 className="help-section-title">{group.section}</h3>
+              <div className="help-shortcut-list">
+                {group.items.map((item, idx) => (
+                  <div key={idx} className="help-shortcut">
+                    <span>{item.desc}</span>
+                    <span className="help-shortcut-keys">
+                      {item.keys.map((k, i) => <kbd key={i}>{k}</kbd>)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+});
+
+// 思考过程展示：可折叠的推理区域，把 DeepSeek 的 reasoning_content 实时
+// 流式展示。默认折叠，避免推理内容过长挤占正文；流式时显示光标。
+const ReasoningBlock = React.memo(function ReasoningBlock({ content, streaming, expanded: expandedProp }) {
+  const [expanded, setExpanded] = useState(false);
+  // 流式期间自动展开，让用户看到模型在想什么；结束后自动收起
+  useEffect(() => {
+    if (streaming) setExpanded(true);
+  }, [streaming]);
+  if (!content && !streaming) return null;
+  return (
+    <div className={`reasoning-block ${expanded ? "is-expanded" : ""}`}>
+      <button
+        type="button"
+        className="reasoning-toggle"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+      >
+        <ChevronRight size={11} className="reasoning-chevron" />
+        <Brain size={11} />
+        <span>{streaming ? "正在思考…" : "思考过程"}</span>
+        {content && <em style={{ marginLeft: "auto", color: "var(--fg-subtle)", fontWeight: 400 }}>{content.length} 字</em>}
+      </button>
+      {expanded && (
+        <div className={`reasoning-body ${streaming ? "is-streaming" : ""}`}>
+          {content || (streaming ? "…" : "")}
+          {streaming && <span className="reasoning-cursor" aria-hidden="true" />}
+        </div>
+      )}
+    </div>
+  );
+});
+
+// Token 用量 chip：在报告头部和追问气泡末尾展示本次回答的 token 用量。
+// 主流 Agent（ChatGPT/Claude）都展示这个指标，让用户感知模型消耗。
+const UsageChip = React.memo(function UsageChip({ usage }) {
+  if (!usage || (!usage.prompt_tokens && !usage.completion_tokens && !usage.total_tokens)) return null;
+  const total = usage.total_tokens || ((usage.prompt_tokens || 0) + (usage.completion_tokens || 0));
+  return (
+    <span className="usage-chip" title="本次 LLM 调用的 token 用量">
+      <Clock size={11} />
+      {usage.prompt_tokens > 0 && <>
+        <span>输入 <strong>{formatTokens(usage.prompt_tokens)}</strong></span>
+        <span className="usage-sep">·</span>
+      </>}
+      {usage.completion_tokens > 0 && <>
+        <span>输出 <strong>{formatTokens(usage.completion_tokens)}</strong></span>
+        <span className="usage-sep">·</span>
+      </>}
+      <span>共 <strong>{formatTokens(total)}</strong></span>
+    </span>
+  );
+});
+
 // ReactMarkdown 自定义 components：识别 ![描述](artifact:图表文件名) 语法，
 // 把图表占位符渲染为可点击的内嵌图表卡片，点击在模态框打开交互版。
 // 让图表直接嵌在报告正文中图文混排，而不是只能切到产物 tab 查看。
-function markdownComponents(artifacts, onPreview) {
+// code 组件用 CodeBlock 渲染（语法高亮 + 复制按钮）。
+function markdownComponents(artifacts, onPreview, theme) {
   return {
     img: ({ src, alt }) => {
       if (typeof src === "string" && src.startsWith("artifact:")) {
@@ -428,10 +873,21 @@ function markdownComponents(artifacts, onPreview) {
       }
       return <img src={src} alt={alt} />;
     },
+    code: ({ inline, className, children, ...props }) => {
+      if (inline) {
+        return <code className="inline-code" {...props}>{children}</code>;
+      }
+      // 从 className "language-xxx" 中提取语言
+      const match = /language-(\w+)/.exec(className || "");
+      const language = match ? match[1] : "";
+      const value = String(children || "").replace(/\n$/, "");
+      return <CodeBlock language={language} value={value} theme={theme} />;
+    },
+    pre: ({ children }) => <>{children}</>,
   };
 }
 
-function PlanPanel({ plan, completed, running, currentNodeTitle, elapsedSeconds, toolTrace }) {
+const PlanPanel = React.memo(function PlanPanel({ plan, completed, running, currentNodeTitle, elapsedSeconds, toolTrace }) {
   const completedIds = new Set((completed || []).map((item) => item.id));
   const doneCount = plan.filter((item) => completedIds.has(item.id)).length;
   // 显示耗时：运行中显示"已耗时"，完成时显示"总耗时"。
@@ -520,15 +976,7 @@ function PlanPanel({ plan, completed, running, currentNodeTitle, elapsedSeconds,
           </div>
           <ul className="tool-trace-list">
             {recentTools.map((tool) => (
-              <li key={tool.call_id} className={tool.status === "running" ? "is-running" : "is-done"}>
-                <span className="tool-dot" aria-hidden="true" />
-                <span className="tool-name">{TOOL_LABELS[tool.name] || tool.name}</span>
-                {tool.status === "running" ? (
-                  <LoaderCircle size={10} className="spin" />
-                ) : (
-                  <span className="tool-duration">{tool.duration_ms ? `${tool.duration_ms}ms` : ""}</span>
-                )}
-              </li>
+              <ToolTraceItem key={tool.call_id} tool={tool} />
             ))}
           </ul>
         </div>
@@ -542,7 +990,7 @@ function PlanPanel({ plan, completed, running, currentNodeTitle, elapsedSeconds,
       </div>
     </aside>
   );
-}
+});
 
 // 多轮对话线程：在主报告下方展示追问历史 + 追问输入框。
 // 设计参考 ChatGPT / Claude / Linear 的对话流：
@@ -552,6 +1000,7 @@ function PlanPanel({ plan, completed, running, currentNodeTitle, elapsedSeconds,
 //   - 底部固定追问输入框，支持 Ctrl+Enter 提交
 const ConversationThread = React.memo(function ConversationThread({
   messages, input, onInputChange, onSubmit, onStop, running, disabled, onPreview, artifacts,
+  onEditMessage, theme, inputRef,
 }) {
   const listRef = useRef(null);
   const deferredLastContent = useDeferredValue(
@@ -587,14 +1036,19 @@ const ConversationThread = React.memo(function ConversationThread({
             <ConversationBubble
               key={index}
               message={msg}
+              index={index}
               onPreview={onPreview}
               artifacts={artifacts}
+              onEditMessage={onEditMessage}
+              theme={theme}
+              canEdit={!running && !disabled}
             />
           ))}
         </div>
       )}
       <div className="follow-up-composer">
         <textarea
+          ref={inputRef}
           value={input}
           onChange={(event) => onInputChange(event.target.value)}
           onKeyDown={handleKeyDown}
@@ -623,49 +1077,140 @@ const ConversationThread = React.memo(function ConversationThread({
   );
 });
 
-// 单条对话气泡：用户右对齐主色，助手左对齐卡片+Markdown
-const ConversationBubble = React.memo(function ConversationBubble({ message, onPreview, artifacts }) {
+// 单条对话气泡：
+//   - user 气泡支持 hover 显示编辑按钮，点击进入编辑模式，保存后调用 onEditMessage 截断重发
+//   - assistant 气泡支持 reasoning（思考过程）展示、工具调用展开、usage chip、流式光标
+const ConversationBubble = React.memo(function ConversationBubble({
+  message, index, onPreview, artifacts, onEditMessage, theme, canEdit,
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(message.content || "");
+
+  // 进入编辑模式时同步 draft
+  useEffect(() => {
+    if (editing) setDraft(message.content || "");
+  }, [editing, message.content]);
+
+  // useMemo 缓存 markdownComponents，避免每次渲染重建对象导致 ReactMarkdown 重解析
+  const mdComponents = useMemo(
+    () => markdownComponents(artifacts, onPreview, theme),
+    [artifacts, onPreview, theme]
+  );
+
   if (message.role === "user") {
     return (
       <div className="chat-bubble is-user">
-        <div className="chat-bubble-content">{message.content}</div>
+        {editing ? (
+          <div>
+            <textarea
+              className="chat-bubble-edit-area"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              autoFocus
+              rows={Math.min(8, Math.max(2, draft.split("\n").length))}
+            />
+            <div className="chat-bubble-edit-actions">
+              <button type="button" className="btn-save" onClick={() => {
+                if (draft.trim() && draft.trim() !== (message.content || "").trim()) {
+                  onEditMessage?.(index, draft.trim());
+                }
+                setEditing(false);
+              }}>
+                <CornerDownLeft size={11} />保存并重发
+              </button>
+              <button type="button" className="btn-cancel" onClick={() => setEditing(false)}>取消</button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="chat-bubble-content">{message.content}</div>
+            {canEdit && onEditMessage && (
+              <div className="chat-bubble-actions">
+                <button
+                  type="button"
+                  className="chat-bubble-action-btn"
+                  title="编辑后重新发送（会清除后续对话）"
+                  onClick={() => setEditing(true)}
+                  aria-label="编辑消息"
+                >
+                  <RefreshCw size={11} />
+                </button>
+              </div>
+            )}
+          </>
+        )}
       </div>
     );
   }
-  // assistant 气泡：Markdown 渲染 + 工具时间线 + 流式光标
+  // assistant 气泡：reasoning + Markdown 渲染 + 工具时间线 + 流式光标 + usage
   const isStreaming = message.streaming;
   const hasContent = !!message.content;
+  const hasReasoning = !!message.reasoning;
   return (
     <div className="chat-bubble is-assistant">
+      {(hasReasoning || (isStreaming && !hasContent)) && (
+        <ReasoningBlock content={message.reasoning || ""} streaming={isStreaming && !hasContent} />
+      )}
       {message.tools?.length > 0 && (
         <div className="chat-tools" aria-label="本次追问工具调用">
           {message.tools.map((tool) => (
-            <span key={tool.call_id} className={`chat-tool-chip ${tool.status === "running" ? "is-running" : "is-done"}`}>
-              <span className="tool-dot" aria-hidden="true" />
-              {TOOL_LABELS[tool.name] || tool.name}
-              {tool.status === "running" ? (
-                <LoaderCircle size={9} className="spin" />
-              ) : (
-                <em>{tool.duration_ms ? `${tool.duration_ms}ms` : ""}</em>
-              )}
-            </span>
+            <ChatToolChip key={tool.call_id} tool={tool} />
           ))}
         </div>
       )}
       <div className={`chat-bubble-content ${isStreaming ? "is-streaming" : ""}`}>
-        {isStreaming && !hasContent ? (
-          <div className="report-placeholder"><LoaderCircle size={13} className="spin" />正在思考…</div>
-        ) : (
+        {isStreaming && !hasContent && !hasReasoning ? (
+          <div className="thinking-placeholder">
+            <span className="thinking-dots"><span /><span /><span /></span>
+            正在思考…
+          </div>
+        ) : hasContent ? (
           <>
-            <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={markdownComponents(artifacts, onPreview)}>
+            <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={mdComponents}>
               {message.content || ""}
             </ReactMarkdown>
             {isStreaming && <span className="report-cursor" aria-hidden="true" />}
           </>
-        )}
+        ) : null}
       </div>
+      {!isStreaming && message.usage && <UsageChip usage={message.usage} />}
       {message.error && <div className="chat-bubble-error"><AlertTriangle size={12} />{message.error}</div>}
     </div>
+  );
+});
+
+// 对话气泡内的工具 chip：支持点击展开查看 input/output preview
+const ChatToolChip = React.memo(function ChatToolChip({ tool }) {
+  const [expanded, setExpanded] = useState(false);
+  const hasDetail = !!(tool.input_preview || tool.output_preview);
+  return (
+    <span
+      className={`chat-tool-chip ${tool.status === "running" ? "is-running" : "is-done"}`}
+      onClick={() => hasDetail && setExpanded((v) => !v)}
+      onKeyDown={(e) => {
+        if (hasDetail && (e.key === "Enter" || e.key === " ")) {
+          e.preventDefault();
+          setExpanded((v) => !v);
+        }
+      }}
+      role={hasDetail ? "button" : undefined}
+      tabIndex={hasDetail ? 0 : undefined}
+      aria-expanded={hasDetail ? expanded : undefined}
+    >
+      <span className="tool-dot" aria-hidden="true" />
+      {TOOL_LABELS[tool.name] || tool.name}
+      {tool.status === "running" ? (
+        <LoaderCircle size={9} className="spin" />
+      ) : (
+        <em>{tool.duration_ms ? `${tool.duration_ms}ms` : ""}</em>
+      )}
+      {expanded && hasDetail && (
+        <div className="chat-tool-detail" onClick={(e) => e.stopPropagation()}>
+          {tool.input_preview && <div><strong>输入</strong><pre>{tryFormatJson(tool.input_preview)}</pre></div>}
+          {tool.output_preview && <div><strong>输出</strong><pre>{tryFormatJson(tool.output_preview)}</pre></div>}
+        </div>
+      )}
+    </span>
   );
 });
 
@@ -678,9 +1223,19 @@ const ConversationBubble = React.memo(function ConversationBubble({ message, onP
 //   3. 状态圆点 + 中文标签 —— running 圆点带脉冲动画，completed 是绿色，
 //      failed 是红色，cancelled 是灰色，状态一眼可读。
 //   4. 当前会话用左侧竖条 + 浅蓝底高亮，比单纯背景色更醒目。
-function HistoryPanel({ sessions, currentSessionId, onSelect, onRefresh, loading, expanded, onToggle, historyError, switchingSessionId }) {
-  const groups = useMemo(() => groupSessionsByTime(sessions), [sessions]);
+const HistoryPanel = React.memo(function HistoryPanel({ sessions, currentSessionId, onSelect, onRefresh, loading, expanded, onToggle, historyError, switchingSessionId }) {
+  const [searchQuery, setSearchQuery] = useState("");
+  // 搜索过滤：按文件名匹配，匹配不到时显示空状态。本地过滤即可，
+  // 不需要后端 query 参数——历史列表通常 ≤ 30 条，前端 filter 毫秒级。
+  const filtered = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return sessions || [];
+    return (sessions || []).filter((s) => (s.filename || "").toLowerCase().includes(q));
+  }, [sessions, searchQuery]);
+  const groups = useMemo(() => groupSessionsByTime(filtered), [filtered]);
   const isEmpty = !sessions?.length && !loading;
+  const isSearching = searchQuery.trim().length > 0;
+  const noResults = isSearching && filtered.length === 0 && !loading;
 
   return (
     <div className="sidebar-section history-section">
@@ -696,7 +1251,24 @@ function HistoryPanel({ sessions, currentSessionId, onSelect, onRefresh, loading
             <RefreshCw size={12} className={loading ? "spin" : ""} />
             {loading ? "加载中" : "刷新"}
           </button>
-          {isEmpty ? (
+          {sessions?.length > 0 && (
+            <div className="history-search">
+              <div className="history-search-wrap">
+                <Search size={12} />
+                <input
+                  type="search"
+                  className="history-search-input"
+                  placeholder="搜索文件名…"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  aria-label="搜索历史会话"
+                />
+              </div>
+            </div>
+          )}
+          {noResults ? (
+            <div className="history-search-empty">没有匹配「{searchQuery.trim()}」的会话</div>
+          ) : isEmpty ? (
             <div className="history-empty">
               <History size={16} />
               {historyError ? (
@@ -760,7 +1332,7 @@ function HistoryPanel({ sessions, currentSessionId, onSelect, onRefresh, loading
       )}
     </div>
   );
-}
+});
 
 // React.memo：rows 仅在 session 切换时变化，但 App 每次输入 task 或
 // 刷新历史都会重渲染。memo 让 DataTable 跳过这些场景，避免重新生成
@@ -1019,6 +1591,20 @@ function App() {
   // 切换历史会话的 loading：让被点击的项立即有反馈，避免用户重复点击
   const [switchingSessionId, setSwitchingSessionId] = useState(null);
 
+  // 主题（light/dark）：useTheme 内部读取 localStorage，无则跟随系统。
+  const { theme, toggle: toggleTheme } = useTheme();
+  // Reasoning（DeepSeek reasoning_content）：分析/追问时后端推送 thinking_chunk，
+  // 累积到这里让 ReportView / ConversationBubble 展示思考过程。
+  // 主分析的 reasoning 放在 App 级别（单条），追问的 reasoning 内嵌在每条 assistant 气泡上。
+  const [reasoning, setReasoning] = useState("");
+  const [reasoningStreaming, setReasoningStreaming] = useState(false);
+  // Token 用量：complete / chat_done 事件携带，非流式时展示在报告/气泡底部。
+  const [usage, setUsage] = useState(null);
+  // 命令面板（Cmd+K）与快捷键帮助（?）弹层状态
+  const [commandOpen, setCommandOpen] = useState(false);
+  const [commandQuery, setCommandQuery] = useState("");
+  const [helpOpen, setHelpOpen] = useState(false);
+
   // Esc 键关闭预览模态框或设置面板（P0-4）。
   // 之前 Esc 只对 previewItem 生效，设置面板打开时按 Esc 没反应，
   // 用户必须移动鼠标到右上角点 X，破坏键盘操作流。
@@ -1189,6 +1775,99 @@ function App() {
     const timer = window.setInterval(poll, interval);
     return () => window.clearInterval(timer);
   }, [authReady, authRequired, authenticated, running]);
+
+  // 全局键盘快捷键：Cmd+K 命令面板、? 快捷键帮助、T 切换主题、Cmd+B 折叠侧栏、
+  // 1/2/3 切换 Tab、Cmd+. 停止分析。这些快捷键参考 Linear / Notion / VSCode，
+  // 让熟练用户完全脱离鼠标操作，是缩小与主流 Agent 体验差距的关键。
+  // 注意：在 input/textarea/contenteditable 中按键时跳过单字符快捷键（? T 1 2 3），
+  // 避免用户输入这些字符时误触发；Cmd 组合键不受此限制。
+  useEffect(() => {
+    const onKey = (event) => {
+      const target = event.target;
+      const isTyping = target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+      const meta = event.metaKey || event.ctrlKey;
+
+      // Cmd+K：打开命令面板（任何焦点下都生效）
+      if (meta && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setCommandOpen((v) => !v);
+        return;
+      }
+      // Cmd+B：折叠/展开历史侧栏
+      if (meta && event.key.toLowerCase() === "b") {
+        event.preventDefault();
+        setHistoryExpanded((v) => !v);
+        return;
+      }
+      // Cmd+.：停止正在运行的分析
+      if (meta && event.key === ".") {
+        if (running) { event.preventDefault(); stopAnalysis(); }
+        else if (chatRunning) { event.preventDefault(); stopFollowUp(); }
+        return;
+      }
+      // 单字符快捷键：只在非输入态下生效
+      if (isTyping) return;
+      // ?：打开快捷键帮助面板（Shift+/）
+      if (event.key === "?" && !meta) {
+        event.preventDefault();
+        setHelpOpen((v) => !v);
+        return;
+      }
+      // T：切换主题
+      if (event.key.toLowerCase() === "t" && !meta && !event.altKey) {
+        event.preventDefault();
+        toggleTheme();
+        return;
+      }
+      // 1/2/3：切换分析/数据/产物 Tab
+      if (event.key === "1" && !meta) { event.preventDefault(); setActiveTab("analysis"); return; }
+      if (event.key === "2" && !meta) { event.preventDefault(); setActiveTab("data"); return; }
+      if (event.key === "3" && !meta) { event.preventDefault(); setActiveTab("artifacts"); return; }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [running, chatRunning, toggleTheme]);
+
+  // 命令面板动作执行器：根据 action.id 路由到具体操作。
+  // 用 useCallback 保持身份稳定，作为 props 传入 CommandPalette 时不会触发重渲染。
+  const runCommandAction = useCallback((action) => {
+    switch (action?.id) {
+      case "new-analysis":
+        fileInput.current?.click();
+        break;
+      case "toggle-theme":
+        toggleTheme();
+        break;
+      case "open-settings":
+        setKeyOpen(true);
+        break;
+      case "tab-analysis":
+        setActiveTab("analysis");
+        break;
+      case "tab-data":
+        setActiveTab("data");
+        break;
+      case "tab-artifacts":
+        setActiveTab("artifacts");
+        break;
+      case "show-help":
+        setHelpOpen(true);
+        break;
+      default:
+        break;
+    }
+    setCommandOpen(false);
+    setCommandQuery("");
+  }, [toggleTheme]);
+
+  // 消息编辑重发：截断 index 之后的所有 followUps，把新文本作为新追问重发。
+  // 参考 ChatGPT/Claude 的"编辑并重新发送"交互——保留历史上下文的同时重置分支。
+  const handleEditFollowUp = useCallback((index, newContent) => {
+    setFollowUps((prev) => prev.slice(0, index));
+    setFollowUpInput(newContent);
+    // 让输入框立即获得焦点，用户可直接 Cmd+Enter 发送
+    window.setTimeout(() => followUpInputRef.current?.focus(), 0);
+  }, []);
 
   // useCallback：openArtifactPreview / downloadArtifact 作为 props 传给
   // React.memo(ArtifactCenter)。若每次渲染都创建新函数，memo 比较失败，
@@ -1405,7 +2084,8 @@ function App() {
           const event = lines.find((line) => line.startsWith("event:"))?.slice(6).trim();
           const dataText = lines.find((line) => line.startsWith("data:"))?.slice(5).trim();
           if (!event || !dataText) continue;
-          const data = JSON.parse(dataText);
+          const data = parseSSEData(dataText);
+          if (!data) continue;
           if (event === "chat_chunk") {
             // 流式追加到最后一个 assistant 气泡
             setFollowUps((prev) => {
@@ -1413,6 +2093,18 @@ function App() {
               const last = next[next.length - 1];
               if (last && last.role === "assistant") {
                 next[next.length - 1] = { ...last, content: (last.content || "") + (data.chunk || "") };
+              }
+              return next;
+            });
+          } else if (event === "thinking_chunk") {
+            // 思考过程追加到最后一个 assistant 气泡的 reasoning 字段，
+            // ConversationBubble 内嵌的 ReasoningBlock 会自动展示。
+            if (!data.chunk) continue;
+            setFollowUps((prev) => {
+              const next = [...prev];
+              const last = next[next.length - 1];
+              if (last && last.role === "assistant") {
+                next[next.length - 1] = { ...last, reasoning: (last.reasoning || "") + (data.chunk || "") };
               }
               return next;
             });
@@ -1451,7 +2143,14 @@ function App() {
               const next = [...prev];
               const last = next[next.length - 1];
               if (last && last.role === "assistant") {
-                next[next.length - 1] = { ...last, content: data.response || last.content, streaming: false };
+                next[next.length - 1] = {
+                  ...last,
+                  content: data.response || last.content,
+                  streaming: false,
+                  // 后端可能在终态一次性给出完整 reasoning / usage，覆盖流式累计值
+                  reasoning: data.reasoning || last.reasoning,
+                  usage: data.usage || last.usage,
+                };
               }
               return next;
             });
@@ -1534,6 +2233,10 @@ function App() {
     // 清空上次的工具调用时间线和报告，为新分析腾出空间
     setToolTrace([]);
     setResult(null);
+    // 重置 reasoning / usage：新一轮分析的思考过程和用量从 0 开始累计
+    setReasoning("");
+    setReasoningStreaming(false);
+    setUsage(null);
     // 新分析开始时清空追问历史，避免上轮的追问残留混淆当前分析
     setFollowUps([]);
     // 任务已提交运行，清空输入框，避免用户以为还没发起分析。
@@ -1578,7 +2281,8 @@ function App() {
           const dataText = lines.find((line) => line.startsWith("data:"))?.slice(5).trim();
           if (!event || !dataText) continue;
           sawEvent = true;
-          const data = JSON.parse(dataText);
+          const data = parseSSEData(dataText);
+          if (!data) continue;
           // 用户切换到历史会话后，SSE 帧仍会到达（后台分析未中断），但 UI 已展示
           // 历史会话的内容。此时不应覆盖 plan/completed/result/currentNodeTitle/session，
           // 否则历史视图会被运行中的分析数据污染。complete 帧仍需记录 completedPayload
@@ -1604,9 +2308,20 @@ function App() {
               setCompleted(data.completed_steps || []);
               setCurrentNodeTitle("正在审查进度并重规划");
             }
+          } else if (event === "thinking_chunk") {
+            // DeepSeek reasoning_content：流式思考过程。开始接收时打开 streaming 标记，
+            // ReportView 顶部的 ReasoningBlock 会自动展开；接收完后由 report_chunk / complete
+            // 阶段自然关闭 streaming。思考过程让用户看到 Agent 的推理链路，减少"黑盒等待"焦虑。
+            if (isViewingRunningSession) {
+              if (!data.chunk) return;
+              setReasoningStreaming(true);
+              setReasoning((prev) => prev + (data.chunk || ""));
+            }
           } else if (event === "finalize") {
             if (isViewingRunningSession) {
               setCurrentNodeTitle("正在汇总最终报告");
+              // finalize 阶段开始输出报告正文，思考过程已结束，关闭 streaming
+              setReasoningStreaming(false);
               // 创建空壳 result，让 ReportView 立即显示"正在生成报告…"占位，
               // 后续 report_chunk 事件会逐字追加 response，实现流式打字效果。
               setResult((prev) => prev || { response: "", artifacts: [], plan, completed_steps: completed });
@@ -1647,6 +2362,10 @@ function App() {
               // 乐观更新 artifacts，refresh 失败时仍能看到产物。
               setSession((current) => (current ? { ...current, artifacts: data.artifacts || [] } : current));
               setCurrentNodeTitle("");
+              // 思考过程与用量收尾：complete 帧可能携带最终 reasoning / usage。
+              setReasoningStreaming(false);
+              if (data.reasoning) setReasoning(data.reasoning);
+              if (data.usage) setUsage(data.usage);
             }
           } else if (event === "cancelled") {
             // 仅在用户未通过 stopAnalysis 主动取消时显示后端取消消息，避免重复 setError。
@@ -1712,6 +2431,9 @@ function App() {
       if (analysisController.current === controller) analysisController.current = null;
       setRunning(false);
       setCurrentNodeTitle("");
+      // 分析结束（无论成功/取消/失败）都关闭 reasoning streaming，
+      // 避免下次进入会话时 ReasoningBlock 仍显示流式光标。
+      setReasoningStreaming(false);
     }
   }
 
@@ -1754,7 +2476,16 @@ function App() {
   function restoreFollowUps(latest) {
     const chat = latest?.chat || [];
     const tail = chat.length > 2 ? chat.slice(2) : [];
-    setFollowUps(tail.map((item) => ({ role: item.role, content: item.content || "" })));
+    // 恢复完整字段：除 role/content 外，还保留 tools（工具调用 chip）、
+    // reasoning（思考过程）、usage（token 用量），让历史会话的追问回复
+    // 仍能展示这些信息，而非降级为纯文本。
+    setFollowUps(tail.map((item) => ({
+      role: item.role,
+      content: item.content || "",
+      tools: item.tools,
+      reasoning: item.reasoning,
+      usage: item.usage,
+    })));
   }
 
   // 会话失效（404）时清空前端状态，引导用户回到上传界面。
@@ -2001,7 +2732,39 @@ function App() {
             <ChevronRight size={13} />
             <strong>{session?.filename || "未命名分析"}</strong>
           </div>
-          <div className="api-status"><i className={settings ? "online" : ""} />{settings ? "服务正常" : "连接中"}</div>
+          <div className="topbar-actions">
+            <div className="api-status"><i className={settings ? "online" : ""} />{settings ? "服务正常" : "连接中"}</div>
+            {/* 命令面板入口：点击等价于 Cmd+K，给不熟悉快捷键的用户一个可见入口 */}
+            <button
+              type="button"
+              className="icon-button topbar-action"
+              title="命令面板 (⌘K)"
+              aria-label="打开命令面板"
+              onClick={() => setCommandOpen(true)}
+            >
+              <Command size={16} />
+            </button>
+            {/* 快捷键帮助入口：与 ? 快捷键等价 */}
+            <button
+              type="button"
+              className="icon-button topbar-action"
+              title="键盘快捷键 (?)"
+              aria-label="查看键盘快捷键"
+              onClick={() => setHelpOpen(true)}
+            >
+              <Keyboard size={16} />
+            </button>
+            {/* 主题切换：太阳/月亮图标随当前 theme 切换，与 T 快捷键等价 */}
+            <button
+              type="button"
+              className="icon-button topbar-action theme-toggle"
+              title={theme === "dark" ? "切换到亮色 (T)" : "切换到暗色 (T)"}
+              aria-label="切换主题"
+              onClick={toggleTheme}
+            >
+              {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+            </button>
+          </div>
         </header>
 
         {error && (
@@ -2153,14 +2916,51 @@ function App() {
             {!settings?.configured && <p className="composer-note">请先在左侧配置 DeepSeek API Key。</p>}
 
             {/* tabs 紧贴 task-box 下方：切换分析/数据/产物三个视图 */}
-            <nav className="tabs" aria-label="工作区视图">
-              <button className={activeTab === "analysis" ? "active" : ""} onClick={() => setActiveTab("analysis")}><BarChart3 size={15} />分析</button>
-              <button className={activeTab === "data" ? "active" : ""} onClick={() => setActiveTab("data")}><Table2 size={15} />数据</button>
-              <button className={activeTab === "artifacts" ? "active" : ""} onClick={() => setActiveTab("artifacts")}><FileSpreadsheet size={15} />产物 <span>{session.artifacts?.length || 0}</span></button>
+            {/* ARIA tablist 语义：roving tabindex + 左右箭头切换，屏幕阅读器可正确识别 */}
+            <nav className="tabs" role="tablist" aria-label="工作区视图">
+              <button
+                id="tab-analysis"
+                role="tab"
+                aria-selected={activeTab === "analysis"}
+                aria-controls="tabpanel-analysis"
+                tabIndex={activeTab === "analysis" ? 0 : -1}
+                className={activeTab === "analysis" ? "active" : ""}
+                onClick={() => setActiveTab("analysis")}
+                onKeyDown={(e) => {
+                  if (e.key === "ArrowRight") { e.preventDefault(); document.getElementById("tab-data")?.focus(); }
+                  else if (e.key === "ArrowLeft") { e.preventDefault(); document.getElementById("tab-artifacts")?.focus(); }
+                }}
+              ><BarChart3 size={15} />分析</button>
+              <button
+                id="tab-data"
+                role="tab"
+                aria-selected={activeTab === "data"}
+                aria-controls="tabpanel-data"
+                tabIndex={activeTab === "data" ? 0 : -1}
+                className={activeTab === "data" ? "active" : ""}
+                onClick={() => setActiveTab("data")}
+                onKeyDown={(e) => {
+                  if (e.key === "ArrowRight") { e.preventDefault(); document.getElementById("tab-artifacts")?.focus(); }
+                  else if (e.key === "ArrowLeft") { e.preventDefault(); document.getElementById("tab-analysis")?.focus(); }
+                }}
+              ><Table2 size={15} />数据</button>
+              <button
+                id="tab-artifacts"
+                role="tab"
+                aria-selected={activeTab === "artifacts"}
+                aria-controls="tabpanel-artifacts"
+                tabIndex={activeTab === "artifacts" ? 0 : -1}
+                className={activeTab === "artifacts" ? "active" : ""}
+                onClick={() => setActiveTab("artifacts")}
+                onKeyDown={(e) => {
+                  if (e.key === "ArrowRight") { e.preventDefault(); document.getElementById("tab-analysis")?.focus(); }
+                  else if (e.key === "ArrowLeft") { e.preventDefault(); document.getElementById("tab-data")?.focus(); }
+                }}
+              ><FileSpreadsheet size={15} />产物 <span>{session.artifacts?.length || 0}</span></button>
             </nav>
 
             {activeTab === "analysis" && (
-              <div className="analysis-grid">
+              <div className="analysis-grid" id="tabpanel-analysis" role="tabpanel" aria-labelledby="tab-analysis" tabIndex={0}>
                 <section className="analysis-column">
                   {result ? (
                     <>
@@ -2169,6 +2969,10 @@ function App() {
                         streaming={running && !!result}
                         artifacts={result.artifacts || session?.artifacts}
                         onPreview={openArtifactPreview}
+                        reasoning={reasoning}
+                        reasoningStreaming={reasoningStreaming && running}
+                        theme={theme}
+                        usage={usage}
                       />
                       <ConversationThread
                         messages={followUps}
@@ -2180,6 +2984,9 @@ function App() {
                         disabled={running || !settings?.configured}
                         onPreview={openArtifactPreview}
                         artifacts={session?.artifacts}
+                        onEditMessage={handleEditFollowUp}
+                        theme={theme}
+                        inputRef={followUpInputRef}
                       />
                     </>
                   ) : (
@@ -2191,14 +2998,14 @@ function App() {
                   completed={completed}
                   running={running && session?.id === runningSessionIdRef.current}
                   currentNodeTitle={currentNodeTitle}
-                  elapsedSeconds={session?.id === runningSessionIdRef.current ? elapsedSeconds : null}
+                  elapsedSeconds={session?.id === runningSessionIdRef.current ? elapsedSeconds : (session?.elapsed_seconds ?? null)}
                   toolTrace={session?.id === runningSessionIdRef.current ? toolTrace : []}
                 />
               </div>
             )}
 
             {activeTab === "data" && (
-              <section className="data-view">
+              <section className="data-view" id="tabpanel-data" role="tabpanel" aria-labelledby="tab-data" tabIndex={0}>
                 <div className="section-title">
                   <div><span className="section-kicker">数据预览</span><h2>原始记录</h2></div>
                   <small>前 100 行</small>
@@ -2208,7 +3015,7 @@ function App() {
             )}
 
             {activeTab === "artifacts" && (
-              <section className="artifact-view">
+              <section className="artifact-view" id="tabpanel-artifacts" role="tabpanel" aria-labelledby="tab-artifacts" tabIndex={0}>
                 <div className="section-title artifact-title">
                   <div><span className="section-kicker">结果中心</span><h2>值得保留的结论</h2></div>
                   <small>中间文件已自动收起</small>
@@ -2274,6 +3081,23 @@ function App() {
           </section>
         </div>
       )}
+      {commandOpen && (
+        <CommandPalette
+          query={commandQuery}
+          onQueryChange={setCommandQuery}
+          actions={COMMAND_ACTIONS}
+          sessions={history}
+          onAction={runCommandAction}
+          onSelectSession={(item) => {
+            setCommandOpen(false);
+            setCommandQuery("");
+            selectSession(item);
+          }}
+          onClose={() => { setCommandOpen(false); setCommandQuery(""); }}
+          theme={theme}
+        />
+      )}
+      {helpOpen && <HelpPanel onClose={() => setHelpOpen(false)} />}
     </div>
   );
 }

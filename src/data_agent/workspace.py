@@ -590,9 +590,16 @@ class DataWorkspace:
         self._artifacts = [item for item in self._artifacts if item.path.resolve() in existing_files]
 
     def save_checkpoint(self) -> Path:
-        """Persist the active DataFrame separately from user-facing artifacts."""
+        """Persist the active DataFrame separately from user-facing artifacts.
+
+        原子写入：先写 .tmp 再 os.replace，避免进程被强杀（daemon 线程在进程
+        退出时被杀）时留下半截 parquet 文件，导致下次 restore_checkpoint 读取
+        到损坏文件抛 ArrowInvalid、会话无法恢复。
+        """
         path = self.root / WORKSPACE_STATE_NAME
-        self.dataframe.to_parquet(path, index=False)
+        temporary = path.with_suffix(".tmp")
+        self.dataframe.to_parquet(temporary, index=False)
+        os.replace(temporary, path)
         return path
 
     def restore_checkpoint(self) -> bool:
