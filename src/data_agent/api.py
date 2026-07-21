@@ -50,7 +50,12 @@ from data_agent.config import AgentSettings
 from data_agent.credentials import delete_saved_api_key, get_saved_api_key, save_api_key
 from data_agent.serialization import to_jsonable
 from data_agent.storage import LocalSessionStorage, SessionStorage, build_session_storage
-from data_agent.workspace import PLOTLY_BUNDLE_NAME, SUPPORTED_EXTENSIONS, DataWorkspace
+from data_agent.workspace import (
+    ECHARTS_BUNDLE_NAME,
+    PLOTLY_BUNDLE_NAME,
+    SUPPORTED_EXTENSIONS,
+    DataWorkspace,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1069,9 +1074,36 @@ _PLOTLY_TAG_PATTERN = re.compile(
     flags=re.IGNORECASE,
 )
 
+# ECharts bundle 内联正则：匹配相对路径或 CDN URL 的 echarts.min.js 引用，
+# 用于把预览/下载 HTML 内联成自包含文档。
+_ECHARTS_TAG_PATTERN = re.compile(
+    r"<script\s+src=['\"](?:echarts\.min\.js|https?://[^'\"]*echarts[^'\"]*\.js)['\"]\s*></script>",
+    flags=re.IGNORECASE,
+)
+
+
+def _inline_echarts_bundle(record: SessionRecord, html_text: str) -> str:
+    """Replace the ECharts ``<script src>`` tag with the full source so previews
+    and downloads stay self-contained when the bundle was downloaded locally.
+
+    若 echarts.min.js 未下载到 artifacts_dir（离线场景），保持原 CDN 引用
+    不变（在线场景可用），不报错。
+    """
+    bundle_path = record.workspace.artifacts_dir / ECHARTS_BUNDLE_NAME
+    if not bundle_path.is_file():
+        return html_text
+    try:
+        echarts_js = bundle_path.read_text(encoding="utf-8")
+    except OSError:
+        return html_text
+    return _ECHARTS_TAG_PATTERN.sub(
+        lambda _match: f"<script>{echarts_js}</script>", html_text, count=1
+    )
+
 _PREVIEW_CSP = (
     "default-src 'none'; "
-    "script-src 'unsafe-inline'; "
+    # ECharts 离线 fallback 时需引用 jsdelivr CDN，加入白名单。
+    "script-src 'unsafe-inline' https://cdn.jsdelivr.net; "
     "style-src 'unsafe-inline'; "
     "img-src data: blob:; "
     "font-src data:; "
@@ -1124,6 +1156,7 @@ def preview_artifact(session_id: str, filename: str) -> Response:
     if path.suffix.lower() != ".html":
         raise HTTPException(status_code=415, detail="该产物不支持在线预览。")
     html_text = _inline_plotly_bundle(record, path.read_text(encoding="utf-8"))
+    html_text = _inline_echarts_bundle(record, html_text)
     html_text = _harden_preview_document(html_text)
     return Response(
         content=html_text,
@@ -1138,6 +1171,7 @@ def download_artifact(session_id: str, filename: str) -> Response:
     if path.suffix.lower() == ".html":
         # Downloads must remain self-contained so they open offline.
         html_text = _inline_plotly_bundle(record, path.read_text(encoding="utf-8"))
+        html_text = _inline_echarts_bundle(record, html_text)
         return Response(
             content=html_text,
             media_type="text/html",

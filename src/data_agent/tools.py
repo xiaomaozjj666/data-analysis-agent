@@ -1082,12 +1082,19 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         dimensions: list[str] | None = None,
         aggregation: Literal["none", "mean", "median", "sum", "count", "min", "max"] = "none",
         title: str | None = None,
+        chart_engine: Literal["plotly", "echarts"] = "plotly",
         bins: int = 30,
         top_n: int | None = None,
         scale_mode: Literal["auto", "full"] = "auto",
         export_png: bool = False,
     ) -> str:
-        """Create an interactive Plotly chart and save a standalone HTML artifact.
+        """Create an interactive chart and save a standalone HTML artifact.
+
+        双引擎：``chart_engine="plotly"``（默认）走原 Plotly 渲染分支；
+        ``chart_engine="echarts"`` 走 ECharts 渲染分支，适合正式报告，
+        自带学术级交互（区间缩放、图例多选、平滑动画、高清导出）和
+        数据驱动的白话解读。两个引擎复用同一套数据准备逻辑（聚合、
+        布尔值本地化、top_n、_checked_columns），上层无感知切换。
 
         Supports standard and complex plots including 3D scatter, correlation heatmap, scatter
         matrix, sunburst and treemap. For bar/line/area, aggregation groups by x and optional
@@ -1302,6 +1309,17 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         existing_chart_count = workspace.count_artifacts("visualization")
         stem = _chart_filename_stem(chart_type, existing_chart_count)
         display_title = _humanize_chart_title(title, chart_type)
+        # === 双引擎分派：echarts 走独立渲染分支，plotly 走原有逻辑 ===
+        if chart_engine == "echarts":
+            from data_agent.echarts_engine import _render_echarts
+            return json_text(_render_echarts(
+                workspace, df,
+                chart_type=chart_type, x=x, y=y, color=color, z=z, size=size,
+                values=values, path_columns=path_columns, dimensions=dimensions,
+                aggregation=aggregation, title=title, bins=bins,
+                display_title=display_title, stem=stem,
+            ))
+        # === Plotly 原有渲染逻辑（默认分支，保持不变）===
         html_path = workspace.artifacts_dir / f"{stem}.html"
         shared_plotly = workspace.ensure_plotly_bundle()
         relative_script = shared_plotly.relative_to(workspace.artifacts_dir).as_posix() if shared_plotly else None
