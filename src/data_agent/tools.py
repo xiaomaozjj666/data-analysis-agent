@@ -461,14 +461,6 @@ def _numeric_columns(df: pd.DataFrame, columns: list[str] | None = None) -> list
     return result
 
 
-def _safe_stem(title: str | None, fallback: str) -> str:
-    """Legacy stem helper; new charts use ``_chart_filename_stem`` instead."""
-    raw = title or fallback
-    stem = re.sub(r"[^\w\-\u4e00-\u9fff]+", "_", raw).strip("_")[:50]
-    import uuid as _uuid
-    return f"{stem or fallback}_{_uuid.uuid4().hex[:8]}"
-
-
 # 图表类型的中文短名，用于生成"柱状图_01"这种简洁文件名。
 # 用户在前端看到的产物名仍以 LLM 给的 title 为准（经 _humanize_chart_title 清理），
 # 文件名 stem 仅作为磁盘上的稳定标识，不再把整段标题塞进去。
