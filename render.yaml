@@ -1,50 +1,27 @@
 services:
   - type: web
     name: data-analysis-agent
-    runtime: python
-    plan: free
-    buildCommand: pip install -e .
+    env: python
+    region: singapore
+    buildCommand: |
+      cd frontend && npm ci && npm run build && cd ..
+      pip install .
     startCommand: uvicorn data_agent.api:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /api/health
-    autoDeploy: true
     envVars:
       - key: PYTHON_VERSION
-        value: "3.13.5"
-      - key: DATA_AGENT_RUNS_DIR
-        value: /tmp/data-agent-runs
+        value: 3.12.8
+      - key: DATA_AGENT_DATA_DIR
+        value: /var/data
+      - key: DATA_AGENT_STATIC_DIR
+        value: frontend/dist
       - key: DATA_AGENT_CORS_ORIGINS
-        value: "https://data-analysis-agent-wikz.onrender.com"
-      - key: APP_ACCESS_TOKEN
+        value: "*"
+      - key: OPENAI_API_KEY
         sync: false
-      - key: DATA_AGENT_MAX_UPLOAD_BYTES
-        value: "52428800"
-      - key: DATA_AGENT_MAX_ROWS
-        value: "250000"
-      - key: DATA_AGENT_MAX_CELLS
-        value: "3000000"
-      - key: DATA_AGENT_RATE_LIMIT_PER_MINUTE
-        value: "30"
-      - key: DATA_AGENT_MAX_CONCURRENT_ANALYSES
-        value: "1"
       - key: DATA_AGENT_STORAGE_BACKEND
-        value: s3
-      - key: DATA_AGENT_STORAGE_BUCKET
-        sync: false
-      - key: DATA_AGENT_STORAGE_ENDPOINT_URL
-        sync: false
-      - key: DATA_AGENT_STORAGE_PREFIX
-        value: data-analysis-agent/sessions
-      - key: AWS_ACCESS_KEY_ID
-        sync: false
-      - key: AWS_SECRET_ACCESS_KEY
-        sync: false
-      - key: AWS_DEFAULT_REGION
-        value: ap-southeast-1
-      - key: DEEPSEEK_API_KEY
-        sync: false
-      - key: LANGSMITH_TRACING
-        value: "true"
-      - key: LANGSMITH_API_KEY
-        sync: false
-      - key: LANGSMITH_PROJECT
-        value: data-analysis-agent
+        value: local
+    disk:
+      name: data
+      mountPath: /var/data
+      sizeGB: 10
+    autoDeploy: true
