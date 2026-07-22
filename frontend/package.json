@@ -19,6 +19,7 @@
     "react-window": "2.3.0",
     "remark-gfm": "4.0.1",
     "typescript": "7.0.2",
-    "vite": "8.1.5"
+    "vite": "8.1.5",
+    "zustand": "5.0.14"
   }
 }

@@ -1,0 +1,30 @@
+/* 格子波浪呼吸动画：弱化对比度，staggered delay 形成对角波浪 */
+@keyframes cell-breathe {
+  0%, 100% { opacity: 0.72; }
+  50% { opacity: 0.96; }
+}
+
+@keyframes pulse-dot { 0% { box-shadow: 0 0 0 0 rgba(59, 108, 179, 0.4); } 70% { box-shadow: 0 0 0 5px rgba(59, 108, 179, 0); } 100% { box-shadow: 0 0 0 0 rgba(59, 108, 179, 0); } }
+
+@keyframes blink { to { visibility: hidden; } }
+
+/* ---------- 动画 ---------- */
+.spin { animation: spin 0.85s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes status-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(59, 108, 179, 0.45); }
+  70% { box-shadow: 0 0 0 5px rgba(59, 108, 179, 0); }
+}
+@keyframes skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+@keyframes fade-in { from { opacity: 0; } }
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+@keyframes modal-in { from { opacity: 0; transform: translateY(8px) scale(0.985); } }
+@keyframes banner-in { from { opacity: 0; transform: translateY(-4px); } }
+
+@keyframes thinking-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-3px); opacity: 1; }
+}

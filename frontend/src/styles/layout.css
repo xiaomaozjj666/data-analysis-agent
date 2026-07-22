@@ -1,0 +1,61 @@
+/* ---------- 布局骨架 ---------- */
+/* 侧栏加宽到 280px，解决左右视觉失衡；侧栏独立底色 + 右侧分割线强化分层 */
+.app-shell { min-height: 100vh; display: grid; grid-template-columns: 280px minmax(0, 1fr); }
+.sidebar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  padding: 20px 16px 16px;
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--border-default);
+  box-shadow: 1px 0 0 rgba(26, 35, 50, 0.02);
+  overflow-y: auto;
+}
+/* 主区限宽居中，宽屏下比例更协调；padding 加大提升留白节奏 */
+.main { min-width: 0; width: 100%; max-width: 1360px; margin: 0 auto; padding: 0 48px 64px; }
+
+/* ---------- 顶栏 ---------- */
+/* 顶栏白底 + 下边框 + 轻阴影，做出顶部栏分区感，不再和画布融为一体 */
+.topbar {
+  height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px;
+  background: var(--topbar-bg);
+  border-bottom: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-xs);
+  margin-bottom: 4px;
+}
+.breadcrumb { min-width: 0; display: flex; align-items: center; gap: 8px; color: var(--fg-muted); font-size: var(--text-sm); }
+.breadcrumb > svg { color: var(--fg-subtle); flex: 0 0 auto; }
+.breadcrumb strong { max-width: 45vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-default); font-weight: 600; }
+/* 服务状态做成精致胶囊：状态点 + 文字，hover 微妙加深 */
+.api-status { min-height: 28px; padding: 0 12px; gap: 7px; border: 1px solid var(--border-default); border-radius: var(--radius-full); background: var(--canvas-subtle); color: var(--fg-muted); font-size: var(--text-xs); font-weight: 500; transition: border-color var(--duration) var(--ease-out), background-color var(--duration) var(--ease-out), transform var(--duration) var(--ease-out); }
+.api-status:hover { border-color: var(--border-strong); background: var(--canvas-default); transform: translateY(-1px); box-shadow: var(--shadow-xs); }
+
+/* ---------- 鉴权页 ---------- */
+.auth-gate { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: linear-gradient(135deg, #f2f5f9 0%, #eaeef4 45%, #eef2f7 100%); }
+.auth-card { width: min(100%, 380px); padding: 32px; border: 1px solid var(--border-default); border-radius: var(--radius-lg); background: var(--canvas-default); box-shadow: var(--shadow-lg); }
+.auth-card h1 { margin: 10px 0 8px; color: var(--fg-default); font-size: var(--text-2xl); font-weight: 600; }
+.auth-card p { margin: 0 0 20px; color: var(--fg-muted); font-size: var(--text-md); }
+.auth-card input { width: 100%; height: 42px; box-sizing: border-box; margin-bottom: 14px; padding: 0 12px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--canvas-default); color: var(--fg-default); transition: border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out); }
+.auth-card input:focus-visible { border-color: var(--accent-fg); box-shadow: 0 0 0 3px var(--accent-ring); }
+.auth-card .primary { width: 100%; justify-content: center; }
+.auth-error { display: block; margin-top: 12px; color: var(--danger-fg); font-size: var(--text-sm); }
+.auth-loading { color: var(--fg-muted); font-size: var(--text-md); }
+
+/* ---------- 顶栏右侧操作区 ---------- */
+.topbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* ---------- 侧栏切换按钮（默认隐藏，平板及以下显示） ---------- */
+.sidebar-toggle { display: none; }

@@ -1,0 +1,74 @@
+/* ---------- 空工作台 ---------- */
+/* 简约轻量装饰：保留表格骨架意象（贴合数据分析产品气质），但大幅弱化视觉权重，
+   告别"中间悬浮插画"的厚重感，让主视觉回归到右侧文案与上传入口。 */
+.empty-workspace { min-height: calc(100vh - 112px); display: grid; grid-template-columns: minmax(320px, 480px) minmax(280px, 400px); align-items: center; justify-content: center; gap: 6vw; overflow: hidden; transition: background var(--duration) var(--ease-out); }
+.empty-workspace.is-drag-over { background: var(--accent-subtle); outline: 2px dashed var(--accent-fg); outline-offset: -8px; border-radius: var(--radius-lg); }
+.empty-grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  width: min(38vw, 460px);
+  aspect-ratio: 1.4;
+  overflow: hidden;
+  background: var(--canvas-default);
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  /* 鼠标跟随光斑：默认在右上角，JS 更新 --mouse-x/y */
+  --mouse-x: 80%;
+  --mouse-y: 20%;
+}
+/* 光斑层：首列表头底色，极淡区分 */
+.empty-grid::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 36px;
+  background: var(--canvas-subtle);
+  border-right: 1px solid var(--border-muted);
+  z-index: 1;
+}
+.empty-grid::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 34px;
+  background: var(--canvas-subtle);
+  border-bottom: 1px solid var(--border-muted);
+  z-index: 1;
+}
+/* 鼠标光斑：极淡径向渐变，弱化"悬浮插画"感，保留克制的活物感 */
+.empty-grid {
+  background-image: radial-gradient(
+    circle 200px at var(--mouse-x) var(--mouse-y),
+    rgba(59, 108, 179, 0.06),
+    transparent 70%
+  );
+  background-repeat: no-repeat;
+}
+.empty-grid i {
+  position: relative;
+  min-height: 54px;
+  border-right: 1px solid var(--border-muted);
+  border-bottom: 1px solid var(--border-muted);
+  z-index: 2;
+  /* 对角线波浪呼吸：弱化对比度（0.72-0.96），保留 staggered 节奏感 */
+  animation: cell-breathe 4.2s ease-in-out infinite;
+  animation-delay: calc(var(--cell-index, 0) * 0.1s);
+  transition: background-color var(--duration) var(--ease-out), transform var(--duration) var(--ease-out);
+}
+/* 高亮格子：极淡底色，作为"数据已填充"的暗示 */
+.empty-grid i:nth-child(7), .empty-grid i:nth-child(13), .empty-grid i:nth-child(19) {
+  background: var(--accent-subtle);
+}
+/* 悬浮涟漪：弱化缩放与阴影，克制不夸张 */
+.empty-grid i:hover {
+  background: var(--accent-subtle);
+  transform: scale(1.02);
+  z-index: 3;
+  box-shadow: 0 2px 8px rgba(59, 108, 179, 0.1);
+}
+.grid-tab { position: absolute; z-index: 4; top: 11px; left: 50px; width: 66px; height: 11px; border-radius: var(--radius-full); background: var(--border-default); }
+.empty-copy { align-self: center; }
+.empty-copy h2 { margin: 10px 0 8px; font-size: clamp(26px, 2.8vw, 36px); line-height: 1.15; font-weight: 700; letter-spacing: -0.01em; }
+.empty-copy p { margin: 0 0 24px; color: var(--fg-muted); font-size: var(--text-md); }
