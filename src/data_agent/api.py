@@ -1709,10 +1709,15 @@ if frontend_dist.is_dir():
         app.mount("/assets", StaticFiles(directory=assets_dir), name="frontend-assets")
 
     @app.get("/{full_path:path}", include_in_schema=False)
-    def frontend_app(full_path: str) -> FileResponse:
+    def frontend_app(full_path: str) -> Response:
         if full_path.startswith(("api/", "docs", "redoc", "openapi.json")):
             raise HTTPException(status_code=404, detail="Not found")
         requested = (frontend_dist / full_path).resolve()
         if frontend_dist.resolve() in requested.parents and requested.is_file():
-            return FileResponse(requested)
-        return FileResponse(frontend_dist / "index.html")
+            # 带内容的静态资源（JS/CSS/图片）文件名含 hash，可长期缓存
+            return FileResponse(requested, headers={"Cache-Control": "public, max-age=31536000, immutable"})
+        # index.html 必须禁止缓存，否则浏览器加载旧 HTML 引用的旧 JS 文件名
+        return FileResponse(
+            frontend_dist / "index.html",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
