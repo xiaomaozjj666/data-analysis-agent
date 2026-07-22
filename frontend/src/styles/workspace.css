@@ -33,6 +33,24 @@
 .metric strong { margin-top: 8px; font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
 .metric small { margin-left: 4px; color: var(--fg-subtle); font-family: inherit; font-size: var(--text-sm); font-weight: 500; }
 
+/* 可点击指标（Batch A2 #13）：重置 button 默认样式，保留 .metric 的 flex 布局与 padding。
+   双类选择器 .metric.metric-clickable 特异性高于单类 .metric，确保 button reset 生效。
+   不重复声明 padding / display，沿用 .metric 已有值保持视觉一致。 */
+.metric.metric-clickable {
+  cursor: pointer;
+  border: 0;
+  border-right: 1px solid var(--border-muted);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+}
+.metric.metric-clickable:last-child { border-right: 0; }
+.metric.metric-clickable:focus-visible {
+  outline: 2px solid var(--accent-fg);
+  outline-offset: -2px;
+}
+
 /* GitHub 式下划线标签页 */
 .tabs { height: 52px; display: flex; align-items: flex-end; gap: 24px; border-bottom: 1px solid var(--border-muted); }
 .tabs button { position: relative; height: 40px; display: flex; align-items: center; gap: 7px; padding: 0 2px; border: 0; background: transparent; color: var(--fg-muted); font-size: var(--text-sm); }
@@ -45,7 +63,9 @@
 .tabs button.active span { background: var(--accent-subtle); color: var(--accent-fg); }
 
 /* ---------- 分析任务区 ---------- */
-.analysis-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 28px; padding-top: 28px; }
+/* analysis-grid：右列用 minmax(320px, 380px) 兼顾窄屏与内容密度，
+   避免固定 340px 在宽屏下显得过窄、窄屏下又溢出。 */
+.analysis-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 380px); gap: 28px; padding-top: 28px; }
 .analysis-column { min-width: 0; }
 .task-box { background: var(--canvas-default); border: 1px solid var(--border-default); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); transition: border-color var(--duration) var(--ease-out), box-shadow var(--duration) var(--ease-out), transform var(--duration) var(--ease-out); }
 .task-box:hover { border-color: var(--border-strong); box-shadow: var(--shadow-md); }
@@ -69,6 +89,28 @@
 .preset-row button:hover { border-color: var(--accent-fg); color: var(--accent-fg); background: var(--accent-subtle); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
 .preset-row svg { color: var(--accent-fg); }
 .composer-note { margin: 8px 2px 0; color: var(--danger-fg); font-size: var(--text-sm); }
+
+/* ---------- 任务输入提示 + 操作按钮分组（Batch A2 #8）---------- */
+/* task-box-footer：把"键位提示"与运行/审阅按钮分组到右侧，
+   与左侧 preset-row 通过 task-actions 的 space-between 分离。
+   footer 自身为内容宽度，gap 提供稳定间距，space-between 在无剩余空间时退化为 gap。 */
+.task-box-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 4px;
+}
+/* 覆盖 conversation.css 中 .input-hint 的 display:block / margin-top / text-align，
+   在 task-box-footer 内改为内联小字，紧贴按钮左侧 */
+.task-box-footer .input-hint {
+  display: inline;
+  margin-top: 0;
+  text-align: left;
+  font-size: 11px;
+  color: var(--fg-subtle);
+  white-space: nowrap;
+}
 
 /* ---------- 字段质量概览 ---------- */
 .dataset-overview { margin-top: 28px; border-top: 1px solid var(--border-default); }

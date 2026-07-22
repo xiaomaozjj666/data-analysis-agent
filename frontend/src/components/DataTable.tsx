@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Search } from "lucide-react";
 
 type Row = Record<string, unknown>;
@@ -9,6 +9,10 @@ interface DataTableProps {
   rows?: Row[] | null;
 }
 
+// 分页大小：50 行/页，兼顾首屏可读性与大数据集浏览效率。
+// 超过 50 行时通过底部分页控件翻页，避免渲染数千个 <td> 卡顿。
+const PAGE_SIZE = 50;
+
 // React.memo：rows 仅在 session 切换时变化，但 App 每次输入 task 或
 // 刷新历史都会重渲染。memo 让 DataTable 跳过这些场景，避免重新生成
 // 几百个 <td>。
@@ -16,6 +20,7 @@ const DataTable = React.memo(function DataTable({ rows }: DataTableProps) {
   const [search, setSearch] = useState("");
   const [sortCol, setSortCol] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const [page, setPage] = useState(0);
   const columns = useMemo(() => Object.keys(rows?.[0] || {}), [rows]);
 
   // 列类型推断：取第一个非空值判断 number / date / text。
@@ -56,6 +61,17 @@ const DataTable = React.memo(function DataTable({ rows }: DataTableProps) {
     });
   }, [filtered, sortCol, sortDir]);
 
+  // 搜索条件变化时回到第一页，避免停留在已不存在的页码上看到空表格。
+  useEffect(() => {
+    setPage(0);
+  }, [search]);
+
+  const totalPages = Math.ceil(sorted.length / PAGE_SIZE);
+  const paged = useMemo(
+    () => sorted.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE),
+    [sorted, page]
+  );
+
   const toggleSort = (col: string) => {
     if (sortCol === col) {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -83,7 +99,7 @@ const DataTable = React.memo(function DataTable({ rows }: DataTableProps) {
           aria-label="过滤数据预览行"
         />
         <span className="data-table-count">
-          显示 {sorted.length}/{rows.length} 行
+          显示 {paged.length}/{sorted.length} 行（第 {page + 1}/{totalPages || 1} 页）
         </span>
       </div>
       <div className="table-wrap">
@@ -108,15 +124,36 @@ const DataTable = React.memo(function DataTable({ rows }: DataTableProps) {
           <tbody>
             {sorted.length === 0 ? (
               <tr><td className="row-number">—</td><td colSpan={columns.length} style={{ textAlign: "center", color: "var(--fg-muted)" }}>没有匹配的行</td></tr>
-            ) : sorted.map((row, index) => (
+            ) : paged.map((row, index) => (
               <tr key={index}>
-                <td className="row-number">{index + 1}</td>
-                {columns.map((column) => <td key={column}>{String(row[column] ?? "")}</td>)}
+                <td className="row-number">{page * PAGE_SIZE + index + 1}</td>
+                {columns.map((column) => {
+                  // 空值高亮：null / undefined / 空字符串 / NaN 统一显示为 "—"，
+                  // 并加 cell-empty 类用斜体灰色弱化，便于扫读缺失值分布。
+                  const cellValue = row[column];
+                  const isEmpty = cellValue == null || cellValue === "" || (typeof cellValue === "number" && isNaN(cellValue));
+                  return (
+                    <td key={column} className={isEmpty ? "cell-empty" : ""}>
+                      {isEmpty ? "—" : String(cellValue)}
+                    </td>
+                  );
+                })}
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+      {/* 分页控件：仅当总页数 > 1 时显示。首页/上页/页码/下页/末页五段式，
+          与主流数据表格（Ant Design / MUI DataTable）交互一致。 */}
+      {totalPages > 1 && (
+        <div className="data-table-pagination">
+          <button onClick={() => setPage(0)} disabled={page === 0} aria-label="第一页">«</button>
+          <button onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0} aria-label="上一页">‹</button>
+          <span>第 {page + 1}/{totalPages} 页</span>
+          <button onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1} aria-label="下一页">›</button>
+          <button onClick={() => setPage(totalPages - 1)} disabled={page >= totalPages - 1} aria-label="最后一页">»</button>
+        </div>
+      )}
     </div>
   );
 });

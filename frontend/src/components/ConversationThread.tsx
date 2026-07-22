@@ -2,7 +2,9 @@ import React, { useDeferredValue, useEffect, useMemo, useRef, useState } from "r
 import ReactMarkdown from "react-markdown";
 import {
   AlertTriangle,
+  Check,
   CornerDownLeft,
+  Copy,
   Play,
   RefreshCw,
   Square,
@@ -132,6 +134,8 @@ const ConversationBubble = React.memo(function ConversationBubble({
 }: ConversationBubbleProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(message.content || "");
+  // 复制状态：copiedIndex 记录当前气泡是否已复制，1.8s 后自动恢复图标
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
 
   // 进入编辑模式时同步 draft
   useEffect(() => {
@@ -143,6 +147,14 @@ const ConversationBubble = React.memo(function ConversationBubble({
     () => markdownComponents(artifacts, onPreview, theme),
     [artifacts, onPreview, theme]
   );
+
+  // 复制消息内容到剪贴板，成功后切换图标 1.8s 提示已复制
+  const copyMessage = (text: string, idx: number) => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedIndex(idx);
+      window.setTimeout(() => setCopiedIndex(null), 1800);
+    }).catch(() => { /* 剪贴板权限被拒或不可用时静默 */ });
+  };
 
   if (message.role === "user") {
     return (
@@ -171,8 +183,18 @@ const ConversationBubble = React.memo(function ConversationBubble({
         ) : (
           <>
             <div className="chat-bubble-content">{message.content}</div>
-            {canEdit && onEditMessage && (
-              <div className="chat-bubble-actions">
+            {/* 用户气泡操作：复制 + 编辑重发，复用 chat-bubble-action-btn 保持白底半透明风格 */}
+            <div className="chat-bubble-actions">
+              <button
+                type="button"
+                className="chat-bubble-action-btn"
+                title="复制"
+                aria-label="复制消息"
+                onClick={() => copyMessage(message.content || "", index)}
+              >
+                {copiedIndex === index ? <Check size={12} /> : <Copy size={12} />}
+              </button>
+              {canEdit && onEditMessage && (
                 <button
                   type="button"
                   className="chat-bubble-action-btn"
@@ -182,8 +204,8 @@ const ConversationBubble = React.memo(function ConversationBubble({
                 >
                   <RefreshCw size={11} />
                 </button>
-              </div>
-            )}
+              )}
+            </div>
           </>
         )}
       </div>
@@ -220,6 +242,20 @@ const ConversationBubble = React.memo(function ConversationBubble({
           </>
         ) : null}
       </div>
+      {/* 助手气泡操作：复制按钮，hover 显示；流式生成中不显示避免干扰 */}
+      {!isStreaming && hasContent && (
+        <div className="chat-bubble-actions">
+          <button
+            type="button"
+            className="chat-action"
+            title="复制"
+            aria-label="复制回复"
+            onClick={() => copyMessage(message.content || "", index)}
+          >
+            {copiedIndex === index ? <Check size={12} /> : <Copy size={12} />}
+          </button>
+        </div>
+      )}
       {!isStreaming && message.usage && <UsageChip usage={message.usage} />}
       {message.error && <div className="chat-bubble-error"><AlertTriangle size={12} />{message.error}</div>}
     </div>

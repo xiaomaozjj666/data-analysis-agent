@@ -69,7 +69,11 @@
 .history-group:first-of-type { margin-top: 4px; }
 .history-group-label { display: block; padding: 4px 12px 2px; color: var(--fg-subtle); font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
 
-.history-list { margin: 2px 0 4px; padding: 0 4px; list-style: none; max-height: 360px; overflow-y: auto; }
+/* history-list：桌面端不再独立限高与滚动，让侧栏 .sidebar 统一处理滚动，
+   避免"侧栏滚 + 列表滚"双重滚动条同时出现，体验更接近 Linear/Notion。
+   移动端（sidebar 改为相对定位 + 高度自适应）由 responsive.css 中
+   .history-list { max-height: none } 进一步放开高度，避免列表过长撑高首屏。 */
+.history-list { margin: 2px 0 4px; padding: 0 4px; list-style: none; }
 .history-list li { margin: 0; position: relative; }
 .history-list li > button { width: 100%; display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 8px; border: 0; border-radius: var(--radius-md); background: transparent; text-align: left; }
 .history-list li > button:hover { background: var(--control-hover); }

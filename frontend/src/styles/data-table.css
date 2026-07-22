@@ -26,3 +26,59 @@ tbody tr:hover td { background: var(--accent-subtle); }
 .data-table th.is-sorted { color: var(--accent-fg); }
 /* 列类型小徽标：# 数值 / A 文本 / 📅 日期 */
 .data-table-type-badge { display: inline-block; margin-left: 4px; padding: 0 4px; border-radius: 3px; background: var(--canvas-inset); color: var(--fg-subtle); font-size: 10px; font-weight: 600; letter-spacing: 0; text-transform: none; }
+
+/* 空值高亮：null / undefined / 空字符串 / NaN 单元格统一显示 "—"，
+   斜体灰色弱化，便于扫读缺失值分布（数据质量一眼可读）。 */
+.data-table .cell-empty {
+  color: var(--fg-subtle);
+  font-style: italic;
+  text-align: center;
+}
+
+/* 行号列冻结：横向滚动时保持行号列可见，便于参照行位置。
+   z-index 层级：td.row-number (1) < th (2) < th.row-number (3)，
+   确保表头始终覆盖在行号之上、角单元格覆盖在所有单元格之上。 */
+.data-table td.row-number {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--canvas-subtle);
+}
+.data-table th.row-number {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  background: var(--canvas-subtle);
+}
+/* hover 时行号列需同步变色，否则会与同行其他单元格色差割裂。
+   特异性需高于 .data-table td.row-number 才能覆盖 sticky 背景。 */
+.data-table tbody tr:hover td.row-number {
+  background: var(--accent-subtle);
+}
+
+/* 分页控件：底部居中，首页/上页/页码/下页/末页五段式 */
+.data-table-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 0;
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+}
+.data-table-pagination button {
+  padding: 2px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--canvas-default);
+  cursor: pointer;
+  font-size: var(--text-xs);
+  transition: background var(--duration-fast) var(--ease-out), opacity var(--duration-fast) var(--ease-out);
+}
+.data-table-pagination button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.data-table-pagination button:hover:not(:disabled) {
+  background: var(--canvas-subtle);
+}

@@ -6,15 +6,51 @@
 .artifact-section-label span { font-size: var(--text-md); font-weight: 700; }
 .artifact-section-label small { color: var(--fg-subtle); font-size: var(--text-xs); }
 .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
-.chart-card { position: relative; min-height: 164px; display: grid; grid-template-columns: 30px 1fr; align-content: start; gap: 18px 14px; padding: 20px 22px; overflow: hidden; background: var(--canvas-default); border: 1px solid var(--border-default); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); transition: border-color var(--duration) var(--ease-out), box-shadow var(--duration) var(--ease-out), transform var(--duration) var(--ease-out); }
+
+/* 图表卡片：垂直布局（缩略图 → 信息 → 操作），checkbox 与引擎徽章浮于缩略图上方 */
+.chart-card { position: relative; min-height: 164px; display: flex; flex-direction: column; gap: 12px; padding: 16px; overflow: hidden; background: var(--canvas-default); border: 1px solid var(--border-default); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); transition: border-color var(--duration) var(--ease-out), box-shadow var(--duration) var(--ease-out), transform var(--duration) var(--ease-out); }
 .chart-card:hover { border-color: var(--accent-fg); box-shadow: var(--shadow-lg); transform: translateY(-3px); }
-.chart-index { padding-top: 2px; color: var(--fg-subtle); font-family: var(--font-mono); font-size: var(--text-xs); font-weight: 600; }
-.chart-card > svg { grid-column: 1; grid-row: 2; color: var(--accent-fg); }
-.chart-card > div:nth-of-type(2) { grid-column: 2; grid-row: 2; min-width: 0; padding-right: 8px; }
+
+/* 缩略图容器：固定高度，点击触发预览；背景使用 subtle 底色避免透明 PNG 视觉割裂 */
+.chart-thumbnail { position: relative; height: 140px; display: flex; align-items: center; justify-content: center; background: var(--canvas-subtle); border: 1px solid var(--border-muted); border-radius: var(--radius-md); overflow: hidden; cursor: pointer; transition: border-color var(--duration-fast) var(--ease-out); }
+.chart-thumbnail:hover { border-color: var(--accent-fg); }
+.chart-thumbnail img { max-width: 100%; max-height: 100%; object-fit: contain; }
+
+/* 图标回退：无缩略图（ECharts 或 Plotly 渲染失败）时展示类型图标 */
+.chart-icon { position: relative; height: 140px; display: flex; align-items: center; justify-content: center; background: var(--canvas-subtle); border: 1px solid var(--border-muted); border-radius: var(--radius-md); color: var(--accent-fg); cursor: pointer; transition: border-color var(--duration-fast) var(--ease-out), background var(--duration-fast) var(--ease-out); }
+.chart-icon:hover { border-color: var(--accent-fg); background: var(--accent-subtle); }
+
+/* 引擎徽章：浮于缩略图左上角，区分 Plotly / ECharts */
+.engine-badge { position: absolute; top: 8px; left: 8px; z-index: 2; padding: 2px 8px; background: rgba(255, 255, 255, 0.92); border: 1px solid var(--border-default); border-radius: var(--radius-sm); color: var(--accent-fg); font-size: var(--text-xs); font-weight: 600; letter-spacing: 0.02em; backdrop-filter: blur(4px); pointer-events: none; }
+[data-theme="dark"] .engine-badge { background: rgba(28, 36, 51, 0.92); }
+
+/* 批量选择 checkbox：浮于缩略图右上角 */
+.chart-card-checkbox { position: absolute; top: 8px; right: 8px; z-index: 2; width: 16px; height: 16px; accent-color: var(--accent-fg); cursor: pointer; }
+
+/* 卡片信息区：序号 + 标题/描述 */
+.chart-card-info { display: flex; gap: 8px; min-width: 0; }
+.chart-index { flex-shrink: 0; padding-top: 2px; color: var(--fg-subtle); font-family: var(--font-mono); font-size: var(--text-xs); font-weight: 600; }
+.chart-card-text { flex: 1; min-width: 0; }
 .chart-card strong, .chart-card small { display: block; }
 .chart-card strong { min-height: 36px; font-size: var(--text-sm); line-height: 1.55; font-weight: 700; }
-.chart-card small { margin-top: 7px; color: var(--fg-subtle); font-size: var(--text-xs); line-height: 1.5; }
-.artifact-actions { grid-column: 2; display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.chart-card small { margin-top: 4px; color: var(--fg-subtle); font-size: var(--text-xs); line-height: 1.5; }
+
+.artifact-actions { display: flex; align-items: center; gap: 8px; margin-top: auto; }
+
+/* 筛选与排序控件栏 */
+.artifact-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 16px; }
+.artifact-controls button { height: 28px; padding: 0 12px; display: inline-flex; align-items: center; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--canvas-default); color: var(--fg-muted); font-size: var(--text-xs); font-weight: 600; cursor: pointer; transition: all var(--duration-fast) var(--ease-out); }
+.artifact-controls button:hover { border-color: var(--accent-fg); color: var(--accent-fg); background: var(--accent-subtle); }
+.artifact-controls button.active { border-color: var(--accent-fg); background: var(--accent-fg); color: #fff; }
+.artifact-controls select { height: 28px; padding: 0 8px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--canvas-default); color: var(--fg-default); font-size: var(--text-xs); cursor: pointer; transition: border-color var(--duration-fast) var(--ease-out); }
+.artifact-controls select:hover { border-color: var(--accent-fg); }
+.artifact-controls select:focus { outline: none; border-color: var(--accent-fg); box-shadow: 0 0 0 3px var(--accent-ring); }
+
+/* 批量下载按钮：选中后出现，accent 主色样式 */
+.batch-download-btn { height: 28px; margin-left: auto; padding: 0 14px; display: inline-flex; align-items: center; gap: 6px; border: none; border-radius: var(--radius-md); background: var(--accent-fg); color: #fff; font-size: var(--text-xs); font-weight: 600; cursor: pointer; transition: background var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-out); box-shadow: var(--shadow-xs); }
+.batch-download-btn:hover { background: var(--accent-hover); box-shadow: var(--shadow-sm); transform: translateY(-1px); }
+.batch-download-btn:active { transform: translateY(0); }
+
 .artifact-files { padding-top: 32px; }
 .artifact-list { margin-top: 0; border-top: 1px solid var(--border-default); }
 .artifact-list > div { min-height: 64px; display: grid; grid-template-columns: 26px 1fr 36px; align-items: center; gap: 12px; border-bottom: 1px solid var(--border-muted); transition: background var(--duration) var(--ease-out); }
@@ -23,3 +59,8 @@
 .artifact-list strong, .artifact-list small { display: block; }
 .artifact-list strong { font-size: var(--text-sm); font-weight: 600; }
 .artifact-list small { margin-top: 2px; color: var(--fg-muted); font-size: var(--text-xs); }
+
+/* ---------- 报告内嵌图表缩略图 ---------- */
+/* ReportParts.tsx 的 artifact: 图片占位符支持缩略图展示：
+   有 thumbnail_url 时渲染小尺寸缩略图，无则回退到类型图标。 */
+.embedded-chart-thumb { width: 48px; height: 32px; object-fit: contain; border-radius: var(--radius-sm); border: 1px solid var(--border-muted); background: var(--canvas-subtle); flex-shrink: 0; }

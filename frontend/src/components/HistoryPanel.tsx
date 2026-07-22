@@ -1,11 +1,13 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import {
   ChevronRight,
+  Download,
   FileSpreadsheet,
   History,
   LoaderCircle,
   RefreshCw,
   Search,
+  Upload,
 } from "lucide-react";
 import {
   describeHistoryStatus,
@@ -24,6 +26,9 @@ interface HistoryPanelProps {
   onToggle: () => void;
   historyError?: boolean;
   switchingSessionId?: string | null;
+  // Batch 4：会话导入/导出
+  onExportSession?: (item: HistorySessionItem) => void;
+  onImportSession?: (file: File) => void;
 }
 
 // 历史会话面板：可折叠的侧边栏组件，按时间分组列出最近会话并允许切换。
@@ -37,8 +42,11 @@ interface HistoryPanelProps {
 //   4. 当前会话用左侧竖条 + 浅蓝底高亮，比单纯背景色更醒目。
 const HistoryPanel = React.memo(function HistoryPanel({
   sessions, currentSessionId, onSelect, onRefresh, loading, expanded, onToggle, historyError, switchingSessionId,
+  onExportSession, onImportSession,
 }: HistoryPanelProps) {
   const [searchQuery, setSearchQuery] = useState("");
+  // 隐藏的文件 input：触发浏览器原生文件选择对话框，选中后回调 onImportSession
+  const importInputRef = useRef<HTMLInputElement>(null);
   // 搜索过滤：按文件名匹配，匹配不到时显示空状态。本地过滤即可，
   // 不需要后端 query 参数——历史列表通常 ≤ 30 条，前端 filter 毫秒级。
   const filtered = useMemo<HistorySessionItem[]>(() => {
@@ -64,27 +72,46 @@ const HistoryPanel = React.memo(function HistoryPanel({
         {sessions && sessions.length > 0 && <em className="history-total">{sessions.length}</em>}
         <ChevronRight size={13} className={expanded ? "rot-90" : ""} />
       </button>
+      {/* 会话搜索框：始终可见（不随 expanded 切换挂载/卸载），
+          让用户在折叠态也能直接输入关键词，展开后即看到过滤结果。
+          placeholder 改为"搜索会话…"，因为匹配范围已涵盖任务文本与报告内容，
+          不再局限于文件名。 */}
+      <div className="history-search">
+        <div className="history-search-wrap">
+          <Search size={12} />
+          <input
+            type="search"
+            className="history-search-input"
+            placeholder="搜索会话…"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            aria-label="搜索历史会话"
+          />
+        </div>
+      </div>
       {expanded && (
         <>
           <button type="button" className="history-refresh" onClick={onRefresh} disabled={loading} title="刷新历史" aria-label="刷新历史会话列表">
             <RefreshCw size={12} className={loading ? "spin" : ""} />
             {loading ? "加载中" : "刷新"}
           </button>
-          {sessions && sessions.length > 0 && (
-            <div className="history-search">
-              <div className="history-search-wrap">
-                <Search size={12} />
-                <input
-                  type="search"
-                  className="history-search-input"
-                  placeholder="搜索文件名…"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  aria-label="搜索历史会话"
-                />
-              </div>
-            </div>
-          )}
+          {/* 导入会话：选择 .zip 文件交给后端解析并恢复会话 */}
+          <button type="button" className="history-import" onClick={() => importInputRef.current?.click()} title="导入会话" aria-label="从 ZIP 文件导入会话">
+            <Upload size={12} />
+            导入
+          </button>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".zip"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file && onImportSession) onImportSession(file);
+              // 重置 value 允许重复选择同一文件
+              e.target.value = "";
+            }}
+          />
           {noResults ? (
             <div className="history-search-empty">没有匹配「{searchQuery.trim()}」的会话</div>
           ) : isEmpty ? (
@@ -140,6 +167,18 @@ const HistoryPanel = React.memo(function HistoryPanel({
                             <em className="history-count">{item.artifact_count}</em>
                           ) : null}
                         </button>
+                        {/* 导出按钮：hover 时显示，点击后阻止冒泡避免触发切换 */}
+                        {onExportSession && (
+                          <button
+                            type="button"
+                            className="history-export"
+                            onClick={(e) => { e.stopPropagation(); onExportSession(item); }}
+                            title="导出会话"
+                            aria-label={`导出会话 ${item.filename}`}
+                          >
+                            <Download size={12} />
+                          </button>
+                        )}
                       </li>
                     );
                   })}

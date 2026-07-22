@@ -42,8 +42,13 @@ interface AppStoreState {
   // === 会话 slice ===
   session: Session | null;
   activeTab: "analysis" | "data" | "artifacts";
+  // lastActiveTab：跨会话切换时持久化用户最后查看的 Tab，
+  // 切换历史会话后恢复而非每次回到"分析"，减少重复点击。
+  // selectSession 中带 fallback：目标会话无 preview 数据时仍回退到 analysis。
+  lastActiveTab: "analysis" | "data" | "artifacts";
   setSession: (updater: Updater<Session | null>) => void;
   setActiveTab: (tab: "analysis" | "data" | "artifacts") => void;
+  setLastActiveTab: (tab: "analysis" | "data" | "artifacts") => void;
 
   // === 分析任务 slice ===
   task: string;
@@ -56,6 +61,18 @@ interface AppStoreState {
   setCompleted: (v: CompletedStep[]) => void;
   setResult: (updater: Updater<AnalysisResult | null>) => void;
   setRunning: (v: boolean) => void;
+
+  // === 计划审批 slice ===
+  // plan_only=true 时后端在 plan_analysis 后结束流并推送 plan_ready 事件，
+  // 前端进入 awaitingApproval 模式：PlanPanel 显示编辑/删除/重排控件，
+  // 用户审批后调用 startAnalysis(editedPlan, completed_steps: []) 继续执行。
+  // stepProgress：执行中后端推送的当前步骤进度（百分比 / 工具调用数 / 提示）。
+  awaitingApproval: boolean;
+  pendingObjective: string;
+  stepProgress: { progress: number; toolCalls: number; message: string } | null;
+  setAwaitingApproval: (v: boolean) => void;
+  setPendingObjective: (v: string) => void;
+  setStepProgress: (v: { progress: number; toolCalls: number; message: string } | null) => void;
 
   // === UI slice ===
   uploading: boolean;
@@ -169,11 +186,13 @@ export const useAppStore = create<AppStoreState>((set) => ({
   // === 会话 slice ===
   session: null,
   activeTab: "analysis",
+  lastActiveTab: "analysis",
   setSession: (updater) =>
     set((state) => ({
       session: typeof updater === "function" ? updater(state.session) : updater,
     })),
   setActiveTab: (tab) => set({ activeTab: tab }),
+  setLastActiveTab: (tab) => set({ lastActiveTab: tab }),
 
   // === 分析任务 slice ===
   task: "",
@@ -189,6 +208,14 @@ export const useAppStore = create<AppStoreState>((set) => ({
       result: typeof updater === "function" ? updater(state.result) : updater,
     })),
   setRunning: (v) => set({ running: v }),
+
+  // === 计划审批 slice ===
+  awaitingApproval: false,
+  pendingObjective: "",
+  stepProgress: null,
+  setAwaitingApproval: (v) => set({ awaitingApproval: v }),
+  setPendingObjective: (v) => set({ pendingObjective: v }),
+  setStepProgress: (v) => set({ stepProgress: v }),
 
   // === UI slice ===
   uploading: false,

@@ -102,6 +102,29 @@ _PLOTLY_DARK_MODE_SCRIPT = """<script>
   var observer = new MutationObserver(function() { setTimeout(applyTheme, 50); });
   observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
+  // 响应式重绘：监听窗口尺寸变化，防抖 150ms 后调用 Plotly.Plots.resize，
+  // 避免拖拽调整预览模态或全屏切换时图表被裁剪/留白。
+  var _resizeTimer;
+  window.addEventListener('resize', function() {
+    clearTimeout(_resizeTimer);
+    _resizeTimer = setTimeout(function() {
+      var gd = document.querySelector('.plotly-graph-div');
+      if (gd && window.Plotly) Plotly.Plots.resize(gd);
+    }, 150);
+  });
+  // PNG 导出（postMessage 通道）：父页面发送 {type:"download-png"} 触发导出，
+  // 这里调用 Plotly.toImage 生成 dataURL 后回传 {type:"png-data", data}。
+  // 使用 postMessage 而非直接下载，可避免 iframe 需要 allow-same-origin 权限。
+  window.addEventListener('message', function(e) {
+    if (e.data && e.data.type === 'download-png') {
+      var gd = document.querySelector('.plotly-graph-div');
+      if (gd && window.Plotly) {
+        Plotly.toImage(gd, {format: 'png', width: 1200, height: 700, scale: 2}).then(function(url) {
+          parent.postMessage({type: 'png-data', data: url}, '*');
+        });
+      }
+    }
+  });
 })();
 </script>"""
 
@@ -263,6 +286,76 @@ def _add_missing_combination_markers(
         f"组合覆盖 {coverage['observed_combinations']}/{coverage['total_combinations']}；"
         f"基线标记表示{missing_label}，不是数值为 0，也不是漏画",
     )
+
+
+def _annotate_extreme_values(fig: go.Figure) -> None:
+    """在柱状图和折线图上自动标注最大值和最小值（best-effort）。
+
+    仅标注第一个匹配的 trace，避免多 trace 分组图表标注过多影响可读性。
+    通过 trace 类型（``bar`` 或 ``scatter`` 且 mode 含 ``lines``）判定是否
+    适用，跳过饼图、热力图、散点矩阵等不适用场景。
+
+    标注是 best-effort：任何异常都被吞掉，不能影响图表正常生成。
+    """
+    try:
+        for trace in fig.data:
+            trace_type = getattr(trace, "type", "bar")
+            trace_mode = getattr(trace, "mode", "") or ""
+            # 仅对柱状图和折线图标注，跳过饼图、热力图、散点矩阵等
+            is_bar = trace_type == "bar"
+            is_line = trace_type == "scatter" and trace_mode in {"lines", "lines+markers"}
+            if not (is_bar or is_line):
+                continue
+            y_values = list(trace.y) if getattr(trace, "y", None) is not None else []
+            x_values = list(trace.x) if getattr(trace, "x", None) is not None else []
+            if not y_values or not x_values or len(y_values) != len(x_values):
+                continue
+            # 找到最大值和最小值的索引
+            max_idx = max(range(len(y_values)), key=lambda i: y_values[i])
+            min_idx = min(range(len(y_values)), key=lambda i: y_values[i])
+            # 最大值标注
+            y_max = y_values[max_idx]
+            max_text = (
+                f"最大: {y_max:.1f}"
+                if isinstance(y_max, (int, float, np.number))
+                else f"最大: {y_max}"
+            )
+            fig.add_annotation(
+                x=x_values[max_idx],
+                y=y_max,
+                text=max_text,
+                showarrow=True,
+                arrowhead=2,
+                arrowsize=0.8,
+                arrowwidth=1,
+                arrowcolor="#D97745",
+                font={"size": 10, "color": "#D97745"},
+                ax=0,
+                ay=-30,
+            )
+            # 最小值标注
+            y_min = y_values[min_idx]
+            min_text = (
+                f"最小: {y_min:.1f}"
+                if isinstance(y_min, (int, float, np.number))
+                else f"最小: {y_min}"
+            )
+            fig.add_annotation(
+                x=x_values[min_idx],
+                y=y_min,
+                text=min_text,
+                showarrow=True,
+                arrowhead=2,
+                arrowsize=0.8,
+                arrowwidth=1,
+                arrowcolor="#7A6FB0",
+                font={"size": 10, "color": "#7A6FB0"},
+                ax=0,
+                ay=30,
+            )
+            break  # 只标注第一个 trace，避免多 trace 时标注过多
+    except Exception:
+        pass  # 标注是 best-effort，不能影响图表生成
 
 
 def _severe_axis_compression(values: list[Any], *, include_zero: bool = False) -> dict[str, Any] | None:
@@ -1257,6 +1350,9 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                 color=color,
                 aggregation=aggregation,
             )
+        # 自动标注关键统计量（最大值/最小值），仅用于柱状图和折线图
+        if chart_type in {"bar", "line"}:
+            _annotate_extreme_values(fig)
         fig.update_layout(
             font={"family": "IBM Plex Sans, Noto Sans SC, sans-serif", "color": "#102a2a"},
             paper_bgcolor="#fbfaf5",

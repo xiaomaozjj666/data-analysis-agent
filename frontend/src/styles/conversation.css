@@ -64,8 +64,9 @@
   overflow-y: auto;
 }
 
-/* ---------- 消息编辑重发 ---------- */
+/* ---------- 消息编辑重发 / 复制 ---------- */
 .chat-bubble.is-user { position: relative; }
+.chat-bubble.is-assistant { position: relative; }
 .chat-bubble-actions {
   position: absolute;
   top: 4px;
@@ -74,8 +75,11 @@
   gap: 4px;
   opacity: 0;
   transition: opacity var(--duration-fast) var(--ease-out);
+  z-index: 1;
 }
 .chat-bubble.is-user:hover .chat-bubble-actions { opacity: 1; }
+/* 助手气泡：hover 显示复制按钮，与用户气泡编辑按钮共用 .chat-bubble-actions 容器 */
+.chat-bubble.is-assistant:hover .chat-bubble-actions { opacity: 1; }
 /* 触屏设备无 hover 事件，编辑按钮始终可见，否则移动端用户无法编辑重发 */
 @media (hover: none) {
   .chat-bubble-actions { opacity: 1; }
@@ -92,6 +96,22 @@
   cursor: pointer;
 }
 .chat-bubble-action-btn:hover { background: rgba(255, 255, 255, 0.3); color: #fff; }
+/* 助手气泡复制按钮：透明底 + subtle 文字，hover 提亮，与用户气泡的白底按钮区分 */
+.chat-action {
+  padding: 2px 6px;
+  border: none;
+  background: transparent;
+  color: var(--fg-subtle);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  transition: background-color var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+.chat-action:hover {
+  background: var(--canvas-subtle);
+  color: var(--fg-default);
+}
 .chat-bubble-edit-area {
   width: 100%;
   min-height: 60px;
@@ -151,9 +171,19 @@
   line-height: 1.6;
   max-height: 280px;
   overflow-y: auto;
-  white-space: pre-wrap;
+  /* 移除 white-space: pre-wrap —— 改用 ReactMarkdown 渲染后，
+     pre-wrap 会破坏 markdown 列表缩进与代码块换行，由各元素自身控制空白。 */
 }
 .reasoning-body.is-streaming { color: var(--fg-muted); }
+/* reasoning-body 内 markdown 排版：与 chat-bubble-content 风格保持一致但更紧凑。
+   模型在 reasoning_content 中常输出 **加粗**、`代码`、- 列表 等语法，
+   需要专门的 margin/padding 让其正确呈现，而不是挤成一团。 */
+.reasoning-body p { margin: 0 0 8px; }
+.reasoning-body p:last-child { margin-bottom: 0; }
+.reasoning-body code { font-size: 12px; }
+.reasoning-body pre { margin: 4px 0; }
+.reasoning-body ul, .reasoning-body ol { margin: 4px 0 8px; padding-left: 20px; }
+.reasoning-body li { margin: 2px 0; }
 .reasoning-cursor {
   display: inline-block;
   width: 6px;

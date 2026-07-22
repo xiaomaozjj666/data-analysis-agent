@@ -1,19 +1,24 @@
-import React, { Suspense, useCallback, useEffect, useRef } from "react";
+import React, { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   BarChart3,
   Check,
   ChevronRight,
+  Columns2,
   Command,
   Download,
   Eye,
   EyeOff,
+  FileImage,
   FilePlus2,
   FileSpreadsheet,
   Keyboard,
   KeyRound,
+  ListChecks,
   LoaderCircle,
+  Maximize2,
   Moon,
+  Palette,
   Play,
   RefreshCw,
   Settings2,
@@ -97,9 +102,13 @@ function App() {
     // 会话
     session, activeTab,
     setSession, setActiveTab,
+    lastActiveTab, setLastActiveTab,
     // 分析任务
     task, plan, completed, result, running,
     setTask, setPlan, setCompleted, setResult, setRunning,
+    // 计划审批：plan_only 流程的待审阅状态、步骤进度
+    awaitingApproval, pendingObjective, stepProgress,
+    setAwaitingApproval, setPendingObjective, setStepProgress,
     // UI
     uploading, previewItem, previewHtml, previewLoading, previewError, currentNodeTitle,
     setUploading, setPreviewItem, setPreviewHtml, setPreviewLoading, setPreviewError, setCurrentNodeTitle,
@@ -174,6 +183,30 @@ function App() {
   // 主题（light/dark）：useTheme 内部读取 localStorage，无则跟随系统。
   const { theme, toggle: toggleTheme } = useTheme();
 
+  // === Batch 4：图表内联编辑 ===
+  // 预览模态中可对图表产物进行标题/主色就地编辑，
+  // 调用 PUT /api/sessions/{id}/artifacts/{filename}/edit 更新 HTML 和 JSON。
+  const [chartEditOpen, setChartEditOpen] = useState(false);
+  const [chartEditTitle, setChartEditTitle] = useState("");
+  const [chartEditColor, setChartEditColor] = useState("#245C55");
+  const [chartEditSaving, setChartEditSaving] = useState(false);
+
+  // === Batch B1：图表预览增强 ===
+  // previewFullscreen：全屏展示图表（#17）
+  // compareMode/compareItem/compareHtml/compareLoading：图表对比并排展示（#22）
+  // pngDownloading：通过 postMessage 通道触发 iframe 内图表导出 PNG（#23）
+  const [previewFullscreen, setPreviewFullscreen] = useState(false);
+  const [compareMode, setCompareMode] = useState(false);
+  const [compareItem, setCompareItem] = useState<Artifact | null>(null);
+  const [compareHtml, setCompareHtml] = useState("");
+  const [compareLoading, setCompareLoading] = useState(false);
+  const [pngDownloading, setPngDownloading] = useState(false);
+
+  // === Batch A2：设置面板连接测试 ===
+  // testingKey：测试进行中；testResult：测试结果（ok 标识成功/失败，message 为提示文案）
+  const [testingKey, setTestingKey] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+
   // Esc 键关闭预览模态框或设置面板（P0-4）。
   // 之前 Esc 只对 previewItem 生效，设置面板打开时按 Esc 没反应，
   // 用户必须移动鼠标到右上角点 X，破坏键盘操作流。
@@ -187,6 +220,27 @@ function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [previewItem, keyOpen]);
+
+  // 设置面板点击外部关闭：mousedown 落在 settings-form 或 provider-block 之外时收起，
+  // 避免用户每次都得移动鼠标到右上角点 X。mousedown 而非 click，
+  // 在文本选区拖拽到面板外释放时不会误触关闭。
+  useEffect(() => {
+    if (!keyOpen) return;
+    const handler = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest(".settings-form") && !target.closest(".provider-block")) {
+        setKeyOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [keyOpen, setKeyOpen]);
+
+  // Tab 持久化：activeTab 变化时同步到 lastActiveTab，切换历史会话时恢复，
+  // 避免每次切换都回到"分析" Tab，减少用户重复点击。
+  useEffect(() => {
+    setLastActiveTab(activeTab);
+  }, [activeTab, setLastActiveTab]);
 
   useEffect(() => {
     api<AuthStatus>("/api/auth")
@@ -258,13 +312,19 @@ function App() {
       setResult(null);
       setCurrentNodeTitle("");
       setRetryOffer(null);
+      // 切换会话时清理审批/进度态，避免新会话复用旧审批 UI
+      setAwaitingApproval(false);
+      setPendingObjective("");
+      setStepProgress(null);
       restoreCompletedAnalysis(latest);
       restoreFollowUps(latest);
       if (!running) {
         startedAtRef.current = (latest as Session & { analysis_started_at?: number | null }).analysis_started_at ?? null;
         setElapsedSeconds(latest.elapsed_seconds ?? null);
       }
-      setActiveTab("analysis");
+      // 恢复上次查看的 Tab：有 preview 数据时恢复 lastActiveTab（如数据/产物），
+      // 无数据时回退 analysis，避免切到空白的数据 Tab。
+      setActiveTab(latest.preview?.length ? lastActiveTab : "analysis");
       fetchHistory();
     } catch (err) {
       const error = err as Error & { status?: number };
@@ -459,6 +519,11 @@ function App() {
     previewController.current = controller;
     setPreviewItem(item);
     setPreviewError("");
+    // 打开新预览时重置对比/全屏状态，避免上一张图的对比布局残留到新图。
+    setCompareMode(false);
+    setCompareItem(null);
+    setCompareHtml("");
+    setPreviewFullscreen(false);
     // LRU 缓存命中：直接展示已加载的 HTML，跳过 fetch + 解析（Plotly.js ~3.5MB）。
     // 重复打开同一图表时秒开，多个图表来回切换无需重新加载。
     const cacheKey = item.preview_url;
@@ -516,7 +581,77 @@ function App() {
     setPreviewHtml("");
     setPreviewLoading(false);
     setPreviewError("");
+    // 关闭预览时清空对比/全屏状态，下次打开时干净起步。
+    setCompareMode(false);
+    setCompareItem(null);
+    setCompareHtml("");
+    setCompareLoading(false);
+    setPreviewFullscreen(false);
   }, []);
+
+  // 加载对比图表：复用预览 LRU 缓存，命中则秒开，否则 fetch 后入缓存。
+  // 与主预览共享 previewCacheRef，切换主图与对比图时互不重复请求。
+  const loadCompareChart = useCallback(async (item: Artifact) => {
+    if (!item.preview_url) return;
+    setCompareItem(item);
+    setCompareLoading(true);
+    setCompareHtml("");
+    const cacheKey = item.preview_url;
+    const cached = previewCacheRef.current.get(cacheKey);
+    if (cached !== undefined) {
+      // LRU：删除再插入，将命中条目移到 Map 末尾标记为最近使用
+      previewCacheRef.current.delete(cacheKey);
+      previewCacheRef.current.set(cacheKey, cached);
+      setCompareHtml(cached);
+      setCompareLoading(false);
+      return;
+    }
+    try {
+      const response = await fetch(`${API_URL}${item.preview_url}`, {
+        headers: requestHeaders(),
+      });
+      const html = await response.text();
+      if (response.ok) {
+        previewCacheRef.current.set(cacheKey, html);
+        if (previewCacheRef.current.size > PREVIEW_CACHE_MAX) {
+          const oldest = previewCacheRef.current.keys().next().value;
+          if (oldest !== undefined) previewCacheRef.current.delete(oldest);
+        }
+        setCompareHtml(html);
+      }
+    } catch {
+      // 对比加载失败时不阻塞主图，静默忽略
+    } finally {
+      setCompareLoading(false);
+    }
+  }, []);
+
+  // 通过 postMessage 通道让 iframe 内图表导出 PNG（#23）。
+  // iframe sandbox 只保留 allow-scripts（不含 allow-same-origin），
+  // 因此不能用 contentDocument 直接读取，改由图表脚本回传 dataURL。
+  // 5 秒超时兜底，避免图表脚本未注册监听时按钮永远 disabled。
+  const downloadPng = useCallback(() => {
+    const iframe = document.querySelector<HTMLIFrameElement>(".preview-frame iframe");
+    if (!iframe?.contentWindow) return;
+    setPngDownloading(true);
+    const handler = (e: MessageEvent) => {
+      if (e.data?.type === "png-data" && e.data.data) {
+        const a = document.createElement("a");
+        a.href = e.data.data as string;
+        a.download = `${previewItem?.name?.replace(/\.html$/, "") || "chart"}.png`;
+        a.click();
+        window.removeEventListener("message", handler);
+        setPngDownloading(false);
+      }
+    };
+    window.addEventListener("message", handler);
+    iframe.contentWindow.postMessage({ type: "download-png" }, "*");
+    // 超时兜底：5 秒未收到回传则解绑监听并恢复按钮状态
+    window.setTimeout(() => {
+      window.removeEventListener("message", handler);
+      setPngDownloading(false);
+    }, 5000);
+  }, [previewItem]);
 
   const downloadArtifact = useCallback(async (item: Artifact) => {
     const controller = new AbortController();
@@ -548,6 +683,172 @@ function App() {
       window.clearTimeout(timeout);
     }
   }, []);
+
+  // 批量下载：用户在产物中心选中多张图表后一次性触发下载。
+  // 顺序触发（间隔 300ms）避免浏览器并发下载限制和后端瞬时压力；
+  // 任一文件失败不中断后续，最终汇总成功/失败数量。
+  const batchDownload = useCallback(async (items: Artifact[]) => {
+    if (!items.length) return;
+    let succeeded = 0;
+    let failed = 0;
+    for (const item of items) {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 120000);
+      try {
+        const response = await fetch(`${API_URL}${item.download_url}`, {
+          headers: requestHeaders(),
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const blob = await response.blob();
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = item.name;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(link.href);
+        succeeded += 1;
+      } catch {
+        failed += 1;
+      } finally {
+        window.clearTimeout(timeout);
+      }
+      // 浏览器需要时间处理每次下载对话框，间隔过短会被合并或丢弃。
+      await wait(300);
+    }
+    if (failed > 0) {
+      setError(`批量下载完成：成功 ${succeeded} 个，失败 ${failed} 个。`);
+    }
+  }, []);
+
+  // === Batch 4：会话导出/导入 ===
+  // 导出会话为 ZIP：浏览器侧生成下载链接，文件名格式 `<filename>_<id>.zip`。
+  // requestHeaders() 不带 Content-Type，避免后端按 JSON 解析二进制流。
+  const exportSession = useCallback(async (item: HistorySessionItem) => {
+    try {
+      const response = await fetch(`${API_URL}/api/sessions/${item.id}/export`, {
+        headers: requestHeaders(),
+      });
+      if (!response.ok) {
+        const contentType = response.headers.get("content-type") || "";
+        const payload: unknown = contentType.includes("application/json")
+          ? await response.json().catch(() => ({}))
+          : await response.text().catch(() => "");
+        throw new Error(describeApiError(payload, response.status));
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${item.filename || "session"}_${item.id}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(`导出会话失败：${err instanceof Error ? err.message : "未知错误"}`);
+    }
+  }, []);
+
+  // 导入会话：multipart 上传 ZIP，后端返回完整 session payload；
+  // 成功后刷新历史并切到新会话。FormData 不能带 Content-Type，
+  // 浏览器会自动设置 multipart/form-data 边界。
+  const importSession = useCallback(async (file: File) => {
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const response = await fetch(`${API_URL}/api/sessions/import`, {
+        method: "POST",
+        headers: requestHeaders(),
+        body: formData,
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({})) as { detail?: string };
+        throw new Error(payload.detail || "导入失败");
+      }
+      const sessionPayload = await response.json() as Session;
+      await fetchHistory();
+      selectSession({ id: sessionPayload.id, filename: sessionPayload.filename, analysis_status: sessionPayload.analysis_status } as HistorySessionItem);
+    } catch (err) {
+      setError(`导入会话失败：${err instanceof Error ? err.message : "未知错误"}`);
+    } finally {
+      setUploading(false);
+    }
+  }, [fetchHistory, selectSession]);
+
+  // === Batch 4：图表内联编辑 ===
+  // 修改图表标题或主色，后端更新 HTML 和 JSON 产物；前端清除预览缓存后重新加载。
+  const editChart = useCallback(async () => {
+    if (!session || !previewItem) return;
+    setChartEditSaving(true);
+    try {
+      const response = await fetch(`${API_URL}/api/sessions/${session.id}/artifacts/${previewItem.name}/edit`, {
+        method: "PUT",
+        headers: requestHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ title: chartEditTitle || undefined, color: chartEditColor || undefined }),
+      });
+      if (!response.ok) throw new Error("图表编辑失败");
+      // 清除预览缓存：下次打开会重新拉取更新后的 HTML
+      previewCacheRef.current.clear();
+      setPreviewHtml("");
+      setChartEditOpen(false);
+      // 重新打开预览，加载更新后的图表
+      openArtifactPreview(previewItem);
+      // 刷新 session 以获取更新的 artifacts（描述等可能被后端覆盖）
+      const updated = await api<Session>(`/api/sessions/${session.id}`);
+      setSession(updated);
+    } catch (err) {
+      setError(`图表编辑失败：${err instanceof Error ? err.message : "未知错误"}`);
+    } finally {
+      setChartEditSaving(false);
+    }
+  }, [session, previewItem, chartEditTitle, chartEditColor, openArtifactPreview]);
+
+  // 打开预览时初始化编辑表单（标题取自产物描述，颜色用默认品牌色）
+  useEffect(() => {
+    if (previewItem) {
+      setChartEditTitle(previewItem.description || previewItem.name);
+      setChartEditColor("#245C55");
+      setChartEditOpen(false);
+    }
+  }, [previewItem]);
+
+  // 连接测试：在保存前先用当前 Key 发起一次轻量 PUT /api/settings 请求，
+  // 仅验证连通性与 Key 有效性，不写入持久化（不带 persist_key）。
+  // 成功时展示后端 warning（如配额提示），失败时展示 detail / HTTP 状态码。
+  // 与 saveSettings 的区别：不 setSettings / 不 setKeyOpen / 不清空 apiKey，
+  // 让用户在确认 Key 有效后再正式保存。
+  const testConnection = useCallback(async () => {
+    setTestingKey(true);
+    setTestResult(null);
+    try {
+      const response = await fetch(`${API_URL}/api/settings`, {
+        method: "PUT",
+        headers: requestHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({
+          provider: settings?.provider || "deepseek",
+          api_key: apiKey,
+          model: settings?.model || "deepseek-chat",
+          base_url: settings?.base_url,
+          thinking_enabled: thinking,
+          reasoning_effort: effort,
+        }),
+      });
+      if (response.ok) {
+        const data = await response.json() as { warning?: string };
+        setTestResult({ ok: true, message: data.warning || "连接成功" });
+      } else {
+        const data = await response.json().catch(() => ({})) as { detail?: string };
+        setTestResult({ ok: false, message: data.detail || `HTTP ${response.status}` });
+      }
+    } catch (err) {
+      setTestResult({ ok: false, message: err instanceof Error ? err.message : "连接失败" });
+    } finally {
+      setTestingKey(false);
+    }
+  }, [apiKey, settings, thinking, effort]);
 
   async function saveSettings() {
     if (savingSettings) return;
@@ -775,7 +1076,11 @@ function App() {
     chatControllerRef.current?.abort();
   }
 
-  async function startAnalysis(nextTask: string = task, resumeFrom: { plan: PlanStep[]; completed_steps: CompletedStep[] } | null = null) {
+  async function startAnalysis(
+    nextTask: string = task,
+    resumeFrom: { plan: PlanStep[]; completed_steps: CompletedStep[] } | null = null,
+    planOnly: boolean = false,
+  ) {
     if (!session || !nextTask.trim() || running) return;
     if ("Notification" in window && Notification.permission === "default") {
       try { await Notification.requestPermission(); } catch { /* noop */ }
@@ -794,6 +1099,10 @@ function App() {
     }
     setCurrentNodeTitle("");
     setRetryOffer(null);
+    // 重置计划审批与步骤进度态：新一轮分析从干净状态开始
+    setAwaitingApproval(false);
+    setStepProgress(null);
+    setPendingObjective("");
     // 立即用客户端时间戳启动计时。setInterval 会每秒刷新 elapsedSeconds。
     // complete 帧后用后端返回的精确 elapsed_seconds 覆盖一次，消除客户端
     // 与服务端时钟漂移带来的误差（通常 < 1 秒）。
@@ -853,7 +1162,7 @@ function App() {
       const response = await fetch(`${API_URL}/api/sessions/${session.id}/analyze/stream`, {
         method: "POST",
         headers: requestHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({ task: nextTask, resume_from: resumeFrom }),
+        body: JSON.stringify({ task: nextTask, resume_from: resumeFrom, plan_only: planOnly }),
         signal: controller.signal,
       });
       if (!response.ok) {
@@ -878,6 +1187,27 @@ function App() {
           if (session.id === runningSessionIdRef.current) {
             setPlan(data.plan || []);
             setCurrentNodeTitle("正在规划分析步骤");
+          }
+        },
+        plan_ready: (data) => {
+          // plan_only=true 时后端在 plan_analysis 后结束流并发送 plan_ready，
+          // 前端进入待审阅状态，等待用户编辑并批准计划再执行。
+          if (session.id === runningSessionIdRef.current) {
+            setPlan(data.plan || []);
+            setPendingObjective(data.objective || "");
+            setAwaitingApproval(true);
+            setCurrentNodeTitle("计划已生成，等待审阅");
+            setRunning(false);
+          }
+        },
+        step_progress: (data) => {
+          // 当前步骤的执行进度（百分比 / 工具调用数 / 提示文案）
+          if (session.id === runningSessionIdRef.current) {
+            setStepProgress({
+              progress: data.progress || 0,
+              toolCalls: data.tool_calls || 0,
+              message: data.message || "",
+            });
           }
         },
         execute_step: () => {
@@ -975,6 +1305,8 @@ function App() {
             setReasoningStreaming(false);
             if ((data as AnalysisResult).reasoning) setReasoning((data as AnalysisResult).reasoning || "");
             if ((data as AnalysisResult).usage) setUsage((data as AnalysisResult).usage || null);
+            // 步骤进度归位：分析完成后不再显示步骤内进度条
+            setStepProgress(null);
           }
           notifyAnalysisDone("分析已完成", nextTask || "数据分析任务已完成");
         },
@@ -985,6 +1317,9 @@ function App() {
           }
           // 立即刷新缓冲：让用户看到取消前已生成的报告内容
           flushReportBuffer();
+          // 取消时退出审批模式，避免 UI 卡在待审阅状态
+          setAwaitingApproval(false);
+          setStepProgress(null);
           // 断点续跑：取消时若有已完成步骤，提供"继续分析"入口
           if (completed.length > 0) {
             setRetryOffer({ task: nextTask, reason: "cancelled", canResume: true, plan, completed });
@@ -993,6 +1328,9 @@ function App() {
         error: (data) => {
           // 立即刷新缓冲：让用户看到出错前已生成的报告内容
           flushReportBuffer();
+          // 出错时退出审批模式，避免 UI 卡在待审阅状态
+          setAwaitingApproval(false);
+          setStepProgress(null);
           notifyAnalysisDone("分析失败", data.message || "数据分析任务执行出错");
           throw new Error(data.message || "分析失败");
         },
@@ -1230,6 +1568,33 @@ function App() {
     startAnalysis(resumeTask, { plan: savedPlan || [], completed_steps: savedCompleted || [] });
   }
 
+  // === Batch 4：计划审批回调 ===
+  // 用户在 PlanPanel 中编辑计划后点击"批准并执行"触发，
+  // 用编辑后的计划作为 resume_from，completed_steps 为空表示从头执行。
+  const approvePlan = useCallback((editedPlan: PlanStep[]) => {
+    setAwaitingApproval(false);
+    setPlan(editedPlan);
+    setStepProgress(null);
+    startAnalysis(lastTaskRef.current, { plan: editedPlan, completed_steps: [] });
+  }, [startAnalysis]);
+
+  // 用户取消审批：丢弃编辑、清空待执行计划
+  const cancelApproval = useCallback(() => {
+    setAwaitingApproval(false);
+    setPlan([]);
+    setPendingObjective("");
+    setCurrentNodeTitle("");
+  }, []);
+
+  // 从指定步骤重跑：截断 completed 至 index 之前的步骤，
+  // 用原始 plan 作为 resume_from，跳过已保留部分。
+  const rerunFromStep = useCallback((index: number) => {
+    if (!session || running) return;
+    // 截断 completed_steps：保留 index 之前的步骤，丢弃 index 及之后的
+    const truncatedCompleted = completed.slice(0, index);
+    startAnalysis(lastTaskRef.current, { plan, completed_steps: truncatedCompleted });
+  }, [session, running, completed, plan, startAnalysis]);
+
   const profile = (session?.profile || null) as (DatasetProfile & { rows?: number; columns?: number; load_warnings?: string[] }) | null;
   const columnInfo = profile?.column_info || [];
   const missingCount = columnInfo.reduce((sum, item) => sum + ((item.missing as number) || 0), 0);
@@ -1293,6 +1658,8 @@ function App() {
           onToggle={() => setHistoryExpanded((value) => !value)}
           historyError={historyError}
           switchingSessionId={switchingSessionId}
+          onExportSession={exportSession}
+          onImportSession={importSession}
         />
 
         <div className="sidebar-spacer" />
@@ -1307,7 +1674,11 @@ function App() {
             <Settings2 size={15} />
           </button>
           {keyOpen && (
-            <form className="settings-form" onSubmit={(event) => { event.preventDefault(); saveSettings(); }}>
+            <>
+              {/* 遮罩层：固定定位覆盖全屏，点击任意位置收起设置面板。
+                  z-index 19 低于 settings-form 的 20，避免遮挡表单交互 */}
+              <div className="settings-backdrop" onClick={() => setKeyOpen(false)} aria-hidden="true" />
+              <form className="settings-form" onSubmit={(event) => { event.preventDefault(); saveSettings(); }}>
               <div className="settings-title">
                 <strong>模型设置</strong>
                 <button type="button" title="收起设置（Esc）" aria-label="收起设置" onClick={() => { setKeyOpen(false); setApiKey(""); }}><X size={15} /></button>
@@ -1335,10 +1706,23 @@ function App() {
                   <button type="button" key={value} title={value === "high" ? "标准推理速度，适合大多数场景" : "最深推理，效果更好但更慢"} className={effort === value ? "selected" : ""} onClick={() => setEffort(value)}>{label}</button>
                 ))}
               </div>
-              <button type="submit" className="save-button" disabled={savingSettings}>
-                {savingSettings ? <><LoaderCircle size={14} className="spin" />保存中…</> : <><Check size={14} />保存设置</>}
-              </button>
-            </form>
+              {/* 连接测试结果：成功绿色、失败红色，提示文案来自后端 warning / detail */}
+              {testResult && (
+                <div className={`test-result ${testResult.ok ? "ok" : "fail"}`}>
+                  {testResult.ok ? "✓ " : "✗ "}{testResult.message}
+                </div>
+              )}
+              {/* 操作区：测试连接（次操作）+ 保存（主操作）并排展示 */}
+              <div className="settings-actions">
+                <button type="button" className="test-button" onClick={testConnection} disabled={testingKey || !apiKey}>
+                  {testingKey ? "测试中…" : "测试连接"}
+                </button>
+                <button type="submit" className="save-button" disabled={savingSettings}>
+                  {savingSettings ? <><LoaderCircle size={14} className="spin" />保存中…</> : <><Check size={14} />保存设置</>}
+                </button>
+              </div>
+              </form>
+            </>
           )}
         </div>
 
@@ -1489,10 +1873,21 @@ function App() {
             </section>
 
             <section className="metrics-band">
-              <Metric label="记录" value={rows.toLocaleString()} unit="行" />
-              <Metric label="字段" value={columns} unit="列" />
+              {/* 可点击指标：记录数 / 字段数 → 跳转数据 Tab；
+                  分析产物 → 跳转产物 Tab。缺失率保持静态展示。 */}
+              <button type="button" className="metric metric-clickable" onClick={() => setActiveTab("data")} title="查看数据预览">
+                <span>记录</span>
+                <strong>{rows.toLocaleString()}<small>行</small></strong>
+              </button>
+              <button type="button" className="metric metric-clickable" onClick={() => setActiveTab("data")} title="查看数据预览">
+                <span>字段</span>
+                <strong>{columns}<small>列</small></strong>
+              </button>
               <Metric label="缺失率" value={missingRate} unit="%" />
-              <Metric label="分析产物" value={session.artifacts?.length || 0} unit="项" />
+              <button type="button" className="metric metric-clickable" onClick={() => setActiveTab("artifacts")} title="查看分析产物">
+                <span>分析产物</span>
+                <strong>{session.artifacts?.length || 0}<small>项</small></strong>
+              </button>
             </section>
 
             {/* task-box 常驻顶部：无论切到哪个 tab 都能直接发起新分析 */}
@@ -1541,15 +1936,26 @@ function App() {
                     </button>
                   ))}
                 </div>
-                {running ? (
-                  <button className="cancel-button" onClick={stopAnalysis} disabled={stopping}>
-                    <Square size={13} fill="currentColor" />{stopping ? "停止中…" : "停止分析"}
-                  </button>
-                ) : (
-                  <button className="run-button" onClick={() => startAnalysis()} disabled={!task.trim() || !settings?.configured}>
-                    <Play size={15} fill="currentColor" />运行分析
-                  </button>
-                )}
+                {/* 任务输入提示 + 操作按钮分组：提示紧贴按钮左侧，
+                    明确告知 Enter 换行、⌘/Ctrl+Enter 运行的键位约定 */}
+                <div className="task-box-footer">
+                  <small className="input-hint">Enter 换行 · ⌘/Ctrl+Enter 运行分析</small>
+                  {running ? (
+                    <button className="cancel-button" onClick={stopAnalysis} disabled={stopping}>
+                      <Square size={13} fill="currentColor" />{stopping ? "停止中…" : "停止分析"}
+                    </button>
+                  ) : (
+                    <>
+                      <button className="plan-review-button" onClick={() => startAnalysis(task, null, true)} disabled={!task.trim() || !settings?.configured || !session} title="先生成计划，审阅后再执行">
+                        <ListChecks size={15} />
+                        审阅计划
+                      </button>
+                      <button className="run-button" onClick={() => startAnalysis()} disabled={!task.trim() || !settings?.configured}>
+                        <Play size={15} fill="currentColor" />运行分析
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
             </div>
             {!settings?.configured && <p className="composer-note">请先在左侧配置 DeepSeek API Key。</p>}
@@ -1641,6 +2047,11 @@ function App() {
                   currentNodeTitle={currentNodeTitle}
                   elapsedSeconds={session?.id === runningSessionIdRef.current ? elapsedSeconds : (session?.elapsed_seconds ?? null)}
                   toolTrace={session?.id === runningSessionIdRef.current ? toolTrace : []}
+                  awaitingApproval={awaitingApproval}
+                  stepProgress={stepProgress}
+                  onApprovePlan={approvePlan}
+                  onCancelApproval={cancelApproval}
+                  onRerunFromStep={rerunFromStep}
                 />
               </div>
             )}
@@ -1667,6 +2078,7 @@ function App() {
                   artifacts={session.artifacts}
                   onDownload={downloadArtifact}
                   onPreview={openArtifactPreview}
+                  onBatchDownload={batchDownload}
                 />
               </section>
             )}
@@ -1683,7 +2095,7 @@ function App() {
             if (event.target === event.currentTarget) closeArtifactPreview();
           }}
         >
-          <section className="preview-panel" role="dialog" aria-modal="true" aria-label={`预览 ${previewItem.description || previewItem.name}`}>
+          <section className={`preview-panel ${previewFullscreen ? "is-fullscreen" : ""}`} role="dialog" aria-modal="true" aria-label={`预览 ${previewItem.description || previewItem.name}`}>
             <header>
               <div>
                 <span className="section-kicker">交互图表</span>
@@ -1691,13 +2103,62 @@ function App() {
               </div>
               <div className="preview-actions">
                 <button type="button" onClick={() => downloadArtifact(previewItem)}><Download size={15} />下载</button>
+                {/* PNG 导出（#23）：通过 postMessage 让 iframe 内图表渲染为 PNG 后回传 dataURL */}
+                <button type="button" title="下载为 PNG 图片" onClick={downloadPng} disabled={pngDownloading}>
+                  <FileImage size={15} />
+                  {pngDownloading ? "导出中…" : "PNG"}
+                </button>
+                {/* 图表对比（#22）：仅当存在其他可视化产物时可点击，并排展示两张图 */}
+                {session?.artifacts?.filter(a => a.kind === "visualization" && a.name !== previewItem?.name).length ? (
+                  <button type="button" title="对比其他图表" onClick={() => setCompareMode(v => !v)}>
+                    <Columns2 size={15} />
+                    对比
+                  </button>
+                ) : null}
+                {/* 图表编辑：切换内联编辑面板，修改标题或主色后调用后端更新产物 */}
+                <button type="button" onClick={() => setChartEditOpen(!chartEditOpen)} title="编辑图表" aria-label="编辑图表标题或主色">
+                  <Palette size={15} />
+                  编辑
+                </button>
+                {/* 全屏切换（#17）：撑满视口，配合响应式 resize 自适应图表尺寸 */}
+                <button type="button" title="全屏" onClick={() => setPreviewFullscreen(v => !v)}>
+                  <Maximize2 size={15} />
+                </button>
                 <button type="button" className="icon-button" title="关闭预览 (Esc)" onClick={closeArtifactPreview}><X size={17} /></button>
               </div>
             </header>
-            <div className="preview-stage">
-              {previewLoading && !previewError && (
-                <div className="preview-loading"><LoaderCircle className="spin" size={18} />正在准备交互图表…</div>
-              )}
+            {chartEditOpen && (
+              <div className="chart-edit-panel">
+                <label>
+                  <span>标题</span>
+                  <input type="text" value={chartEditTitle} onChange={(e) => setChartEditTitle(e.target.value)} placeholder="图表标题" />
+                </label>
+                <label>
+                  <span>主色</span>
+                  <input type="color" value={chartEditColor} onChange={(e) => setChartEditColor(e.target.value)} aria-label="图表主色" />
+                </label>
+                <button type="button" onClick={editChart} disabled={chartEditSaving}>
+                  {chartEditSaving ? "保存中…" : "应用修改"}
+                </button>
+              </div>
+            )}
+            {/* 对比图表选择器：列出当前会话中除主图外的可视化产物 */}
+            {compareMode && (
+              <div className="compare-selector">
+                <span>选择对比图表：</span>
+                {session?.artifacts?.filter(a => a.kind === "visualization" && a.name !== previewItem?.name).map(a => (
+                  <button
+                    key={a.name}
+                    type="button"
+                    className={compareItem?.name === a.name ? "active" : ""}
+                    onClick={() => loadCompareChart(a)}
+                  >
+                    {a.description || a.name}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className={`preview-stage ${compareMode && compareItem ? "is-comparing" : ""}`}>
               {previewError && (
                 <div className="preview-loading preview-error">
                   <AlertTriangle size={18} />
@@ -1707,27 +2168,59 @@ function App() {
                   </button>
                 </div>
               )}
-              {previewHtml && !previewError && (
-                <iframe
-                  title={previewItem.description || previewItem.name}
-                  sandbox="allow-scripts"
-                  referrerPolicy="no-referrer"
-                  srcDoc={previewHtml}
-                  onLoad={(e) => {
-                    setPreviewLoading(false);
-                    try {
-                      const iframe = e.target as HTMLIFrameElement;
-                      // 注意：可选链不能用于赋值左侧，这里直接访问 contentWindow
-                      // 在 sandbox 跨域时访问 contentWindow.document 会抛错，
-                      // 由外层 try/catch 捕获后 noop。
-                      iframe.contentWindow!.document.documentElement.dataset.theme = theme;
-                    } catch { /* sandbox 跨域时 noop，图表脚本回退到 prefers-color-scheme */ }
-                  }}
-                  onError={() => {
-                    setPreviewLoading(false);
-                    setPreviewError("图表加载失败，请检查网络或重新生成产物。");
-                  }}
-                />
+              {/* 主图表 */}
+              <div className="preview-frame">
+                {/* 加载骨架屏（#26）：替代旋转 spinner，视觉上预告柱状图布局 */}
+                {previewLoading && !previewError && (
+                  <div className="preview-skeleton">
+                    <div className="skeleton-chart">
+                      <div className="skeleton-bar" style={{ width: "60%", height: "40%" }} />
+                      <div className="skeleton-bar" style={{ width: "80%", height: "60%" }} />
+                      <div className="skeleton-bar" style={{ width: "45%", height: "30%" }} />
+                    </div>
+                    <small>正在准备交互图表…</small>
+                  </div>
+                )}
+                {previewHtml && !previewError && (
+                  <iframe
+                    title={previewItem.description || previewItem.name}
+                    sandbox="allow-scripts"
+                    referrerPolicy="no-referrer"
+                    srcDoc={previewHtml}
+                    onLoad={(e) => {
+                      setPreviewLoading(false);
+                      try {
+                        const iframe = e.target as HTMLIFrameElement;
+                        // 注意：可选链不能用于赋值左侧，这里直接访问 contentWindow
+                        // 在 sandbox 跨域时访问 contentWindow.document 会抛错，
+                        // 由外层 try/catch 捕获后 noop。
+                        iframe.contentWindow!.document.documentElement.dataset.theme = theme;
+                      } catch { /* sandbox 跨域时 noop，图表脚本回退到 prefers-color-scheme */ }
+                    }}
+                    onError={() => {
+                      setPreviewLoading(false);
+                      setPreviewError("图表加载失败，请检查网络或重新生成产物。");
+                    }}
+                  />
+                )}
+              </div>
+              {/* 对比图表：并排在右侧展示，复用主预览的 LRU 缓存 */}
+              {compareMode && compareItem && (
+                <div className="preview-frame">
+                  {compareLoading && (
+                    <div className="preview-skeleton">
+                      <div className="skeleton-chart">
+                        <div className="skeleton-bar" style={{ width: "60%", height: "40%" }} />
+                        <div className="skeleton-bar" style={{ width: "80%", height: "60%" }} />
+                        <div className="skeleton-bar" style={{ width: "45%", height: "30%" }} />
+                      </div>
+                      <small>正在准备对比图表…</small>
+                    </div>
+                  )}
+                  {compareHtml && (
+                    <iframe title={compareItem.name} sandbox="allow-scripts" referrerPolicy="no-referrer" srcDoc={compareHtml} />
+                  )}
+                </div>
               )}
             </div>
           </section>

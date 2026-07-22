@@ -1,5 +1,8 @@
 /* ---------- 执行计划面板 ---------- */
-.plan-panel { min-width: 0; align-self: start; position: sticky; top: 84px; overflow: hidden; background: var(--canvas-default); border: 1px solid var(--border-default); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); }
+/* max-height + overflow-y：当计划步骤较多（≥8 步）时，面板会超出视口高度，
+   底部内容被裁切不可见。改为视口高度 - 顶栏/边距，内部独立滚动，
+   保留 sticky 让滚动主区时面板始终可见。 */
+.plan-panel { min-width: 0; align-self: start; position: sticky; top: 84px; max-height: calc(100vh - 108px); overflow-x: hidden; overflow-y: auto; background: var(--canvas-default); border: 1px solid var(--border-default); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); }
 .panel-heading { min-height: 68px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; }
 .panel-heading h2 { margin: 4px 0 0; font-size: var(--text-md); font-weight: 700; }
 .panel-meta { display: flex; align-items: center; gap: 6px; }
