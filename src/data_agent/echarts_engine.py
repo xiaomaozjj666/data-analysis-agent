@@ -939,6 +939,61 @@ def _echarts_sunburst(
 
 # === ECharts HTML 模板（standalone，与 Plotly 同目录共存）===
 
+#: ECharts 暗色模式自适应脚本：注入图表 HTML，监听主题变化动态切换背景和文字颜色。
+#: 通过 setOption 合并更新颜色属性，不触碰数据。浅色回退值与 _ECHARTS_*_COLOR 一致。
+_ECHARTS_DARK_MODE_SCRIPT = """<script>
+(function() {
+  function applyTheme() {
+    var isDark = document.documentElement.dataset.theme === 'dark' ||
+                 window.matchMedia('(prefers-color-scheme: dark)').matches;
+    var chart = window.__echartsInstance;
+    if (chart) {
+      var axisColor = isDark ? '#2a3445' : '#e5e7eb';
+      var splitColor = isDark ? '#2a3445' : '#f3f4f6';
+      var labelColor = isDark ? '#9ca3af' : '#6b7280';
+      var textColor = isDark ? '#e6eaf0' : '#1f2937';
+      var tooltipBg = isDark ? 'rgba(28,36,51,0.98)' : 'rgba(255,255,255,0.98)';
+      var axisUpdate = function() {
+        return { axisLabel: { color: labelColor }, axisLine: { lineStyle: { color: axisColor } },
+                 splitLine: { lineStyle: { color: splitColor } }, nameTextStyle: { color: labelColor } };
+      };
+      var update = {
+        backgroundColor: isDark ? '#1c2433' : '#ffffff',
+        textStyle: { color: textColor },
+        title: { textStyle: { color: textColor }, subtextStyle: { color: labelColor } },
+        legend: { textStyle: { color: labelColor } },
+        tooltip: { backgroundColor: tooltipBg, borderColor: axisColor, textStyle: { color: textColor } }
+      };
+      try {
+        var cur = chart.getOption() || {};
+        if (cur.xAxis && cur.xAxis.length) update.xAxis = cur.xAxis.map(function() { return axisUpdate(); });
+        if (cur.yAxis && cur.yAxis.length) update.yAxis = cur.yAxis.map(function() { return axisUpdate(); });
+        if (cur.parallelAxis && cur.parallelAxis.length) update.parallelAxis = cur.parallelAxis.map(function() { return axisUpdate(); });
+        if (cur.visualMap && cur.visualMap.length) update.visualMap = cur.visualMap.map(function() { return { textStyle: { color: labelColor } }; });
+        chart.setOption(update);
+      } catch (e) { /* noop */ }
+    }
+    document.documentElement.style.background = isDark ? '#1c2433' : '#ffffff';
+    document.body.style.background = isDark ? '#1c2433' : '#ffffff';
+    document.body.style.color = isDark ? '#e6eaf0' : '#1f2937';
+    var interp = document.querySelector('.interpretation');
+    if (interp) {
+      interp.style.background = isDark ? '#162032' : '#f9fafb';
+      interp.style.color = isDark ? '#cbd5e1' : '#374151';
+      interp.style.borderTopColor = isDark ? '#2a3445' : '#e5e7eb';
+    }
+    var interpTitle = document.querySelector('.interpretation-title');
+    if (interpTitle) {
+      interpTitle.style.color = isDark ? '#9ca3af' : '#6b7280';
+    }
+  }
+  setTimeout(applyTheme, 100);
+  var observer = new MutationObserver(function() { setTimeout(applyTheme, 50); });
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
+})();
+</script>"""
+
 _ECHARTS_HTML_TEMPLATE = """<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -990,6 +1045,7 @@ _ECHARTS_HTML_TEMPLATE = """<!doctype html>
   window.__echartsInstance = chart;
 }})();
 </script>
+{dark_script}
 </body>
 </html>
 """
@@ -1025,6 +1081,7 @@ def _build_echarts_html(
         bg=_ECHARTS_BG_COLOR,
         font=_ECHARTS_FONT_FAMILY,
         text=_ECHARTS_TEXT_COLOR,
+        dark_script=_ECHARTS_DARK_MODE_SCRIPT,
     )
 
 

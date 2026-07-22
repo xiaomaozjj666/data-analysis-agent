@@ -889,6 +889,7 @@ i.warning { background: var(--attention-fg); box-shadow: 0 0 0 3px rgba(154, 103
 .follow-up-composer textarea { width: 100%; padding: 10px 14px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--canvas-default); color: var(--fg-default); font-size: var(--text-sm); line-height: 1.6; font-family: inherit; resize: vertical; min-height: 42px; max-height: 200px; transition: border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out); }
 .follow-up-composer textarea:focus { outline: none; border-color: var(--accent-fg); box-shadow: 0 0 0 3px var(--accent-subtle); }
 .follow-up-composer textarea:disabled { background: var(--canvas-subtle); color: var(--fg-subtle); cursor: not-allowed; }
+.input-hint { display: block; margin-top: 4px; color: var(--fg-subtle); font-size: var(--text-xs); text-align: right; }
 .follow-up-actions { display: flex; justify-content: flex-end; margin-top: 8px; }
 .follow-up-actions .run-button, .follow-up-actions .cancel-button { height: 32px; padding: 0 14px; font-size: var(--text-xs); }
 
@@ -907,6 +908,19 @@ tbody tr { transition: background-color var(--duration-fast) var(--ease-out); }
 tbody tr:hover td { background: var(--accent-subtle); }
 .row-number { width: 48px; color: var(--fg-subtle); font-family: var(--font-mono); font-size: var(--text-xs); text-align: right; }
 .empty-row { margin-top: 18px; padding: 56px 24px; border: 1px dashed var(--border-default); border-radius: var(--radius-lg); background: var(--canvas-default); color: var(--fg-muted); text-align: center; font-size: var(--text-sm); }
+
+/* 数据预览表工具栏：搜索框 + 行数统计 */
+.data-table-toolbar { display: flex; align-items: center; gap: 8px; margin-top: 18px; margin-bottom: 8px; }
+.data-table-search-icon { color: var(--fg-muted); flex-shrink: 0; }
+.data-table-search { height: 30px; padding: 0 10px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); font-size: var(--text-sm); background: var(--canvas-default); color: var(--fg-default); flex: 0 1 280px; }
+.data-table-search:focus { outline: none; border-color: var(--accent-fg); }
+.data-table-count { margin-left: auto; color: var(--fg-muted); font-size: var(--text-xs); white-space: nowrap; }
+/* 可点击列头：排序交互 */
+.data-table th { cursor: pointer; user-select: none; transition: background-color var(--duration-fast) var(--ease-out); }
+.data-table th:hover { background: var(--control-hover); }
+.data-table th.is-sorted { color: var(--accent-fg); }
+/* 列类型小徽标：# 数值 / A 文本 / 📅 日期 */
+.data-table-type-badge { display: inline-block; margin-left: 4px; padding: 0 4px; border-radius: 3px; background: var(--canvas-inset); color: var(--fg-subtle); font-size: 10px; font-weight: 600; letter-spacing: 0; text-transform: none; }
 
 /* ---------- 产物中心 ---------- */
 .artifact-title { padding-bottom: 18px; border-bottom: 1px solid var(--border-default); }
@@ -1611,4 +1625,107 @@ code.inline-code {
   .history-list { max-height: none; }
   /* panel-meta 在窄屏时把"已耗时"换行到 run-state 下方，避免挤压标题。 */
   .panel-meta { flex-wrap: wrap; justify-content: flex-end; }
+}
+
+/* ==========================================================================
+   移动端响应式适配（v5 增量）
+   --------------------------------------------------------------------------
+   在已有断点（1040 / 820 / 680）基础上，补充 1024 / 768 / 480 三档断点，
+   覆盖侧栏抽屉化、表格水平滚动、命令面板移动端体验等场景。
+   仅追加新规则，不修改已有样式；后置规则在同等特异性下覆盖前置规则。
+   ========================================================================== */
+
+/* ---------- 侧栏切换按钮（默认隐藏，平板及以下显示） ---------- */
+.sidebar-toggle { display: none; }
+
+/* ---------- 1. 平板断点（max-width: 1024px） ---------- */
+@media (max-width: 1024px) {
+  /* 侧栏切换按钮在平板及以下显示 */
+  .sidebar-toggle { display: inline-flex; }
+
+  /* app-shell 由双栏改为单列布局 */
+  .app-shell { grid-template-columns: 1fr; }
+
+  /* sidebar 改为可隐藏的抽屉，默认滑出视口；加 .is-open 时滑入 */
+  .sidebar {
+    position: fixed;
+    left: -280px;
+    top: 0;
+    height: 100vh;
+    width: 280px;
+    z-index: 100;
+    transition: left 0.3s ease;
+  }
+  .sidebar.is-open { left: 0; }
+
+  /* main 区域 padding 收窄 */
+  .main { padding: 0 24px 48px; }
+
+  /* analysis-grid 由双列改为单列堆叠 */
+  .analysis-grid { grid-template-columns: 1fr; }
+}
+
+/* ---------- 2. 手机断点（max-width: 768px） ---------- */
+@media (max-width: 768px) {
+  /* main 区域 padding 进一步收窄 */
+  .main { padding: 0 16px 32px; }
+
+  /* topbar 允许换行，避免操作区挤压标题 */
+  .topbar { flex-wrap: wrap; }
+
+  /* 任务输入框高度减小 */
+  .task-box textarea { min-height: 84px; }
+
+  /* 数据表格水平滚动，避免溢出视口 */
+  .data-table { overflow-x: auto; }
+
+  /* 报告正文字号减小 */
+  .report-body { font-size: var(--text-sm); }
+
+  /* tab 按钮间距更紧凑 */
+  .tabs button { padding-inline: 6px; margin-inline: 2px; }
+
+  /* 聊天气泡最大宽度放宽到 90% */
+  .chat-bubble { max-width: 90%; }
+
+  /* 跟进输入框固定底部，避免被键盘遮挡 */
+  .follow-up-composer {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 50;
+  }
+
+  /* plan-panel 取消 sticky 定位，避免在窄屏与表格抢空间 */
+  .plan-panel { position: static; }
+
+  /* 工具调用详情可独立滚动，避免过长撑高页面 */
+  .tool-trace-detail {
+    max-height: 60vh;
+    overflow-y: auto;
+  }
+
+  /* 小屏隐藏 architecture-note（次要信息） */
+  .architecture-note { display: none; }
+
+  /* ----- 5. 命令面板移动端优化 ----- */
+  .command-palette-backdrop { padding: 10vh 12px; }
+  .command-palette { max-height: 70vh; }
+  .command-palette-item { padding: 10px 12px; }
+}
+
+/* ---------- 3. 小手机断点（max-width: 480px） ---------- */
+@media (max-width: 480px) {
+  /* 隐藏 tab 按钮中的产物数量徽章，节省横向空间 */
+  .tabs button span { display: none; }
+
+  /* 空状态工作区 padding 进一步减小 */
+  .empty-workspace { padding: 24px 0; }
+
+  /* 命令面板宽度改为 90vw，贴近屏幕宽度 */
+  .command-palette { width: 90vw; }
+
+  /* 帮助面板宽度改为 90vw */
+  .help-panel { width: 90vw; }
 }

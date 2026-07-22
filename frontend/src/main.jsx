@@ -174,6 +174,65 @@ function parseSSEData(dataText) {
   }
 }
 
+// SSE 事件流读取器：统一处理 response.body 的流式读取、buffer 拆分、
+// event/data 提取和 JSON 解析。消除 startAnalysis 和 startFollowUp 中
+// 重复的 SSE 解析逻辑（buffer 拆分、行过滤、event/data 提取、parseSSEData
+// 调用），调用方只需提供事件名到处理函数的映射。
+//
+// 解析规则（与原 startAnalysis/startFollowUp 一致）：
+//   - 按 "\n\n" 拆分事件块，最后一块留作 buffer 等待下次拼接
+//   - 过滤空行和 ":" 开头的 SSE 注释行（如 ": keep-alive"）
+//   - event 行：slice(6).trim()  （"event:" 长 6 字符）
+//   - data 行：slice(5).trim()   （"data:" 长 5 字符）
+//   - 跳过无 event 或无 data 的块
+//   - 通过 parseSSEData 安全解析 JSON，解析失败则跳过该事件
+//
+// 事件分发：handlers[eventName](data)。若 handlers 中无对应 eventName 则忽略。
+// 跨事件状态（如 startAnalysis 的 completedPayload）由调用方通过闭包维护。
+//
+// @param {Response} response - fetch 返回的 Response 对象
+// @param {Object} handlers - 事件处理映射 { eventName: (data) => void }
+// @param {Object} options
+//   - onChunk?: () => void     每次 reader.read() 返回非 done 时调用（用于重置 idle timer）
+//   - onEvent?: (event) => void 每个 event+dataText 齐全的事件（解析前）调用（用于 sawEvent 标记）
+//   - onDone?: () => void      流正常结束时调用
+//   - signal?: AbortSignal     若提供且已 aborted，AbortError 会被静默吞掉
+//   - onError?: (err) => void  捕获异常；未提供则重新抛出
+async function consumeSSEStream(response, handlers, options = {}) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (!done && options.onChunk) options.onChunk();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+      const blocks = buffer.split("\n\n");
+      buffer = blocks.pop() || "";
+      for (const block of blocks) {
+        // 过滤空行和 SSE 注释行（": keep-alive"），避免被当作无 event 的块。
+        const lines = block.split("\n").filter((line) => line.length > 0 && !line.startsWith(":"));
+        const event = lines.find((line) => line.startsWith("event:"))?.slice(6).trim();
+        const dataText = lines.find((line) => line.startsWith("data:"))?.slice(5).trim();
+        if (!event || !dataText) continue;
+        if (options.onEvent) options.onEvent(event);
+        const data = parseSSEData(dataText);
+        if (!data) continue;
+        const handler = handlers[event];
+        if (handler) handler(data);
+      }
+      if (done) break;
+    }
+    if (options.onDone) options.onDone();
+  } catch (err) {
+    if (err.name === "AbortError" && options.signal?.aborted) return;
+    if (options.onError) options.onError(err);
+    else throw err;
+  } finally {
+    try { reader.releaseLock(); } catch (_) { /* noop */ }
+  }
+}
+
 // Module-level constant: remarkPlugins array is recreated on every ReportView
 // render if declared inline, which forces ReactMarkdown to re-process the
 // markdown AST even when the content hasn't changed. Hoisting it to module
@@ -517,6 +576,21 @@ const ReportView = React.memo(function ReportView({ result, streaming, onPreview
     }
   };
 
+  // 导出报告为 Markdown 文件：Blob → ObjectURL → 临时 <a> 点击下载 → 释放。
+  // 让用户能把报告存档/分享，而不只能在线查看或手动复制粘贴。
+  const exportReport = useCallback(() => {
+    if (!result?.response) return;
+    const blob = new Blob([result.response], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `分析报告_${new Date().toISOString().slice(0, 10)}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [result]);
+
   return (
     <article className="report">
       <div className="report-meta">
@@ -541,6 +615,16 @@ const ReportView = React.memo(function ReportView({ result, streaming, onPreview
           >
             {copyState === "copied" ? <Check size={13} /> : <FileSpreadsheet size={13} />}
             {copyState === "copied" ? "已复制" : copyState === "failed" ? "复制失败" : "复制"}
+          </button>
+          <button
+            type="button"
+            className="report-copy"
+            onClick={exportReport}
+            title="导出为 Markdown"
+            aria-label="导出报告为 Markdown 文件"
+            disabled={streaming}
+          >
+            <Download size={13} />导出
           </button>
         </div>
       </div>
@@ -1049,7 +1133,8 @@ const ConversationThread = React.memo(function ConversationThread({
   }, [deferredLastContent, messages.length, running]);
 
   const handleKeyDown = (event) => {
-    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+    // Enter（含 ⌘/Ctrl+Enter）发送；Shift+Enter 走 textarea 默认换行，不阻止。
+    if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       if (!running && input.trim() && !disabled) onSubmit();
     }
@@ -1086,10 +1171,11 @@ const ConversationThread = React.memo(function ConversationThread({
           value={input}
           onChange={(event) => onInputChange(event.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={disabled ? "请先配置 API Key 后再追问" : "追问任何关于数据的问题，如：把刚才那张图改成红色 / 解释这个 p 值（⌘/Ctrl+Enter 发送）"}
+          placeholder={disabled ? "请先配置 API Key 后再追问" : "追问任何关于数据的问题，如：把刚才那张图改成红色 / 解释这个 p 值"}
           rows={2}
           disabled={disabled}
         />
+        <small className="input-hint">Enter 发送 · Shift+Enter 换行</small>
         <div className="follow-up-actions">
           {running ? (
             <button className="cancel-button" type="button" onClick={onStop} disabled={false}>
@@ -1377,21 +1463,110 @@ const HistoryPanel = React.memo(function HistoryPanel({ sessions, currentSession
 // 刷新历史都会重渲染。memo 让 DataTable 跳过这些场景，避免重新生成
 // 几百个 <td>。
 const DataTable = React.memo(function DataTable({ rows }) {
+  const [search, setSearch] = useState("");
+  const [sortCol, setSortCol] = useState(null);
+  const [sortDir, setSortDir] = useState("asc");
   const columns = useMemo(() => Object.keys(rows?.[0] || {}), [rows]);
+
+  // 列类型推断：取第一个非空值判断 number / date / text。
+  // date 检测附加 /[-/:]/ 前置过滤，避免 "2023" 这类纯数字字符串被
+  // Date.parse 误判为合法日期（V8 会把 "2023" 当作年份解析）。
+  const colTypes = useMemo(() => {
+    const types = {};
+    for (const col of columns) {
+      const sample = (rows || []).find((r) => r[col] != null)?.[col];
+      if (typeof sample === "number") types[col] = "number";
+      else if (typeof sample === "string" && /[-/:]/.test(sample) && !isNaN(Date.parse(sample))) types[col] = "date";
+      else types[col] = "text";
+    }
+    return types;
+  }, [rows, columns]);
+
+  // 客户端搜索过滤：在 preview（前 100 行）范围内按任意列包含关键词匹配。
+  const filtered = useMemo(() => {
+    if (!rows?.length) return [];
+    if (!search.trim()) return rows;
+    const q = search.toLowerCase();
+    return rows.filter((row) =>
+      columns.some((col) => String(row[col] ?? "").toLowerCase().includes(q))
+    );
+  }, [rows, search, columns]);
+
+  // 列排序：null 值统一沉底，number 用数值比较，其余用 localeCompare。
+  const sorted = useMemo(() => {
+    if (!sortCol) return filtered;
+    return [...filtered].sort((a, b) => {
+      const av = a[sortCol], bv = b[sortCol];
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      const cmp = typeof av === "number" && typeof bv === "number"
+        ? av - bv
+        : String(av).localeCompare(String(bv));
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+  }, [filtered, sortCol, sortDir]);
+
+  const toggleSort = (col) => {
+    if (sortCol === col) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortCol(col);
+      setSortDir("asc");
+    }
+  };
+
+  // 列类型 → 列头小标签（# 数值 / A 文本 / 📅 日期）
+  const typeLabel = (t) => (t === "number" ? "#" : t === "date" ? "📅" : "A");
+
   if (!rows?.length) return <div className="empty-row">没有可预览的数据</div>;
+
   return (
-    <div className="table-wrap">
-      <table>
-        <thead><tr><th className="row-number">#</th>{columns.map((column) => <th key={column}>{column}</th>)}</tr></thead>
-        <tbody>
-          {rows.map((row, index) => (
-            <tr key={index}>
-              <td className="row-number">{index + 1}</td>
-              {columns.map((column) => <td key={column}>{String(row[column] ?? "")}</td>)}
+    <div>
+      <div className="data-table-toolbar">
+        <Search size={14} className="data-table-search-icon" />
+        <input
+          className="data-table-search"
+          type="text"
+          placeholder="搜索行内容…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          aria-label="过滤数据预览行"
+        />
+        <span className="data-table-count">
+          显示 {sorted.length}/{rows.length} 行
+        </span>
+      </div>
+      <div className="table-wrap">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th className="row-number">#</th>
+              {columns.map((column) => (
+                <th
+                  key={column}
+                  onClick={() => toggleSort(column)}
+                  className={sortCol === column ? `is-sorted is-${sortDir}` : ""}
+                  title="点击切换升序 / 降序"
+                >
+                  {column}
+                  <span className="data-table-type-badge">{typeLabel(colTypes[column])}</span>
+                  {sortCol === column ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
+                </th>
+              ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {sorted.length === 0 ? (
+              <tr><td className="row-number">—</td><td colSpan={columns.length} style={{ textAlign: "center", color: "var(--fg-muted)" }}>没有匹配的行</td></tr>
+            ) : sorted.map((row, index) => (
+              <tr key={index}>
+                <td className="row-number">{index + 1}</td>
+                {columns.map((column) => <td key={column}>{String(row[column] ?? "")}</td>)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 });
@@ -1590,6 +1765,10 @@ const ArtifactCenter = React.memo(function ArtifactCenter({ artifacts = [], onDo
   );
 });
 
+// 预览 HTML LRU 缓存上限：每个图表 HTML 完全自包含（含 Plotly.js ~3.5MB），
+// 缓存最近 5 个图表的 HTML，重复打开时秒开，避免重新 fetch + 解析。
+const PREVIEW_CACHE_MAX = 5;
+
 function App() {
   const [authRequired, setAuthRequired] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
@@ -1657,9 +1836,17 @@ function App() {
   const taskInput = useRef(null);
   const analysisController = useRef(null);
   const previewController = useRef(null);
+  // 预览 HTML LRU 缓存：每个图表 HTML 完全自包含（含 Plotly.js ~3.5MB），
+  // 重复打开同一图表时秒开，避免重新 fetch + 解析。最多缓存 5 条。
+  const previewCacheRef = useRef(new Map());
   const retryController = useRef(null);
   const cancelRequested = useRef(false);
   const lastTaskRef = useRef("");
+  // 流式报告节流缓冲：report_chunk 每个 token 都直接 setResult 会触发
+  // ReactMarkdown 全量重解析 AST，长报告（5000+ 字）在低端设备卡顿。
+  // 改为缓冲 chunks，80ms 批量刷新一次（每秒约 12 次，人眼感知流畅）。
+  const reportBufferRef = useRef("");
+  const reportFlushTimerRef = useRef(null);
   // 按 sessionId 保存草稿：切换历史会话时不丢失当前正在输入的任务
   const taskDraftsRef = useRef({});
   // 切换历史会话的 loading：让被点击的项立即有反馈，避免用户重复点击
@@ -1959,8 +2146,20 @@ function App() {
     const controller = new AbortController();
     previewController.current = controller;
     setPreviewItem(item);
-    setPreviewHtml("");
     setPreviewError("");
+    // LRU 缓存命中：直接展示已加载的 HTML，跳过 fetch + 解析（Plotly.js ~3.5MB）。
+    // 重复打开同一图表时秒开，多个图表来回切换无需重新加载。
+    const cacheKey = item.preview_url;
+    const cached = previewCacheRef.current.get(cacheKey);
+    if (cached !== undefined) {
+      // LRU：删除再插入，将命中条目移到 Map 末尾标记为最近使用
+      previewCacheRef.current.delete(cacheKey);
+      previewCacheRef.current.set(cacheKey, cached);
+      setPreviewHtml(cached);
+      setPreviewLoading(false);
+      return;
+    }
+    setPreviewHtml("");
     setPreviewLoading(true);
     try {
       // 预览仍使用请求头鉴权，主访问令牌不会进入 URL、历史记录或服务器 access log。
@@ -1978,6 +2177,12 @@ function App() {
           // 非 JSON 错误正文交给统一错误描述处理。
         }
         throw new Error(describeApiError(payload, response.status));
+      }
+      // 缓存结果：超过上限时淘汰 Map 中最旧（最久未使用）的条目
+      previewCacheRef.current.set(cacheKey, html);
+      if (previewCacheRef.current.size > PREVIEW_CACHE_MAX) {
+        const oldest = previewCacheRef.current.keys().next().value;
+        previewCacheRef.current.delete(oldest);
       }
       setPreviewHtml(html);
       // loading 状态由 iframe onLoad 关闭，确保用户看到的是完成渲染的图表。
@@ -2150,110 +2355,78 @@ function App() {
         const payload = await response.json().catch(() => ({}));
         throw new ApiError(describeApiError(payload, response.status), response.status);
       }
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (true) {
-        const { value, done } = await reader.read();
-        if (!done) resetIdleTimeout();
-        buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-        const blocks = buffer.split("\n\n");
-        buffer = blocks.pop() || "";
-        for (const block of blocks) {
-          const lines = block.split("\n").filter((line) => line.length > 0 && !line.startsWith(":"));
-          const event = lines.find((line) => line.startsWith("event:"))?.slice(6).trim();
-          const dataText = lines.find((line) => line.startsWith("data:"))?.slice(5).trim();
-          if (!event || !dataText) continue;
-          const data = parseSSEData(dataText);
-          if (!data) continue;
-          if (event === "chat_chunk") {
-            // 流式追加到最后一个 assistant 气泡
-            setFollowUps((prev) => {
-              const next = [...prev];
-              const last = next[next.length - 1];
-              if (last && last.role === "assistant") {
-                next[next.length - 1] = { ...last, content: (last.content || "") + (data.chunk || "") };
-              }
-              return next;
-            });
-          } else if (event === "thinking_chunk") {
-            // 思考过程追加到最后一个 assistant 气泡的 reasoning 字段，
-            // ConversationBubble 内嵌的 ReasoningBlock 会自动展示。
-            if (!data.chunk) continue;
-            setFollowUps((prev) => {
-              const next = [...prev];
-              const last = next[next.length - 1];
-              if (last && last.role === "assistant") {
-                next[next.length - 1] = { ...last, reasoning: (last.reasoning || "") + (data.chunk || "") };
-              }
-              return next;
-            });
-          } else if (event === "tool_call") {
-            setFollowUps((prev) => {
-              const next = [...prev];
-              const last = next[next.length - 1];
-              if (last && last.role === "assistant") {
-                next[next.length - 1] = {
-                  ...last,
-                  tools: [...(last.tools || []), {
-                    call_id: data.call_id, name: data.name,
-                    status: "running", started_at: data.started_at,
-                  }],
-                };
-              }
-              return next;
-            });
-          } else if (event === "tool_result") {
-            setFollowUps((prev) => {
-              const next = [...prev];
-              const last = next[next.length - 1];
-              if (last && last.role === "assistant") {
-                next[next.length - 1] = {
-                  ...last,
-                  tools: (last.tools || []).map((t) => t.call_id === data.call_id
-                    ? { ...t, status: "done", duration_ms: data.duration_ms }
-                    : t),
-                };
-              }
-              return next;
-            });
-          } else if (event === "chat_done") {
-            // 终态：写入完整回复（防止 chunk 丢失），标记非流式，追加新产物
-            setFollowUps((prev) => {
-              const next = [...prev];
-              const last = next[next.length - 1];
-              if (last && last.role === "assistant") {
-                next[next.length - 1] = {
-                  ...last,
-                  content: data.response || last.content,
-                  streaming: false,
-                  // 后端可能在终态一次性给出完整 reasoning / usage，覆盖流式累计值
-                  reasoning: data.reasoning || last.reasoning,
-                  usage: data.usage || last.usage,
-                };
-              }
-              return next;
-            });
-            if (data.artifacts?.length) {
-              setSession((current) => current
-                ? { ...current, artifacts: [...(current.artifacts || []), ...data.artifacts] }
-                : current);
-            }
-          } else if (event === "cancelled") {
-            setFollowUps((prev) => {
-              const next = [...prev];
-              const last = next[next.length - 1];
-              if (last && last.role === "assistant") {
-                next[next.length - 1] = { ...last, streaming: false, error: data.message || "追问已取消。" };
-              }
-              return next;
-            });
-          } else if (event === "error") {
-            throw new Error(data.message || "追问失败");
-          }
+      // SSE 事件分发：buffer 拆分 / event+data 提取 / JSON 解析由
+      // consumeSSEStream 统一处理，这里只声明各事件的业务逻辑。
+      // error 事件抛出的异常会被 consumeSSEStream 重新抛出，落到下面的 catch。
+      const appendToLastAssistant = (mutate) => setFollowUps((prev) => {
+        const next = [...prev];
+        const last = next[next.length - 1];
+        if (last && last.role === "assistant") {
+          next[next.length - 1] = mutate(last);
         }
-        if (done) break;
-      }
+        return next;
+      });
+      await consumeSSEStream(response, {
+        chat_chunk: (data) => {
+          // 流式追加到最后一个 assistant 气泡
+          appendToLastAssistant((last) => ({
+            ...last,
+            content: (last.content || "") + (data.chunk || ""),
+          }));
+        },
+        thinking_chunk: (data) => {
+          // 思考过程追加到最后一个 assistant 气泡的 reasoning 字段，
+          // ConversationBubble 内嵌的 ReasoningBlock 会自动展示。
+          if (!data.chunk) return;
+          appendToLastAssistant((last) => ({
+            ...last,
+            reasoning: (last.reasoning || "") + (data.chunk || ""),
+          }));
+        },
+        tool_call: (data) => {
+          appendToLastAssistant((last) => ({
+            ...last,
+            tools: [...(last.tools || []), {
+              call_id: data.call_id, name: data.name,
+              status: "running", started_at: data.started_at,
+            }],
+          }));
+        },
+        tool_result: (data) => {
+          appendToLastAssistant((last) => ({
+            ...last,
+            tools: (last.tools || []).map((t) => t.call_id === data.call_id
+              ? { ...t, status: "done", duration_ms: data.duration_ms }
+              : t),
+          }));
+        },
+        chat_done: (data) => {
+          // 终态：写入完整回复（防止 chunk 丢失），标记非流式，追加新产物
+          appendToLastAssistant((last) => ({
+            ...last,
+            content: data.response || last.content,
+            streaming: false,
+            // 后端可能在终态一次性给出完整 reasoning / usage，覆盖流式累计值
+            reasoning: data.reasoning || last.reasoning,
+            usage: data.usage || last.usage,
+          }));
+          if (data.artifacts?.length) {
+            setSession((current) => current
+              ? { ...current, artifacts: [...(current.artifacts || []), ...data.artifacts] }
+              : current);
+          }
+        },
+        cancelled: (data) => {
+          appendToLastAssistant((last) => ({
+            ...last,
+            streaming: false,
+            error: data.message || "追问已取消。",
+          }));
+        },
+        error: (data) => {
+          throw new Error(data.message || "追问失败");
+        },
+      }, { onChunk: resetIdleTimeout });
     } catch (err) {
       if (err.name === "AbortError") {
         setFollowUps((prev) => {
@@ -2316,6 +2489,12 @@ function App() {
     // 清空上次的工具调用时间线和报告，为新分析腾出空间
     setToolTrace([]);
     setResult(null);
+    // 重置流式报告节流缓冲：清除上一轮可能残留的 pending flush 和缓冲内容
+    if (reportFlushTimerRef.current) {
+      clearTimeout(reportFlushTimerRef.current);
+      reportFlushTimerRef.current = null;
+    }
+    reportBufferRef.current = "";
     // 重置 reasoning / usage：新一轮分析的思考过程和用量从 0 开始累计
     setReasoning("");
     setReasoningStreaming(false);
@@ -2337,6 +2516,22 @@ function App() {
       idleTimeout = window.setTimeout(() => controller.abort(), 180000);
     };
     resetIdleTimeout();
+    // 节流刷新：将缓冲区内容批量写入 state，避免每个 token 都触发 ReactMarkdown 重解析。
+    // 定义在 try 之前，以便 complete/cancelled/error/finally 都能调用。
+    const flushReportBuffer = () => {
+      if (reportFlushTimerRef.current) {
+        clearTimeout(reportFlushTimerRef.current);
+        reportFlushTimerRef.current = null;
+      }
+      if (reportBufferRef.current) {
+        const buffered = reportBufferRef.current;
+        reportBufferRef.current = "";
+        setResult((prev) => prev
+          ? { ...prev, response: buffered }
+          : { response: buffered, artifacts: [], plan, completed_steps: completed }
+        );
+      }
+    };
     try {
       const response = await fetch(`${API_URL}/api/sessions/${session.id}/analyze/stream`, {
         method: "POST",
@@ -2348,127 +2543,147 @@ function App() {
         const payload = await response.json().catch(() => ({}));
         throw new ApiError(describeApiError(payload, response.status), response.status);
       }
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (true) {
-        const { value, done } = await reader.read();
-        if (!done) resetIdleTimeout();
-        buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-        const blocks = buffer.split("\n\n");
-        buffer = blocks.pop() || "";
-        for (const block of blocks) {
-          // 显式过滤 SSE 注释行（": keep-alive"），避免被当作无 event 的块。
-          const lines = block.split("\n").filter((line) => line.length > 0 && !line.startsWith(":"));
-          const event = lines.find((line) => line.startsWith("event:"))?.slice(6).trim();
-          const dataText = lines.find((line) => line.startsWith("data:"))?.slice(5).trim();
-          if (!event || !dataText) continue;
-          sawEvent = true;
-          const data = parseSSEData(dataText);
-          if (!data) continue;
-          // 用户切换到历史会话后，SSE 帧仍会到达（后台分析未中断），但 UI 已展示
-          // 历史会话的内容。此时不应覆盖 plan/completed/result/currentNodeTitle/session，
-          // 否则历史视图会被运行中的分析数据污染。complete 帧仍需记录 completedPayload
-          // 以便结束后 setRunning(false) 和刷新 history，让历史列表反映新状态。
-          const isViewingRunningSession = session.id === runningSessionIdRef.current;
-          if (event === "started") {
-            if (isViewingRunningSession) setCurrentNodeTitle("后端已接收任务");
-          } else if (event === "progress") {
-            if (isViewingRunningSession) setCurrentNodeTitle(data.title || "正在分析");
-          } else if (event === "validate_dataset") {
-            if (isViewingRunningSession) setCurrentNodeTitle("正在检查数据集结构");
-          } else if (event === "plan_analysis") {
-            if (isViewingRunningSession) {
-              setPlan(data.plan || []);
-              setCurrentNodeTitle("正在规划分析步骤");
-            }
-          } else if (event === "execute_step") {
-            if (isViewingRunningSession) {
-              setCurrentNodeTitle((current) => current || "正在执行分析步骤");
-            }
-          } else if (event === "replan") {
-            if (isViewingRunningSession) {
-              setCompleted(data.completed_steps || []);
-              setCurrentNodeTitle("正在审查进度并重规划");
-            }
-          } else if (event === "thinking_chunk") {
-            // DeepSeek reasoning_content：流式思考过程。开始接收时打开 streaming 标记，
-            // ReportView 顶部的 ReasoningBlock 会自动展开；接收完后由 report_chunk / complete
-            // 阶段自然关闭 streaming。思考过程让用户看到 Agent 的推理链路，减少"黑盒等待"焦虑。
-            if (isViewingRunningSession) {
-              if (!data.chunk) return;
-              setReasoningStreaming(true);
-              setReasoning((prev) => prev + (data.chunk || ""));
-            }
-          } else if (event === "finalize") {
-            if (isViewingRunningSession) {
-              setCurrentNodeTitle("正在汇总最终报告");
-              // finalize 阶段开始输出报告正文，思考过程已结束，关闭 streaming
-              setReasoningStreaming(false);
-              // 创建空壳 result，让 ReportView 立即显示"正在生成报告…"占位，
-              // 后续 report_chunk 事件会逐字追加 response，实现流式打字效果。
-              setResult((prev) => prev || { response: "", artifacts: [], plan, completed_steps: completed });
-            }
-          } else if (event === "report_chunk") {
-            // 流式报告：逐字追加，用户看着报告逐字写出，而不是等 30-60 秒看完整报告。
-            if (isViewingRunningSession) {
-              setResult((prev) => prev
-                ? { ...prev, response: (prev.response || "") + (data.chunk || "") }
-                : { response: data.chunk || "", artifacts: [], plan, completed_steps: completed }
-              );
-            }
-          } else if (event === "tool_call") {
-            // 工具调用开始：追加到时间线，让用户看到 ReAct 内部正在做什么
-            if (isViewingRunningSession) {
-              setToolTrace((prev) => [...prev, {
-                call_id: data.call_id,
-                name: data.name,
-                input_preview: data.input_preview,
-                status: "running",
-                started_at: data.started_at,
-              }]);
-            }
-          } else if (event === "tool_result") {
-            // 工具调用结束：更新对应 call_id 的状态和耗时
-            if (isViewingRunningSession) {
-              setToolTrace((prev) => prev.map((item) => item.call_id === data.call_id
-                ? { ...item, status: "done", output_preview: data.output_preview, duration_ms: data.duration_ms }
-                : item
-              ));
-            }
-          } else if (event === "complete") {
-            completedPayload = data;
-            if (isViewingRunningSession) {
-              setResult(data);
-              setPlan(data.plan || []);
-              setCompleted(data.completed_steps || []);
-              // 乐观更新 artifacts，refresh 失败时仍能看到产物。
-              setSession((current) => (current ? { ...current, artifacts: data.artifacts || [] } : current));
-              setCurrentNodeTitle("");
-              // 思考过程与用量收尾：complete 帧可能携带最终 reasoning / usage。
-              setReasoningStreaming(false);
-              if (data.reasoning) setReasoning(data.reasoning);
-              if (data.usage) setUsage(data.usage);
-            }
-            notifyAnalysisDone("分析已完成", nextTask || "数据分析任务已完成");
-          } else if (event === "cancelled") {
-            // 仅在用户未通过 stopAnalysis 主动取消时显示后端取消消息，避免重复 setError。
-            if (!cancelRequested.current && isViewingRunningSession) {
-              setError(data.message || "分析已取消。");
-            }
-            // 断点续跑：取消时若有已完成步骤，提供"继续分析"入口
-            if (completed.length > 0) {
-              setRetryOffer({ task: nextTask, reason: "cancelled", canResume: true, plan, completed });
-            }
-          } else if (event === "error") {
-            notifyAnalysisDone("分析失败", data.message || "数据分析任务执行出错");
-            throw new Error(data.message || "分析失败");
-          } else if (event === "heartbeat") {
-            // 仅用于保活，重置 idle timer 即可；不更新 UI。
+      // SSE 事件分发：buffer 拆分 / event+data 提取 / JSON 解析由
+      // consumeSSEStream 统一处理，这里只声明各事件的业务逻辑。
+      // 跨事件状态（completedPayload / sawEvent）通过闭包维护。
+      // error 事件抛出的异常会被 consumeSSEStream 重新抛出，落到下面的 catch。
+      await consumeSSEStream(response, {
+        started: () => {
+          if (session.id === runningSessionIdRef.current) setCurrentNodeTitle("后端已接收任务");
+        },
+        progress: (data) => {
+          if (session.id === runningSessionIdRef.current) setCurrentNodeTitle(data.title || "正在分析");
+        },
+        validate_dataset: () => {
+          if (session.id === runningSessionIdRef.current) setCurrentNodeTitle("正在检查数据集结构");
+        },
+        plan_analysis: (data) => {
+          if (session.id === runningSessionIdRef.current) {
+            setPlan(data.plan || []);
+            setCurrentNodeTitle("正在规划分析步骤");
           }
-        }
-        if (done) break;
-      }
+        },
+        execute_step: () => {
+          if (session.id === runningSessionIdRef.current) {
+            setCurrentNodeTitle((current) => current || "正在执行分析步骤");
+          }
+        },
+        replan: (data) => {
+          if (session.id === runningSessionIdRef.current) {
+            setCompleted(data.completed_steps || []);
+            setCurrentNodeTitle("正在审查进度并重规划");
+          }
+        },
+        thinking_chunk: (data) => {
+          // DeepSeek reasoning_content：流式思考过程。开始接收时打开 streaming 标记，
+          // ReportView 顶部的 ReasoningBlock 会自动展开；接收完后由 report_chunk / complete
+          // 阶段自然关闭 streaming。思考过程让用户看到 Agent 的推理链路，减少"黑盒等待"焦虑。
+          if (session.id === runningSessionIdRef.current) {
+            if (!data.chunk) return;
+            setReasoningStreaming(true);
+            setReasoning((prev) => prev + (data.chunk || ""));
+          }
+        },
+        finalize: () => {
+          if (session.id === runningSessionIdRef.current) {
+            setCurrentNodeTitle("正在汇总最终报告");
+            // finalize 阶段开始输出报告正文，思考过程已结束，关闭 streaming
+            setReasoningStreaming(false);
+            // 创建空壳 result，让 ReportView 立即显示"正在生成报告…"占位，
+            // 后续 report_chunk 事件会逐字追加 response，实现流式打字效果。
+            setResult((prev) => prev || { response: "", artifacts: [], plan, completed_steps: completed });
+          }
+        },
+        report_chunk: (data) => {
+          // 流式报告：逐字追加，用户看着报告逐字写出，而不是等 30-60 秒看完整报告。
+          // 节流：不直接 setResult（每个 token 触发 ReactMarkdown 全量重解析 AST），
+          // 而是写入 ref 缓冲，80ms 批量刷新一次。长报告（5000+ 字）在低端设备更流畅。
+          if (session.id === runningSessionIdRef.current) {
+            reportBufferRef.current += (data.chunk || "");
+            if (!reportFlushTimerRef.current) {
+              reportFlushTimerRef.current = setTimeout(() => {
+                reportFlushTimerRef.current = null;
+                if (reportBufferRef.current) {
+                  const buffered = reportBufferRef.current;
+                  reportBufferRef.current = "";
+                  setResult((prev) => prev
+                    ? { ...prev, response: buffered }
+                    : { response: buffered, artifacts: [], plan, completed_steps: completed }
+                  );
+                }
+              }, 80);
+            }
+          }
+        },
+        tool_call: (data) => {
+          // 工具调用开始：追加到时间线，让用户看到 ReAct 内部正在做什么
+          if (session.id === runningSessionIdRef.current) {
+            setToolTrace((prev) => [...prev, {
+              call_id: data.call_id,
+              name: data.name,
+              input_preview: data.input_preview,
+              status: "running",
+              started_at: data.started_at,
+            }]);
+          }
+        },
+        tool_result: (data) => {
+          // 工具调用结束：更新对应 call_id 的状态和耗时
+          if (session.id === runningSessionIdRef.current) {
+            setToolTrace((prev) => prev.map((item) => item.call_id === data.call_id
+              ? { ...item, status: "done", output_preview: data.output_preview, duration_ms: data.duration_ms }
+              : item
+            ));
+          }
+        },
+        complete: (data) => {
+          // complete 帧仍需记录 completedPayload，以便结束后 setRunning(false)
+          // 和刷新 history，让历史列表反映新状态（即使用户已切到历史会话）。
+          completedPayload = data;
+          if (session.id === runningSessionIdRef.current) {
+            // 清除节流定时器并丢弃缓冲：complete 帧的 data 是权威最终结果，
+            // pending flush 不得覆盖它。
+            if (reportFlushTimerRef.current) {
+              clearTimeout(reportFlushTimerRef.current);
+              reportFlushTimerRef.current = null;
+            }
+            reportBufferRef.current = "";
+            setResult(data);
+            setPlan(data.plan || []);
+            setCompleted(data.completed_steps || []);
+            // 乐观更新 artifacts，refresh 失败时仍能看到产物。
+            setSession((current) => (current ? { ...current, artifacts: data.artifacts || [] } : current));
+            setCurrentNodeTitle("");
+            // 思考过程与用量收尾：complete 帧可能携带最终 reasoning / usage。
+            setReasoningStreaming(false);
+            if (data.reasoning) setReasoning(data.reasoning);
+            if (data.usage) setUsage(data.usage);
+          }
+          notifyAnalysisDone("分析已完成", nextTask || "数据分析任务已完成");
+        },
+        cancelled: (data) => {
+          // 仅在用户未通过 stopAnalysis 主动取消时显示后端取消消息，避免重复 setError。
+          if (!cancelRequested.current && session.id === runningSessionIdRef.current) {
+            setError(data.message || "分析已取消。");
+          }
+          // 立即刷新缓冲：让用户看到取消前已生成的报告内容
+          flushReportBuffer();
+          // 断点续跑：取消时若有已完成步骤，提供"继续分析"入口
+          if (completed.length > 0) {
+            setRetryOffer({ task: nextTask, reason: "cancelled", canResume: true, plan, completed });
+          }
+        },
+        error: (data) => {
+          // 立即刷新缓冲：让用户看到出错前已生成的报告内容
+          flushReportBuffer();
+          notifyAnalysisDone("分析失败", data.message || "数据分析任务执行出错");
+          throw new Error(data.message || "分析失败");
+        },
+        // heartbeat: 仅用于保活，重置 idle timer 即可；不更新 UI。
+      }, {
+        onChunk: resetIdleTimeout,
+        onEvent: () => { sawEvent = true; },
+      });
       if (completedPayload) {
         // 仅在用户仍在查看运行 session 时才 refresh + 更新 UI；用户切换到
         // 历史会话后不需要把当前 session 的最新状态刷到 UI（历史会话有自己的数据）。
@@ -2513,6 +2728,10 @@ function App() {
       }
     } finally {
       if (idleTimeout) window.clearTimeout(idleTimeout);
+      // 安全网：客户端 abort（如 idle timeout / stopAnalysis）可能未触发
+      // complete/cancelled/error 事件，此处 flush 残留缓冲确保已生成的
+      // 报告内容不丢失。complete 已将缓冲清空，此处为空操作，不会覆盖。
+      flushReportBuffer();
       if (analysisController.current === controller) analysisController.current = null;
       setRunning(false);
       setCurrentNodeTitle("");
@@ -3167,7 +3386,12 @@ function App() {
                   sandbox="allow-scripts"
                   referrerPolicy="no-referrer"
                   srcDoc={previewHtml}
-                  onLoad={() => setPreviewLoading(false)}
+                  onLoad={(e) => {
+                    setPreviewLoading(false);
+                    try {
+                      e.target.contentWindow.document.documentElement.dataset.theme = theme;
+                    } catch (_) { /* sandbox 跨域时 noop，图表脚本回退到 prefers-color-scheme */ }
+                  }}
                   onError={() => {
                     setPreviewLoading(false);
                     setPreviewError("图表加载失败，请检查网络或重新生成产物。");

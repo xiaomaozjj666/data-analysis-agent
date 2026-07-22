@@ -505,7 +505,7 @@ def test_create_visualization_escapes_script_tag_in_html(tmp_path):
     # 用户数据中的 </script> 必须被转义为 <\/script>，不能形成有效的 script 闭合。
     assert "<\\/script>" in html_content, "用户数据中的 </script> 必须被转义为 <\\/script>"
     # Plotly 自身的 <script> 标签是合法的，不应被转义。
-    # 统计未转义的 </script>：应只有 Plotly 自身的 1 个（闭合 Plotly.newPlot 调用）。
+    # 统计未转义的 </script>：应有 Plotly 自身 1 个 + 暗色适配脚本 1 个 = 2 个。
     # 用户数据中的 </script> 必须全部被转义，不能出现在原始计数里。
     raw_close_count = html_content.count("</script>")
-    assert raw_close_count == 1, f"应只有 Plotly 自身的 1 个 </script>，实际 {raw_close_count}"
+    assert raw_close_count == 2, f"应有 Plotly + 暗色适配共 2 个 </script>，实际 {raw_close_count}"

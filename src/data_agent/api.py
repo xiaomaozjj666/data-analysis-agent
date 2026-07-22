@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import asyncio
+import enum
 import hmac
 import json
 import logging
@@ -626,6 +627,50 @@ def _effective_settings() -> AgentSettings:
     return settings
 
 
+class _ArtifactPriority(enum.IntEnum):
+    """数据集产物的展示优先级（数字越小优先级越高）。
+
+    ``_curate_artifacts`` 保留优先级最高的两个数据集产物展示给用户。
+    ``transformed_data`` 故意排在 ``DEFAULT`` 之后，仅在没有更权威产物时
+    才展示，确保清洗步骤始终在 ArtifactCenter 中有可见产物。
+    """
+
+    #: 显式 "final" / "result" 导出（如 cleaned_data_final.csv、analysis_result.csv）
+    EXPLICIT_FINAL = 0
+    #: clean_data 工具产出的 cleaned_data.csv
+    CLEANER_OUTPUT = 1
+    #: 其他含 final / result / report 关键词的导出
+    OTHER_FINAL = 2
+    #: 默认数据集（无特殊标记的普通导出）
+    DEFAULT = 3
+    #: transform_data 的非破坏性视图，仅在无更权威产物时展示
+    TRANSFORMED_VIEW = 4
+
+
+#: 数据集产物优先级匹配表：按顺序匹配，首个命中即决定优先级。
+#: 每个条目为 ``(预编译正则, 优先级, 可读标签)``。未命中任何模式的产物
+#: 回退到 ``_ArtifactPriority.DEFAULT``。
+_ARTIFACT_PATTERNS: list[tuple[re.Pattern[str], _ArtifactPriority, str]] = [
+    (re.compile(r"cleaned_data_final|analysis_result"), _ArtifactPriority.EXPLICIT_FINAL, "explicit final export"),
+    (re.compile(r"(^|[_/])cleaned_data\.csv$"), _ArtifactPriority.CLEANER_OUTPUT, "cleaner output"),
+    (re.compile(r"final|result|report"), _ArtifactPriority.OTHER_FINAL, "other final/result/report"),
+    (re.compile(r"(^|[_/])transformed_data\.csv$"), _ArtifactPriority.TRANSFORMED_VIEW, "transformed view"),
+]
+
+
+def _dataset_priority(name: str) -> _ArtifactPriority:
+    """Return the curation priority for a dataset artifact by its filename.
+
+    遍历 ``_ARTIFACT_PATTERNS`` 配置表，首个匹配的模式决定优先级；
+    未匹配时回退到 ``_ArtifactPriority.DEFAULT``。
+    """
+    lowered = name.lower()
+    for pattern, priority, _label in _ARTIFACT_PATTERNS:
+        if pattern.search(lowered):
+            return priority
+    return _ArtifactPriority.DEFAULT
+
+
 def _curate_artifacts(artifacts: list[dict[str, str]]) -> list[dict[str, str]]:
     """Return a concise, user-facing result set instead of every intermediate file."""
     latest_visualizations: dict[str, dict[str, str]] = {}
@@ -655,18 +700,6 @@ def _curate_artifacts(artifacts: list[dict[str, str]]) -> list[dict[str, str]]:
     # surfaced when nothing more authoritative exists, so that a cleaning step
     # always shows up in the ArtifactCenter even if the agent never called
     # export_data with a "final" filename.
-    def _dataset_priority(name: str) -> int:
-        lowered = name.lower()
-        if re.search(r"cleaned_data_final|analysis_result", lowered):
-            return 0
-        if re.search(r"(^|[_/])cleaned_data\.csv$", lowered):
-            return 1
-        if re.search(r"final|result|report", lowered):
-            return 2
-        if re.search(r"(^|[_/])transformed_data\.csv$", lowered):
-            return 4
-        return 3
-
     selected_datasets = sorted(datasets, key=lambda item: (_dataset_priority(item.get("name", "")),))[-2:]
     return [
         *list(latest_visualizations.values())[-6:],
