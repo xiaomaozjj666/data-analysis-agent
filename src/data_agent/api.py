@@ -51,11 +51,13 @@ from data_agent.config import AgentSettings
 from data_agent.credentials import delete_saved_api_key, get_saved_api_key, save_api_key
 from data_agent.serialization import to_jsonable
 from data_agent.storage import LocalSessionStorage, SessionStorage, build_session_storage
+from data_agent.tools import _PLOTLY_DARK_MODE_SCRIPT
 from data_agent.workspace import (
     ECHARTS_BUNDLE_NAME,
     PLOTLY_BUNDLE_NAME,
     SUPPORTED_EXTENSIONS,
     DataWorkspace,
+    _atomic_write_text,
 )
 
 logger = logging.getLogger(__name__)
@@ -85,6 +87,23 @@ class AnalyzeRequest(BaseModel):
     task: str = Field(min_length=1, max_length=8000)
     # 断点续跑：提供 plan + completed_steps 时，跳过已完成步骤从中断处继续。
     resume_from: dict[str, Any] | None = None
+    # 仅规划模式：为 True 时只执行到 plan_analysis 节点即停止，
+    # 返回 plan/objective 等待用户审批。审批通过后前端用 resume_from
+    # 注入已确认的计划重新发起 analyze/stream 启动执行阶段。
+    plan_only: bool = False
+
+
+class ChartEditRequest(BaseModel):
+    """图表编辑请求：基于 .plotly.json 重新生成 HTML。
+
+    支持的修改字段：
+    - ``title``：新标题文本，写入 ``layout.title.text``。
+    - ``color``：十六进制颜色（如 ``#245C55``），应用到所有 trace 的
+      ``marker.color``。无 marker 的 trace 自动创建。
+    至少提供一个字段；未提供的字段保持原值不变。
+    """
+    title: str | None = None
+    color: str | None = None
 
 
 class SessionRecord:
@@ -104,6 +123,10 @@ class SessionRecord:
         # 但旧 started_at 的瞬间状态。
         self.analysis_started_at: float | None = None
         self.analysis_completed_at: float | None = None
+        # plan_only 模式产出的待审批计划。前端展示给用户确认后，
+        # 通过 resume_from 注入该计划启动执行阶段；为 None 表示当前
+        # 没有待审批计划（已完成或从未进入 plan_only 模式）。
+        self.pending_plan: list[dict[str, Any]] | None = None
 
     @property
     def analysis_status(self) -> str:
@@ -124,6 +147,20 @@ class SessionRecord:
     def set_finished(self, status: str) -> None:
         with self._status_lock:
             self._analysis_status = status
+            self.analysis_completed_at = time.time()
+
+    def set_awaiting_approval(self) -> None:
+        """标记会话进入"等待计划审批"状态。
+
+        plan_only 模式下规划阶段产出计划后调用本方法：
+        - 状态切到 ``awaiting_approval``，``is_running()`` 返回 False，
+          释放 run_lock 让用户可以重新发起执行请求。
+        - 记录完成时间用于前端显示"规划耗时"。
+        - 前端据此渲染审批面板，用户确认后用 resume_from 注入
+          ``pending_plan`` 发起 analyze/stream 进入执行阶段。
+        """
+        with self._status_lock:
+            self._analysis_status = "awaiting_approval"
             self.analysis_completed_at = time.time()
 
     def is_running(self) -> bool:
@@ -222,6 +259,9 @@ class SessionRegistry:
             ],
             "created_at": record.created_at,
             "updated_at": time.time(),
+            # plan_only 模式产出的待审批计划，恢复时回填到 record.pending_plan，
+            # 让前端在服务重启后仍能展示待审批计划供用户确认。
+            "pending_plan": record.pending_plan,
         }
         target = self._manifest_path(record)
         temporary = target.with_suffix(".tmp")
@@ -291,13 +331,17 @@ class SessionRegistry:
         ][-40:]
         record.created_at = float(payload.get("created_at", record.created_at))
         saved_status = str(payload.get("analysis_status", "idle"))
-        record.analysis_status = saved_status if saved_status in {"completed", "cancelled", "failed"} else "idle"
+        # awaiting_approval 是 plan_only 模式产出的待审批态，恢复后仍需保持，
+        # 让前端继续展示待审批计划供用户确认；其他非终态统一回退到 idle。
+        record.analysis_status = saved_status if saved_status in {"completed", "cancelled", "failed", "awaiting_approval"} else "idle"
         # 恢复墙钟时间；若 manifest 缺字段则基于 created_at 退化为 None，
         # 前端会判断没有 elapsed 数据时不显示。
         started_raw = payload.get("analysis_started_at")
         completed_raw = payload.get("analysis_completed_at")
         record.analysis_started_at = float(started_raw) if isinstance(started_raw, (int, float)) else None
         record.analysis_completed_at = float(completed_raw) if isinstance(completed_raw, (int, float)) else None
+        # 恢复待审批计划，让前端在服务重启后仍能展示并让用户确认执行。
+        record.pending_plan = payload.get("pending_plan")
         saved_result = payload.get("last_result")
         if isinstance(saved_result, dict) and isinstance(saved_result.get("response"), str):
             record.last_result = AnalysisResult(
@@ -333,6 +377,30 @@ class SessionRegistry:
         self._cleanup_remote(removed_ids)
         if record is None:
             raise HTTPException(status_code=404, detail="分析会话不存在或服务已经重启。")
+        return record
+
+    def restore_from_directory(self, session_id: str) -> SessionRecord | None:
+        """从磁盘目录恢复会话到内存（用于导入）。
+
+        导入流程：ZIP 已解压到 ``self.runs_dir / session_id``，本方法
+        调用 ``_restore_locked`` 读取 manifest 和工作区数据，注册到
+        ``self._items`` 并同步到对象存储。返回恢复的 SessionRecord，
+        若目录无效或损坏返回 None 由调用方清理临时目录。
+
+        与 ``get`` 的区别：``get`` 在 session 不存在时抛 404，本方法
+        返回 None 让导入端点能区分"目录无效"与"会话不存在"两种情况，
+        并给出更具体的 400 错误提示。
+        """
+        with self._lock:
+            if session_id in self._items:
+                return self._items[session_id]
+            self._prune_locked(reserve=1)
+            record = self._restore_locked(session_id)
+            if record is not None:
+                self._items[session_id] = record
+                record.last_access = time.monotonic()
+        if record is not None:
+            self._sync_storage(session_id, record.workspace.root)
         return record
 
     def list_recent(self, limit: int = 30) -> list[dict[str, Any]]:
@@ -765,6 +833,9 @@ def _session_payload(session_id: str, record: SessionRecord) -> dict[str, Any]:
             if record.last_result is not None
             else None
         ),
+        # plan_only 模式产出的待审批计划，前端据此渲染审批面板；
+        # 为 None 表示当前没有待审批计划。
+        "pending_plan": record.pending_plan,
     }
 
 
@@ -998,34 +1069,59 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
                 event_callback=_emit_event,
             )
             final_payload: dict[str, Any] | None = None
-            for update in agent.stream(request.task, history=history, resume_from=request.resume_from):
+            # plan_only 模式下记录 plan_analysis 节点输出，用于待审批计划
+            # 持久化和 plan_ready 事件推送。完整执行模式下保持为 None，
+            # 不影响原有 finalize 完成路径。
+            plan_payload: dict[str, Any] | None = None
+            for update in agent.stream(
+                request.task,
+                history=history,
+                resume_from=request.resume_from,
+                plan_only=request.plan_only,
+            ):
                 node = update["node"]
                 data = update["data"]
                 if node == "finalize":
                     final_payload = data
+                if node == "plan_analysis":
+                    plan_payload = data
                 _safe_emit(loop, queue, (node, data))
-            if final_payload is None:
-                raise RuntimeError("工作流没有返回最终结果。")
-            result = AnalysisResult(
-                response=final_payload["response"],
-                trace=final_payload.get("trace", []),
-                artifacts=final_payload.get("artifacts", []),
-                dataset_profile=final_payload["dataset_profile"],
-                plan=final_payload.get("plan", []),
-                completed_steps=final_payload.get("completed_steps", []),
-                usage=final_payload.get("usage"),
-                reasoning=final_payload.get("reasoning", ""),
-            )
-            record.chat.extend(
-                [
-                    {"role": "user", "content": request.task},
-                    {"role": "assistant", "content": result.response},
-                ]
-            )
-            record.last_result = result
-            record.set_finished("completed")
-            registry.persist(session_id, record)
-            _safe_emit(loop, queue, ("complete", _result_payload(session_id, result)))
+            if request.plan_only:
+                # 仅规划模式：不进入 finalize，提取计划并切换到待审批态。
+                # 前端收到 plan_ready 事件后展示审批面板，用户确认后用
+                # resume_from 注入 pending_plan 发起执行请求。
+                if plan_payload is None:
+                    raise RuntimeError("规划阶段未返回计划。")
+                record.pending_plan = plan_payload.get("plan", [])
+                record.set_awaiting_approval()
+                registry.persist(session_id, record)
+                _safe_emit(loop, queue, ("plan_ready", {
+                    "plan": plan_payload.get("plan", []),
+                    "objective": plan_payload.get("objective", ""),
+                }))
+            else:
+                if final_payload is None:
+                    raise RuntimeError("工作流没有返回最终结果。")
+                result = AnalysisResult(
+                    response=final_payload["response"],
+                    trace=final_payload.get("trace", []),
+                    artifacts=final_payload.get("artifacts", []),
+                    dataset_profile=final_payload["dataset_profile"],
+                    plan=final_payload.get("plan", []),
+                    completed_steps=final_payload.get("completed_steps", []),
+                    usage=final_payload.get("usage"),
+                    reasoning=final_payload.get("reasoning", ""),
+                )
+                record.chat.extend(
+                    [
+                        {"role": "user", "content": request.task},
+                        {"role": "assistant", "content": result.response},
+                    ]
+                )
+                record.last_result = result
+                record.set_finished("completed")
+                registry.persist(session_id, record)
+                _safe_emit(loop, queue, ("complete", _result_payload(session_id, result)))
         except AnalysisCancelled:
             record.set_finished("cancelled")
             registry.persist(session_id, record)
@@ -1255,6 +1351,79 @@ def cancel_analysis(session_id: str) -> dict[str, str]:
     return {"status": "cancelling"}
 
 
+@app.get("/api/sessions/{session_id}/export")
+def export_session(session_id: str) -> StreamingResponse:
+    """导出会话完整状态为 ZIP 归档。
+
+    将会话工作区根目录下所有文件（input/、artifacts/、session.json、
+    workspace_state.parquet 等）打包成 ZIP 流式返回。前端下载后可在
+    其他实例通过 /api/sessions/import 导入恢复完整会话状态。
+
+    安全：仅打包会话根目录内的文件，不跟随符号链接；rglob("*") 遍历
+    后通过 path.is_file() 过滤掉目录，避免 ZipFile 写入空目录条目。
+    """
+    import io
+    import zipfile
+
+    record = registry.get(session_id)
+    root = record.workspace.root
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+        for path in sorted(root.rglob("*")):
+            if path.is_file():
+                bundle.write(path, path.relative_to(root))
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{session_id}.zip"'},
+    )
+
+
+@app.post("/api/sessions/import", status_code=201)
+async def import_session(file: Annotated[UploadFile, File()]) -> dict[str, Any]:
+    """导入会话 ZIP 归档，创建新会话。
+
+    接收前端通过 /export 下载的 ZIP，解压到新的 runs/<session_id> 目录，
+    调用 ``restore_from_directory`` 读取 manifest 并恢复工作区状态。
+
+    安全：
+    - 路径遍历防护：解压前遍历归档成员，校验每个解压目标必须位于
+      会话根目录内，防止 ``../`` 等恶意路径逃逸。
+    - 无效 ZIP 返回 400；解压后 manifest 读取失败返回 400 并清理目录。
+    - 生成新的 session_id，避免与已有会话冲突。
+    """
+    import io
+    import shutil
+    import zipfile
+
+    session_id = f"api_{uuid4().hex[:12]}"
+    root = bootstrap_settings.runs_dir / session_id
+    root.mkdir(parents=True, exist_ok=True)
+    content = await file.read()
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as bundle:
+            # 路径遍历防护：先校验所有成员再解压，避免半解压后才发现
+            # 恶意路径。target.resolve() 后检查 root 是否在其父链上。
+            for member in bundle.infolist():
+                target = (root / member.filename).resolve()
+                if target != root and root not in target.parents:
+                    raise HTTPException(status_code=400, detail="归档包含不安全路径。")
+            bundle.extractall(root)
+    except zipfile.BadZipFile as exc:
+        shutil.rmtree(root, ignore_errors=True)
+        raise HTTPException(status_code=400, detail="无效的 ZIP 文件。") from exc
+    except HTTPException:
+        shutil.rmtree(root, ignore_errors=True)
+        raise
+    record = registry.restore_from_directory(session_id)
+    if record is None:
+        # manifest 损坏或缺少 input 文件：清理临时目录并返回 400。
+        shutil.rmtree(root, ignore_errors=True)
+        raise HTTPException(status_code=400, detail="导入的会话归档无效。")
+    return _session_payload(session_id, record)
+
+
 def _artifact_file(session_id: str, filename: str) -> tuple[SessionRecord, Path]:
     record = registry.get(session_id)
     matches = [item for item in record.workspace.artifacts if item["name"] == Path(filename).name]
@@ -1375,6 +1544,108 @@ def download_artifact(session_id: str, filename: str) -> Response:
             headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(path.name)}"},
         )
     return FileResponse(path, filename=path.name)
+
+
+@app.put("/api/sessions/{session_id}/artifacts/{filename}/edit")
+def edit_chart(session_id: str, filename: str, request: ChartEditRequest) -> dict[str, Any]:
+    """编辑已有图表：修改标题或配色，基于 .plotly.json 重新生成 HTML。
+
+    流程：
+    1. 根据传入的 filename（可为 ``xxx.html`` 或 ``xxx``）定位同名
+       ``xxx.plotly.json`` 数据文件。
+    2. 读取 fig_dict，应用 title/color 修改。
+    3. 用与 tools.py 一致的 HTML 模板（含暗色模式脚本、XSS 转义、
+       原子写）重新生成 HTML，覆盖原文件。
+    4. 同步更新 .plotly.json，保证后续编辑基于最新数据。
+
+    安全：
+    - filename 经 Path(filename).name 取基名，防止路径遍历。
+    - HTML 生成复用 tools.py 的 ``</script>`` → ``<\\/script>`` 转义。
+    """
+    from html import escape
+
+    import plotly.graph_objects as go
+
+    record = registry.get(session_id)
+    workspace = record.workspace
+    # 取基名防止路径遍历，并去掉可能的 .html 后缀得到原始 stem。
+    stem = Path(filename).name
+    if stem.endswith(".html"):
+        stem = stem[: -len(".html")]
+    json_path = workspace.artifacts_dir / f"{stem}.plotly.json"
+    html_path = workspace.artifacts_dir / f"{stem}.html"
+    if not json_path.is_file():
+        raise HTTPException(status_code=404, detail="图表数据文件不存在，无法编辑。")
+    try:
+        fig_dict = json.loads(json_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=500, detail=f"图表数据读取失败：{exc}") from exc
+
+    # 应用修改：title 写入 layout.title.text（保持 Plotly 标准结构）；
+    # color 应用到所有 trace 的 marker.color，无 marker 的 trace 自动创建。
+    if request.title is not None:
+        fig_dict.setdefault("layout", {})["title"] = {"text": request.title}
+    if request.color is not None:
+        for trace in fig_dict.get("data", []):
+            if "marker" in trace and isinstance(trace["marker"], dict):
+                trace["marker"]["color"] = request.color
+            else:
+                trace["marker"] = {"color": request.color}
+
+    # 重新生成 HTML：与 tools.py 保持一致的模板和转义逻辑，
+    # 确保编辑后的图表预览/下载体验与原始生成一致。
+    try:
+        fig = go.Figure(fig_dict)
+        shared_plotly = workspace.ensure_plotly_bundle()
+        relative_script = (
+            shared_plotly.relative_to(workspace.artifacts_dir).as_posix()
+            if shared_plotly
+            else None
+        )
+        display_title = (
+            (fig_dict.get("layout", {}) or {}).get("title", {}).get("text", "")
+            or stem
+        )
+        if relative_script:
+            html_template = (
+                "<!doctype html><html><head><meta charset='utf-8'>"
+                "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                "<title>{title}</title><script src='{script}'></script>"
+                "<style>html,body{{width:100%;height:100%;margin:0;background:#fbfaf5;overflow:hidden}}"
+                ".plotly-graph-div{{width:100% !important;height:100% !important;min-height:560px}}</style>"
+                "</head><body>{div}{dark_script}</body></html>"
+            )
+            div = fig.to_html(
+                full_html=False,
+                include_plotlyjs=False,
+                default_width="100%",
+                default_height="100%",
+                config={
+                    "responsive": True,
+                    "displaylogo": False,
+                    "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+                },
+            )
+            # XSS 防护：与 tools.py 一致，转义 </script> 避免 Plotly
+            # 序列化数据中的 </script> 提前关闭 script 块导致注入。
+            div = div.replace("</script>", "<\\/script>")
+            _atomic_write_text(
+                html_path,
+                html_template.format(
+                    title=escape(display_title),
+                    script=relative_script,
+                    div=div,
+                    dark_script=_PLOTLY_DARK_MODE_SCRIPT,
+                ),
+            )
+        else:
+            # plotly bundle 不可用（极少见）时回退到内联 plotlyjs 的完整 HTML。
+            fig.write_html(html_path, include_plotlyjs=True, full_html=True)
+        # 同步更新 .plotly.json，保证后续编辑基于最新数据。
+        fig.write_json(json_path)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"图表重新生成失败：{exc}") from exc
+    return {"status": "ok", "message": "图表已更新。"}
 
 
 frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"

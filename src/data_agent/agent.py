@@ -681,6 +681,7 @@ class DataAnalysisAgent:
         query: str,
         history: list[BaseMessage] | None = None,
         resume_from: dict[str, Any] | None = None,
+        plan_only: bool = False,
     ) -> Iterator[dict[str, Any]]:
         """流式执行分析，逐节点 yield 中间状态更新。
 
@@ -691,6 +692,10 @@ class DataAnalysisAgent:
             query: 用户的分析任务描述。
             history: 可选的多轮对话历史。
             resume_from: 断点续跑的恢复点，包含 ``plan`` 和 ``completed_steps``。
+            plan_only: 仅规划模式。为 True 时在 yield 出 ``plan_analysis``
+                节点后立即停止，不进入 execute_step/finalize。用于"规划-
+                审批-执行"工作流：先展示计划等待用户确认，再通过
+                ``resume_from`` 注入已确认的计划启动执行。
 
         Yields:
             包含节点名和状态增量的字典。
@@ -704,6 +709,11 @@ class DataAnalysisAgent:
         ):
             node, payload = next(iter(update.items()))
             yield {"node": node, "data": payload}
+            # 仅规划模式：在 plan_analysis 节点输出后立即终止迭代，
+            # 不进入 execute_step/finalize。调用方（API 层）从 payload 中
+            # 提取 plan/objective 推送给前端等待用户审批。
+            if plan_only and node == "plan_analysis":
+                return
 
     def chat(
         self,

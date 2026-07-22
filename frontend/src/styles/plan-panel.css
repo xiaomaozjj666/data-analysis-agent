@@ -56,6 +56,148 @@
 .tool-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); }
 .tool-duration { color: var(--fg-subtle); font-size: 10px; font-variant-numeric: tabular-nums; font-weight: 500; }
 
+/* ---------- Batch 4：计划审批编辑模式 ---------- */
+/* awaitingApproval 为 true 时，每步渲染为可编辑表单：标题/成功标准输入框 +
+   上下移动/删除按钮。审批操作区固定在底部，提供"批准并执行"和"取消"。 */
+.plan-list.editable { padding: 6px 18px 12px; }
+.plan-list.editable li {
+  display: grid;
+  grid-template-columns: 26px 1fr;
+  gap: 12px;
+  padding: 12px 0;
+  align-items: start;
+}
+.plan-list.editable li:not(:last-child)::after { content: none; }
+.plan-list.editable .step-edit-body { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.plan-list.editable .step-edit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+}
+.plan-list.editable .step-edit-field input {
+  width: 100%;
+  padding: 4px 8px;
+  font-size: var(--text-sm);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--canvas-default);
+  color: var(--fg-default);
+  transition: border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
+}
+.plan-list.editable .step-edit-field input:focus {
+  outline: none;
+  border-color: var(--accent-fg);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+.plan-list.editable .step-edit-controls {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+}
+.plan-list.editable .step-edit-controls button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 24px;
+  padding: 0;
+  font-size: var(--text-xs);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--canvas-default);
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out);
+}
+.plan-list.editable .step-edit-controls button:hover:not(:disabled) {
+  background: var(--control-hover);
+  color: var(--accent-fg);
+  border-color: var(--accent-fg);
+}
+.plan-list.editable .step-edit-controls button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.plan-list.editable .step-edit-controls button:hover:not(:disabled) svg { color: inherit; }
+
+/* 审批操作区：批准执行（主操作）/ 取消（次操作） */
+.plan-approval-actions {
+  display: flex;
+  gap: 8px;
+  margin: 8px 18px 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-muted);
+}
+.plan-approval-actions button {
+  flex: 1;
+  padding: 8px 16px;
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out), opacity var(--duration-fast) var(--ease-out);
+}
+.plan-approval-actions .approve-btn {
+  background: var(--accent-fg);
+  color: #fff;
+  border: none;
+}
+.plan-approval-actions .approve-btn:hover:not(:disabled) { background: var(--accent-hover); }
+.plan-approval-actions .approve-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.plan-approval-actions .cancel-btn {
+  background: var(--canvas-default);
+  color: var(--fg-default);
+  border: 1px solid var(--border-default);
+}
+.plan-approval-actions .cancel-btn:hover { background: var(--control-hover); border-color: var(--border-strong); }
+
+/* ---------- 步骤内进度条（step_progress 事件） ---------- */
+/* 后端在执行单步时推送进度百分比和工具调用数，PlanPanel 在 current-node 下方
+   渲染一条细进度条，让用户看到当前步骤的执行进度，而不是只看到"正在执行"。 */
+.step-progress { margin: 8px 18px; padding: 8px 10px; border-radius: var(--radius-sm); background: var(--canvas-subtle); }
+.step-progress-bar { height: 3px; background: var(--neutral-muted); border-radius: var(--radius-full); overflow: hidden; }
+.step-progress-bar span {
+  display: block;
+  height: 100%;
+  background: var(--accent-fg);
+  transition: width 0.3s var(--ease-out);
+}
+.step-progress small {
+  display: block;
+  margin-top: 6px;
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 重跑入口 ---------- */
+/* 已完成步骤的 hover 时显示"重跑从此处"按钮，点击后截断后续步骤并重新执行 */
+.step-rerun {
+  align-self: center;
+  padding: 3px 10px;
+  font-size: var(--text-xs);
+  font-weight: 500;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out);
+}
+.step-rerun:hover {
+  background: var(--accent-subtle);
+  color: var(--accent-fg);
+  border-color: var(--accent-fg);
+}
+
+/* 让带重跑按钮的 li 改为三列布局：mark / 内容 / 按钮 */
+.plan-list li:has(.step-rerun) {
+  grid-template-columns: 26px 1fr auto;
+}
+
 /* ---------- 工具调用展开/折叠：渲染 input/output JSON ---------- */
 .tool-trace-item { position: relative; }
 .tool-trace-row {

@@ -82,23 +82,52 @@ class ToolTraceCallback(BaseCallbackHandler):
     本回调通过 on_tool_start/on_tool_end 钩子推送 tool_call/tool_result
     事件，前端在步骤卡片内展开工具调用时间线，让用户看到"正在读取数据
     → 正在清洗 → 正在生成图表"的实时过程。
+
+    同时通过 step_progress 事件推送步骤进度估计：每次工具调用递增
+    ``_call_count``，按 20%/次累加并封顶 90%，前端据此渲染步骤进度条，
+    让用户在长步骤内也能感知"已经走到第几次工具调用"。``reset()``
+    在步骤边界重置计数器，保证每个 execute_step 独立计数。
     """
 
     def __init__(self, event_callback: Callable[[str, dict[str, Any]], None]) -> None:
         self.event_callback = event_callback
         self._tool_starts: dict[str, float] = {}
+        # 当前步骤内的工具调用计数。每次 on_tool_start 自增，
+        # reset() 在步骤边界清零。用于推送 step_progress 进度估计。
+        self._call_count = 0
+
+    def reset(self) -> None:
+        """重置步骤内工具调用计数器。
+
+        ToolTraceCallback 在每个 execute_step 中被重新创建（局部变量），
+        计数器自然从 0 开始；本方法用于在步骤边界显式重置，便于未来
+        复用同一实例跨步骤累计统计，或在外部需要清零时调用。
+        """
+        self._call_count = 0
 
     def on_tool_start(self, serialized: dict[str, Any] | None = None, input_str: str = "", **kwargs: Any) -> Any:
         import time
         tool_name = (serialized or {}).get("name", "unknown") if serialized else "unknown"
         run_id = str(kwargs.get("run_id", ""))
         self._tool_starts[run_id] = time.time()
+        # 步骤内工具调用计数：每次工具调用自增，用于估算步骤进度。
+        # 封顶 90% 是为 finalize 留出 10% 余量——step_progress 只反映
+        # execute_step 内的工具调用阶段，不覆盖 replan/finalize。
+        self._call_count += 1
         try:
             self.event_callback("tool_call", {
                 "call_id": run_id,
                 "name": tool_name,
                 "input_preview": (input_str or "")[:200],
                 "started_at": self._tool_starts[run_id],
+            })
+        except Exception:
+            pass
+        try:
+            self.event_callback("step_progress", {
+                "progress": min(90, self._call_count * 20),
+                "tool_calls": self._call_count,
+                "message": f"第 {self._call_count} 次工具调用",
             })
         except Exception:
             pass

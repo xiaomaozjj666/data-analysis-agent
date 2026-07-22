@@ -388,7 +388,7 @@ def test_sse_stream_emits_progress_and_heartbeat(tmp_path, monkeypatch):
             self.event_callback = event_callback
             self.cancel_event = cancel_event
 
-        def stream(self, query, history=None, resume_from=None):
+        def stream(self, query, history=None, resume_from=None, plan_only=False):
             if self.progress_callback:
                 self.progress_callback("validate_dataset", "正在检查数据集结构")
             import time

@@ -55,13 +55,17 @@
   .task-box textarea { min-height: 98px; padding: 14px; font-size: var(--text-base); }
   .task-actions { align-items: stretch; flex-direction: column; padding: 8px; }
   .preset-row { width: 100%; }
-  .run-button, .cancel-button { width: 100%; justify-content: center; }
+  .run-button, .cancel-button, .plan-review-button { width: 100%; justify-content: center; }
   .preview-backdrop { padding: 0; }
   .preview-panel { width: 100vw; height: 100vh; border-radius: 0; }
   .preview-panel > header { padding-inline: 14px; }
   .preview-panel h2 { max-width: 58vw; font-size: var(--text-base); }
   .preview-actions > button:not(.icon-button) { width: 32px; gap: 0; padding: 0; justify-content: center; font-size: 0; }
   .preview-stage { padding: 8px; }
+  /* 图表编辑面板在窄屏改为垂直布局，输入框撑满宽度 */
+  .chart-edit-panel { flex-direction: column; align-items: stretch; gap: 10px; padding: 12px 14px; }
+  .chart-edit-panel input[type="text"] { width: 100%; }
+  .chart-edit-panel button { width: 100%; }
   .column-list > div { grid-template-columns: minmax(130px, 1fr) 85px 64px; gap: 7px; }
   .report-body { padding: 18px 16px 22px; max-height: 560px; }
   .report-meta { padding: 0 14px; }
