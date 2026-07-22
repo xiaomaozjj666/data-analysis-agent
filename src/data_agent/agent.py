@@ -577,6 +577,40 @@ def _is_recoverable_format_error(text: str) -> bool:
     return any(marker in text or marker in lowered for marker in markers)
 
 
+_ERROR_HUMANIZE_MAP: list[tuple[str, str]] = [
+    ("could not convert string to float", "部分值无法转为数值，存在非数字内容"),
+    ("could not convert", "数据类型转换失败，部分值格式不兼容"),
+    ("KeyError", "引用了不存在的列名"),
+    ("FileNotFoundError", "文件未找到，可能已被移动或删除"),
+    ("ValueError", "数据格式不符合预期，请检查列类型和取值"),
+    ("TypeError", "数据类型不匹配，部分列的格式可能需要清洗"),
+    ("ParserError", "文件解析失败，格式可能不正确或已损坏"),
+    ("UnicodeDecodeError", "文件编码无法识别，请尝试另存为 UTF-8"),
+    ("IndexError", "引用了不存在的行或列位置"),
+    ("ZeroDivisionError", "计算中出现除以零，数据可能存在全零列"),
+    ("MemoryError", "数据量超出内存限制，请缩小分析范围"),
+    ("PermissionError", "文件权限不足，无法读取或写入"),
+    ("OverflowError", "数值超出计算范围"),
+    ("datetime", "日期格式无法解析，请检查日期列格式"),
+    ("time data", "时间数据格式不匹配"),
+]
+
+
+def _humanize_error(exc: Exception) -> str:
+    """把 Python 异常转为面向用户的友好中文消息。
+
+    技术细节保留在 trace 中供调试；summary 只展示用户可理解的描述，
+    避免终端用户看到 ``ValueError: could not convert string to float: 'N/A'``
+    这类晦涩信息。
+    """
+    raw = f"{type(exc).__name__}: {exc}"
+    lowered = raw.lower()
+    for pattern, human_text in _ERROR_HUMANIZE_MAP:
+        if pattern.lower() in lowered:
+            return human_text
+    return f"执行过程中遇到问题（{type(exc).__name__}）"
+
+
 def _query_allows_format_repair(query: str) -> bool:
     return not any(token in query for token in ("不修改", "无需修改", "只检查", "仅检查"))
 
@@ -802,10 +836,11 @@ class DataAnalysisAgent:
                 if isinstance(exc, AnalysisCancelled):
                     raise
                 error = f"{type(exc).__name__}: {exc}"
+                friendly = _humanize_error(exc)
                 step_result = {
                     **step,
                     "status": "failed",
-                    "summary": f"步骤执行失败：{error}。后续将由重规划判断是否需要补偿。",
+                    "summary": f"步骤执行失败：{friendly}。后续将由重规划判断是否需要补偿。",
                 }
                 return {
                     "current_step": step,

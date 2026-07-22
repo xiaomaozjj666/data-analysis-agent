@@ -95,7 +95,7 @@ class AgentSettings:
         selected_provider = (provider or os.getenv("MODEL_PROVIDER", "deepseek")).strip().lower()
         if selected_provider == "deepseek":
             api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
-            model = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro").strip()
+            model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat").strip()
             base_url = os.getenv("DEEPSEEK_API_BASE", DEEPSEEK_BASE_URL).strip() or DEEPSEEK_BASE_URL
             thinking_enabled = os.getenv("DEEPSEEK_THINKING", "true").strip().lower() not in {"0", "false", "no", "off"}
             reasoning_effort = os.getenv("DEEPSEEK_REASONING_EFFORT", "high").strip().lower()
