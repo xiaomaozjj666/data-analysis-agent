@@ -31,12 +31,12 @@
   box-shadow: var(--shadow-xs);
   margin-bottom: 4px;
 }
-.breadcrumb { min-width: 0; display: flex; align-items: center; gap: 8px; color: var(--fg-muted); font-size: var(--text-sm); }
+.breadcrumb { min-width: 0; display: flex; align-items: center; gap: 6px; color: var(--fg-subtle); font-size: var(--text-sm); font-weight: 400; }
 .breadcrumb > svg { color: var(--fg-subtle); flex: 0 0 auto; }
-.breadcrumb strong { max-width: 45vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-default); font-weight: 600; }
-/* 服务状态做成精致胶囊：状态点 + 文字，hover 微妙加深 */
-.api-status { min-height: 28px; padding: 0 12px; gap: 7px; border: 1px solid var(--border-default); border-radius: var(--radius-full); background: var(--canvas-subtle); color: var(--fg-muted); font-size: var(--text-xs); font-weight: 500; transition: border-color var(--duration) var(--ease-out), background-color var(--duration) var(--ease-out), transform var(--duration) var(--ease-out); }
-.api-status:hover { border-color: var(--border-strong); background: var(--canvas-default); transform: translateY(-1px); box-shadow: var(--shadow-xs); }
+.breadcrumb strong { max-width: 45vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-default); font-weight: 500; }
+/* 服务状态做成精致胶囊：状态点 + 文字，hover 仅微妙加深边框/底，不再位移 */
+.api-status { min-height: 28px; padding: 0 12px; gap: 7px; border: 1px solid var(--border-muted); border-radius: var(--radius-full); background: var(--canvas-subtle); color: var(--fg-muted); font-size: var(--text-xs); font-weight: 500; transition: border-color var(--duration) var(--ease-out), background-color var(--duration) var(--ease-out); }
+.api-status:hover { border-color: var(--border-default); background: var(--canvas-default); }
 
 /* ---------- 鉴权页 ---------- */
 .auth-gate { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: linear-gradient(135deg, #f2f5f9 0%, #eaeef4 45%, #eef2f7 100%); }

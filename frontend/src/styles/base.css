@@ -5,9 +5,10 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
-  /* 极淡线性渐变底色：从左上到右下，告别纯白死板，提升层次感 */
+  /* 多层极淡渐变：营造空间纵深感，告别纯白死板 */
   background:
-    linear-gradient(135deg, #f2f5f9 0%, #eaeef4 45%, #eef2f7 100%) fixed;
+    radial-gradient(ellipse 80% 50% at 50% -20%, rgba(91, 91, 214, 0.04), transparent),
+    linear-gradient(180deg, #f8f9fb 0%, #f4f5f7 100%) fixed;
   font-size: var(--text-base);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
@@ -27,11 +28,17 @@ button {
 button:disabled { cursor: not-allowed; opacity: 0.5; }
 :focus-visible { outline: 2px solid var(--accent-fg); outline-offset: 2px; }
 input:focus-visible, textarea:focus-visible { outline: none; }
-::selection { background: rgba(59, 108, 179, 0.18); }
+::selection { background: rgba(91, 91, 214, 0.15); }
+
+/* 内容模块的交错入场动画（由 animations.css 的 .main > * 调用） */
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 
 /* 细滚动条：与中性色板一致，不抢内容 */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #c4cdd6; border: 3px solid transparent; border-radius: 8px; background-clip: content-box; }
-::-webkit-scrollbar-thumb:hover { background: #9fa9b4; border: 3px solid transparent; background-clip: content-box; }
-* { scrollbar-width: thin; scrollbar-color: #c4cdd6 transparent; }
+::-webkit-scrollbar-thumb { background: #d1d5db; border: 3px solid transparent; border-radius: 8px; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: #9ca3af; border: 3px solid transparent; background-clip: content-box; }
+* { scrollbar-width: thin; scrollbar-color: #d1d5db transparent; }

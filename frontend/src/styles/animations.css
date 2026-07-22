@@ -28,3 +28,31 @@
   0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
   30% { transform: translateY(-3px); opacity: 1; }
 }
+
+/* 空状态几何插画呼吸浮动：3s 周期内上下 6px，克制不夸张 */
+@keyframes gentle-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+
+/* ---------- 内容模块交错入场 ---------- */
+/* fade-in-up 的 @keyframes 定义在 base.css，此处不重复声明 */
+
+/* 空状态插画的轻柔呼吸浮动 */
+@keyframes gentle-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-2px); }
+}
+
+/* 主内容区子元素交错入场 */
+.main > * {
+  animation: fade-in-up 0.4s var(--ease-out) both;
+}
+.main > *:nth-child(1) { animation-delay: 0ms; }
+.main > *:nth-child(2) { animation-delay: 60ms; }
+.main > *:nth-child(3) { animation-delay: 120ms; }
+
+/* 尊重 reduced-motion 偏好 */
+@media (prefers-reduced-motion: reduce) {
+  .main > * { animation: none; }
+}
