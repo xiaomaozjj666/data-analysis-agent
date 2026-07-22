@@ -1,0 +1,89 @@
+/* ---------- 历史会话面板 ---------- */
+.history-section { position: relative; }
+.history-toggle { width: 100%; min-height: 32px; display: flex; align-items: center; gap: 8px; padding: 4px 8px; border: 0; border-radius: var(--radius-md); background: transparent; color: var(--fg-default); text-align: left; }
+.history-toggle:hover { background: var(--control-hover); }
+.history-toggle svg:first-child { color: var(--fg-subtle); flex: 0 0 auto; }
+.history-toggle .sidebar-label { margin: 0; flex: 1; }
+.history-toggle .history-total { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 17px; padding: 0 6px; margin-right: 4px; border-radius: var(--radius-full); background: var(--neutral-muted); color: var(--fg-muted); font-size: 10px; font-style: normal; font-weight: 600; }
+.history-toggle svg:last-child { color: var(--fg-subtle); flex: 0 0 auto; transition: transform var(--duration) var(--ease-out); }
+.history-refresh { position: absolute; top: 4px; right: 8px; display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 7px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--fg-muted); font-size: 10px; font-weight: 600; }
+.history-refresh:hover:not(:disabled) { background: var(--control-hover); color: var(--fg-default); }
+.history-empty { display: grid; justify-items: center; gap: 6px; margin: 8px 8px 12px; padding: 18px 12px; color: var(--fg-subtle); text-align: center; }
+.history-empty p { margin: 0; font-size: var(--text-sm); line-height: 1.55; }
+
+/* 时间分组：组标题极淡，与列表项形成层级 */
+.history-group { margin-top: 6px; }
+.history-group:first-of-type { margin-top: 4px; }
+.history-group-label { display: block; padding: 4px 12px 2px; color: var(--fg-subtle); font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+
+.history-list { margin: 2px 0 4px; padding: 0 4px; list-style: none; max-height: 360px; overflow-y: auto; }
+.history-list li { margin: 0; position: relative; }
+.history-list li > button { width: 100%; display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 8px; border: 0; border-radius: var(--radius-md); background: transparent; text-align: left; }
+.history-list li > button:hover { background: var(--control-hover); }
+/* 当前会话：左侧竖条 + 浅蓝底，比单纯背景色更醒目 */
+.history-list li.is-active > button { background: var(--accent-subtle); }
+.history-list li.is-active::before { content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 2px; border-radius: 1px; background: var(--accent-fg); }
+.history-list li > button > svg:first-child { color: var(--accent-fg); flex: 0 0 auto; }
+.history-list li > button > span { min-width: 0; flex: 1; }
+.history-list li strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-sm); font-weight: 600; color: var(--fg-default); }
+.history-list li small { display: flex; align-items: center; flex-wrap: wrap; gap: 3px; margin-top: 3px; color: var(--fg-muted); font-size: 10px; }
+
+/* 状态圆点：颜色按语义区分，运行中带脉冲 */
+.history-status-dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; }
+.history-status-dot.is-done { background: var(--success-fg); }
+.history-status-dot.is-running { background: var(--accent-fg); animation: status-pulse 1.4s ease-in-out infinite; }
+.history-status-dot.is-cancelling { background: var(--attention-fg); animation: status-pulse 1.4s ease-in-out infinite; }
+.history-status-dot.is-cancelled { background: #9ba2ab; }
+.history-status-dot.is-failed { background: var(--danger-fg); }
+.history-status-dot.is-idle { background: #c2c7cd; }
+.history-status-text { font-weight: 600; }
+.history-result { color: var(--success-fg); font-weight: 600; }
+.history-time { color: var(--fg-subtle); }
+.history-count { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: var(--radius-full); background: var(--neutral-muted); color: var(--fg-muted); font-size: 10px; font-style: normal; font-weight: 600; flex: 0 0 auto; }
+.history-list li.is-active .history-count { background: var(--accent-fg); color: #fff; }
+
+/* 骨架屏：shimmer 渐变从左到右扫过 */
+.history-skeleton { padding: 4px 8px; }
+.history-skeleton li { padding: 0 !important; }
+.skeleton-row { display: flex; align-items: center; gap: 8px; padding: 10px 6px; }
+.skeleton-icon { width: 14px; height: 14px; border-radius: var(--radius-sm); background: var(--neutral-muted); flex-shrink: 0; }
+.skeleton-lines { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+.skeleton-line { height: 8px; border-radius: var(--radius-full); background: linear-gradient(90deg, var(--neutral-muted) 25%, #f3f5f7 50%, var(--neutral-muted) 75%); background-size: 200% 100%; animation: skeleton-shimmer 1.4s ease-in-out infinite; }
+.skeleton-line-wide { width: 70%; }
+.skeleton-line-narrow { width: 45%; }
+
+/* history-retry：历史加载失败时的重试按钮 */
+.history-empty .history-retry { margin-top: 8px; padding: 6px 14px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--canvas-default); color: var(--fg-default); font-size: var(--text-sm); font-weight: 500; box-shadow: var(--shadow-xs); transition: background-color var(--duration) var(--ease-out), border-color var(--duration) var(--ease-out); }
+.history-empty .history-retry:hover { background: var(--canvas-subtle); border-color: var(--border-strong); }
+
+/* ---------- 会话搜索 ---------- */
+.history-search {
+  margin: 6px 0 8px;
+  padding: 0 8px;
+}
+.history-search-input {
+  width: 100%;
+  height: 30px;
+  padding: 0 10px 0 28px;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-md);
+  background: var(--canvas-default);
+  color: var(--fg-default);
+  font-size: var(--text-sm);
+}
+.history-search-input:focus { border-color: var(--accent-fg); }
+.history-search-wrap { position: relative; }
+.history-search-wrap svg {
+  position: absolute;
+  left: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--fg-subtle);
+  pointer-events: none;
+}
+.history-search-empty {
+  padding: 16px 12px;
+  text-align: center;
+  color: var(--fg-subtle);
+  font-size: var(--text-sm);
+}

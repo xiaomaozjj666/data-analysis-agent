@@ -14,367 +14,63 @@
 线程安全：
     DataAnalysisAgent 实例本身不是线程安全的。API 层通过 run_lock 保证
     同一会话同一时刻只有一个分析在运行。
+
+数据模型、回调处理器和提示词/辅助函数已分别拆分到
+``data_agent.models``、``data_agent.callbacks`` 和 ``data_agent.prompts``。
+本模块保留工作流引擎主类 ``DataAnalysisAgent`` 及其直接依赖的工具函数。
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import re
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
 from threading import Event
-from typing import Any, TypedDict
+from typing import Any
 from uuid import uuid4
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import wrap_tool_call
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_deepseek import ChatDeepSeek
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
-from pydantic import BaseModel, Field
 
+from data_agent.callbacks import (
+    CancelCallback,
+    ReasoningStreamCallback,
+    ReportStreamCallback,
+    ToolTraceCallback,
+    UsageAccumulator,
+)
 from data_agent.config import AgentSettings
+from data_agent.models import (
+    AnalysisCancelled,
+    AnalysisPlan,
+    AnalysisResult,
+    ReplanDecision,
+    WorkflowState,
+)
+from data_agent.prompts import (
+    _FINALIZE_EVIDENCE_BUDGET,
+    _FINALIZE_PER_STEP_MIN_CHARS,
+    _FORMAT_ERROR_DISPLAY_MAX_CHARS,
+    _PLAN_PROFILE_MAX_CHARS,
+    _REPLAN_PAYLOAD_MAX_CHARS,
+    _TRACE_DETAIL_MAX_CHARS,
+    SYSTEM_PROMPT,
+    _apply_query_constraints,
+    _fallback_plan,
+    _handle_tool_error,
+    _humanize_error,
+    _is_recoverable_format_error,
+    _query_allows_format_repair,
+)
 from data_agent.tools import build_tools
 from data_agent.workspace import DataWorkspace
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# 命名常量：消除散落在各节点中的魔法数字
-# ---------------------------------------------------------------------------
-
-#: 工具调用结果写入 trace 时的最大字符数，防止单条 trace 膨胀到 MB 级。
-_TRACE_DETAIL_MAX_CHARS = 4_000
-
-#: 规划提示词中数据概况的最大字符数，避免超大 profile 撑爆 context window。
-_PLAN_PROFILE_MAX_CHARS = 12_000
-
-#: 重规划审查载荷的最大字符数。
-_REPLAN_PAYLOAD_MAX_CHARS = 16_000
-
-#: 最终报告汇总时所有步骤 summary 的总字符预算。
-_FINALIZE_EVIDENCE_BUDGET = 30_000
-
-#: 每步 summary 在 finalize 中至少保留的字符数。
-_FINALIZE_PER_STEP_MIN_CHARS = 800
-
-#: 格式修复重试时展示给 LLM 的错误文本最大字符数。
-_FORMAT_ERROR_DISPLAY_MAX_CHARS = 3_000
-
-SYSTEM_PROMPT = """你是一名严谨、主动的数据分析专家。你通过 ReAct 循环选择下一项最小必要行动，
-并且只能使用提供的工具读取和变更数据。
-
-工作规范：
-1. 不得猜测数据结构；进行清洗、统计或绘图前必须确认字段、类型和缺失情况。
-2. 如果工具因列类型、日期格式、数值格式或编码问题失败，先检查错误，再调用 repair_data_format，修复后重试原操作一次。
-3. repair_data_format 只允许修复明确的格式问题；不得把负数、离群值、重复记录或业务缺失值擅自改掉。
-4. 清洗必须采用保守策略，说明处理前后的行数、缺失值和异常值变化。
-5. 统计结论给出样本量、指标、适用时的 p 值、效应量与显著性；相关不等于因果。
-6. 图表必须匹配变量类型并使用清晰标题；复杂关系优先使用热力图或关系图。若极端值会压缩主体数据，必须使用 create_visualization 的默认 auto 尺度生成“主体尺度/全量视图”切换，不得交付正常点全部挤在零线上的图，也不得为了好看擅自删除异常值。分组图缺少某些类别组合时，必须保留工具生成的“无样本/无记录”说明，不能把缺失组合解释成数值 0 或渲染失败。
-7. 只能引用工具实际返回的数字和文件，不得编造结果。
-8. 不展示隐藏的内部推理，只简要说明已执行的动作和可验证结果。
-9. 当前只完成计划中指定的步骤，不要擅自重复已经完成的工作。
-10. transform_data 只生成派生视图，不会改变主数据；不得把筛选视图当作最终清洗数据导出。
-
-分析深度要求：
-11. 统计分析时优先选择最能揭示数据特征的指标：分布形态（偏度/峰度）、离散程度、分位数而非仅仅均值。
-12. 发现显著关系时，主动补充效应量和置信区间，帮助用户判断实际意义而非仅仅统计显著性。
-13. 多维度数据优先使用分组对比、小倍数图或热力图揭示模式，避免将所有信息塞进一张图。
-14. 每步执行完毕后，用一句话总结本步核心发现，必须包含具体数字和它对分析目标意味着什么，
-    便于后续步骤和最终报告直接引用（例："华东区收入 120 万最高，是西北区的 2.3 倍，区域差异是收入的主要驱动"）。
-"""
-
-
-class PlanStep(BaseModel):
-    """分析计划中的单个可执行步骤。
-
-    Attributes:
-        id: 稳定的短标识符（如 ``inspect``、``visualize``），用于去重和引用。
-        title: 面向用户展示的中文短标题。
-        instruction: 传递给 ReAct 执行器的具体任务指令。
-        success_criteria: 可观测的完成标准，供重规划器判断是否达标。
-    """
-
-    id: str = Field(description="Stable short step id, for example inspect or visualize")
-    title: str = Field(description="Short Chinese title shown to the user")
-    instruction: str = Field(description="Concrete instruction for the ReAct executor")
-    success_criteria: str = Field(description="Observable completion criteria")
-
-
-class AnalysisPlan(BaseModel):
-    """LLM 结构化输出的完整分析计划。
-
-    Attributes:
-        objective: 一句话分析目标，贯穿所有步骤。
-        steps: 2-8 个有序步骤，第一步必须是数据检查。
-    """
-
-    objective: str = Field(description="One-sentence analysis objective")
-    steps: list[PlanStep] = Field(min_length=1, max_length=8)
-
-
-class ReplanDecision(BaseModel):
-    """重规划器的结构化决策输出。
-
-    Attributes:
-        done: 是否已有足够证据结束分析。
-        rationale: 简短理由（不暴露内部推理链）。
-        remaining_steps: 若未结束，返回仍需执行的后续步骤。
-    """
-
-    done: bool = Field(description="Whether enough evidence exists to finish")
-    rationale: str = Field(description="Brief reason without hidden chain of thought")
-    remaining_steps: list[PlanStep] = Field(default_factory=list, max_length=8)
-
-
-class WorkflowState(TypedDict, total=False):
-    """LangGraph 工作流的全局状态字典。
-
-    所有节点通过返回 partial dict 来更新状态（reducer 语义为覆盖）。
-    """
-
-    query: str
-    input_messages: list[BaseMessage]
-    dataset_profile: dict[str, Any]
-    objective: str
-    plan: list[dict[str, str]]
-    remaining_steps: list[dict[str, str]]
-    current_step: dict[str, str]
-    last_step_result: dict[str, Any]
-    completed_steps: list[dict[str, Any]]
-    response: str
-    trace: list[dict[str, str]]
-    artifacts: list[dict[str, str]]
-    replan_reason: str
-
-
-@dataclass(slots=True)
-class AnalysisResult:
-    """一次完整分析的最终输出，由 finalize 节点组装。
-
-    Attributes:
-        response: Markdown 格式的中文分析报告。
-        trace: 工具调用与结果的审计轨迹。
-        artifacts: 生成的图表、数据文件等产物元数据。
-        dataset_profile: 数据集概况快照。
-        plan: 原始计划步骤列表。
-        completed_steps: 各步骤执行结果（含 status 和 summary）。
-        usage: 本次分析累计的 token 用量（prompt/completion/total_tokens），
-            由 UsageAccumulator 在 LLM 调用结束时累计。None 表示未采集。
-        reasoning: DeepSeek reasoning_content 的完整思考过程文本，
-            由 ReasoningStreamCallback 累计。空字符串表示无思考过程。
-    """
-
-    response: str
-    trace: list[dict[str, str]]
-    artifacts: list[dict[str, str]]
-    dataset_profile: dict[str, Any]
-    plan: list[dict[str, str]]
-    completed_steps: list[dict[str, Any]]
-    usage: dict[str, int] | None = None
-    reasoning: str = ""
-
-
-class AnalysisCancelled(RuntimeError):
-    """Raised between workflow nodes when the user cancels an analysis."""
-
-
-class CancelCallback(BaseCallbackHandler):
-    """LangChain callback that aborts long-running LLM/tool calls on cancel.
-
-    The workflow only checks ``cancel_event`` at node boundaries, so a single
-    DeepSeek thinking-mode call (60+ s) or a 25-iteration ReAct loop would
-    otherwise keep running for minutes after the user clicks Cancel. This
-    handler raises :class:`AnalysisCancelled` from ``on_llm_start`` /
-    ``on_tool_start`` / ``on_chat_model_start`` so the cancellation takes
-    effect within one LLM call instead of one node.
-    """
-
-    def __init__(self, cancel_event: Event) -> None:
-        self.cancel_event = cancel_event
-
-    def _ensure(self) -> None:
-        if self.cancel_event.is_set():
-            raise AnalysisCancelled("分析已取消。")
-
-    def on_llm_start(self, *args: Any, **kwargs: Any) -> Any:
-        self._ensure()
-
-    def on_chat_model_start(self, *args: Any, **kwargs: Any) -> Any:
-        self._ensure()
-
-    def on_tool_start(self, *args: Any, **kwargs: Any) -> Any:
-        self._ensure()
-
-
-class ReportStreamCallback(BaseCallbackHandler):
-    """流式文本回调：把 LLM 生成的 token 实时推送到前端。
-
-    主流 Agent 体验的核心在于"边生成边出字"。之前 finalize 用 model.invoke
-    阻塞调用，用户要等完整报告生成才能看到任何文字（可能 30-60 秒）。
-    本回调通过 on_llm_new_token 钩子把每个 token 通过 event_callback 推送，
-    前端逐字拼接渲染，体验从"等 30 秒看完整报告"变为"看着报告逐字写出"。
-
-    event_type 区分用途：
-    - ``report_chunk``：finalize 节点的最终报告流式输出。
-    - ``chat_chunk``：轻量追问（chat）节点的回答流式输出。
-    前端用不同事件类型区分渲染区域（报告区 vs 对话气泡）。
-    """
-
-    def __init__(
-        self,
-        event_callback: Callable[[str, dict[str, Any]], None],
-        event_type: str = "report_chunk",
-    ) -> None:
-        self.event_callback = event_callback
-        self.event_type = event_type
-
-    def on_llm_new_token(self, token: str, **kwargs: Any) -> Any:
-        if token:
-            try:
-                self.event_callback(self.event_type, {"chunk": token})
-            except Exception:
-                pass
-
-
-class ToolTraceCallback(BaseCallbackHandler):
-    """工具追踪回调：把 ReAct 执行器内部每次工具调用实时推送到前端。
-
-    之前 execute_step 整个 ReAct 循环（可能 5-25 次工具调用）聚合为一次
-    yield，用户只看到"正在执行 (2/4)"一行字，完全不知道内部在做什么。
-    本回调通过 on_tool_start/on_tool_end 钩子推送 tool_call/tool_result
-    事件，前端在步骤卡片内展开工具调用时间线，让用户看到"正在读取数据
-    → 正在清洗 → 正在生成图表"的实时过程。
-    """
-
-    def __init__(self, event_callback: Callable[[str, dict[str, Any]], None]) -> None:
-        self.event_callback = event_callback
-        self._tool_starts: dict[str, float] = {}
-
-    def on_tool_start(self, serialized: dict[str, Any] | None = None, input_str: str = "", **kwargs: Any) -> Any:
-        import time
-        tool_name = (serialized or {}).get("name", "unknown") if serialized else "unknown"
-        run_id = str(kwargs.get("run_id", ""))
-        self._tool_starts[run_id] = time.time()
-        try:
-            self.event_callback("tool_call", {
-                "call_id": run_id,
-                "name": tool_name,
-                "input_preview": (input_str or "")[:200],
-                "started_at": self._tool_starts[run_id],
-            })
-        except Exception:
-            pass
-
-    def on_tool_end(self, output: str = "", **kwargs: Any) -> Any:
-        import time
-        run_id = str(kwargs.get("run_id", ""))
-        started = self._tool_starts.pop(run_id, None)
-        duration_ms = int((time.time() - started) * 1000) if started else 0
-        try:
-            self.event_callback("tool_result", {
-                "call_id": run_id,
-                "output_preview": (str(output) if output else "")[:300],
-                "duration_ms": duration_ms,
-            })
-        except Exception:
-            pass
-
-
-class ReasoningStreamCallback(BaseCallbackHandler):
-    """思考过程流式回调：把 DeepSeek reasoning_content 实时推送到前端。
-
-    DeepSeek thinking 模式下，LLM 输出分两段：先是 reasoning_content（思考过程），
-    然后是 content（最终回答）。ReportStreamCallback 只捕获 content token，
-    reasoning_content 被丢弃，用户完全看不到 Agent 的推理链路。
-
-    本回调通过 on_llm_new_token 钩子检查 chunk.additional_kwargs.reasoning_content，
-    把思考过程以 thinking_chunk 事件实时推送，前端 ReasoningBlock 流式展示，
-    让用户看到"Agent 正在想什么"，减少黑盒等待焦虑（与 DeepSeek 官网 / Claude
-    思考过程展示体验一致）。
-
-    同时把 reasoning 累计到 buffer 列表，供 finalize/chat 返回时一次性给出完整文本。
-    """
-
-    def __init__(
-        self,
-        event_callback: Callable[[str, dict[str, Any]], None],
-        buffer: list[str] | None = None,
-        event_type: str = "thinking_chunk",
-    ) -> None:
-        self.event_callback = event_callback
-        self.buffer = buffer if buffer is not None else []
-        self.event_type = event_type
-
-    def on_llm_new_token(self, token: str, **kwargs: Any) -> Any:
-        # DeepSeek 的 reasoning_content 在 chunk.additional_kwargs 中，不在 token 参数里。
-        # chunk 可能是 ChatGenerationChunk（有 .message）或 AIMessageChunk（直接有 .additional_kwargs）。
-        chunk = kwargs.get("chunk")
-        reasoning = ""
-        if chunk is not None:
-            message = getattr(chunk, "message", chunk)
-            additional_kwargs = getattr(message, "additional_kwargs", None) or {}
-            reasoning = additional_kwargs.get("reasoning_content", "") or ""
-        if not reasoning:
-            return
-        self.buffer.append(reasoning)
-        try:
-            self.event_callback(self.event_type, {"chunk": reasoning})
-        except Exception:
-            pass
-
-
-class UsageAccumulator(BaseCallbackHandler):
-    """Token 用量累计回调：在每次 LLM 调用结束时累计 prompt/completion/total tokens。
-
-    一次完整分析可能包含 plan + 多次 ReAct LLM 调用 + finalize，每调用一次
-    on_llm_end 触发一次。本回调把所有调用的用量求和，分析结束后通过 snapshot()
-    一次性给出总用量，前端在报告底部以 chip 形式展示（与 ChatGPT/Claude 用量
-    展示一致）。
-
-    兼容两种用量来源：
-    1. response.llm_output["token_usage"]（OpenAI/DeepSeek 原生格式，prompt_tokens 字段）
-    2. generation.message.usage_metadata（LangChain 标准格式，input_tokens 字段）
-    """
-
-    def __init__(self) -> None:
-        self.total_input = 0
-        self.total_output = 0
-        self.total_total = 0
-
-    def on_llm_end(self, response: Any, **kwargs: Any) -> Any:
-        # 优先从 llm_output 提取（OpenAI/DeepSeek 原生格式）
-        llm_output = getattr(response, "llm_output", None) or {}
-        token_usage = llm_output.get("token_usage") or llm_output.get("usage") or {}
-        if token_usage:
-            self.total_input += int(token_usage.get("prompt_tokens", 0) or 0)
-            self.total_output += int(token_usage.get("completion_tokens", 0) or 0)
-            self.total_total += int(token_usage.get("total_tokens", 0) or 0)
-            return
-        # 回退到 generation 级别的 usage_metadata（LangChain 标准格式）
-        generations = getattr(response, "generations", None) or []
-        for batch in generations:
-            for generation in batch or []:
-                message = getattr(generation, "message", None)
-                if message is None:
-                    continue
-                usage = getattr(message, "usage_metadata", None) or {}
-                if usage:
-                    self.total_input += int(usage.get("input_tokens", 0) or 0)
-                    self.total_output += int(usage.get("output_tokens", 0) or 0)
-                    self.total_total += int(usage.get("total_tokens", 0) or 0)
-
-    def snapshot(self) -> dict[str, int]:
-        """返回当前累计的 token 用量快照。"""
-        return {
-            "prompt_tokens": self.total_input,
-            "completion_tokens": self.total_output,
-            "total_tokens": self.total_total,
-        }
 
 
 def create_chat_model(settings: AgentSettings) -> BaseChatModel:
@@ -439,144 +135,6 @@ def _message_text(message: BaseMessage | None) -> str:
     return "\n".join(part for part in parts if part)
 
 
-def _fallback_plan(query: str) -> AnalysisPlan:
-    """Build a default plan; query constraints are applied by the caller."""
-    return AnalysisPlan(
-        objective=f"基于当前数据集完成可验证的分析：{query}",
-        steps=[
-            PlanStep(
-                id="inspect",
-                title="检查数据质量",
-                instruction="检查字段、类型、缺失、重复和样例，指出最重要的数据质量问题。",
-                success_criteria="返回数据规模、字段类型、缺失和重复情况。",
-            ),
-            PlanStep(
-                id="prepare",
-                title="准备分析数据",
-                instruction="根据已发现的问题采用保守策略完成必要清洗，并保存清洗结果。",
-                success_criteria="说明处理动作和前后数据变化，生成清洗数据产物。",
-            ),
-            PlanStep(
-                id="analyze",
-                title="执行统计分析",
-                instruction=f"围绕用户目标执行描述统计、关系分析和适用的统计检验：{query}",
-                success_criteria="给出样本量、关键指标及适用时的显著性或模型指标。",
-            ),
-            PlanStep(
-                id="visualize",
-                title="生成图表与导出",
-                instruction="创建最有解释力的图表并导出当前分析数据。",
-                success_criteria="至少生成一个可读的交互图表和一个数据文件产物；存在极端值时图表须同时保留主体尺度与全量视图。",
-            ),
-        ],
-    )
-
-
-# ---------------------------------------------------------------------------
-# 用户约束识别：用预编译正则模式集合替代裸子串匹配，同时覆盖中英文等价表达。
-# ---------------------------------------------------------------------------
-
-#: 只读意图模式（中英）。命中时过滤掉会修改主数据的步骤。
-_READ_ONLY_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"不修改|无需修改|不要修改|不要改动|保持原样|只读|只看"),
-    re.compile(r"只检查|仅检查"),
-    re.compile(r"no\s*modify|read\s*only|don'?t\s*change|no\s*changes", re.IGNORECASE),
-)
-
-#: 禁用图表意图模式（中英）。命中时过滤掉可视化相关步骤。
-_NO_CHART_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(
-        r"不生成图表|不要图表|不画图|无需绘图|不用画图|不用绘图|"
-        r"不需要图表|不需要可视化|不用可视化|无需图表|不要可视化"
-    ),
-    re.compile(r"no\s*charts?|no\s*plots?|no\s*visuals?|don'?t\s*chart|without\s*charts?", re.IGNORECASE),
-)
-
-#: "仅检查数据质量"意图：需同时命中"检查"语义和"质量"语义。
-_INSPECT_ONLY_CHECK_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"只检查|仅检查"),
-)
-_INSPECT_ONLY_QUALITY_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"质量|quality", re.IGNORECASE),
-)
-
-#: 禁止格式修复意图模式（中英）。命中时跳过自动 repair_data_format 重试。
-_FORMAT_REPAIR_BLOCKERS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"不修改|无需修改|只检查|仅检查"),
-    re.compile(r"no\s*modify|read\s*only|check\s*only|don'?t\s*change|no\s*changes", re.IGNORECASE),
-)
-
-
-@dataclass(slots=True, frozen=True)
-class _StepFilterRule:
-    """Config-driven step filter rule for ``_apply_query_constraints``.
-
-    When any of ``query_patterns`` matches the user query, steps are dropped if
-    their id is in ``drop_step_ids`` OR any ``drop_step_keyword_patterns``
-    matches the step's ``title + instruction``。新增约束类型只需在
-    ``_STEP_FILTER_RULES`` 中追加条目，无需修改函数主体。
-    """
-
-    query_patterns: tuple[re.Pattern[str], ...]
-    drop_step_ids: frozenset[str]
-    drop_step_keyword_patterns: tuple[re.Pattern[str], ...]
-
-
-#: 步骤过滤规则表：read_only / no_charts 等约束均在此声明。
-_STEP_FILTER_RULES: tuple[_StepFilterRule, ...] = (
-    _StepFilterRule(
-        query_patterns=_READ_ONLY_PATTERNS,
-        drop_step_ids=frozenset({"prepare", "clean", "transform", "export"}),
-        drop_step_keyword_patterns=(re.compile(r"清洗|转换|导出"),),
-    ),
-    _StepFilterRule(
-        query_patterns=_NO_CHART_PATTERNS,
-        drop_step_ids=frozenset({"visualize", "chart", "plot"}),
-        drop_step_keyword_patterns=(re.compile(r"图表|绘图|可视化"),),
-    ),
-)
-
-
-def _any_pattern_match(patterns: tuple[re.Pattern[str], ...], text: str) -> bool:
-    """Return True if any precompiled pattern in ``patterns`` matches ``text``."""
-    return any(pattern.search(text) for pattern in patterns)
-
-
-def _apply_query_constraints(query: str, plan: AnalysisPlan) -> AnalysisPlan:
-    """Keep explicit user constraints intact even when structured planning falls back.
-
-    使用预编译正则模式集合（含中英文等价词）识别用户意图，步骤过滤逻辑由
-    ``_STEP_FILTER_RULES`` 配置表驱动，避免裸子串匹配和散落的硬编码分支。
-    """
-    steps = list(plan.steps)
-    # "仅检查数据质量" 是更强的约束：只保留 inspect 步骤。
-    if (
-        _any_pattern_match(_INSPECT_ONLY_CHECK_PATTERNS, query)
-        and _any_pattern_match(_INSPECT_ONLY_QUALITY_PATTERNS, query)
-    ):
-        steps = [step for step in steps if step.id == "inspect"]
-    # 通用约束规则：read_only / no_charts 等。
-    for rule in _STEP_FILTER_RULES:
-        if not _any_pattern_match(rule.query_patterns, query):
-            continue
-        steps = [
-            step
-            for step in steps
-            if step.id not in rule.drop_step_ids
-            and not _any_pattern_match(rule.drop_step_keyword_patterns, f"{step.title}{step.instruction}")
-        ]
-    if not steps:
-        steps = [
-            PlanStep(
-                id="inspect",
-                title="检查数据质量",
-                instruction="只读取数据并检查字段、类型、缺失、重复和样例，不修改任何数据。",
-                success_criteria="返回数据规模、字段类型、缺失和重复情况。",
-            )
-        ]
-    return AnalysisPlan(objective=plan.objective, steps=steps)
-
-
 def _tool_trace(messages: list[BaseMessage]) -> list[dict[str, str]]:
     """从 ReAct 执行器的消息序列中提取工具调用审计轨迹。
 
@@ -612,90 +170,6 @@ def _format_error_text(messages: list[BaseMessage]) -> str:
         if isinstance(message, ToolMessage)
         and message.additional_kwargs.get("error_code") == "format_error"
     )
-
-
-def _is_recoverable_format_error(text: str) -> bool:
-    """判断工具错误是否属于可通过 repair_data_format 自动修复的格式问题。
-
-    仅匹配明确的类型/编码/日期格式错误标记；业务数据异常（如离群值、
-    负数）不在此列，避免 Agent 擅自修改有效数据。
-    """
-    markers = (
-        "dtype",
-        "datetime",
-        "could not convert",
-        "not numeric",
-        "不是数值列",
-        "无法转换",
-        "unable to parse",
-        "time data",
-        "日期格式",
-        "数值格式",
-        "编码",
-    )
-    lowered = text.lower()
-    return any(marker in text or marker in lowered for marker in markers)
-
-
-_ERROR_HUMANIZE_MAP: list[tuple[str, str]] = [
-    ("could not convert string to float", "部分值无法转为数值，存在非数字内容"),
-    ("could not convert", "数据类型转换失败，部分值格式不兼容"),
-    ("KeyError", "引用了不存在的列名"),
-    ("FileNotFoundError", "文件未找到，可能已被移动或删除"),
-    ("ValueError", "数据格式不符合预期，请检查列类型和取值"),
-    ("TypeError", "数据类型不匹配，部分列的格式可能需要清洗"),
-    ("ParserError", "文件解析失败，格式可能不正确或已损坏"),
-    ("UnicodeDecodeError", "文件编码无法识别，请尝试另存为 UTF-8"),
-    ("IndexError", "引用了不存在的行或列位置"),
-    ("ZeroDivisionError", "计算中出现除以零，数据可能存在全零列"),
-    ("MemoryError", "数据量超出内存限制，请缩小分析范围"),
-    ("PermissionError", "文件权限不足，无法读取或写入"),
-    ("OverflowError", "数值超出计算范围"),
-    ("datetime", "日期格式无法解析，请检查日期列格式"),
-    ("time data", "时间数据格式不匹配"),
-]
-
-
-def _humanize_error(exc: Exception) -> str:
-    """把 Python 异常转为面向用户的友好中文消息。
-
-    技术细节保留在 trace 中供调试；summary 只展示用户可理解的描述，
-    避免终端用户看到 ``ValueError: could not convert string to float: 'N/A'``
-    这类晦涩信息。
-    """
-    raw = f"{type(exc).__name__}: {exc}"
-    lowered = raw.lower()
-    for pattern, human_text in _ERROR_HUMANIZE_MAP:
-        if pattern.lower() in lowered:
-            return human_text
-    return f"执行过程中遇到问题（{type(exc).__name__}）"
-
-
-def _query_allows_format_repair(query: str) -> bool:
-    """Return False when the query explicitly forbids data modifications.
-
-    通过 ``_FORMAT_REPAIR_BLOCKERS`` 预编译正则模式集合（含中英文等价词）
-    识别禁止修改意图，替代原有的裸子串匹配。
-    """
-    return not _any_pattern_match(_FORMAT_REPAIR_BLOCKERS, query)
-
-
-@wrap_tool_call
-def _handle_tool_error(request: Any, handler: Any) -> ToolMessage:
-    try:
-        return handler(request)
-    except Exception as exc:
-        detail = f"{type(exc).__name__}: {exc}"
-        error_code = "format_error" if _is_recoverable_format_error(detail) else "tool_error"
-        return ToolMessage(
-            content=(
-                f"工具执行失败：{detail}。"
-                "如果原因与列类型、日期或数值格式有关，请先调用 repair_data_format，"
-                "再用修正后的列名和参数重试；如果是业务数据异常，不要擅自修改。"
-            ),
-            tool_call_id=request.tool_call["id"],
-            additional_kwargs={"error_code": error_code},
-        )
 
 
 class DataAnalysisAgent:

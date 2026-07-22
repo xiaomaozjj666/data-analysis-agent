@@ -1,0 +1,125 @@
+/* ---------- 通用按钮变体 ---------- */
+/* 主按钮：实心品牌蓝，用于关键操作 */
+.primary, .run-button, .save-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid rgba(31, 35, 40, 0.12);
+  border-radius: var(--radius-md);
+  background: var(--accent-fg);
+  color: #fff;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  box-shadow: var(--shadow-xs);
+}
+.primary:hover, .run-button:hover, .save-button:hover { background: var(--accent-hover); box-shadow: var(--shadow-sm); }
+.primary:active, .run-button:active, .save-button:active { transform: translateY(1px); box-shadow: none; }
+.primary { height: 40px; padding: 0 18px; }
+.run-button { height: 34px; padding: 0 14px; flex: 0 0 auto; }
+
+/* 次级按钮：白底细边框（GitHub btn），用于弱操作 */
+.change-file, .report-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--canvas-default);
+  color: var(--fg-default);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  box-shadow: var(--shadow-xs);
+}
+.change-file:hover, .report-copy:hover { background: var(--canvas-subtle); border-color: var(--border-strong); }
+.change-file:active, .report-copy:active { background: var(--control-active); }
+
+/* 品牌蓝描边按钮：查看类操作 */
+.preview-button, .preview-actions > button:not(.icon-button) {
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 12px;
+  border: 1px solid var(--accent-fg);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--accent-fg);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.preview-button:hover, .preview-actions > button:not(.icon-button):hover { background: var(--accent-subtle); }
+
+/* 危险操作：柔红底，主停止按钮 hover 填充实色强化警示 */
+.cancel-button, .retry-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-md);
+  background: var(--danger-subtle);
+  color: var(--danger-fg);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.cancel-button { height: 34px; padding: 0 12px; flex: 0 0 auto; }
+.cancel-button:hover { background: var(--danger-fg); border-color: var(--danger-fg); color: #fff; }
+.cancel-button:active, .retry-button:active { transform: translateY(1px); }
+.retry-button { min-height: 28px; margin: 0 4px; padding: 0 10px; font-size: var(--text-xs); }
+.retry-button:hover { background: #ffdcd5; border-color: var(--danger-fg); }
+
+/* 图标按钮：32px 方钮 */
+.icon-button, .artifact-download {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--fg-muted);
+}
+.icon-button:hover, .artifact-download:hover { color: var(--accent-fg); border-color: var(--accent-fg); background: var(--accent-subtle); }
+
+/* 小标签：章节上方的英文 kicker / 侧栏分组标签 */
+.sidebar-label, .section-kicker {
+  display: block;
+  color: var(--fg-subtle);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+.sidebar-label { margin: 0 8px 6px; }
+
+/* 状态指示灯：绿=在线，黄=降级 */
+.model-line i, .sidebar-foot i, .api-status i, .storage-status i { width: 7px; height: 7px; border-radius: 50%; background: #b3bac2; flex: 0 0 auto; }
+i.online { background: var(--success-fg); box-shadow: 0 0 0 3px rgba(26, 127, 55, 0.12); }
+i.warning { background: var(--attention-fg); box-shadow: 0 0 0 3px rgba(154, 103, 0, 0.12); }
+
+/* resume-button：断点续跑主操作按钮（绿色，与"重新运行"区分）。
+   canResume 时优先展示此按钮，让用户一眼看出"可以继续"而非只能重来。 */
+.resume-button { min-height: 28px; margin: 0 4px; padding: 0 12px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--success-fg); border-radius: var(--radius-md); background: var(--success-fg); color: #fff; font-size: var(--text-xs); font-weight: 600; cursor: pointer; transition: all var(--duration-fast) var(--ease-out); box-shadow: 0 1px 3px rgba(21, 128, 61, 0.25); }
+.resume-button:hover { background: #16a34a; border-color: #16a34a; transform: translateY(-1px); box-shadow: 0 2px 6px rgba(21, 128, 61, 0.3); }
+.resume-button:active { transform: translateY(0); }
+.resume-button svg { flex-shrink: 0; }
+
+/* 主题切换按钮：顶栏右侧的小图标按钮，与设置按钮风格一致 */
+.theme-toggle {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--canvas-default);
+  color: var(--fg-muted);
+  box-shadow: var(--shadow-xs);
+}
+.theme-toggle:hover { color: var(--accent-fg); border-color: var(--accent-fg); background: var(--accent-subtle); }
+.theme-toggle:active { transform: translateY(1px); }

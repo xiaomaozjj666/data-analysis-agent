@@ -1,0 +1,75 @@
+import React, { useCallback, useRef, useState } from "react";
+import { LoaderCircle, Upload } from "lucide-react";
+
+function EmptyWorkspace({ uploading, onUpload, onFileDrop }) {
+  // 鼠标跟随光斑：跟踪鼠标在 grid 上的相对位置，更新 CSS 变量，
+  // 由 styles.css 的 radial-gradient 渲染柔和光晕。参考 Linear/Vercel
+  // 空状态的 spotlight 效果——比静态装饰更有"活物感"。
+  const gridRef = useRef(null);
+  const [dragOver, setDragOver] = useState(false);
+  const dragCounter = useRef(0);
+  const handleMouseMove = useCallback((event) => {
+    const grid = gridRef.current;
+    if (!grid) return;
+    const rect = grid.getBoundingClientRect();
+    const x = ((event.clientX - rect.left) / rect.width) * 100;
+    const y = ((event.clientY - rect.top) / rect.height) * 100;
+    grid.style.setProperty("--mouse-x", `${x}%`);
+    grid.style.setProperty("--mouse-y", `${y}%`);
+  }, []);
+
+  const handleDragEnter = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter.current += 1;
+    if (e.dataTransfer?.types?.includes("Files")) setDragOver(true);
+  }, []);
+  const handleDragLeave = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter.current -= 1;
+    if (dragCounter.current <= 0) { dragCounter.current = 0; setDragOver(false); }
+  }, []);
+  const handleDragOver = useCallback((e) => { e.preventDefault(); e.stopPropagation(); }, []);
+  const handleDrop = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter.current = 0;
+    setDragOver(false);
+    const file = e.dataTransfer?.files?.[0];
+    if (file && onFileDrop) onFileDrop(file);
+  }, [onFileDrop]);
+
+  return (
+    <section
+      className={`empty-workspace${dragOver ? " is-drag-over" : ""}`}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
+      <div
+        className="empty-grid"
+        aria-hidden="true"
+        ref={gridRef}
+        onMouseMove={handleMouseMove}
+      >
+        <span className="grid-tab" />
+        {Array.from({ length: 20 }, (_, index) => (
+          <i key={index} style={{ "--cell-index": index }} />
+        ))}
+      </div>
+      <div className="empty-copy">
+        <span className="section-kicker">新建分析</span>
+        <h2>从一份数据开始</h2>
+        <p>CSV、Excel、JSON 或 Parquet{dragOver ? " · 松开以上传" : " · 或拖拽文件到此"}</p>
+        <button className="primary" onClick={onUpload} disabled={uploading}>
+          {uploading ? <LoaderCircle className="spin" size={17} /> : <Upload size={17} />}
+          {uploading ? "正在读取" : "选择数据文件"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+export default EmptyWorkspace;
