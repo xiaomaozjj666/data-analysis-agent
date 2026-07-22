@@ -5,6 +5,7 @@ import {
   FileSpreadsheet,
   History,
   LoaderCircle,
+  Pencil,
   RefreshCw,
   Search,
   Trash2,
@@ -16,6 +17,27 @@ import {
   groupSessionsByTime,
 } from "../utils/format";
 import type { HistorySessionItem } from "../types";
+
+// 状态过滤选项：全部 / 已完成 / 运行中 / 失败 / 已取消
+type StatusFilter = "all" | "completed" | "running" | "failed" | "cancelled";
+type SortOrder = "recent" | "earliest";
+const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
+  { value: "all", label: "全部" },
+  { value: "completed", label: "已完成" },
+  { value: "running", label: "运行中" },
+  { value: "failed", label: "失败" },
+  { value: "cancelled", label: "已取消" },
+];
+// 状态值映射到过滤分类：running 与 cancelling 都归为"运行中"
+function matchesStatus(filter: StatusFilter, status: string | undefined): boolean {
+  switch (filter) {
+    case "all": return true;
+    case "completed": return status === "completed";
+    case "running": return status === "running" || status === "cancelling";
+    case "failed": return status === "failed";
+    case "cancelled": return status === "cancelled";
+  }
+}
 
 interface HistoryPanelProps {
   sessions?: HistorySessionItem[] | null;
@@ -31,6 +53,7 @@ interface HistoryPanelProps {
   onExportSession?: (item: HistorySessionItem) => void;
   onImportSession?: (file: File) => void;
   onDeleteSession?: (item: HistorySessionItem) => void;
+  onRenameSession?: (item: HistorySessionItem, title: string) => void;
 }
 
 // 历史会话面板：可折叠的侧边栏组件，按时间分组列出最近会话并允许切换。
@@ -44,27 +67,40 @@ interface HistoryPanelProps {
 //   4. 当前会话用左侧竖条 + 浅蓝底高亮，比单纯背景色更醒目。
 const HistoryPanel = React.memo(function HistoryPanel({
   sessions, currentSessionId, onSelect, onRefresh, loading, expanded, onToggle, historyError, switchingSessionId,
-  onExportSession, onImportSession, onDeleteSession,
+  onExportSession, onImportSession, onDeleteSession, onRenameSession,
 }: HistoryPanelProps) {
   const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [sortOrder, setSortOrder] = useState<SortOrder>("recent");
   // 隐藏的文件 input：触发浏览器原生文件选择对话框，选中后回调 onImportSession
   const importInputRef = useRef<HTMLInputElement>(null);
-  // 搜索过滤：按文件名匹配，匹配不到时显示空状态。本地过滤即可，
-  // 不需要后端 query 参数——历史列表通常 ≤ 30 条，前端 filter 毫秒级。
+  // 搜索 + 状态过滤 + 排序：文本匹配与状态筛选 AND 组合，先过滤再分组。
+  // 本地过滤即可——历史列表通常 ≤ 30 条，前端 filter 毫秒级。
   const filtered = useMemo<HistorySessionItem[]>(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return sessions || [];
-    return (sessions || []).filter((s) => {
-      const filename = (s.filename || "").toLowerCase();
-      const task = (s.current_task || s.task || "").toLowerCase();
-      const response = ((s.last_result?.response as string | undefined) || "").toLowerCase();
-      return filename.includes(q) || task.includes(q) || response.includes(q);
+    const list = sessions || [];
+    const matched = q
+      ? list.filter((s) => {
+          const filename = (s.filename || "").toLowerCase();
+          const task = (s.current_task || s.task || "").toLowerCase();
+          const response = ((s.last_result?.response as string | undefined) || "").toLowerCase();
+          return filename.includes(q) || task.includes(q) || response.includes(q);
+        })
+      : list;
+    const statusFiltered = statusFilter === "all"
+      ? matched
+      : matched.filter((s) => matchesStatus(statusFilter, s.analysis_status));
+    // 排序：默认最近在前（created_at desc），可切换最早在前
+    return [...statusFiltered].sort((a, b) => {
+      const ta = a.created_at || 0;
+      const tb = b.created_at || 0;
+      return sortOrder === "recent" ? tb - ta : ta - tb;
     });
-  }, [sessions, searchQuery]);
+  }, [sessions, searchQuery, statusFilter, sortOrder]);
   const groups = useMemo(() => groupSessionsByTime(filtered), [filtered]);
   const isEmpty = !sessions?.length && !loading;
-  const isSearching = searchQuery.trim().length > 0;
-  const noResults = isSearching && filtered.length === 0 && !loading;
+  const isFiltering = searchQuery.trim().length > 0 || statusFilter !== "all";
+  const noResults = isFiltering && filtered.length === 0 && !loading;
 
   return (
     <div className="sidebar-section history-section">
@@ -93,6 +129,40 @@ const HistoryPanel = React.memo(function HistoryPanel({
       </div>
       {expanded && (
         <>
+          {/* 高级筛选行：状态 chip（单选）+ 排序 chip，仅展开态可见 */}
+          <div className="history-filter-row">
+            <div className="history-filter-chips" role="group" aria-label="按状态过滤">
+              {STATUS_FILTERS.map((f) => (
+                <button
+                  key={f.value}
+                  type="button"
+                  className={`history-chip ${statusFilter === f.value ? "is-active" : ""}`}
+                  onClick={() => setStatusFilter(f.value)}
+                  aria-pressed={statusFilter === f.value}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+            <div className="history-sort-chips" role="group" aria-label="排序方式">
+              <button
+                type="button"
+                className={`history-chip ${sortOrder === "recent" ? "is-active" : ""}`}
+                onClick={() => setSortOrder("recent")}
+                aria-pressed={sortOrder === "recent"}
+              >
+                最近
+              </button>
+              <button
+                type="button"
+                className={`history-chip ${sortOrder === "earliest" ? "is-active" : ""}`}
+                onClick={() => setSortOrder("earliest")}
+                aria-pressed={sortOrder === "earliest"}
+              >
+                最早
+              </button>
+            </div>
+          </div>
           <button type="button" className="history-refresh" onClick={onRefresh} disabled={loading} title="刷新历史" aria-label="刷新历史会话列表">
             <RefreshCw size={12} className={loading ? "spin" : ""} />
             {loading ? "加载中" : "刷新"}
@@ -115,7 +185,9 @@ const HistoryPanel = React.memo(function HistoryPanel({
             }}
           />
           {noResults ? (
-            <div className="history-search-empty">没有匹配「{searchQuery.trim()}」的会话</div>
+            <div className="history-search-empty">
+              {searchQuery.trim() ? `没有匹配「${searchQuery.trim()}」的会话` : "没有符合条件的会话"}
+            </div>
           ) : isEmpty ? (
             <div className="history-empty">
               <History size={16} />
@@ -157,6 +229,7 @@ const HistoryPanel = React.memo(function HistoryPanel({
                       onSelect={onSelect}
                       onExport={onExportSession}
                       onDelete={onDeleteSession}
+                      onRename={onRenameSession}
                     />
                   ))}
                 </ul>
@@ -182,14 +255,20 @@ interface HistoryItemProps {
   onSelect: (item: HistorySessionItem) => void;
   onExport?: (item: HistorySessionItem) => void;
   onDelete?: (item: HistorySessionItem) => void;
+  onRename?: (item: HistorySessionItem, title: string) => void;
 }
 
 const HistoryItem = React.memo(function HistoryItem({
-  item, active, switching, switchingAny, onSelect, onExport, onDelete,
+  item, active, switching, switchingAny, onSelect, onExport, onDelete, onRename,
 }: HistoryItemProps) {
   const status = describeHistoryStatus(item.analysis_status);
+  // 显示名优先用自定义标题，没有则回退 filename
+  const displayName = item.title || item.filename;
   const [confirming, setConfirming] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(displayName);
   const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const editInputRef = useRef<HTMLInputElement>(null);
 
   // 4 秒后自动收起确认态，避免用户点开删除后走开回来仍停留在高危态
   useEffect(() => {
@@ -199,6 +278,25 @@ const HistoryItem = React.memo(function HistoryItem({
       if (confirmTimer.current) clearTimeout(confirmTimer.current);
     };
   }, [confirming]);
+
+  // 进入编辑态时聚焦输入框并选中全部文字，方便直接覆盖
+  useEffect(() => {
+    if (editing) {
+      setDraft(displayName);
+      requestAnimationFrame(() => {
+        editInputRef.current?.focus();
+        editInputRef.current?.select();
+      });
+    }
+  }, [editing, displayName]);
+
+  const commitRename = () => {
+    const trimmed = draft.trim();
+    if (onRename && trimmed && trimmed !== displayName) {
+      onRename(item, trimmed);
+    }
+    setEditing(false);
+  };
 
   if (confirming) {
     return (
@@ -224,12 +322,34 @@ const HistoryItem = React.memo(function HistoryItem({
     );
   }
 
+  if (editing) {
+    return (
+      <li className="is-editing">
+        <div className="history-edit-bar">
+          <input
+            ref={editInputRef}
+            className="history-edit-input"
+            value={draft}
+            maxLength={80}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") { e.preventDefault(); commitRename(); }
+              if (e.key === "Escape") { e.preventDefault(); setEditing(false); }
+            }}
+          />
+          <button type="button" className="history-edit-save" onClick={commitRename}>保存</button>
+          <button type="button" className="history-edit-cancel" onClick={() => setEditing(false)}>取消</button>
+        </div>
+      </li>
+    );
+  }
+
   return (
     <li className={active ? "is-active" : ""}>
       <button type="button" onClick={() => onSelect(item)} disabled={switchingAny}>
         <FileSpreadsheet size={14} />
         <span>
-          <strong>{item.filename}</strong>
+          <strong>{displayName}</strong>
           <small>
             <span className={`history-status-dot ${status.dot}`} aria-hidden="true" />
             <span className="history-status-text">{status.label}</span>
@@ -243,15 +363,26 @@ const HistoryItem = React.memo(function HistoryItem({
           <em className="history-count">{item.artifact_count}</em>
         ) : null}
       </button>
-      {/* 操作按钮组：导出 + 删除并排，hover 列表项时淡入，不遮挡会话文字 */}
+      {/* 操作按钮组：重命名 + 导出 + 删除并排，hover 列表项时淡入，不遮挡会话文字 */}
       <div className="history-actions">
+        {onRename && (
+          <button
+            type="button"
+            className="history-action-btn history-rename"
+            onClick={(e) => { e.stopPropagation(); setEditing(true); }}
+            title="重命名会话"
+            aria-label={`重命名会话 ${displayName}`}
+          >
+            <Pencil size={12} />
+          </button>
+        )}
         {onExport && (
           <button
             type="button"
             className="history-action-btn history-export"
             onClick={(e) => { e.stopPropagation(); onExport(item); }}
             title="导出会话"
-            aria-label={`导出会话 ${item.filename}`}
+            aria-label={`导出会话 ${displayName}`}
           >
             <Download size={12} />
           </button>
@@ -262,7 +393,7 @@ const HistoryItem = React.memo(function HistoryItem({
             className="history-action-btn history-delete"
             onClick={(e) => { e.stopPropagation(); setConfirming(true); }}
             title="删除会话"
-            aria-label={`删除会话 ${item.filename}`}
+            aria-label={`删除会话 ${displayName}`}
           >
             <Trash2 size={12} />
           </button>

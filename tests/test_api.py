@@ -720,3 +720,58 @@ def test_delete_session_rejects_invalid_session_id(tmp_path, monkeypatch):
     client = TestClient(api.app)
     assert client.delete("/api/sessions/!invalid!").status_code == 404
 
+
+def test_sample_endpoint_creates_session_with_sales_data(tmp_path, monkeypatch):
+    """POST /api/sessions/sample 应创建内置示例会话，可正常加载数据。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    response = client.post("/api/sessions/sample")
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["id"].startswith("api_")
+    assert payload["filename"] == "sample_sales.csv"
+    # 示例数据含 20 行订单，列含 region/sales 等字段
+    assert isinstance(payload["profile"], dict)
+    history = client.get("/api/sessions?limit=30").json()["sessions"]
+    assert any(s["id"] == payload["id"] for s in history)
+
+
+def test_rename_session_persists_title_and_falls_back_on_empty(tmp_path, monkeypatch):
+    """PATCH /api/sessions/{id} 应持久化自定义标题，空串回退到 filename。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = client.post(
+        "/api/sessions",
+        files={"file": ("sales.csv", b"region,sales\nEast,100\nWest,200\n", "text/csv")},
+    ).json()
+    session_id = uploaded["id"]
+
+    # 设置自定义标题
+    rename_resp = client.patch(
+        f"/api/sessions/{session_id}", json={"title": "我的销售分析"}
+    )
+    assert rename_resp.status_code == 200
+    assert rename_resp.json()["title"] == "我的销售分析"
+
+    # 历史列表与详情都应反映新标题
+    history = client.get("/api/sessions?limit=30").json()["sessions"]
+    matched = [s for s in history if s["id"] == session_id][0]
+    assert matched["title"] == "我的销售分析"
+    detail = client.get(f"/api/sessions/{session_id}").json()
+    assert detail["title"] == "我的销售分析"
+
+    # 空串清除自定义标题，回退 filename
+    clear_resp = client.patch(f"/api/sessions/{session_id}", json={"title": "   "})
+    assert clear_resp.status_code == 200
+    assert clear_resp.json()["title"] == ""
+    detail_after = client.get(f"/api/sessions/{session_id}").json()
+    assert detail_after["title"] in (None, "")
+
+
+def test_rename_session_rejects_unknown_session(tmp_path, monkeypatch):
+    """PATCH 不存在的会话应返回 404。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    assert client.patch("/api/sessions/api_nonexistent", json={"title": "x"}).status_code == 404
+
+

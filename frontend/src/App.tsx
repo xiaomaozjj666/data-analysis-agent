@@ -17,6 +17,7 @@ import {
   ListChecks,
   LoaderCircle,
   Maximize2,
+  Menu,
   Moon,
   Palette,
   Play,
@@ -206,6 +207,8 @@ function App() {
   // testingKey：测试进行中；testResult：测试结果（ok 标识成功/失败，message 为提示文案）
   const [testingKey, setTestingKey] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  // 移动端侧边栏抽屉开关：桌面端 sidebar 常驻，平板/手机折叠为抽屉
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Esc 键关闭预览模态框或设置面板（P0-4）。
   // 之前 Esc 只对 previewItem 生效，设置面板打开时按 Esc 没反应，
@@ -301,6 +304,7 @@ function App() {
     if (session?.id) taskDraftsRef.current[session.id] = task;
     setError("");
     closeArtifactPreview();
+    setSidebarOpen(false);
     setSwitchingSessionId(item.id);
     try {
       const latest = await api<Session>(`/api/sessions/${item.id}`);
@@ -817,6 +821,32 @@ function App() {
     }
   }, [session?.id, fetchHistory]);
 
+  // 重命名会话：PATCH 更新服务端 title，乐观更新本地 history 列表与当前 session。
+  // 空串视为清除自定义标题（回退 filename），后端会存 None。
+  const renameSession = useCallback(async (item: HistorySessionItem, title: string) => {
+    try {
+      const response = await fetch(`${API_URL}/api/sessions/${item.id}`, {
+        method: "PATCH",
+        headers: { ...requestHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({})) as { detail?: string };
+        throw new Error(payload.detail || "重命名失败");
+      }
+      const data = await response.json() as { title: string };
+      // 乐观更新 history 列表中该 item 的 title
+      const updated = (history || []).map((s) => s.id === item.id ? { ...s, title: data.title || undefined } : s);
+      setHistory(updated);
+      // 当前会话同步更新标题
+      if (session?.id === item.id) {
+        setSession((prev) => prev ? { ...prev, title: data.title || undefined } : prev);
+      }
+    } catch (err) {
+      setError(`重命名会话失败：${err instanceof Error ? err.message : "未知错误"}`);
+    }
+  }, [session?.id, history, setHistory]);
+
   // === Batch 4：图表内联编辑 ===
   // 修改图表标题或主色，后端更新 HTML 和 JSON 产物；前端清除预览缓存后重新加载。
   const editChart = useCallback(async () => {
@@ -955,6 +985,44 @@ function App() {
       if (fileInput.current) fileInput.current.value = "";
     }
   }
+
+  // EmptyWorkspace 派发的两个自定义事件：
+  //  - empty-workspace:load-sample —— 用户点击"加载示例数据体验"，后端用内置样例建会话
+  //  - empty-workspace:extra-files  —— 多文件拖入时，首个文件已走主上传路径，
+  //    其余文件在此顺序创建独立会话（数据分析常需对比多表）
+  useEffect(() => {
+    const onLoadSample = async () => {
+      setUploading(true);
+      setError("");
+      closeArtifactPreview();
+      setPlan([]); setCompleted([]); setResult(null); setTask("");
+      setActiveTab("analysis"); setCurrentNodeTitle(""); setRetryOffer(null);
+      try {
+        const value = await api<Session>("/api/sessions/sample", { method: "POST" });
+        setSession(value);
+        startedAtRef.current = (value as Session & { analysis_started_at?: number | null }).analysis_started_at ?? null;
+        setElapsedSeconds(value.elapsed_seconds ?? null);
+        setFollowUps([]);
+        fetchHistory();
+      } catch (err) {
+        setError((err as Error).message);
+      } finally {
+        setUploading(false);
+      }
+    };
+    const onExtraFiles = async (event: Event) => {
+      const files = (event as CustomEvent).detail?.files as File[] | undefined;
+      if (!files?.length) return;
+      // 顺序上传：每个文件独立成会话，避免并发挤占 slot
+      for (const file of files) await uploadFile(file);
+    };
+    window.addEventListener("empty-workspace:load-sample", onLoadSample as EventListener);
+    window.addEventListener("empty-workspace:extra-files", onExtraFiles as EventListener);
+    return () => {
+      window.removeEventListener("empty-workspace:load-sample", onLoadSample as EventListener);
+      window.removeEventListener("empty-workspace:extra-files", onExtraFiles as EventListener);
+    };
+  }, []);
 
   async function stopAnalysis() {
     if (!session || !running || stopping) return;
@@ -1681,9 +1749,17 @@ function App() {
           <input
             ref={fileInput}
             type="file"
+            multiple
             accept=".csv,.tsv,.xlsx,.xls,.json,.jsonl,.parquet"
             hidden
-            onChange={(event) => uploadFile(event.target.files?.[0])}
+            onChange={(event) => {
+              const files = event.target.files ? Array.from(event.target.files) : [];
+              if (files.length === 0) return;
+              uploadFile(files[0]);
+              if (files.length > 1) {
+                window.dispatchEvent(new CustomEvent("empty-workspace:extra-files", { detail: { files: files.slice(1) } }));
+              }
+            }}
           />
         </div>
 
@@ -1700,6 +1776,7 @@ function App() {
           onExportSession={exportSession}
           onImportSession={importSession}
           onDeleteSession={deleteSession}
+          onRenameSession={renameSession}
         />
 
         <div className="sidebar-spacer" />
@@ -1775,9 +1852,11 @@ function App() {
           <small>{settings?.storage_status === "ok" ? "持久化正常" : "降级模式"}</small>
         </div>
       </aside>
+      {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} aria-hidden="true" />}
 
       <main className={session ? "main" : "main is-empty"}>
         <header className="topbar">
+          <button type="button" className="sidebar-toggle" onClick={() => setSidebarOpen(true)} aria-label="打开侧边栏"><Menu size={18} /></button>
           <div className="breadcrumb">
             <span>分析工作区</span>
             <ChevronRight size={13} />

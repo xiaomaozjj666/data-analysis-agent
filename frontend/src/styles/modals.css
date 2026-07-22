@@ -232,6 +232,18 @@
 .command-item-text { flex: 1; min-width: 0; }
 .command-item-text strong { display: block; font-size: var(--text-sm); font-weight: 600; }
 .command-item-text small { display: block; color: var(--fg-subtle); font-size: var(--text-xs); }
+/* 模糊匹配高亮：命中字符用 accent 底色标注 */
+.command-item-text mark {
+  background: var(--accent-subtle);
+  color: var(--accent-fg);
+  font-weight: inherit;
+  padding: 0;
+  border-radius: 2px;
+}
+.command-item.is-active .command-item-text mark {
+  background: var(--accent-fg);
+  color: #fff;
+}
 .command-item-kbd {
   font-family: var(--font-mono);
   font-size: var(--text-xs);

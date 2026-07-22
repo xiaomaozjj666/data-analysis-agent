@@ -49,6 +49,7 @@ export interface Session {
 export interface HistorySessionItem {
   id: string;
   filename: string;
+  title?: string;
   analysis_status: string;
   current_task?: string;
   task?: string;

@@ -36,7 +36,7 @@
   .storage-status { margin-top: 0; padding: 8px 2px 0; border: 0; border-top: 1px solid var(--border-muted); border-radius: 0; background: transparent; box-shadow: none; }
   .storage-status:hover { box-shadow: none; }
   .settings-form { position: fixed; left: 12px; right: 12px; bottom: 12px; width: auto; }
-  .main { padding: 0 14px 36px; }
+  .main { padding: 0 12px 36px; }
   .topbar { height: 52px; border-radius: 0; box-shadow: none; }
   .breadcrumb strong { max-width: 42vw; }
   .dataset-header { min-height: 78px; }
@@ -97,20 +97,37 @@
   /* app-shell 由双栏改为单列布局 */
   .app-shell { grid-template-columns: 1fr; }
 
-  /* sidebar 改为可隐藏的抽屉，默认滑出视口；加 .is-open 时滑入 */
+  /* sidebar 改为可隐藏的抽屉：transform 滑出视口（GPU 加速），加 .is-open 时滑入 */
   .sidebar {
     position: fixed;
-    left: -280px;
+    left: 0;
     top: 0;
     height: 100vh;
     width: 280px;
     z-index: 100;
-    transition: left 0.3s ease;
+    transform: translateX(-100%);
+    transition: transform var(--duration-slow) var(--ease-out);
   }
-  .sidebar.is-open { left: 0; }
+  .sidebar.is-open { transform: none; }
 
-  /* main 区域 padding 收窄 */
-  .main { padding: 0 24px 48px; }
+  /* 抽屉遮罩：默认透明不拦截点击，sidebar 打开时显形（需 overlay 为 .sidebar 后续兄弟） */
+  .sidebar-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: 99;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--duration) var(--ease-out);
+  }
+  .sidebar.is-open ~ .sidebar-overlay {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* main 区域 padding 收窄到 16px */
+  .main { padding: 0 16px 48px; }
 
   /* analysis-grid 由双列改为单列堆叠 */
   .analysis-grid { grid-template-columns: 1fr; }
@@ -118,11 +135,15 @@
 
 /* ---------- 2. 手机断点（max-width: 768px） ---------- */
 @media (max-width: 768px) {
-  /* main 区域 padding 进一步收窄 */
-  .main { padding: 0 16px 32px; }
+  /* main 区域 padding 进一步收窄到 12px */
+  .main { padding: 0 12px 32px; }
 
-  /* topbar 允许换行，避免操作区挤压标题 */
-  .topbar { flex-wrap: wrap; }
+  /* topbar 高度减小并允许换行，避免操作区挤压标题 */
+  .topbar { flex-wrap: wrap; height: 52px; }
+
+  /* 面包屑字号缩小 */
+  .breadcrumb { font-size: var(--text-xs); }
+  .breadcrumb strong { max-width: 38vw; }
 
   /* 任务输入框高度减小 */
   .task-box textarea { min-height: 84px; }
