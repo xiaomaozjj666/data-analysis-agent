@@ -143,6 +143,7 @@ class DataWorkspace:
         # 的 duplicated().sum() 和 nunique() 开销显著）。数据变更时自动失效。
         # 用 OrderedDict 实现 LRU：命中时 move_to_end，超容量时 popitem(last=False)。
         self._profile_cache: OrderedDict[int, dict[str, Any]] = OrderedDict()
+        self._df_version = 0  # 每次 setter 递增，避免 id() 复用导致过期缓存
 
     @property
     def dataframe(self) -> pd.DataFrame:
@@ -155,6 +156,7 @@ class DataWorkspace:
         if not isinstance(value, pd.DataFrame):
             raise TypeError("工作区数据必须是 pandas DataFrame。")
         self._df = value
+        self._df_version += 1
         # 数据变更时清除 profile 缓存，确保下次 profile() 反映最新数据。
         self._profile_cache.clear()
 
@@ -454,9 +456,9 @@ class DataWorkspace:
             sample 等字段的字典。
         """
         sample_rows = max(1, min(int(sample_rows), 20))
-        # 使用 (id(df), sample_rows) 作为缓存键：同一 DataFrame 对象且
-        # sample_rows 相同时直接返回缓存，避免 finalize 重复计算。
-        cache_key = id(self._df) * 100 + sample_rows
+        # 使用 (df_version, sample_rows) 作为缓存键，df_version 在每次 setter
+        # 递增，避免 id(df) 复用（Python GC 后 id 可能重复）导致过期缓存。
+        cache_key = self._df_version * 100 + sample_rows
         cached = self._profile_cache.get(cache_key)
         if cached is not None:
             # LRU：命中时移到末尾，标记为最近使用。

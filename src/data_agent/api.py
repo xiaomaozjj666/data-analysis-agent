@@ -446,15 +446,27 @@ def _safe_emit(loop: asyncio.AbstractEventLoop, queue: asyncio.Queue, item: tupl
     队列满时（QueueFull）按事件类型决策：thinking_chunk / report_chunk 等
     流式 token 可丢弃（过程信息），complete / error / cancelled 等终态事件
     强制入队（即使需淘汰最旧的 thinking_chunk 腾位置）。
+
+    注意：asyncio.Queue.full() 不是线程安全的，不能在 worker 线程直接调用。
+    改为在 call_soon_threadsafe 回调内部 catch QueueFull 来安全处理满队列。
     """
-    # 在 worker 线程侧先做 fast-path 检查：thinking_chunk 在队列接近满时直接丢弃，
-    # 避免无意义的 call_soon_threadsafe 开销。
     event_type = item[0] if item else None
     droppable = event_type in ("thinking_chunk", "report_chunk", "chat_chunk")
-    if droppable and queue.full():
-        return
+
+    def _put() -> None:
+        try:
+            queue.put_nowait(item)
+        except asyncio.QueueFull:
+            if not droppable:
+                # 终态事件不能丢：淘汰最旧元素后重试一次
+                try:
+                    queue.get_nowait()
+                    queue.put_nowait(item)
+                except (asyncio.QueueEmpty, asyncio.QueueFull):
+                    pass  # 极端情况：队列已被其他回调清空或仍满，放弃本次写入
+
     try:
-        loop.call_soon_threadsafe(queue.put_nowait, item)
+        loop.call_soon_threadsafe(_put)
     except RuntimeError:
         # 事件循环已关闭，丢弃事件但不崩溃，确保 finally 中的 release 能执行
         pass
@@ -1203,7 +1215,10 @@ def cancel_analysis(session_id: str) -> dict[str, str]:
     # Persist so a restart between this call and the worker's unwind does
     # not leave the manifest stuck on "running"; the retry poller relies on
     # seeing "cancelling" to recognize an interrupted analysis.
-    registry.persist(session_id, record)
+    try:
+        registry.persist(session_id, record)
+    except Exception:
+        logger.exception("Failed to persist cancelling status for %s — may show stale state on restart", session_id)
     return {"status": "cancelling"}
 
 
