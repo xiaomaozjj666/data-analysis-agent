@@ -785,6 +785,23 @@ def _artifact_payload(session_id: str, artifacts: list[dict[str, str]]) -> list[
         value["previewable"] = item.get("kind") == "visualization"
         if item.get("kind") == "visualization":
             value["preview_url"] = f"/api/sessions/{session_id}/artifacts/{item['name']}/preview"
+            # 图表缩略图与引擎标识：仅 Plotly 图表（存在 .plotly.json）提供缩略图，
+            # ECharts 图表无 JSON 数据文件，回退到图标展示。
+            artifact_name = item.get("name", "")
+            if artifact_name.endswith(".html"):
+                stem = artifact_name[: -len(".html")]
+                raw_path = item.get("path")
+                artifacts_dir = Path(raw_path).parent if raw_path else None
+                has_plotly_json = bool(
+                    artifacts_dir and (artifacts_dir / f"{stem}.plotly.json").is_file()
+                )
+                if has_plotly_json:
+                    value["thumbnail_url"] = (
+                        f"/api/sessions/{session_id}/artifacts/{artifact_name}/thumbnail"
+                    )
+                    value["engine"] = "plotly"
+                else:
+                    value["engine"] = "echarts"
         try:
             value["size_bytes"] = Path(item["path"]).stat().st_size
         except (OSError, KeyError):
@@ -1544,6 +1561,43 @@ def download_artifact(session_id: str, filename: str) -> Response:
             headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(path.name)}"},
         )
     return FileResponse(path, filename=path.name)
+
+
+@app.get("/api/sessions/{session_id}/artifacts/{filename}/thumbnail")
+def get_chart_thumbnail(session_id: str, filename: str) -> FileResponse:
+    """生成图表缩略图 PNG（best-effort，依赖 Kaleido）。
+
+    优先返回已缓存的 ``{stem}_thumb.png``；缓存不存在时从 ``{stem}.plotly.json``
+    重新渲染。Kaleido 未安装时返回 503，其他渲染异常返回 500。缩略图尺寸
+    400×250，去掉 margin 节省空间。
+    """
+    record = registry.get(session_id)
+    workspace = record.workspace
+    # 取基名防止路径遍历，并去掉可能的 .html 后缀得到原始 stem。
+    stem = Path(filename).name
+    if stem.endswith(".html"):
+        stem = stem[: -len(".html")]
+    # 先查是否已有缓存的缩略图
+    thumb_path = workspace.artifacts_dir / f"{stem}_thumb.png"
+    if thumb_path.is_file():
+        return FileResponse(thumb_path, media_type="image/png")
+    # 从 .plotly.json 重新生成
+    json_path = workspace.artifacts_dir / f"{stem}.plotly.json"
+    if not json_path.is_file():
+        raise HTTPException(status_code=404, detail="图表数据文件不存在。")
+    try:
+        import plotly.graph_objects as go
+
+        fig_dict = json.loads(json_path.read_text(encoding="utf-8"))
+        fig = go.Figure(fig_dict)
+        # 缩略图尺寸 400x250，去掉 margin 节省空间
+        fig.update_layout(margin=dict(l=20, r=20, t=30, b=20), showlegend=False)
+        fig.write_image(str(thumb_path), width=400, height=250, scale=1)
+        return FileResponse(thumb_path, media_type="image/png")
+    except ImportError:
+        raise HTTPException(status_code=503, detail="服务器未安装图片渲染依赖（kaleido）。") from None
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"缩略图生成失败：{exc}") from exc
 
 
 @app.put("/api/sessions/{session_id}/artifacts/{filename}/edit")

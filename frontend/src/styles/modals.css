@@ -10,6 +10,90 @@
 .preview-loading.preview-error { flex-direction: column; gap: 14px; color: var(--danger-fg); }
 .preview-loading.preview-error span { max-width: 80%; text-align: center; }
 
+/* ---------- Batch B1：图表预览增强 ---------- */
+/* 全屏模式（#17）：撑满视口，去掉圆角和最大尺寸限制，配合后端响应式 resize 自适应图表。 */
+.preview-panel.is-fullscreen {
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  max-height: none;
+  border-radius: 0;
+}
+.preview-panel.is-fullscreen .preview-stage {
+  height: calc(100vh - 72px);
+}
+
+/* 图表对比（#22）：并排双栏布局，每栏一个 preview-frame 包裹 iframe。 */
+.preview-stage.is-comparing {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.preview-frame {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.preview-frame iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+/* 对比图表选择器条 */
+.compare-selector {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border-default);
+  background: var(--canvas-subtle);
+  flex-wrap: wrap;
+}
+.compare-selector span {
+  font-size: 12px;
+  color: var(--fg-muted);
+  flex-shrink: 0;
+}
+.compare-selector button {
+  padding: 4px 10px;
+  font-size: 12px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: var(--canvas-default);
+  cursor: pointer;
+}
+.compare-selector button.active {
+  background: var(--accent-fg);
+  color: white;
+  border-color: var(--accent-fg);
+}
+
+/* 加载骨架屏（#26）：替代旋转 spinner，用脉冲柱预告图表布局，降低感知延迟。 */
+.preview-skeleton {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 12px;
+}
+.skeleton-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+  height: 200px;
+  width: 60%;
+}
+.skeleton-bar {
+  background: var(--canvas-subtle);
+  border-radius: 4px;
+  animation: skeleton-pulse 1.5s ease-in-out infinite;
+}
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
 /* ---------- Batch 4：图表内联编辑面板 ---------- */
 /* 预览模态头部的"编辑"按钮切换 chart-edit-panel 显隐，
    用户可修改图表标题或主色后调用后端 PUT 接口更新产物。

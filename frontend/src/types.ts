@@ -5,7 +5,8 @@ export type SSEEventType =
   | "started" | "progress" | "validate_dataset" | "plan_analysis"
   | "execute_step" | "replan" | "thinking_chunk" | "finalize"
   | "report_chunk" | "tool_call" | "tool_result" | "complete"
-  | "cancelled" | "error" | "heartbeat" | "chat_chunk" | "chat_done";
+  | "cancelled" | "error" | "heartbeat" | "chat_chunk" | "chat_done"
+  | "plan_ready" | "step_progress";
 
 // 分析结果
 // 注意：流式渲染阶段会构造部分字段的对象（仅 response + artifacts + plan +
@@ -39,6 +40,8 @@ export interface Session {
   artifact_count?: number;
   created_at?: number;
   chat?: ChatMessage[];
+  // 计划审批：plan_only=true 时后端在 plan_analysis 后结束流，并写入待审阅计划
+  pending_plan?: PlanStep[] | null;
   [key: string]: unknown;
 }
 
@@ -81,6 +84,8 @@ export interface Artifact {
   preview_url?: string;
   download_url?: string;
   size_bytes?: number;
+  thumbnail_url?: string;  // 图表缩略图 URL（仅 Plotly 图表提供）
+  engine?: "plotly" | "echarts";  // 图表引擎标识
   [key: string]: unknown;
 }
 

@@ -991,6 +991,28 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
   var observer = new MutationObserver(function() { setTimeout(applyTheme, 50); });
   observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
+  // 响应式重绘：监听窗口尺寸变化，防抖 150ms 后调用 chart.resize()，
+  // 与模板内已有的 resize 监听并存；这里防抖避免高频拖拽时重复重绘卡顿。
+  var _resizeTimer;
+  window.addEventListener('resize', function() {
+    clearTimeout(_resizeTimer);
+    _resizeTimer = setTimeout(function() {
+      var chart = window.__echartsInstance;
+      if (chart) chart.resize();
+    }, 150);
+  });
+  // PNG 导出（postMessage 通道）：父页面发送 {type:"download-png"} 触发导出，
+  // 这里调用 chart.getDataURL 生成 dataURL 后回传 {type:"png-data", data}。
+  // 使用 postMessage 而非直接下载，可避免 iframe 需要 allow-same-origin 权限。
+  window.addEventListener('message', function(e) {
+    if (e.data && e.data.type === 'download-png') {
+      var chart = window.__echartsInstance;
+      if (chart) {
+        var url = chart.getDataURL({type: 'png', pixelRatio: 2, backgroundColor: '#fff'});
+        parent.postMessage({type: 'png-data', data: url}, '*');
+      }
+    }
+  });
 })();
 </script>"""
 

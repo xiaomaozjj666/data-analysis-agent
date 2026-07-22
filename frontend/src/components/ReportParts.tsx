@@ -5,9 +5,10 @@ import {
   Clock,
   ExternalLink,
 } from "lucide-react";
+import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import CodeBlock from "./CodeBlock";
-import { pickChartIcon } from "../constants";
+import { API_URL, REMARK_PLUGINS, pickChartIcon } from "../constants";
 import { formatTokens } from "../utils/format";
 import type { Artifact, TokenUsage } from "../types";
 
@@ -41,7 +42,12 @@ const ReasoningBlock = React.memo(function ReasoningBlock({ content, streaming }
       </button>
       {expanded && (
         <div className={`reasoning-body ${streaming ? "is-streaming" : ""}`}>
-          {content || (streaming ? "…" : "")}
+          {/* 用 ReactMarkdown 渲染思考内容：模型常会输出 **加粗**、`代码`、
+              - 列表 等 markdown 语法，纯文本会显示原始字符，影响可读性。
+              复用 REMARK_PLUGINS（与 ReportView 一致）以支持 GFM 表格/删除线等。 */}
+          {content ? (
+            <ReactMarkdown remarkPlugins={REMARK_PLUGINS}>{content}</ReactMarkdown>
+          ) : streaming ? "…" : ""}
           {streaming && <span className="reasoning-cursor" aria-hidden="true" />}
         </div>
       )}
@@ -92,9 +98,26 @@ function markdownComponents(
         const artifact = artifacts?.find((a) => a.name === name);
         if (artifact) {
           const { Icon, label } = pickChartIcon(artifact.name);
+          // 优先展示缩略图（仅 Plotly 图表提供 thumbnail_url），让报告读者
+          // 一眼看到图表概貌；ECharts 或缩略图加载失败时回退到类型图标。
           return (
             <button type="button" className="embedded-chart" onClick={() => onPreview?.(artifact)}>
-              <Icon size={18} />
+              {artifact.thumbnail_url ? (
+                <img
+                  className="embedded-chart-thumb"
+                  src={`${API_URL}${artifact.thumbnail_url}`}
+                  alt={alt || label || artifact.description || artifact.name}
+                  loading="lazy"
+                  onError={(e) => {
+                    // 缩略图加载失败时隐藏图片，避免显示破损图标；
+                    // 由于同按钮内没有图标回退，此处仅隐藏避免视觉污染，
+                    // 文字描述仍可点击进入预览。
+                    (e.currentTarget as HTMLImageElement).style.display = "none";
+                  }}
+                />
+              ) : (
+                <Icon size={18} />
+              )}
               <span>{alt || label || artifact.description || artifact.name}</span>
               <ExternalLink size={12} />
             </button>
