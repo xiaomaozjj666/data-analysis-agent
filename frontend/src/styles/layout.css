@@ -16,6 +16,9 @@
 }
 /* 主区限宽居中，宽屏下比例更协调；padding 加大提升留白节奏 */
 .main { min-width: 0; width: 100%; max-width: 1360px; margin: 0 auto; padding: 0 48px 64px; }
+/* 空状态：取消限宽与底部 padding，让 .empty-workspace 用负 margin 撑满整个右侧工作区，
+   使拖拽与点击上传覆盖全部区域，而非仅中间内容小块。topbar 仍保留左右 padding 对齐。 */
+.main.is-empty { max-width: none; padding-bottom: 0; }
 
 /* ---------- 顶栏 ---------- */
 /* 顶栏白底 + 下边框 + 轻阴影，做出顶部栏分区感，不再和画布融为一体 */

@@ -1,14 +1,18 @@
 /* ---------- 空工作台 ---------- */
 /* 极简居中布局：几何数据网格 + 呼吸浮动动画，主视觉回归文案与上传入口。
-   参考 Linear/Vercel/Notion 的克制留白，告别厚重悬浮插画。 */
+   参考 Linear/Vercel/Notion 的克制留白，告别厚重悬浮插画。
+   整个工作区都是可交互落点：负 margin 突破 .main 的 padding，
+   让拖拽与点击上传覆盖右侧全部区域，而非仅中间内容小块。 */
 .empty-workspace {
-  min-height: calc(100vh - 112px);
+  min-height: calc(100vh - 64px);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 32px;
-  padding: 48px 24px;
+  margin: 0 -48px;
+  padding: 48px 48px;
+  cursor: pointer;
   overflow: hidden;
   transition: background var(--duration) var(--ease-out);
 }
@@ -18,6 +22,10 @@
   outline-offset: -8px;
   border-radius: var(--radius-lg);
 }
+/* 内部内容不继承 section 的 click 区域语义，按钮自身可点击；
+   grid 装饰与文案容器恢复默认光标，避免与主按钮抢夺视觉指向 */
+.empty-grid, .empty-copy { cursor: default; }
+.empty-copy .primary { cursor: pointer; }
 
 /* 几何数据网格：缩小居中，整体呼吸浮动；保留 5×4 格子意象但弱化视觉权重。
    组件仍会写入 --mouse-x/--mouse-y，此处不再渲染光斑，保留变量避免空引用。 */

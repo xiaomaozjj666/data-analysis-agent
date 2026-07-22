@@ -46,6 +46,15 @@ function EmptyWorkspace({ uploading, onUpload, onFileDrop }: EmptyWorkspaceProps
     if (file && onFileDrop) onFileDrop(file);
   }, [onFileDrop]);
 
+  // 整个工作区都可点击触发上传：点击空白区域等价于点击主按钮，
+  // 让用户无需精准瞄准按钮即可发起分析。点击按钮自身时由按钮处理，
+  // 这里通过 closest("button") 排除，避免重复弹出文件选择框。
+  const handleSectionClick = useCallback((e: React.MouseEvent<HTMLElement>) => {
+    if (uploading) return;
+    if ((e.target as HTMLElement).closest("button")) return;
+    onUpload();
+  }, [onUpload, uploading]);
+
   return (
     <section
       className={`empty-workspace${dragOver ? " is-drag-over" : ""}`}
@@ -53,6 +62,7 @@ function EmptyWorkspace({ uploading, onUpload, onFileDrop }: EmptyWorkspaceProps
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
       onDrop={handleDrop}
+      onClick={handleSectionClick}
     >
       <div
         className="empty-grid"

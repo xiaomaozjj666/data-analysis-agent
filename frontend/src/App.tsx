@@ -1736,7 +1736,7 @@ function App() {
         </div>
       </aside>
 
-      <main className="main">
+      <main className={session ? "main" : "main is-empty"}>
         <header className="topbar">
           <div className="breadcrumb">
             <span>分析工作区</span>
