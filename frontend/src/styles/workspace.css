@@ -78,8 +78,9 @@
    切到数据/产物 tab 时也能看到进度，避免用户以为分析停了 */
 .task-running-hint { display: flex; align-items: center; gap: 6px; color: var(--accent-fg); font-size: var(--text-sm); font-weight: 600; max-width: 60%; }
 .task-running-hint > svg { flex-shrink: 0; }
-.task-box textarea { width: 100%; min-height: 104px; display: block; resize: vertical; padding: 16px 24px; border: 0; outline: 0; background: transparent; color: var(--fg-default); font-size: var(--text-md); line-height: 1.7; }
+.task-box textarea { width: 100%; min-height: 104px; display: block; resize: vertical; padding: 16px 24px; border: 0; outline: 0; background: transparent; color: var(--fg-default); font-size: var(--text-md); line-height: 1.7; transition: border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out); }
 .task-box textarea::placeholder { color: var(--fg-subtle); }
+.task-box textarea:focus { outline: none; border-color: var(--accent-fg); box-shadow: 0 0 0 3px var(--accent-ring); }
 .task-actions { min-height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px 10px 16px; border-top: 1px solid var(--border-muted); }
 
 /* 预设任务：胶囊 chips，hover 点亮品牌蓝 */
@@ -99,7 +100,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 0 4px;
+  padding: 8px 4px 0;
 }
 /* 覆盖 conversation.css 中 .input-hint 的 display:block / margin-top / text-align，
    在 task-box-footer 内改为内联小字，紧贴按钮左侧 */
@@ -107,8 +108,9 @@
   display: inline;
   margin-top: 0;
   text-align: left;
-  font-size: 11px;
+  font-size: var(--text-xs);
   color: var(--fg-subtle);
+  font-weight: 400;
   white-space: nowrap;
 }
 

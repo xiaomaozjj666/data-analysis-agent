@@ -39,10 +39,32 @@
 .chat-tool-chip em { font-style: normal; font-size: 9px; color: var(--fg-subtle); font-variant-numeric: tabular-nums; }
 /* 错误提示 */
 .chat-bubble-error { display: flex; align-items: center; gap: 6px; padding: 8px 12px; background: var(--danger-subtle); border: 1px solid var(--danger-border); border-radius: var(--radius-sm); color: var(--danger-fg); font-size: var(--text-xs); }
-/* 追问输入框：紧贴对话列表底部，与主任务输入框风格统一但更紧凑 */
-.follow-up-composer { padding: 14px 20px 18px; border-top: 1px solid var(--border-muted); background: var(--canvas-subtle); }
-.follow-up-composer textarea { width: 100%; padding: 10px 14px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--canvas-default); color: var(--fg-default); font-size: var(--text-sm); line-height: 1.6; font-family: inherit; resize: vertical; min-height: 42px; max-height: 200px; transition: border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out); }
-.follow-up-composer textarea:focus { outline: none; border-color: var(--accent-fg); box-shadow: 0 0 0 3px var(--accent-subtle); }
+/* 追问输入框：紧贴对话列表底部，毛玻璃浮层效果，与主任务输入框风格统一但更紧凑 */
+.follow-up-composer {
+  padding: 14px 20px 18px;
+  border-top: 1px solid var(--border-muted);
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+.follow-up-composer textarea {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--canvas-default);
+  color: var(--fg-default);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  font-family: inherit;
+  resize: vertical;
+  min-height: 44px;
+  max-height: 200px;
+  transition: border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
+}
+.follow-up-composer textarea:focus { outline: none; border-color: var(--accent-fg); box-shadow: 0 0 0 3px var(--accent-ring); }
+/* 暗色模式：毛玻璃用深底半透明，避免亮色 rgba 在深底上形成白雾 */
+[data-theme="dark"] .follow-up-composer { background: rgba(26, 27, 30, 0.72); }
 .follow-up-composer textarea:disabled { background: var(--canvas-subtle); color: var(--fg-subtle); cursor: not-allowed; }
 .input-hint { display: block; margin-top: 4px; color: var(--fg-subtle); font-size: var(--text-xs); text-align: right; }
 .follow-up-actions { display: flex; justify-content: flex-end; margin-top: 8px; }

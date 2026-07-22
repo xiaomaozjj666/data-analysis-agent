@@ -1,61 +1,61 @@
 /* ==========================================================================
-   Data Desk 设计系统 · 柔和浅色商务 B 端（v3 升级）
+   Data Desk 设计系统 · 极简高级感（Linear/Vercel/Notion 风格 v5 升级）
    --------------------------------------------------------------------------
    设计原则：
-   1. 柔和浅色商务 B 端：低饱和蓝主色 + 暖灰画布，状态色仅承载语义；
-   2. 8px 主圆角 + 1px 细边框 + 柔和阴影，三层分层（侧栏/主面板/卡片）；
-   3. 全部交互元素共享同一组过渡曲线，hover 变色+轻微上浮、active 下压；
+   1. 极简高级：低饱和深靛蓝主色 + 冷灰画布，状态色仅承载语义；
+   2. 8px 主圆角 + 1px 细边框 + 柔和散开阴影，三层分层（侧栏/主面板/卡片）；
+   3. 全部交互元素共享同一组 150-250ms ease-out 过渡，克制且高级；
    4. 字号收敛为 7 档阶梯（11–26px），字重仅用 500/600/700，弱化次要文字；
    5. 留白节奏：4/8/12/16/24/32/48 八档标尺，消除拥挤与错落；
-   6. 页面底色为极淡线性渐变，告别纯白死板，提升层次感。
+   6. 页面底色为极淡多层渐变，营造空间纵深感，告别纯白死板。
    ========================================================================== */
 
 /* ---------- 设计令牌 ---------- */
 :root {
-  font-family: "IBM Plex Sans", "Noto Sans SC", -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", sans-serif;
-  color: #1a2332;
-  background: #eef2f7;
+  font-family: "Inter", "IBM Plex Sans", "Noto Sans SC", -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  color: #1a1d29;
+  background: #f6f7f9;
   font-synthesis: none;
   letter-spacing: 0;
 
-  /* 文本色（对白底均满足 WCAG AA 4.5:1） */
-  --fg-default: #1a2332;   /* 标题、正文主色（加深，提升权威感） */
-  --fg-muted: #5a6577;     /* 次级说明文字 */
-  --fg-subtle: #8a94a6;    /* 辅助标签、占位符 */
+  /* 文本色（冷灰调，对白底均满足 WCAG AA 4.5:1） */
+  --fg-default: #1a1d29;   /* 标题、正文主色（近黑带冷色调） */
+  --fg-muted: #6b7280;     /* 次级说明文字（中灰） */
+  --fg-subtle: #9ca3af;    /* 辅助标签、占位符（浅灰） */
 
-  /* 画布色（暖灰调，比纯灰更柔和） */
+  /* 画布色（更洁净的白，带冷色调） */
   --canvas-default: #ffffff;  /* 卡片、弹层 */
-  --canvas-subtle: #f4f6f9;   /* 表头、内凹底 */
-  --canvas-inset: #eaeef3;    /* 分段控件槽、内凹底 */
-  --canvas-page: #eef2f7;     /* 页面底色（极淡渐变基准） */
+  --canvas-subtle: #f4f5f7;   /* 表头、内凹底 */
+  --canvas-inset: #eceef1;    /* 分段控件槽、内凹底 */
+  --canvas-page: #f6f7f9;     /* 页面底色（极淡渐变基准） */
 
   /* 分层底色：侧栏 / 顶栏独立底色，强化三层分层 */
-  --sidebar-bg: #f7f9fc;      /* 侧栏底色，比主区略深一档 */
+  --sidebar-bg: #fafbfc;      /* 侧栏底色，极淡偏白 */
   --topbar-bg: #ffffff;       /* 顶栏白底，与主画布分区 */
 
-  /* 边框色 */
-  --border-default: #d4dae3;
-  --border-muted: #e6eaf0;
-  --border-strong: #a8b2c0;  /* hover 加深 */
+  /* 边框色（更冷、更克制） */
+  --border-default: #e4e6ea;
+  --border-muted: #eef0f3;
+  --border-strong: #c7ccd4;  /* hover 加深 */
 
-  /* 品牌色：低饱和商务蓝（v3 降饱和，更柔和克制） */
-  --accent-fg: #3b6cb3;
-  --accent-hover: #2f569a;
-  --accent-subtle: #e3edf8;
-  --accent-ring: rgba(59, 108, 179, 0.16);
+  /* 品牌色：深靛蓝（Linear 风格） */
+  --accent-fg: #5b5bd6;       /* 深靛蓝 */
+  --accent-hover: #4a4abf;    /* hover 加深 */
+  --accent-subtle: #eeeef9;   /* 极淡靛蓝晕染 */
+  --accent-ring: rgba(91, 91, 214, 0.15);
 
-  /* 语义状态色（保持，已满足语义） */
-  --success-fg: #15803d;
-  --success-subtle: #dcfce7;
-  --attention-fg: #854d0e;
-  --danger-fg: #b91c1c;
+  /* 语义状态色：薄荷绿表示成功（更轻、更现代） */
+  --success-fg: #0d9488;      /* 薄荷青 */
+  --success-subtle: #d1fae5;  /* 浅薄荷背景 */
+  --attention-fg: #d97706;
+  --danger-fg: #dc2626;
   --danger-subtle: #fef2f2;
   --danger-border: #fecaca;
 
   /* 中性控件底（列表 hover / 徽章 / 骨架屏） */
-  --control-hover: #e9edf3;
-  --control-active: #dde3ec;
-  --neutral-muted: #eaeef3;
+  --control-hover: #f0f1f3;
+  --control-active: #e6e8ec;
+  --neutral-muted: #eceef1;
 
   /* 圆角（8px 主圆角，统一所有组件） */
   --radius-sm: 4px;
@@ -63,18 +63,19 @@
   --radius-lg: 12px;
   --radius-full: 999px;
 
-  /* 阴影（更柔和、更有深度，分层更清晰） */
-  --shadow-xs: 0 1px 2px rgba(26, 35, 50, 0.04);
-  --shadow-sm: 0 2px 4px rgba(26, 35, 50, 0.06), 0 1px 2px rgba(26, 35, 50, 0.04);
-  --shadow-md: 0 6px 16px rgba(26, 35, 50, 0.08), 0 2px 4px rgba(26, 35, 50, 0.04);
-  --shadow-lg: 0 12px 32px rgba(26, 35, 50, 0.12), 0 4px 8px rgba(26, 35, 50, 0.06);
-  --shadow-xl: 0 24px 64px rgba(26, 35, 50, 0.16), 0 8px 16px rgba(26, 35, 50, 0.08);
+  /* 阴影（更柔和、更散开，高级质感） */
+  --shadow-xs: 0 1px 2px rgba(17, 24, 39, 0.04);
+  --shadow-sm: 0 1px 3px rgba(17, 24, 39, 0.05), 0 1px 2px rgba(17, 24, 39, 0.03);
+  --shadow-md: 0 4px 12px rgba(17, 24, 39, 0.08), 0 1px 3px rgba(17, 24, 39, 0.04);
+  --shadow-lg: 0 8px 24px rgba(17, 24, 39, 0.10), 0 2px 8px rgba(17, 24, 39, 0.06);
+  --shadow-xl: 0 16px 48px rgba(17, 24, 39, 0.14), 0 4px 16px rgba(17, 24, 39, 0.08);
 
-  /* 动效：同一组缓动曲线 + 三档时长 */
-  --ease-out: cubic-bezier(0.2, 0, 0.13, 1);
-  --duration-fast: 0.12s;
-  --duration: 0.18s;
-  --duration-slow: 0.26s;
+  /* 动效：150-250ms 区间，ease-out 高级感 */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);  /* 更明显的 ease-out */
+  --ease-spring: cubic-bezier(0.2, 0, 0.13, 1);
+  --duration-fast: 0.15s;
+  --duration: 0.2s;
+  --duration-slow: 0.25s;
 
   /* 字号阶梯（标题加大，强化层级） */
   --text-xs: 11px;
@@ -100,7 +101,7 @@
 }
 
 /* ==========================================================================
-   v4 增量：暗色模式 + 9 项主流 Agent 体验组件
+   暗色模式 + 9 项主流 Agent 体验组件
    --------------------------------------------------------------------------
    全部基于已有 CSS 变量体系扩展，暗色模式只覆盖 :root 变量，
    组件样式同时兼容亮/暗两种主题。
@@ -109,55 +110,55 @@
 /* ---------- 暗色模式：覆盖设计令牌 ---------- */
 [data-theme="dark"] {
   /* 文本：亮字暗底，对比度仍满足 WCAG AA */
-  --fg-default: #e6ecf3;
-  --fg-muted: #a3acba;
-  --fg-subtle: #6b7585;
+  --fg-default: #e8eaed;
+  --fg-muted: #9aa0a6;
+  --fg-subtle: #5f6368;
 
-  /* 画布：深蓝灰，分层与亮色保持一致语义 */
-  --canvas-default: #1c2433;
-  --canvas-subtle: #242d3e;
-  --canvas-inset: #2a3447;
-  --canvas-page: #161b26;
+  /* 画布：深冷灰，分层与亮色保持一致语义 */
+  --canvas-default: #1a1b1e;
+  --canvas-subtle: #242528;
+  --canvas-inset: #2a2b2f;
+  --canvas-page: #131415;
 
   /* 分层底色 */
-  --sidebar-bg: #1a2030;
-  --topbar-bg: #1c2433;
+  --sidebar-bg: #161719;
+  --topbar-bg: #1a1b1e;
 
   /* 边框：暗色下加深但保留可见性 */
-  --border-default: #3a4458;
-  --border-muted: #2a3447;
-  --border-strong: #5a6478;
+  --border-default: #2e2f33;
+  --border-muted: #242528;
+  --border-strong: #4a4b50;
 
   /* 品牌色：暗色下提亮一档，保持对比度 */
-  --accent-fg: #5b8cd6;
-  --accent-hover: #6f9fdc;
-  --accent-subtle: #1f2d44;
-  --accent-ring: rgba(91, 140, 214, 0.28);
+  --accent-fg: #7c7cf0;       /* 暗色下更亮的靛蓝 */
+  --accent-hover: #9a9af5;
+  --accent-subtle: #1f1f3a;
+  --accent-ring: rgba(124, 124, 240, 0.25);
 
   /* 语义色：暗色下提亮 */
-  --success-fg: #4ade80;
-  --success-subtle: #1f3a2a;
+  --success-fg: #2dd4bf;
+  --success-subtle: #134e4a;
   --attention-fg: #fbbf24;
   --danger-fg: #f87171;
-  --danger-subtle: #3a1f1f;
-  --danger-border: #5a2a2a;
+  --danger-subtle: #2a1212;
+  --danger-border: #4a2020;
 
   /* 中性控件 */
-  --control-hover: #2a3447;
-  --control-active: #3a4458;
-  --neutral-muted: #2a3447;
+  --control-hover: #2a2b2f;
+  --control-active: #34353a;
+  --neutral-muted: #2a2b2f;
 
   /* 阴影：暗色下减弱（深底上阴影本就不显眼） */
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.25);
-  --shadow-md: 0 6px 16px rgba(0, 0, 0, 0.45), 0 2px 4px rgba(0, 0, 0, 0.3);
-  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.55), 0 4px 8px rgba(0, 0, 0, 0.35);
-  --shadow-xl: 0 24px 64px rgba(0, 0, 0, 0.65), 0 8px 16px rgba(0, 0, 0, 0.45);
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.45), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(0, 0, 0, 0.4);
+  --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.7), 0 4px 16px rgba(0, 0, 0, 0.5);
 }
 
 /* 暗色模式下页面渐变也要切换，避免亮色渐变在深底上突兀 */
 [data-theme="dark"] body {
-  background: linear-gradient(135deg, #1a2030 0%, #161b26 45%, #131822 100%) fixed;
+  background: linear-gradient(135deg, #1a1b1e 0%, #161719 45%, #131415 100%) fixed;
 }
 
 /* 暗色下 iframe 内的 ECharts 图表无法感知主题，预览模态框给一个深底适配 */
@@ -166,21 +167,21 @@
 }
 
 /* 暗色下滚动条颜色适配深底 */
-[data-theme="dark"] ::-webkit-scrollbar-thumb { background: #3a4458; border: 3px solid transparent; border-radius: 8px; background-clip: content-box; }
-[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background: #4a5468; border: 3px solid transparent; background-clip: content-box; }
-[data-theme="dark"] * { scrollbar-color: #3a4458 transparent; }
+[data-theme="dark"] ::-webkit-scrollbar-thumb { background: #2e2f33; border: 3px solid transparent; border-radius: 8px; background-clip: content-box; }
+[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background: #4a4b50; border: 3px solid transparent; background-clip: content-box; }
+[data-theme="dark"] * { scrollbar-color: #2e2f33 transparent; }
 
 /* 暗色下硬编码的浅色背景适配：retry-button hover、resume-button hover、状态点 */
-[data-theme="dark"] .retry-button:hover { background: #4a2a2a; border-color: var(--danger-fg); }
-[data-theme="dark"] .resume-button:hover { background: #16a34a; border-color: #16a34a; }
-[data-theme="dark"] .history-status-dot.is-cancelled { background: #6b7585; }
-[data-theme="dark"] .history-status-dot.is-idle { background: #4a5468; }
+[data-theme="dark"] .retry-button:hover { background: #4a2020; border-color: var(--danger-fg); }
+[data-theme="dark"] .resume-button:hover { background: #2dd4bf; border-color: #2dd4bf; }
+[data-theme="dark"] .history-status-dot.is-cancelled { background: #5f6368; }
+[data-theme="dark"] .history-status-dot.is-idle { background: #4a4b50; }
 [data-theme="dark"] .model-line i,
 [data-theme="dark"] .sidebar-foot i,
 [data-theme="dark"] .api-status i,
-[data-theme="dark"] .storage-status i { background: #6b7585; }
+[data-theme="dark"] .storage-status i { background: #5f6368; }
 
 /* 暗色下折叠遮罩渐变要改为深底，否则亮色渐变在深底上形成白条 */
 [data-theme="dark"] .report-body:not(.is-expanded)::after {
-  background: linear-gradient(180deg, rgba(28, 36, 51, 0) 0%, var(--canvas-default) 90%);
+  background: linear-gradient(180deg, rgba(26, 27, 30, 0) 0%, var(--canvas-default) 90%);
 }

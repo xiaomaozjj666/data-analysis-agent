@@ -1,7 +1,7 @@
 /* ---------- 侧栏 ---------- */
 .wordmark { height: 48px; display: flex; align-items: center; gap: 10px; padding: 0 8px; }
 /* 品牌色小方块：代替图标的极简标识，加柔和光晕提升品牌感 */
-.wordmark::before { content: ""; width: 11px; height: 11px; border-radius: 3px; background: var(--accent-fg); box-shadow: 0 0 0 3px var(--accent-ring), 0 2px 6px rgba(59, 108, 179, 0.28); }
+.wordmark::before { content: ""; width: 12px; height: 12px; border-radius: 3px; background: var(--accent-fg); box-shadow: 0 0 0 3px var(--accent-ring), 0 2px 8px rgba(91, 91, 214, 0.3); }
 .wordmark strong { font-size: 17px; font-weight: 700; letter-spacing: 0.01em; }
 .wordmark span { color: var(--fg-subtle); font-family: var(--font-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.08em; }
 
@@ -27,7 +27,9 @@
 .new-analysis:active { transform: translateY(0); box-shadow: var(--shadow-xs); }
 .new-analysis:disabled { opacity: 0.55; transform: none; }
 
-.sidebar-section { margin-top: 28px; }
+/* 四模块分区：细分隔线 + 顶部留白，强化模块层级（首个分区不画线） */
+.sidebar-section { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border-muted); }
+.sidebar-section:first-of-type { border-top: none; padding-top: 0; }
 
 .upload-button, .dataset-button {
   width: 100%;
@@ -58,10 +60,10 @@
   border-style: solid;
   color: var(--accent-fg);
   background: var(--accent-subtle);
-  transform: translateY(-1px);
+  transform: translateX(2px);
   box-shadow: var(--shadow-sm);
 }
-.upload-button:active { transform: translateY(0); box-shadow: none; }
+.upload-button:active { transform: translateX(0); box-shadow: none; }
 .upload-button:disabled { transform: none; }
 /* 数据集按钮：当前数据高亮，左侧品牌色竖条 + 浅底标识活跃态 */
 .dataset-button {
@@ -76,14 +78,15 @@
   content: "";
   position: absolute;
   left: 0;
-  top: 8px;
-  bottom: 8px;
+  top: 6px;
+  bottom: 6px;
   width: 3px;
   border-radius: 0 2px 2px 0;
   background: var(--accent-fg);
+  box-shadow: 0 0 8px var(--accent-ring);
 }
-.dataset-button:hover { background: var(--canvas-subtle); border-color: var(--border-default); box-shadow: var(--shadow-sm); transform: translateY(-1px); }
-.dataset-button:active { transform: translateY(0); box-shadow: var(--shadow-xs); }
+.dataset-button:hover { background: var(--canvas-subtle); border-color: var(--border-default); box-shadow: var(--shadow-sm); transform: translateX(2px); }
+.dataset-button:active { transform: translateX(0); box-shadow: var(--shadow-xs); }
 .dataset-button > svg:first-child { color: var(--accent-fg); flex: 0 0 auto; }
 .dataset-button > svg:last-child { margin-left: auto; color: var(--fg-subtle); flex: 0 0 auto; transition: color var(--duration) var(--ease-out), transform var(--duration) var(--ease-out); }
 .dataset-button:hover > svg:last-child { color: var(--accent-fg); transform: rotate(-60deg); }
@@ -110,8 +113,8 @@
   box-shadow: var(--shadow-xs);
   transition: background-color var(--duration) var(--ease-out), border-color var(--duration) var(--ease-out), box-shadow var(--duration) var(--ease-out), transform var(--duration) var(--ease-out);
 }
-.model-line:hover { background: var(--canvas-subtle); border-color: var(--border-default); box-shadow: var(--shadow-sm); transform: translateY(-1px); }
-.model-line:active { transform: translateY(0); box-shadow: var(--shadow-xs); }
+.model-line:hover { background: var(--canvas-subtle); border-color: var(--border-default); box-shadow: var(--shadow-sm); transform: translateX(2px); }
+.model-line:active { transform: translateX(0); box-shadow: var(--shadow-xs); }
 .model-line > span, .sidebar-foot > span, .api-status, .storage-status > span { display: flex; align-items: center; gap: 8px; }
 .model-line > span > span { min-width: 0; }
 .model-line strong, .model-line small { display: block; }
@@ -224,9 +227,9 @@
   box-shadow: var(--shadow-xs);
   color: var(--fg-muted);
   font-size: var(--text-xs);
-  transition: border-color var(--duration) var(--ease-out), box-shadow var(--duration) var(--ease-out);
+  transition: border-color var(--duration) var(--ease-out), box-shadow var(--duration) var(--ease-out), transform var(--duration) var(--ease-out);
 }
-.sidebar-foot:hover { border-color: var(--border-default); box-shadow: var(--shadow-sm); }
+.sidebar-foot:hover { border-color: var(--border-default); box-shadow: var(--shadow-sm); transform: translateX(2px); }
 .sidebar-foot small { color: var(--fg-subtle); }
 .storage-status {
   display: flex;
@@ -240,7 +243,37 @@
   box-shadow: var(--shadow-xs);
   color: var(--fg-muted);
   font-size: var(--text-xs);
-  transition: border-color var(--duration) var(--ease-out), box-shadow var(--duration) var(--ease-out);
+  transition: border-color var(--duration) var(--ease-out), box-shadow var(--duration) var(--ease-out), transform var(--duration) var(--ease-out);
 }
-.storage-status:hover { border-color: var(--border-default); box-shadow: var(--shadow-sm); }
+.storage-status:hover { border-color: var(--border-default); box-shadow: var(--shadow-sm); transform: translateX(2px); }
 .storage-status small { color: var(--fg-subtle); }
+
+/* ---------- 状态指示灯：精致圆点 + 语义色光晕（覆盖 buttons.css 默认值）---------- */
+/* 8px 圆点 + 过渡，在线/降级用语义色 + 柔和光环；idle 用中性灰。
+   来源在 buttons.css，此处因侧栏加载顺序更靠后而生效。 */
+.model-line i, .sidebar-foot i, .api-status i, .storage-status i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #c7ccd4;
+  flex: 0 0 auto;
+  transition: background-color var(--duration) var(--ease-out), box-shadow var(--duration) var(--ease-out);
+}
+i.online {
+  background: var(--success-fg);
+  box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.15);
+}
+i.warning {
+  background: var(--attention-fg);
+  box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.15);
+}
+/* 暗色模式：tokens.css 的 [data-theme="dark"] .model-line i 等规则特异性更高，
+   会把 online/warning 也染成灰；此处用同等特异性 + 更靠后的源顺序恢复语义色。 */
+[data-theme="dark"] i.online {
+  background: var(--success-fg);
+  box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.18);
+}
+[data-theme="dark"] i.warning {
+  background: var(--attention-fg);
+  box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.18);
+}
