@@ -189,6 +189,29 @@ function wait(milliseconds) {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
+// 分析完成/失败通知：用户切到其他 tab 时通过 Notification API + title 闪烁提醒
+let _titleFlashTimer = null;
+let _originalTitle = "";
+function notifyAnalysisDone(title, body) {
+  if (document.visibilityState === "hidden") {
+    if ("Notification" in window && Notification.permission === "granted") {
+      try { new Notification(title, { body, icon: "/favicon.ico" }); } catch (_) { /* noop */ }
+    }
+    _originalTitle = _originalTitle || document.title;
+    let toggle = false;
+    const flash = () => {
+      document.title = toggle ? `✅ ${title}` : _originalTitle;
+      toggle = !toggle;
+    };
+    flash();
+    _titleFlashTimer = window.setInterval(flash, 1000);
+    window.addEventListener("focus", () => {
+      if (_titleFlashTimer) { window.clearInterval(_titleFlashTimer); _titleFlashTimer = null; }
+      document.title = _originalTitle;
+    }, { once: true });
+  }
+}
+
 // 把秒数格式化为细颗粒时长：
 //   < 60s    → "23 秒"   （直观，避免 "0:23" 显得突兀）
 //   < 1h     → "12:34"   （分秒，业界通用格式）
@@ -890,13 +913,14 @@ function markdownComponents(artifacts, onPreview, theme) {
 const PlanPanel = React.memo(function PlanPanel({ plan, completed, running, currentNodeTitle, elapsedSeconds, toolTrace }) {
   const completedIds = new Set((completed || []).map((item) => item.id));
   const doneCount = plan.filter((item) => completedIds.has(item.id)).length;
-  // 显示耗时：运行中显示"已耗时"，完成时显示"总耗时"。
-  // 当 elapsedSeconds 为 null（如未运行且没有完成记录）时不显示。
   const hasTiming = elapsedSeconds != null && elapsedSeconds >= 0;
   const elapsedLabel = running ? "已耗时" : plan.length ? "总耗时" : "";
   const isCompleted = !running && plan.length > 0;
-  // 工具调用时间线：显示最近 8 条，让用户看到 ReAct 内部正在做什么
-  const recentTools = (toolTrace || []).slice(-8);
+  const [toolsExpanded, setToolsExpanded] = useState(false);
+  const allTools = toolTrace || [];
+  const TOOL_PREVIEW_COUNT = 8;
+  const recentTools = toolsExpanded ? allTools : allTools.slice(-TOOL_PREVIEW_COUNT);
+  const hasMoreTools = allTools.length > TOOL_PREVIEW_COUNT;
 
   return (
     <aside className="plan-panel" aria-label="执行记录">
@@ -972,13 +996,23 @@ const PlanPanel = React.memo(function PlanPanel({ plan, completed, running, curr
           <div className="tool-trace-label">
             <Activity size={12} />
             <span>工具调用</span>
-            <small>{recentTools.length}</small>
+            <small>{allTools.length}</small>
           </div>
           <ul className="tool-trace-list">
             {recentTools.map((tool) => (
               <ToolTraceItem key={tool.call_id} tool={tool} />
             ))}
           </ul>
+          {hasMoreTools && (
+            <button
+              type="button"
+              className="tool-trace-toggle"
+              onClick={() => setToolsExpanded((v) => !v)}
+              aria-expanded={toolsExpanded}
+            >
+              {toolsExpanded ? "收起" : `展开全部 (${allTools.length})`}
+            </button>
+          )}
         </div>
       )}
 
@@ -1230,7 +1264,12 @@ const HistoryPanel = React.memo(function HistoryPanel({ sessions, currentSession
   const filtered = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     if (!q) return sessions || [];
-    return (sessions || []).filter((s) => (s.filename || "").toLowerCase().includes(q));
+    return (sessions || []).filter((s) => {
+      const filename = (s.filename || "").toLowerCase();
+      const task = (s.current_task || s.task || "").toLowerCase();
+      const response = (s.last_result?.response || "").toLowerCase();
+      return filename.includes(q) || task.includes(q) || response.includes(q);
+    });
   }, [sessions, searchQuery]);
   const groups = useMemo(() => groupSessionsByTime(filtered), [filtered]);
   const isEmpty = !sessions?.length && !loading;
@@ -1357,11 +1396,13 @@ const DataTable = React.memo(function DataTable({ rows }) {
   );
 });
 
-function EmptyWorkspace({ uploading, onUpload }) {
+function EmptyWorkspace({ uploading, onUpload, onFileDrop }) {
   // 鼠标跟随光斑：跟踪鼠标在 grid 上的相对位置，更新 CSS 变量，
   // 由 styles.css 的 radial-gradient 渲染柔和光晕。参考 Linear/Vercel
   // 空状态的 spotlight 效果——比静态装饰更有"活物感"。
   const gridRef = useRef(null);
+  const [dragOver, setDragOver] = useState(false);
+  const dragCounter = useRef(0);
   const handleMouseMove = useCallback((event) => {
     const grid = gridRef.current;
     if (!grid) return;
@@ -1372,8 +1413,36 @@ function EmptyWorkspace({ uploading, onUpload }) {
     grid.style.setProperty("--mouse-y", `${y}%`);
   }, []);
 
+  const handleDragEnter = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter.current += 1;
+    if (e.dataTransfer?.types?.includes("Files")) setDragOver(true);
+  }, []);
+  const handleDragLeave = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter.current -= 1;
+    if (dragCounter.current <= 0) { dragCounter.current = 0; setDragOver(false); }
+  }, []);
+  const handleDragOver = useCallback((e) => { e.preventDefault(); e.stopPropagation(); }, []);
+  const handleDrop = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter.current = 0;
+    setDragOver(false);
+    const file = e.dataTransfer?.files?.[0];
+    if (file && onFileDrop) onFileDrop(file);
+  }, [onFileDrop]);
+
   return (
-    <section className="empty-workspace">
+    <section
+      className={`empty-workspace${dragOver ? " is-drag-over" : ""}`}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
       <div
         className="empty-grid"
         aria-hidden="true"
@@ -1388,7 +1457,7 @@ function EmptyWorkspace({ uploading, onUpload }) {
       <div className="empty-copy">
         <span className="section-kicker">新建分析</span>
         <h2>从一份数据开始</h2>
-        <p>CSV、Excel、JSON 或 Parquet</p>
+        <p>CSV、Excel、JSON 或 Parquet{dragOver ? " · 松开以上传" : " · 或拖拽文件到此"}</p>
         <button className="primary" onClick={onUpload} disabled={uploading}>
           {uploading ? <LoaderCircle className="spin" size={17} /> : <Upload size={17} />}
           {uploading ? "正在读取" : "选择数据文件"}
@@ -1534,7 +1603,12 @@ function App() {
   const [result, setResult] = useState(null);
   const [running, setRunning] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setErrorRaw] = useState("");
+  const [errorExpanded, setErrorExpanded] = useState(false);
+  const setError = useCallback((msg) => {
+    setErrorRaw(msg);
+    if (msg) setErrorExpanded(false);
+  }, []);
   const [showKey, setShowKey] = useState(false);
   const [keyOpen, setKeyOpen] = useState(false);
   const [apiKey, setApiKey] = useState("");
@@ -1773,7 +1847,13 @@ function App() {
       fetchHistory();
     };
     const timer = window.setInterval(poll, interval);
-    return () => window.clearInterval(timer);
+    // 回到前台时立即刷新一次，避免等待下一个 interval tick
+    const onVisible = () => { if (!document.hidden) fetchHistory(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [authReady, authRequired, authenticated, running]);
 
   // 全局键盘快捷键：Cmd+K 命令面板、? 快捷键帮助、T 切换主题、Cmd+B 折叠侧栏、
@@ -2032,7 +2112,7 @@ function App() {
     setRetryChecking(false);
     setCurrentNodeTitle("");
     setRetryOffer(null);
-    setError("已发送停止请求；如果模型正在响应，会在本轮响应结束后安全停止。");
+    setError("分析已停止。如果模型正在响应，后端会在本轮结束后安全退出，已完成步骤不会丢失。");
   }
 
   // 轻量追问：基于已有分析结果继续提问，走 /chat/stream 端点。
@@ -2207,6 +2287,9 @@ function App() {
 
   async function startAnalysis(nextTask = task, resumeFrom = null) {
     if (!session || !nextTask.trim() || running) return;
+    if ("Notification" in window && Notification.permission === "default") {
+      try { await Notification.requestPermission(); } catch (_) { /* noop */ }
+    }
     setRunning(true);
     setError("");
     // 断点续跑时不清空 plan/completed，让用户看到已完成的步骤保持绿色对勾状态；
@@ -2367,6 +2450,7 @@ function App() {
               if (data.reasoning) setReasoning(data.reasoning);
               if (data.usage) setUsage(data.usage);
             }
+            notifyAnalysisDone("分析已完成", nextTask || "数据分析任务已完成");
           } else if (event === "cancelled") {
             // 仅在用户未通过 stopAnalysis 主动取消时显示后端取消消息，避免重复 setError。
             if (!cancelRequested.current && isViewingRunningSession) {
@@ -2377,6 +2461,7 @@ function App() {
               setRetryOffer({ task: nextTask, reason: "cancelled", canResume: true, plan, completed });
             }
           } else if (event === "error") {
+            notifyAnalysisDone("分析失败", data.message || "数据分析任务执行出错");
             throw new Error(data.message || "分析失败");
           } else if (event === "heartbeat") {
             // 仅用于保活，重置 idle timer 即可；不更新 UI。
@@ -2675,7 +2760,7 @@ function App() {
           <button className="model-line" onClick={() => setKeyOpen((value) => !value)}>
             <span>
               <i className={settings?.configured ? "online" : ""} />
-              <span><strong>{settings?.model || "deepseek-v4-pro"}</strong><small>{settings?.configured ? "已连接" : "等待配置"}</small></span>
+              <span><strong>{settings?.model || "deepseek-chat"}</strong><small>{settings?.configured ? "已连接" : "等待配置"}</small></span>
             </span>
             <Settings2 size={15} />
           </button>
@@ -2770,7 +2855,19 @@ function App() {
         {error && (
           <div className="error-banner" role="alert">
             <AlertTriangle size={16} />
-            <span>{error}</span>
+            <span className={error.length > 120 ? (errorExpanded ? "" : "is-clamped") : ""}>
+              {error}
+            </span>
+            {error.length > 120 && (
+              <button
+                type="button"
+                className="error-expand-toggle"
+                onClick={() => setErrorExpanded((v) => !v)}
+                aria-expanded={errorExpanded}
+              >
+                {errorExpanded ? "收起" : "查看详情"}
+              </button>
+            )}
             {retryOffer && !running && retryOffer.canResume && (
               <button
                 type="button"
@@ -2833,7 +2930,7 @@ function App() {
         )}
 
         {!session ? (
-          <EmptyWorkspace uploading={uploading} onUpload={() => fileInput.current?.click()} />
+          <EmptyWorkspace uploading={uploading} onUpload={() => fileInput.current?.click()} onFileDrop={uploadFile} />
         ) : (
           <>
             <section className="dataset-header">
