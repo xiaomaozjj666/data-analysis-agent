@@ -684,3 +684,39 @@ def test_chat_stream_rejects_concurrent_analysis(tmp_path, monkeypatch):
     assert response.status_code == 409
     assert "正在运行" in response.json()["detail"]
 
+
+def test_delete_session_removes_workspace_and_history_entry(tmp_path, monkeypatch):
+    """DELETE /api/sessions/{id} 应清理工作区目录、从历史列表消失。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = client.post(
+        "/api/sessions",
+        files={"file": ("sales.csv", b"region,sales\nEast,100\nWest,200\n", "text/csv")},
+    ).json()
+    session_id = uploaded["id"]
+
+    # 删除前：会话存在于历史列表，工作区目录存在
+    history_before = client.get("/api/sessions?limit=30").json()["sessions"]
+    assert any(s["id"] == session_id for s in history_before)
+    session_dir = tmp_path / "runs" / session_id
+    assert session_dir.is_dir()
+
+    # 删除
+    delete_response = client.delete(f"/api/sessions/{session_id}")
+    assert delete_response.status_code == 204
+
+    # 删除后：工作区目录已清理，历史列表不再包含该会话
+    assert not session_dir.exists()
+    history_after = client.get("/api/sessions?limit=30").json()["sessions"]
+    assert not any(s["id"] == session_id for s in history_after)
+
+    # 再次访问该会话应 404
+    assert client.get(f"/api/sessions/{session_id}").status_code == 404
+
+
+def test_delete_session_rejects_invalid_session_id(tmp_path, monkeypatch):
+    """非法 session_id（格式不符）应返回 404 而非删除任意目录。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    assert client.delete("/api/sessions/!invalid!").status_code == 404
+

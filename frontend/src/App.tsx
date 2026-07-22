@@ -778,6 +778,45 @@ function App() {
     }
   }, [fetchHistory, selectSession]);
 
+  // 删除会话：调用 DELETE 端点清理服务端数据，成功后刷新历史列表。
+  // 若删除的是当前正在查看的会话，清空前端状态回到空状态，让用户
+  // 重新上传数据开始新分析，避免停留在已失效的会话视图上。
+  const deleteSession = useCallback(async (item: HistorySessionItem) => {
+    try {
+      const response = await fetch(`${API_URL}/api/sessions/${item.id}`, {
+        method: "DELETE",
+        headers: requestHeaders(),
+      });
+      if (!response.ok) {
+        const contentType = response.headers.get("content-type") || "";
+        const payload: unknown = contentType.includes("application/json")
+          ? await response.json().catch(() => ({}))
+          : await response.text().catch(() => "");
+        throw new Error(describeApiError(payload, response.status));
+      }
+      // 删除的是当前会话：清空状态回到空工作台
+      if (session?.id === item.id) {
+        setSession(null);
+        setResult(null);
+        setPlan([]);
+        setCompleted([]);
+        setCurrentNodeTitle("");
+        setRetryOffer(null);
+        setFollowUps([]);
+        setAwaitingApproval(false);
+        setPendingObjective("");
+        setStepProgress(null);
+        setTask("");
+        retryController.current?.abort();
+        analysisController.current?.abort();
+        chatControllerRef.current?.abort();
+      }
+      fetchHistory();
+    } catch (err) {
+      setError(`删除会话失败：${err instanceof Error ? err.message : "未知错误"}`);
+    }
+  }, [session?.id, fetchHistory]);
+
   // === Batch 4：图表内联编辑 ===
   // 修改图表标题或主色，后端更新 HTML 和 JSON 产物；前端清除预览缓存后重新加载。
   const editChart = useCallback(async () => {
@@ -1660,6 +1699,7 @@ function App() {
           switchingSessionId={switchingSessionId}
           onExportSession={exportSession}
           onImportSession={importSession}
+          onDeleteSession={deleteSession}
         />
 
         <div className="sidebar-spacer" />

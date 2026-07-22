@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronRight,
   Download,
@@ -7,6 +7,7 @@ import {
   LoaderCircle,
   RefreshCw,
   Search,
+  Trash2,
   Upload,
 } from "lucide-react";
 import {
@@ -29,6 +30,7 @@ interface HistoryPanelProps {
   // Batch 4：会话导入/导出
   onExportSession?: (item: HistorySessionItem) => void;
   onImportSession?: (file: File) => void;
+  onDeleteSession?: (item: HistorySessionItem) => void;
 }
 
 // 历史会话面板：可折叠的侧边栏组件，按时间分组列出最近会话并允许切换。
@@ -42,7 +44,7 @@ interface HistoryPanelProps {
 //   4. 当前会话用左侧竖条 + 浅蓝底高亮，比单纯背景色更醒目。
 const HistoryPanel = React.memo(function HistoryPanel({
   sessions, currentSessionId, onSelect, onRefresh, loading, expanded, onToggle, historyError, switchingSessionId,
-  onExportSession, onImportSession,
+  onExportSession, onImportSession, onDeleteSession,
 }: HistoryPanelProps) {
   const [searchQuery, setSearchQuery] = useState("");
   // 隐藏的文件 input：触发浏览器原生文件选择对话框，选中后回调 onImportSession
@@ -145,43 +147,18 @@ const HistoryPanel = React.memo(function HistoryPanel({
               <div key={group.label} className="history-group">
                 <span className="history-group-label">{group.label}</span>
                 <ul className="history-list">
-                  {group.items.map((item) => {
-                    const active = item.id === currentSessionId;
-                    const status = describeHistoryStatus(item.analysis_status);
-                    return (
-                      <li key={item.id} className={active ? "is-active" : ""}>
-                        <button type="button" onClick={() => onSelect(item)} disabled={switchingSessionId != null}>
-                          <FileSpreadsheet size={14} />
-                          <span>
-                            <strong>{item.filename}</strong>
-                            <small>
-                              <span className={`history-status-dot ${status.dot}`} aria-hidden="true" />
-                              <span className="history-status-text">{status.label}</span>
-                              {item.has_result && <span className="history-result">· 有报告</span>}
-                              <span className="history-time">· {formatRelativeTime(item.created_at)}</span>
-                            </small>
-                          </span>
-                          {switchingSessionId === item.id ? (
-                            <LoaderCircle size={13} className="spin" />
-                          ) : (item.artifact_count || 0) > 0 ? (
-                            <em className="history-count">{item.artifact_count}</em>
-                          ) : null}
-                        </button>
-                        {/* 导出按钮：hover 时显示，点击后阻止冒泡避免触发切换 */}
-                        {onExportSession && (
-                          <button
-                            type="button"
-                            className="history-export"
-                            onClick={(e) => { e.stopPropagation(); onExportSession(item); }}
-                            title="导出会话"
-                            aria-label={`导出会话 ${item.filename}`}
-                          >
-                            <Download size={12} />
-                          </button>
-                        )}
-                      </li>
-                    );
-                  })}
+                  {group.items.map((item) => (
+                    <HistoryItem
+                      key={item.id}
+                      item={item}
+                      active={item.id === currentSessionId}
+                      switching={switchingSessionId === item.id}
+                      switchingAny={switchingSessionId != null}
+                      onSelect={onSelect}
+                      onExport={onExportSession}
+                      onDelete={onDeleteSession}
+                    />
+                  ))}
                 </ul>
               </div>
             ))
@@ -193,3 +170,104 @@ const HistoryPanel = React.memo(function HistoryPanel({
 });
 
 export default HistoryPanel;
+
+// 单个历史会话列表项：拆分为独立组件以管理内联删除确认态。
+// 二次确认采用内联展开而非全局 modal：点击删除图标后该行变为
+// "确认删除？[删除][取消]"，4 秒无操作自动收起，避免误删且不打断流程。
+interface HistoryItemProps {
+  item: HistorySessionItem;
+  active: boolean;
+  switching: boolean;
+  switchingAny: boolean;
+  onSelect: (item: HistorySessionItem) => void;
+  onExport?: (item: HistorySessionItem) => void;
+  onDelete?: (item: HistorySessionItem) => void;
+}
+
+const HistoryItem = React.memo(function HistoryItem({
+  item, active, switching, switchingAny, onSelect, onExport, onDelete,
+}: HistoryItemProps) {
+  const status = describeHistoryStatus(item.analysis_status);
+  const [confirming, setConfirming] = useState(false);
+  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // 4 秒后自动收起确认态，避免用户点开删除后走开回来仍停留在高危态
+  useEffect(() => {
+    if (!confirming) return;
+    confirmTimer.current = setTimeout(() => setConfirming(false), 4000);
+    return () => {
+      if (confirmTimer.current) clearTimeout(confirmTimer.current);
+    };
+  }, [confirming]);
+
+  if (confirming) {
+    return (
+      <li className="is-confirming">
+        <div className="history-confirm-bar">
+          <span>删除此会话？</span>
+          <button
+            type="button"
+            className="history-confirm-delete"
+            onClick={() => { if (onDelete) onDelete(item); }}
+          >
+            删除
+          </button>
+          <button
+            type="button"
+            className="history-confirm-cancel"
+            onClick={() => setConfirming(false)}
+          >
+            取消
+          </button>
+        </div>
+      </li>
+    );
+  }
+
+  return (
+    <li className={active ? "is-active" : ""}>
+      <button type="button" onClick={() => onSelect(item)} disabled={switchingAny}>
+        <FileSpreadsheet size={14} />
+        <span>
+          <strong>{item.filename}</strong>
+          <small>
+            <span className={`history-status-dot ${status.dot}`} aria-hidden="true" />
+            <span className="history-status-text">{status.label}</span>
+            {item.has_result && <span className="history-result">· 有报告</span>}
+            <span className="history-time">· {formatRelativeTime(item.created_at)}</span>
+          </small>
+        </span>
+        {switching ? (
+          <LoaderCircle size={13} className="spin" />
+        ) : (item.artifact_count || 0) > 0 ? (
+          <em className="history-count">{item.artifact_count}</em>
+        ) : null}
+      </button>
+      {/* 操作按钮组：导出 + 删除并排，hover 列表项时淡入，不遮挡会话文字 */}
+      <div className="history-actions">
+        {onExport && (
+          <button
+            type="button"
+            className="history-action-btn history-export"
+            onClick={(e) => { e.stopPropagation(); onExport(item); }}
+            title="导出会话"
+            aria-label={`导出会话 ${item.filename}`}
+          >
+            <Download size={12} />
+          </button>
+        )}
+        {onDelete && (
+          <button
+            type="button"
+            className="history-action-btn history-delete"
+            onClick={(e) => { e.stopPropagation(); setConfirming(true); }}
+            title="删除会话"
+            aria-label={`删除会话 ${item.filename}`}
+          >
+            <Trash2 size={12} />
+          </button>
+        )}
+      </div>
+    </li>
+  );
+});
