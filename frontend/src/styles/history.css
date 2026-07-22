@@ -31,12 +31,24 @@
 .history-import:hover { background: var(--control-hover); color: var(--fg-default); }
 .history-import svg { flex-shrink: 0; }
 
-/* Batch 4：导出会话按钮 —— hover 列表项时显示在右侧 */
-.history-export {
+/* 操作按钮组：导出 + 删除并排显示在列表项右侧，hover 列表项时淡入。
+   两个按钮紧凑排列在 .history-actions 容器中，容器右侧留出 padding
+   让计数徽章与操作组不重叠。整体不遮挡会话标题与状态文字。 */
+.history-actions {
   position: absolute;
   top: 50%;
-  right: 6px;
+  right: 4px;
   transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out);
+  z-index: 1;
+}
+.history-list li:hover .history-actions { opacity: 1; }
+.history-list li.is-active .history-actions { opacity: 1; }
+.history-action-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -48,19 +60,62 @@
   background: var(--canvas-default);
   color: var(--fg-muted);
   cursor: pointer;
-  opacity: 0;
-  transition: opacity var(--duration-fast) var(--ease-out), background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out);
+  transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out);
 }
-.history-list li:hover .history-export { opacity: 1; }
-.history-export:hover {
+.history-action-btn.history-export:hover {
   background: var(--accent-subtle);
   color: var(--accent-fg);
   border-color: var(--accent-fg);
 }
-/* 当前激活会话也显示导出按钮，让用户无需 hover 也能导出当前会话 */
-.history-list li.is-active .history-export { opacity: 1; }
-/* 给带导出按钮的列表项右侧留出空间，避免按钮盖住计数徽章 */
-.history-list li:has(.history-export) > button { padding-right: 32px; }
+.history-action-btn.history-delete:hover {
+  background: var(--danger-subtle);
+  color: var(--danger-fg);
+  border-color: var(--danger-fg);
+}
+/* 给带操作按钮组的列表项右侧留出空间，避免按钮盖住计数徽章 */
+.history-list li:has(.history-actions) > button { padding-right: 56px; }
+
+/* 内联删除确认条：替换原列表项内容，红色警示底 + 确认/取消按钮 */
+.history-list li.is-confirming { padding: 0 4px; }
+.history-confirm-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: var(--radius-md);
+  background: var(--danger-subtle);
+  color: var(--danger-fg);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  animation: rise var(--duration-fast) var(--ease-out);
+}
+.history-confirm-bar > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-confirm-delete {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--danger-fg);
+  color: #fff;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out);
+}
+.history-confirm-delete:hover { filter: brightness(0.9); }
+.history-confirm-cancel {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--canvas-default);
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+.history-confirm-cancel:hover { background: var(--canvas-subtle); color: var(--fg-default); }
 .history-empty { display: grid; justify-items: center; gap: 6px; margin: 8px 8px 12px; padding: 18px 12px; color: var(--fg-subtle); text-align: center; }
 .history-empty p { margin: 0; font-size: var(--text-sm); line-height: 1.55; }
 

@@ -477,6 +477,40 @@ class SessionRegistry:
             self._cleanup_remote(removed_ids)
         return results[:limit]
 
+    def delete(self, session_id: str) -> None:
+        """删除会话：移除内存记录、清理工作区目录与远端归档。
+
+        运行中的会话（run_lock 锁定）拒绝删除并抛出 409，避免 worker
+        正在写文件时清理目录导致状态不一致。调用方应先取消运行中的
+        分析再发起删除。
+
+        路径校验与 ``_restore_locked`` 一致：session_id 必须匹配
+        ``[a-zA-Z0-9_-]{1,80}``，且 resolve 后的 root 必须在 runs_dir
+        下，防止路径穿越删除任意目录。
+        """
+        import shutil
+
+        if not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", session_id):
+            raise HTTPException(status_code=404, detail="会话不存在。")
+        root = (self.runs_dir / session_id).resolve()
+        if self.runs_dir not in root.parents:
+            raise HTTPException(status_code=404, detail="会话不存在。")
+        with self._lock:
+            record = self._items.get(session_id)
+            if record is not None and record.run_lock.locked():
+                raise HTTPException(status_code=409, detail="会话正在运行，请先取消分析再删除。")
+            self._items.pop(session_id, None)
+        # 锁外清理目录（shutil.rmtree 是 I/O 密集，不持锁）
+        try:
+            shutil.rmtree(root, ignore_errors=True)
+        except OSError:
+            logger.exception("Failed to remove session directory %s", session_id)
+        # 清理远端归档：与 _cleanup_remote 一致，失败仅记录不抛出
+        try:
+            self.storage.delete_session(session_id)
+        except Exception:
+            logger.exception("Session storage delete failed for %s", session_id)
+
 
 bootstrap_settings = AgentSettings.from_env(provider="deepseek")
 session_storage = build_session_storage()
@@ -1366,6 +1400,17 @@ def cancel_analysis(session_id: str) -> dict[str, str]:
     except Exception:
         logger.exception("Failed to persist cancelling status for %s — may show stale state on restart", session_id)
     return {"status": "cancelling"}
+
+
+@app.delete("/api/sessions/{session_id}", status_code=204)
+def delete_session(session_id: str) -> Response:
+    """删除会话及其全部产物。
+
+    清理内存记录、工作区目录（input/artifacts/session.json 等）和远端
+    对象存储归档。运行中的会话返回 409，调用方应先取消分析再删除。
+    """
+    registry.delete(session_id)
+    return Response(status_code=204)
 
 
 @app.get("/api/sessions/{session_id}/export")
