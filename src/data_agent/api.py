@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import enum
 import hmac
+import io
 import json
 import logging
 import os
@@ -127,6 +128,9 @@ class SessionRecord:
         # 通过 resume_from 注入该计划启动执行阶段；为 None 表示当前
         # 没有待审批计划（已完成或从未进入 plan_only 模式）。
         self.pending_plan: list[dict[str, Any]] | None = None
+        # 用户自定义会话标题（覆盖默认 filename 展示）。空串/None 视为
+        # 未设置，前端回退到 filename。PATCH /api/sessions/{id} 写入。
+        self.title: str | None = None
 
     @property
     def analysis_status(self) -> str:
@@ -262,6 +266,8 @@ class SessionRegistry:
             # plan_only 模式产出的待审批计划，恢复时回填到 record.pending_plan，
             # 让前端在服务重启后仍能展示待审批计划供用户确认。
             "pending_plan": record.pending_plan,
+            # 用户自定义标题，恢复时回填到 record.title。
+            "title": record.title,
         }
         target = self._manifest_path(record)
         temporary = target.with_suffix(".tmp")
@@ -342,6 +348,9 @@ class SessionRegistry:
         record.analysis_completed_at = float(completed_raw) if isinstance(completed_raw, (int, float)) else None
         # 恢复待审批计划，让前端在服务重启后仍能展示并让用户确认执行。
         record.pending_plan = payload.get("pending_plan")
+        # 恢复用户自定义标题（空串视为未设置）。
+        saved_title = payload.get("title")
+        record.title = saved_title if isinstance(saved_title, str) and saved_title.strip() else None
         saved_result = payload.get("last_result")
         if isinstance(saved_result, dict) and isinstance(saved_result.get("response"), str):
             record.last_result = AnalysisResult(
@@ -427,6 +436,7 @@ class SessionRegistry:
                 in_memory[session_id] = {
                     "id": session_id,
                     "filename": record.workspace.source_path.name if record.workspace.source_path else "dataset",
+                    "title": record.title,
                     "analysis_status": record.analysis_status,
                     "created_at": record.created_at,
                     "has_result": record.last_result is not None,
@@ -462,6 +472,7 @@ class SessionRegistry:
             disk_results.append({
                 "id": session_id,
                 "filename": str(payload.get("filename") or "dataset"),
+                "title": payload.get("title"),
                 "analysis_status": str(payload.get("analysis_status") or "idle"),
                 "created_at": float(payload.get("created_at") or 0.0),
                 "has_result": isinstance(last_result, dict) and isinstance(last_result.get("response"), str),
@@ -510,6 +521,28 @@ class SessionRegistry:
             self.storage.delete_session(session_id)
         except Exception:
             logger.exception("Session storage delete failed for %s", session_id)
+
+    def rename(self, session_id: str, title: str) -> str:
+        """重命名会话：更新 title 字段并持久化到 session.json + 远端归档。
+
+        title 经清洗去除首尾空白、限制 80 字符，空串视为清除自定义标题
+        （回退显示 filename）。会话不存在抛 404。
+        """
+        if not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", session_id):
+            raise HTTPException(status_code=404, detail="会话不存在。")
+        cleaned = title.strip()[:80]
+        with self._lock:
+            record = self._items.get(session_id)
+            if record is None:
+                # 内存没有则尝试从磁盘恢复（用户可能在另一进程重命名）
+                record = self._restore_locked(session_id)
+            if record is None:
+                raise HTTPException(status_code=404, detail="会话不存在。")
+            record.title = cleaned or None
+            record.last_access = time.monotonic()
+            self._persist_locked(session_id, record)
+        self._sync_storage(session_id, record.workspace.root)
+        return cleaned
 
 
 bootstrap_settings = AgentSettings.from_env(provider="deepseek")
@@ -871,6 +904,7 @@ def _session_payload(session_id: str, record: SessionRecord) -> dict[str, Any]:
     return {
         "id": session_id,
         "filename": workspace.source_path.name if workspace.source_path else "dataset",
+        "title": record.title,
         "profile": profile,
         "preview": to_jsonable(workspace.dataframe.head(100)),
         "chat": record.chat,
@@ -1019,6 +1053,54 @@ async def create_session(file: Annotated[UploadFile, File()]) -> dict[str, Any]:
         if isinstance(exc, ValueError):
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         raise HTTPException(status_code=500, detail="数据文件解析失败，请检查格式。") from exc
+    actual_id, record = registry.create(workspace)
+    return _session_payload(actual_id, record)
+
+
+# 内置示例数据集：让新用户无需自备文件即可体验完整分析流程。
+# 采用销售主题的小型 CSV（订单/地区/品类/金额/数量/日期），覆盖数值、
+# 文本、日期三类字段，足以触发清洗、统计、图表等典型工具链。
+_SAMPLE_SALES_CSV = (
+    "order_id,region,category,product,sales,quantity,order_date,customer_segment\n"
+    "1001,华东,电子产品,无线耳机,1280.5,2,2024-01-15,企业\n"
+    "1002,华南,办公用品,打印纸,320.0,10,2024-01-18,零售\n"
+    "1003,华北,电子产品,机械键盘,890.0,3,2024-01-22,企业\n"
+    "1004,华东,家具,人体工学椅,2100.0,1,2024-02-03,政府\n"
+    "1005,西南,办公用品,签字笔,75.5,50,2024-02-11,零售\n"
+    "1006,华南,电子产品,移动硬盘,560.0,4,2024-02-14,企业\n"
+    "1007,华东,家具,书架,780.0,2,2024-02-20,零售\n"
+    "1008,华北,电子产品,智能手环,430.0,5,2024-03-01,企业\n"
+    "1009,西南,家具,折叠桌,620.0,3,2024-03-05,政府\n"
+    "1010,华南,办公用品,文件夹,45.0,100,2024-03-10,零售\n"
+    "1011,华东,电子产品,蓝牙音箱,720.0,3,2024-03-15,企业\n"
+    "1012,华北,家具,办公沙发,3500.0,1,2024-03-22,政府\n"
+    "1013,西南,电子产品,充电宝,210.0,8,2024-04-02,零售\n"
+    "1014,华南,办公用品,订书机,38.0,20,2024-04-08,企业\n"
+    "1015,华东,家具,储物柜,950.0,2,2024-04-12,零售\n"
+    "1016,华北,电子产品,显示器,1800.0,2,2024-04-18,企业\n"
+    "1017,西南,办公用品,计算器,65.0,15,2024-04-25,政府\n"
+    "1018,华南,家具,会议桌,2800.0,1,2024-05-03,企业\n"
+    "1019,华东,电子产品,键盘膜,28.0,30,2024-05-09,零售\n"
+    "1020,华北,办公用品,胶带,12.0,200,2024-05-15,零售\n"
+)
+
+
+@app.post("/api/sessions/sample", status_code=201)
+async def create_sample_session() -> dict[str, Any]:
+    """用内置销售示例数据创建会话，供新用户快速体验。"""
+    settings = bootstrap_settings
+    session_id = f"api_{uuid4().hex[:12]}"
+    workspace = DataWorkspace(settings.runs_dir, session_id=session_id)
+    try:
+        saved = workspace.save_upload_stream(
+            "sample_sales.csv",
+            io.BytesIO(_SAMPLE_SALES_CSV.encode("utf-8")),
+            settings.max_upload_bytes,
+        )
+        workspace.load(saved)
+    except Exception as exc:  # noqa: BLE001 —— 示例数据为常量，失败属配置问题
+        workspace.cleanup()
+        raise HTTPException(status_code=500, detail="示例数据初始化失败。") from exc
     actual_id, record = registry.create(workspace)
     return _session_payload(actual_id, record)
 
@@ -1411,6 +1493,18 @@ def delete_session(session_id: str) -> Response:
     """
     registry.delete(session_id)
     return Response(status_code=204)
+
+
+@app.patch("/api/sessions/{session_id}")
+def rename_session(session_id: str, payload: dict[str, Any]) -> dict[str, str]:
+    """重命名会话（更新自定义标题）。
+
+    请求体 ``{"title": "新名称"}``，空串清除自定义标题回退 filename。
+    持久化到 session.json + 远端归档，返回清洗后的 title。
+    """
+    title = str(payload.get("title", "")).strip()
+    cleaned = registry.rename(session_id, title)
+    return {"title": cleaned}
 
 
 @app.get("/api/sessions/{session_id}/export")

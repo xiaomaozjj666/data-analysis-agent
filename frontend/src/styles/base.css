@@ -27,8 +27,10 @@ button {
 }
 button:disabled { cursor: not-allowed; opacity: 0.5; }
 :focus-visible { outline: 2px solid var(--accent-fg); outline-offset: 2px; }
-input:focus-visible, textarea:focus-visible { outline: none; }
+input:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent-fg); outline-offset: 2px; }
 ::selection { background: rgba(91, 91, 214, 0.15); }
+/* 空工作台可整区聚焦（配合主代理补加的 role/tabindex），内描边避免被外层裁切 */
+.empty-workspace:focus-visible { outline: 2px solid var(--accent-fg); outline-offset: -4px; border-radius: var(--radius-lg); }
 
 /* 内容模块的交错入场动画（由 animations.css 的 .main > * 调用） */
 @keyframes fade-in-up {
@@ -42,3 +44,17 @@ input:focus-visible, textarea:focus-visible { outline: none; }
 ::-webkit-scrollbar-thumb { background: #d1d5db; border: 3px solid transparent; border-radius: 8px; background-clip: content-box; }
 ::-webkit-scrollbar-thumb:hover { background: #9ca3af; border: 3px solid transparent; background-clip: content-box; }
 * { scrollbar-width: thin; scrollbar-color: #d1d5db transparent; }
+
+/* ---------- 颜色对比度核查（WCAG AA）----------
+   亮色模式（对 --canvas-default #ffffff）：
+   --fg-default #1a1d29  ≈ 16:1   ✓ AAA
+   --fg-muted   #6b7280  ≈ 5.4:1  ✓ AA（4.5:1）
+   --fg-subtle  #9ca3af  ≈ 2.9:1  ✗ 低于 AA 4.5:1，仅满足大文本 3:1；
+                                用于辅助标签/占位符等非关键文本。
+                                建议：加深至 #7d848e（≈4.5:1）可达标。
+   --accent-fg  #5b5bd6  ≈ 5.9:1  ✓ AA
+   暗色模式（对 --canvas-default #1a1b1e）：
+   --fg-default #e8eaed  ≈ 15:1   ✓ AAA
+   --fg-muted   #9aa0a6  ≈ 6.5:1  ✓ AA
+   --fg-subtle  #5f6368  ≈ 2.6:1  ✗ 同样偏低，建议提亮至 #7c8086。
+   不强行改色以避免破坏既有设计体系，仅作记录供后续优化。 */

@@ -116,3 +116,87 @@ code.inline-code {
   font-size: 0.92em;
   color: var(--accent-fg);
 }
+
+/* ---------- 报告目录导航（E19） ---------- */
+/* 长报告（h2/h3 超过 3 个）在内容区左侧显示目录：sticky 跟随滚动，
+   点击平滑跳转，IntersectionObserver 高亮当前阅读位置。 */
+.report-content-wrap { display: flex; align-items: flex-start; }
+.report-content-wrap .report-body { flex: 1 1 auto; min-width: 0; }
+.report-toc {
+  flex: 0 0 200px;
+  max-width: 200px;
+  align-self: flex-start;
+  position: sticky;
+  top: 16px;
+  padding: 16px 14px;
+  border-right: 1px solid var(--border-muted);
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+}
+.report-toc-title { margin: 0 0 10px; padding: 0 6px; font-size: var(--text-xs); font-weight: 700; color: var(--fg-subtle); text-transform: uppercase; letter-spacing: 0.06em; }
+.report-toc-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.report-toc-item button {
+  width: 100%;
+  text-align: left;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background var(--duration) var(--ease-out), color var(--duration) var(--ease-out);
+}
+/* h3 缩进为子项，视觉层级更清晰 */
+.report-toc-item.is-sub button { padding-left: 20px; color: var(--fg-subtle); font-weight: 400; }
+.report-toc-item button:hover { background: var(--canvas-subtle); color: var(--fg-default); }
+/* 当前阅读位置用品牌色高亮 */
+.report-toc-item.is-active button { color: var(--accent-fg); background: var(--accent-subtle); font-weight: 600; }
+/* 标题锚点滚动时留出顶部呼吸空间，避免紧贴容器顶 */
+.report-body h2, .report-body h3 { scroll-margin-top: 16px; }
+/* 移动端隐藏目录，报告恢复单列布局 */
+@media (max-width: 1024px) {
+  .report-content-wrap { display: block; }
+  .report-toc { display: none; }
+}
+
+/* ---------- 导出下拉菜单（E18） ---------- */
+/* 替换单一导出按钮：触发器带 chevron，点击展开三项（MD/HTML/打印PDF） */
+.export-menu { position: relative; display: inline-flex; }
+.export-trigger { gap: 4px; }
+.export-trigger svg:last-child { transition: transform var(--duration) var(--ease-out); }
+.export-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  min-width: 168px;
+  padding: 4px;
+  background: var(--canvas-default);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  animation: rise var(--duration) var(--ease-out);
+}
+.export-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-default);
+  font-size: var(--text-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+.export-item:hover { background: var(--accent-subtle); color: var(--accent-fg); }
+.export-item svg { flex-shrink: 0; color: var(--fg-muted); }
+.export-item:hover svg { color: var(--accent-fg); }

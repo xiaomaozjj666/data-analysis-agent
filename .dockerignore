@@ -1,0 +1,39 @@
+# 版本控制与 IDE
+.git
+.gitignore
+.idea
+.vscode
+*.swp
+
+# Python 缓存与虚拟环境
+**/__pycache__
+**/*.pyc
+**/*.pyo
+.venv
+venv
+env
+
+# 前端构建缓存（镜像内重新 npm ci + build，避免本地 node_modules 污染）
+frontend/node_modules
+frontend/dist
+frontend/.vite
+
+# 运行时数据与会话产物（不应打进镜像）
+runs
+data
+*.log
+
+# 测试与文档（生产镜像不需要）
+tests
+**/__pycache__
+.pytest_cache
+.ruff_cache
+.mypy_cache
+*.md
+!README.md
+COMMIT_MSG.txt
+
+# 本地环境配置（含密钥，绝不进镜像）
+.env
+.env.local
+.env.*.local

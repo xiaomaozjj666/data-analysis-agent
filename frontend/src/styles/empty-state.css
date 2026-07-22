@@ -2,7 +2,8 @@
 /* 极简居中布局：几何数据网格 + 呼吸浮动动画，主视觉回归文案与上传入口。
    参考 Linear/Vercel/Notion 的克制留白，告别厚重悬浮插画。
    整个工作区都是可交互落点：负 margin 突破 .main 的 padding，
-   让拖拽与点击上传覆盖右侧全部区域，而非仅中间内容小块。 */
+   让拖拽与点击上传覆盖右侧全部区域，而非仅中间内容小块。
+   两级交互反馈：hover 轻微灰底（可点击），drag 靛蓝底+文案强调（可投放）。 */
 .empty-workspace {
   min-height: calc(100vh - 64px);
   display: flex;
@@ -16,16 +17,16 @@
   overflow: hidden;
   transition: background var(--duration) var(--ease-out);
 }
+/* hover：整个区域轻微灰底，配合 pointer 光标让用户感知"可点击" */
+.empty-workspace:hover { background: var(--canvas-subtle); }
 .empty-workspace.is-drag-over {
   background: var(--accent-subtle);
   outline: 2px dashed var(--accent-fg);
   outline-offset: -8px;
   border-radius: var(--radius-lg);
 }
-/* 内部内容不继承 section 的 click 区域语义，按钮自身可点击；
-   grid 装饰与文案容器恢复默认光标，避免与主按钮抢夺视觉指向 */
-.empty-grid, .empty-copy { cursor: default; }
-.empty-copy .primary { cursor: pointer; }
+/* 拖拽态：提示文案变为强调色，明确告知"松开即上传" */
+.empty-workspace.is-drag-over .empty-copy p { color: var(--accent-fg); font-weight: 600; }
 
 /* 几何数据网格：缩小居中，整体呼吸浮动；保留 5×4 格子意象但弱化视觉权重。
    组件仍会写入 --mouse-x/--mouse-y，此处不再渲染光斑，保留变量避免空引用。 */
@@ -92,4 +93,84 @@
   color: var(--fg-muted);
   font-size: var(--text-md);
   line-height: 1.6;
+  transition: color var(--duration) var(--ease-out), font-weight var(--duration) var(--ease-out);
 }
+
+/* 支持格式徽章：纯装饰药丸，置于标题与拖拽提示之间，弱化呈现 */
+.empty-formats {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  margin: 0 0 18px;
+}
+.format-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+  background: var(--canvas-subtle);
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  line-height: 1.4;
+  transition: color var(--duration) var(--ease-out), border-color var(--duration) var(--ease-out), background var(--duration) var(--ease-out);
+}
+.format-badge svg { flex-shrink: 0; opacity: 0.8; }
+
+/* 操作区：主 CTA 与示例入口纵向居中堆叠 */
+.empty-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+/* 主上传按钮：放大并强化为明确的 CTA，hover 轻微上浮加深阴影 */
+.empty-copy .empty-upload-button {
+  height: 44px;
+  padding: 0 22px;
+  font-size: var(--text-md);
+  font-weight: 600;
+  box-shadow: var(--shadow-sm);
+  transition: background var(--duration) var(--ease-out), box-shadow var(--duration) var(--ease-out), transform var(--duration) var(--ease-out);
+}
+.empty-copy .empty-upload-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
+}
+.empty-copy .empty-upload-button:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: var(--shadow-xs);
+}
+.empty-copy .empty-upload-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+/* 示例数据按钮：幽灵文字按钮，弱于主 CTA，hover 转为强调底 */
+.empty-sample-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--duration) var(--ease-out), color var(--duration) var(--ease-out);
+}
+.empty-sample-button:hover:not(:disabled) {
+  background: var(--accent-subtle);
+  color: var(--accent-fg);
+}
+.empty-sample-button:disabled { cursor: not-allowed; opacity: 0.6; }
+.empty-sample-button svg { flex-shrink: 0; }

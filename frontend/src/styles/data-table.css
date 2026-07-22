@@ -82,3 +82,69 @@ tbody tr:hover td { background: var(--accent-subtle); }
 .data-table-pagination button:hover:not(:disabled) {
   background: var(--canvas-subtle);
 }
+
+/* ---------- 多列排序徽标 + 排序箭头 ---------- */
+.data-table-arrow { margin-left: 4px; color: var(--accent-fg); font-size: 10px; }
+.data-table-sort-badge {
+  display: inline-block;
+  margin-left: 3px;
+  padding: 0 4px;
+  min-width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+  background: var(--accent-fg);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+  letter-spacing: 0;
+  text-transform: none;
+  vertical-align: middle;
+}
+
+/* ---------- 列宽拖拽手柄：贴在表头右边缘，hover 显形 ----------
+   th 已 position:sticky（top:0），为绝对定位手柄提供包含块。
+   拖拽期间直接改 th.style.width，配合 tableLayout:fixed 整列跟随。 */
+.col-resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  user-select: none;
+  touch-action: none;
+  z-index: 4;
+}
+.col-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 25%;
+  bottom: 25%;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  background: transparent;
+  transition: background var(--duration-fast) var(--ease-out);
+}
+.data-table th:hover .col-resize-handle::after { background: var(--border-strong); }
+.col-resize-handle:hover::after,
+.col-resize-handle:active::after { background: var(--accent-fg); }
+
+/* ---------- 增量加载：sentinel 占位 / 加载中 / 底部统计 ---------- */
+.data-table-sentinel td { height: 1px; padding: 0; border: 0; }
+.data-table-loading-row td {
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  font-style: italic;
+  background: var(--canvas-subtle);
+}
+.data-table-footer-row td { background: var(--canvas-subtle); border-bottom: 0; }
+.data-table-footer {
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  text-align: left;
+  font-variant-numeric: tabular-nums;
+}

@@ -67,13 +67,18 @@
   color: var(--accent-fg);
   border-color: var(--accent-fg);
 }
+.history-action-btn.history-rename:hover {
+  background: var(--accent-subtle);
+  color: var(--accent-fg);
+  border-color: var(--accent-fg);
+}
 .history-action-btn.history-delete:hover {
   background: var(--danger-subtle);
   color: var(--danger-fg);
   border-color: var(--danger-fg);
 }
 /* 给带操作按钮组的列表项右侧留出空间，避免按钮盖住计数徽章 */
-.history-list li:has(.history-actions) > button { padding-right: 56px; }
+.history-list li:has(.history-actions) > button { padding-right: 76px; }
 
 /* 内联删除确认条：替换原列表项内容，红色警示底 + 确认/取消按钮 */
 .history-list li.is-confirming { padding: 0 4px; }
@@ -116,6 +121,58 @@
   transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
 }
 .history-confirm-cancel:hover { background: var(--canvas-subtle); color: var(--fg-default); }
+
+/* 内联重命名编辑条：替换原列表项内容，输入框 + 保存/取消按钮 */
+.history-list li.is-editing { padding: 0 4px; }
+.history-edit-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border-radius: var(--radius-md);
+  background: var(--canvas-subtle);
+  animation: rise var(--duration-fast) var(--ease-out);
+}
+.history-edit-input {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--accent-fg);
+  border-radius: var(--radius-sm);
+  background: var(--canvas-default);
+  color: var(--fg-default);
+  font-size: var(--text-xs);
+  font-family: inherit;
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+.history-edit-input:focus { outline: none; }
+.history-edit-save {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--accent-fg);
+  color: #fff;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter var(--duration-fast) var(--ease-out);
+}
+.history-edit-save:hover { filter: brightness(0.9); }
+.history-edit-cancel {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--canvas-default);
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+.history-edit-cancel:hover { background: var(--canvas-subtle); color: var(--fg-default); }
 .history-empty { display: grid; justify-items: center; gap: 6px; margin: 8px 8px 12px; padding: 18px 12px; color: var(--fg-subtle); text-align: center; }
 .history-empty p { margin: 0; font-size: var(--text-sm); line-height: 1.55; }
 
@@ -198,4 +255,49 @@
   text-align: center;
   color: var(--fg-subtle);
   font-size: var(--text-sm);
+}
+
+/* ---------- 高级筛选行：状态 chip + 排序 chip ---------- */
+.history-filter-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 0 8px;
+  margin: 0 0 6px;
+}
+.history-filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+.history-sort-chips {
+  display: flex;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+.history-chip {
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out);
+}
+.history-chip:hover {
+  background: var(--control-hover);
+  color: var(--fg-default);
+}
+.history-chip.is-active {
+  background: var(--accent-fg);
+  color: #fff;
+  border-color: var(--accent-fg);
 }
