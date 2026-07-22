@@ -52,6 +52,29 @@
 }
 .preview-button:hover, .preview-actions > button:not(.icon-button):hover { background: var(--accent-subtle); }
 
+/* 审阅计划按钮：与运行分析并列的次级主操作，描边样式与运行按钮区分 */
+.plan-review-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 14px;
+  flex: 0 0 auto;
+  border: 1px solid var(--accent-fg);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--accent-fg);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-out);
+}
+.plan-review-button:hover:not(:disabled) { background: var(--accent-subtle); box-shadow: var(--shadow-sm); }
+.plan-review-button:active:not(:disabled) { transform: translateY(1px); box-shadow: none; }
+.plan-review-button:disabled { opacity: 0.5; cursor: not-allowed; }
+.plan-review-button svg { flex-shrink: 0; }
+
 /* 危险操作：柔红底，主停止按钮 hover 填充实色强化警示 */
 .cancel-button, .retry-button {
   display: inline-flex;

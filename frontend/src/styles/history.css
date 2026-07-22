@@ -8,6 +8,59 @@
 .history-toggle svg:last-child { color: var(--fg-subtle); flex: 0 0 auto; transition: transform var(--duration) var(--ease-out); }
 .history-refresh { position: absolute; top: 4px; right: 8px; display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 7px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--fg-muted); font-size: 10px; font-weight: 600; }
 .history-refresh:hover:not(:disabled) { background: var(--control-hover); color: var(--fg-default); }
+
+/* Batch 4：导入会话按钮 —— 紧贴刷新按钮左侧 */
+.history-import {
+  position: absolute;
+  top: 4px;
+  right: 56px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+.history-import:hover { background: var(--control-hover); color: var(--fg-default); }
+.history-import svg { flex-shrink: 0; }
+
+/* Batch 4：导出会话按钮 —— hover 列表项时显示在右侧 */
+.history-export {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+  background: var(--canvas-default);
+  color: var(--fg-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out), background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out);
+}
+.history-list li:hover .history-export { opacity: 1; }
+.history-export:hover {
+  background: var(--accent-subtle);
+  color: var(--accent-fg);
+  border-color: var(--accent-fg);
+}
+/* 当前激活会话也显示导出按钮，让用户无需 hover 也能导出当前会话 */
+.history-list li.is-active .history-export { opacity: 1; }
+/* 给带导出按钮的列表项右侧留出空间，避免按钮盖住计数徽章 */
+.history-list li:has(.history-export) > button { padding-right: 32px; }
 .history-empty { display: grid; justify-items: center; gap: 6px; margin: 8px 8px 12px; padding: 18px 12px; color: var(--fg-subtle); text-align: center; }
 .history-empty p { margin: 0; font-size: var(--text-sm); line-height: 1.55; }
 
