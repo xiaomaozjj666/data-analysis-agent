@@ -75,23 +75,35 @@ _CHART_COLORS = [
     "#8A9A5B",
 ]
 
-_COLUMN_LABELS = {
-    "units": "销量",
-    "revenue": "收入",
-    "sales": "销售额",
-    "profit": "利润",
-    "product": "产品",
-    "region": "区域",
-    "channel": "渠道",
-    "category": "类别",
-    "customer_rating": "客户评分",
-    "unit_price": "单价",
-    "discount_rate": "折扣率",
-    "order_date": "订单日期",
-    "date": "日期",
-    "count": "记录数",
-    "is_returned": "是否退货",
-}
+#: Plotly 暗色模式自适应脚本：注入图表 HTML，监听主题变化动态切换背景和文字颜色。
+#: 浅色回退值与图表生成时的原始色板一致（#fbfaf5/#102a2a/#E5ECE9/#C9D5D1），
+#: 避免 applyTheme 首次执行时改变浅色图表的视觉。
+_PLOTLY_DARK_MODE_SCRIPT = """<script>
+(function() {
+  function applyTheme() {
+    var isDark = document.documentElement.dataset.theme === 'dark' ||
+                 window.matchMedia('(prefers-color-scheme: dark)').matches;
+    var plotEl = document.querySelector('.plotly-graph-div');
+    if (!plotEl) return;
+    var update = {
+      'layout.paper_bgcolor': isDark ? '#1c2433' : '#fbfaf5',
+      'layout.plot_bgcolor': isDark ? '#1c2433' : '#fbfaf5',
+      'layout.font.color': isDark ? '#e6eaf0' : '#102a2a',
+      'layout.xaxis.gridcolor': isDark ? '#2a3445' : '#E5ECE9',
+      'layout.yaxis.gridcolor': isDark ? '#2a3445' : '#E5ECE9',
+      'layout.xaxis.zerolinecolor': isDark ? '#3a4458' : '#C9D5D1',
+      'layout.yaxis.zerolinecolor': isDark ? '#3a4458' : '#C9D5D1',
+    };
+    Plotly.relayout(plotEl, update);
+    document.documentElement.style.background = isDark ? '#1c2433' : '#fbfaf5';
+    document.body.style.background = isDark ? '#1c2433' : '#fbfaf5';
+  }
+  setTimeout(applyTheme, 100);
+  var observer = new MutationObserver(function() { setTimeout(applyTheme, 50); });
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
+})();
+</script>"""
 
 _AGGREGATION_LABELS = {
     "sum": "合计",
@@ -110,10 +122,10 @@ _HOVER_TEXT_COLUMN = "__hover_text__"
 
 
 def _human_column_label(column: str | None) -> str:
-    """将英文列名映射为中文可读标签，未知列名用下划线转空格回退。"""
+    """将列名转为可读标签：下划线转空格，不硬编码业务域翻译。"""
     if not column:
         return ""
-    return _COLUMN_LABELS.get(column, str(column).replace("_", " ").strip())
+    return str(column).replace("_", " ").strip()
 
 
 def _compact_number(value: float) -> str:
@@ -1329,7 +1341,7 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             "<title>{title}</title><script src='{script}'></script>"
             "<style>html,body{{width:100%;height:100%;margin:0;background:#fbfaf5;overflow:hidden}}"
             ".plotly-graph-div{{width:100% !important;height:100% !important;min-height:560px}}</style>"
-            "</head><body>{div}</body></html>"
+            "</head><body>{div}{dark_script}</body></html>"
             if relative_script
             else None
         )
@@ -1359,6 +1371,7 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                     title=escape(display_title),
                     script=relative_script,
                     div=div,
+                    dark_script=_PLOTLY_DARK_MODE_SCRIPT,
                 ),
             )
         else:

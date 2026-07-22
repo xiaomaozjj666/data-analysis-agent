@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from threading import Event
@@ -471,39 +472,98 @@ def _fallback_plan(query: str) -> AnalysisPlan:
     )
 
 
+# ---------------------------------------------------------------------------
+# 用户约束识别：用预编译正则模式集合替代裸子串匹配，同时覆盖中英文等价表达。
+# ---------------------------------------------------------------------------
+
+#: 只读意图模式（中英）。命中时过滤掉会修改主数据的步骤。
+_READ_ONLY_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"不修改|无需修改|不要修改|不要改动|保持原样|只读|只看"),
+    re.compile(r"只检查|仅检查"),
+    re.compile(r"no\s*modify|read\s*only|don'?t\s*change|no\s*changes", re.IGNORECASE),
+)
+
+#: 禁用图表意图模式（中英）。命中时过滤掉可视化相关步骤。
+_NO_CHART_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"不生成图表|不要图表|不画图|无需绘图|不用画图|不用绘图|"
+        r"不需要图表|不需要可视化|不用可视化|无需图表|不要可视化"
+    ),
+    re.compile(r"no\s*charts?|no\s*plots?|no\s*visuals?|don'?t\s*chart|without\s*charts?", re.IGNORECASE),
+)
+
+#: "仅检查数据质量"意图：需同时命中"检查"语义和"质量"语义。
+_INSPECT_ONLY_CHECK_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"只检查|仅检查"),
+)
+_INSPECT_ONLY_QUALITY_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"质量|quality", re.IGNORECASE),
+)
+
+#: 禁止格式修复意图模式（中英）。命中时跳过自动 repair_data_format 重试。
+_FORMAT_REPAIR_BLOCKERS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"不修改|无需修改|只检查|仅检查"),
+    re.compile(r"no\s*modify|read\s*only|check\s*only|don'?t\s*change|no\s*changes", re.IGNORECASE),
+)
+
+
+@dataclass(slots=True, frozen=True)
+class _StepFilterRule:
+    """Config-driven step filter rule for ``_apply_query_constraints``.
+
+    When any of ``query_patterns`` matches the user query, steps are dropped if
+    their id is in ``drop_step_ids`` OR any ``drop_step_keyword_patterns``
+    matches the step's ``title + instruction``。新增约束类型只需在
+    ``_STEP_FILTER_RULES`` 中追加条目，无需修改函数主体。
+    """
+
+    query_patterns: tuple[re.Pattern[str], ...]
+    drop_step_ids: frozenset[str]
+    drop_step_keyword_patterns: tuple[re.Pattern[str], ...]
+
+
+#: 步骤过滤规则表：read_only / no_charts 等约束均在此声明。
+_STEP_FILTER_RULES: tuple[_StepFilterRule, ...] = (
+    _StepFilterRule(
+        query_patterns=_READ_ONLY_PATTERNS,
+        drop_step_ids=frozenset({"prepare", "clean", "transform", "export"}),
+        drop_step_keyword_patterns=(re.compile(r"清洗|转换|导出"),),
+    ),
+    _StepFilterRule(
+        query_patterns=_NO_CHART_PATTERNS,
+        drop_step_ids=frozenset({"visualize", "chart", "plot"}),
+        drop_step_keyword_patterns=(re.compile(r"图表|绘图|可视化"),),
+    ),
+)
+
+
+def _any_pattern_match(patterns: tuple[re.Pattern[str], ...], text: str) -> bool:
+    """Return True if any precompiled pattern in ``patterns`` matches ``text``."""
+    return any(pattern.search(text) for pattern in patterns)
+
+
 def _apply_query_constraints(query: str, plan: AnalysisPlan) -> AnalysisPlan:
-    """Keep explicit user constraints intact even when structured planning falls back."""
-    read_only = any(
-        token in query
-        for token in (
-            "不修改", "无需修改", "只检查", "仅检查", "不要改动", "不要修改",
-            "保持原样", "只读", "只看",
-        )
-    )
-    no_charts = any(
-        token in query
-        for token in (
-            "不生成图表", "不要图表", "不画图", "无需绘图", "不用画图", "不用绘图",
-            "不需要图表", "不需要可视化", "不用可视化", "无需图表", "不要可视化",
-        )
-    )
-    inspect_only = any(token in query for token in ("只检查", "仅检查")) and "质量" in query
+    """Keep explicit user constraints intact even when structured planning falls back.
+
+    使用预编译正则模式集合（含中英文等价词）识别用户意图，步骤过滤逻辑由
+    ``_STEP_FILTER_RULES`` 配置表驱动，避免裸子串匹配和散落的硬编码分支。
+    """
     steps = list(plan.steps)
-    if inspect_only:
+    # "仅检查数据质量" 是更强的约束：只保留 inspect 步骤。
+    if (
+        _any_pattern_match(_INSPECT_ONLY_CHECK_PATTERNS, query)
+        and _any_pattern_match(_INSPECT_ONLY_QUALITY_PATTERNS, query)
+    ):
         steps = [step for step in steps if step.id == "inspect"]
-    if read_only:
+    # 通用约束规则：read_only / no_charts 等。
+    for rule in _STEP_FILTER_RULES:
+        if not _any_pattern_match(rule.query_patterns, query):
+            continue
         steps = [
             step
             for step in steps
-            if step.id not in {"prepare", "clean", "transform", "export"}
-            and not any(word in f"{step.title}{step.instruction}" for word in ("清洗", "转换", "导出"))
-        ]
-    if no_charts:
-        steps = [
-            step
-            for step in steps
-            if step.id not in {"visualize", "chart", "plot"}
-            and not any(word in f"{step.title}{step.instruction}" for word in ("图表", "绘图", "可视化"))
+            if step.id not in rule.drop_step_ids
+            and not _any_pattern_match(rule.drop_step_keyword_patterns, f"{step.title}{step.instruction}")
         ]
     if not steps:
         steps = [
@@ -612,7 +672,12 @@ def _humanize_error(exc: Exception) -> str:
 
 
 def _query_allows_format_repair(query: str) -> bool:
-    return not any(token in query for token in ("不修改", "无需修改", "只检查", "仅检查"))
+    """Return False when the query explicitly forbids data modifications.
+
+    通过 ``_FORMAT_REPAIR_BLOCKERS`` 预编译正则模式集合（含中英文等价词）
+    识别禁止修改意图，替代原有的裸子串匹配。
+    """
+    return not _any_pattern_match(_FORMAT_REPAIR_BLOCKERS, query)
 
 
 @wrap_tool_call
