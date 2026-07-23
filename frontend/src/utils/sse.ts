@@ -1,9 +1,9 @@
-// SSE 事件 data 字段：服务端推送的 JSON 对象，结构因 event 而异。
-// 这里用宽泛的 Record 以便各 handler 自行断言。
-type SSEData = Record<string, any>;
+import { dispatchSSEEvent, type SSEEventHandlers } from "./sse-events";
 
-type SSEHandler = (data: SSEData) => void;
-type SSEHandlers = Record<string, SSEHandler>;
+// SSE 事件 data 字段：服务端推送的 JSON 对象，结构因 event 而异。
+// 解析阶段仍用宽泛的 Record；具体形状由 SSEEventPayload 在分发时赋予，
+// 因此各 handler 不再需要自行 `as` 断言。
+type SSEData = Record<string, any>;
 
 interface ConsumeSSEStreamOptions {
   onChunk?: () => void;
@@ -39,11 +39,13 @@ function parseSSEData(dataText: string): SSEData | null {
 //   - 跳过无 event 或无 data 的块
 //   - 通过 parseSSEData 安全解析 JSON，解析失败则跳过该事件
 //
-// 事件分发：handlers[eventName](data)。若 handlers 中无对应 eventName 则忽略。
-// 跨事件状态（如 startAnalysis 的 completedPayload）由调用方通过闭包维护。
+// 事件分发：统一交给 dispatchSSEEvent，它按 event 名把类型安全的 data 交给
+// handlers 中对应的 handler；无对应 handler 则忽略。事件名常量与 data 负载形状
+// 的单一事实来源见 sse-events.ts。跨事件状态（如 startAnalysis 的
+// completedPayload）由调用方通过闭包维护。
 async function consumeSSEStream(
   response: Response,
-  handlers: SSEHandlers,
+  handlers: SSEEventHandlers,
   options: ConsumeSSEStreamOptions = {},
 ): Promise<void> {
   const reader = response.body?.getReader();
@@ -66,8 +68,7 @@ async function consumeSSEStream(
         if (options.onEvent) options.onEvent(event);
         const data = parseSSEData(dataText);
         if (!data) continue;
-        const handler = handlers[event];
-        if (handler) handler(data);
+        dispatchSSEEvent(event, data, handlers);
       }
       if (done) break;
     }

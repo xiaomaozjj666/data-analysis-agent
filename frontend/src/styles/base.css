@@ -32,7 +32,7 @@ input:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent-fg
 /* 空工作台可整区聚焦（配合主代理补加的 role/tabindex），内描边避免被外层裁切 */
 .empty-workspace:focus-visible { outline: 2px solid var(--accent-fg); outline-offset: -4px; border-radius: var(--radius-lg); }
 
-/* 内容模块的交错入场动画（由 animations.css 的 .main > * 调用） */
+/* 内容模块的交错入场动画（由 animations.css 的 .app-main > * 调用） */
 @keyframes fade-in-up {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }

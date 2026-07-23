@@ -5,7 +5,7 @@
 /* ---------- 响应式 ---------- */
 @media (max-width: 1040px) {
   .app-shell { grid-template-columns: 248px minmax(0, 1fr); }
-  .main { padding-inline: 28px; }
+  .app-main { padding-inline: 28px; }
   .analysis-grid { grid-template-columns: minmax(0, 1fr) 296px; gap: 22px; }
   .preset-row button { padding-inline: 12px; }
 }
@@ -36,7 +36,7 @@
   .storage-status { margin-top: 0; padding: 8px 2px 0; border: 0; border-top: 1px solid var(--border-muted); border-radius: 0; background: transparent; box-shadow: none; }
   .storage-status:hover { box-shadow: none; }
   .settings-form { position: fixed; left: 12px; right: 12px; bottom: 12px; width: auto; }
-  .main { padding: 0 12px 36px; }
+  .app-main { padding: 0 12px 36px; }
   .topbar { height: 52px; border-radius: 0; box-shadow: none; }
   .breadcrumb strong { max-width: 42vw; }
   .dataset-header { min-height: 78px; }
@@ -127,7 +127,7 @@
   }
 
   /* main 区域 padding 收窄到 16px */
-  .main { padding: 0 16px 48px; }
+  .app-main { padding: 0 16px 48px; }
 
   /* analysis-grid 由双列改为单列堆叠 */
   .analysis-grid { grid-template-columns: 1fr; }
@@ -136,7 +136,7 @@
 /* ---------- 2. 手机断点（max-width: 768px） ---------- */
 @media (max-width: 768px) {
   /* main 区域 padding 进一步收窄到 12px */
-  .main { padding: 0 12px 32px; }
+  .app-main { padding: 0 12px 32px; }
 
   /* topbar 高度减小并允许换行，避免操作区挤压标题 */
   .topbar { flex-wrap: wrap; height: 52px; }

@@ -55,6 +55,7 @@ class AgentSettings:
         session_ttl_hours: 会话过期时间。
         rate_limit_per_minute: 每客户端每分钟请求上限。
         max_concurrent_analyses: 全局并发分析上限。
+        language: Agent 提示词与报告语言（zh / en）。
     """
 
     provider: str = "deepseek"
@@ -75,6 +76,7 @@ class AgentSettings:
     session_ttl_hours: float = 24.0
     rate_limit_per_minute: int = 30
     max_concurrent_analyses: int = 2
+    language: str = "zh"
 
     @classmethod
     def from_env(
@@ -124,6 +126,7 @@ class AgentSettings:
             session_ttl_hours=float(os.getenv("DATA_AGENT_SESSION_TTL_HOURS", "24")),
             rate_limit_per_minute=int(os.getenv("DATA_AGENT_RATE_LIMIT_PER_MINUTE", "30")),
             max_concurrent_analyses=int(os.getenv("DATA_AGENT_MAX_CONCURRENT_ANALYSES", "2")),
+            language=(os.getenv("DATA_AGENT_LANGUAGE", "zh").strip().lower() or "zh"),
         )
 
     def validate_for_model(self) -> None:
@@ -156,3 +159,5 @@ class AgentSettings:
             raise ValueError("DATA_AGENT_RATE_LIMIT_PER_MINUTE 必须为正数。")
         if self.max_concurrent_analyses <= 0:
             raise ValueError("DATA_AGENT_MAX_CONCURRENT_ANALYSES 必须为正数。")
+        if self.language not in {"zh", "en"}:
+            raise ValueError(f"不支持的 language：{self.language}。可用值：zh、en。")

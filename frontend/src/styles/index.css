@@ -1,3 +1,24 @@
+/* ==========================================================================
+   样式入口与命名约定（CSS scoping audit · C2）
+   --------------------------------------------------------------------------
+   本项目未使用 CSS Modules，全部样式为全局 CSS。为降低跨文件命名冲突风险，
+   遵循以下约定：
+   1. 类名一律采用 `.component-name-element`（或 `.component-element`）前缀模式，
+      以组件/区块名为命名空间，例如 `.history-item`、`.empty-workspace`、
+      `.report-body`、`.plan-panel`、`.artifact-card`。
+   2. 禁止使用 `.container` / `.row` / `.card` / `.wrapper` 等无命名空间的通用类名；
+      顶层布局容器改用带前缀的名字（如 `.app-shell` / `.app-main` / `.sidebar`）。
+      注：历史上的 `.main` 已重命名为 `.app-main`，避免与 `<main>` 元素及通用
+      `.main` 类名冲突。
+   3. 全局 reset / 元素级样式（box-sizing、body、a、input 等）只允许出现在
+      `base.css`，其余文件只写带命名空间的类选择器，避免全局副作用。
+   4. 状态修饰用 `.is-*` 后缀（如 `.is-empty`、`.is-running`、`.is-open`），
+      与组件类名组合使用，不单独定义全局 `.is-*`。
+   5. 设计令牌集中在 `tokens.css`（`:root` 变量），其他文件通过 var() 引用，
+      不硬编码颜色/间距。
+   导入顺序见下方 @import 列表：tokens → base → 各组件样式 → 动画 → 响应式。
+   ========================================================================== */
+
 @import "./tokens.css";
 @import "./base.css";
 @import "./buttons.css";
