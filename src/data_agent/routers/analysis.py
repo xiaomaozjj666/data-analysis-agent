@@ -37,6 +37,22 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+#: 回传给前端的失败文案最大长度。完整堆栈只进服务器日志，
+#: 防止超长异常文本（如带文件路径的 traceback repr）泄露到客户端或撞坏 UI。
+_CLIENT_ERROR_MAX_CHARS = 300
+
+
+def _client_error_detail(exc: Exception) -> str:
+    """把异常压缩成适合回传前端的简短文案。
+
+    保留异常消息（多数是面向用户的中文业务提示，有实际价值），
+    但截断过长内容；完整堆栈由调用方用 ``logger.exception`` 写入服务器日志。
+    """
+    text = str(exc).strip() or exc.__class__.__name__
+    if len(text) > _CLIENT_ERROR_MAX_CHARS:
+        return f"{text[:_CLIENT_ERROR_MAX_CHARS]}…"
+    return text
+
 
 def _safe_emit(loop: asyncio.AbstractEventLoop, queue: asyncio.Queue, item: tuple[str, Any] | None) -> None:
     """跨线程安全推送 SSE 事件到事件循环的队列。
@@ -122,9 +138,12 @@ def analyze(session_id: str, request: AnalyzeRequest) -> dict[str, Any]:
         api.registry.persist(session_id, record)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
+        logger.exception("Analysis failed for session %s", session_id)
         record.set_finished("failed")
         api.registry.persist(session_id, record)
-        raise HTTPException(status_code=502, detail=f"分析执行失败：{exc}") from exc
+        raise HTTPException(
+            status_code=502, detail=f"分析执行失败：{_client_error_detail(exc)}"
+        ) from exc
     finally:
         record.current_task = ""
         record.cancel_event.clear()
@@ -235,9 +254,14 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
             api.registry.persist(session_id, record)
             _safe_emit(loop, queue, ("cancelled", {"message": "分析已取消。"}))
         except Exception as exc:
+            logger.exception("Analysis worker failed for session %s", session_id)
             record.set_finished("failed")
             api.registry.persist(session_id, record)
-            _safe_emit(loop, queue, ("error", {"message": str(exc), "code": "analysis_failed"}))
+            _safe_emit(
+                loop,
+                queue,
+                ("error", {"message": _client_error_detail(exc), "code": "analysis_failed"}),
+            )
         finally:
             record.current_task = ""
             # Always clear the cancel event so the next analysis on this
@@ -395,7 +419,7 @@ async def chat_stream(session_id: str, request: AnalyzeRequest) -> StreamingResp
             _safe_emit(loop, queue, ("cancelled", {"message": "追问已取消。"}))
         except Exception as exc:
             logger.exception("Chat worker failed for session %s", session_id)
-            _safe_emit(loop, queue, ("error", {"message": f"追问失败：{exc}", "code": "chat_failed"}))
+            _safe_emit(loop, queue, ("error", {"message": f"追问失败：{_client_error_detail(exc)}", "code": "chat_failed"}))
         finally:
             record.current_task = ""
             record.cancel_event.clear()
