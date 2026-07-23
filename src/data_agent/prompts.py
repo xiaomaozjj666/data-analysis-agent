@@ -38,7 +38,17 @@ _FINALIZE_PER_STEP_MIN_CHARS = 800
 #: 格式修复重试时展示给 LLM 的错误文本最大字符数。
 _FORMAT_ERROR_DISPLAY_MAX_CHARS = 3_000
 
-SYSTEM_PROMPT = """你是一名严谨、主动的数据分析专家。你通过 ReAct 循环选择下一项最小必要行动，
+# ---------------------------------------------------------------------------
+# 国际化提示词：PROMPTS 按 language 索引，zh 为默认回退。
+# 模板使用 {name} 占位符，由调用方通过 str.format() 填充。
+# ---------------------------------------------------------------------------
+
+#: 支持的语言集合；不在其中的 language 回退到 zh。
+SUPPORTED_LANGUAGES: tuple[str, ...] = ("zh", "en")
+
+PROMPTS: dict[str, dict[str, Any]] = {
+    "zh": {
+        "system_prompt": """你是一名严谨、主动的数据分析专家。你通过 ReAct 循环选择下一项最小必要行动，
 并且只能使用提供的工具读取和变更数据。
 
 工作规范：
@@ -59,39 +69,219 @@ SYSTEM_PROMPT = """你是一名严谨、主动的数据分析专家。你通过 
 13. 多维度数据优先使用分组对比、小倍数图或热力图揭示模式，避免将所有信息塞进一张图。
 14. 每步执行完毕后，用一句话总结本步核心发现，必须包含具体数字和它对分析目标意味着什么，
     便于后续步骤和最终报告直接引用（例："华东区收入 120 万最高，是西北区的 2.3 倍，区域差异是收入的主要驱动"）。
-"""
+""",
+        "plan_template": """为数据分析任务制定 2 到 6 个可执行步骤。第一步必须检查数据，最后应包含必要的图表和导出。不要写空泛步骤，每步都要能由数据工具完成。
+步骤设计原则：
+- 检查步骤要具体指出需要关注的字段和质量问题
+- 统计步骤要明确方法（如相关、回归、分组对比、分布检验）
+- 图表步骤要指定图表类型和展示维度
+- 避免重复步骤，每步应有独立价值
+
+用户目标：{query}
+数据概况：{profile_text}""",
+        "execution_template": """总目标：{objective}
+当前计划步骤：{step_title}
+具体任务：{step_instruction}
+完成标准：{step_success_criteria}
+数据概况：{profile_brief}
+已完成步骤：
+{completed_text}
+
+只执行当前步骤。使用工具获得证据，然后用简短文字报告实际结果。""",
+        "retry_template": """{execution_prompt}
+
+上一次工具调用失败：{format_error}
+自动修复结果：{repair_result}
+请只重试当前步骤，不要扩大任务范围。""",
+        "replan_template": """审查数据分析计划的执行进度。根据已经获得的证据判断是否可以结束；否则只返回仍然必要的后续步骤，删除重复或没有价值的步骤。
+{payload}""",
+        "finalize_template": """请基于以下工具执行结果，写一份给业务负责人看的中文数据分析报告。读者不懂统计、时间有限，只想快速知道三件事：结论是什么、凭什么、接下来怎么办。
+
+硬性要求：
+1. 只能引用执行结果中实际出现的数字和文件，不得编造数据或未验证的推断；
+2. 全文 1200-2000 字，信息密度优先，禁止“通过分析可知”“综上所述”这类空话套话；
+3. 按以下章节组织，每节用二级标题（## ）：
+   - ## 结论速览：3-5 条要点，第一条必须直接回答用户的分析目标；每条一个核心判断，关键数字 **加粗**，让读者 30 秒看懂全局；
+   - ## 关键发现：按业务价值从高到低排序，每条发现按三步写——先一句话说清发现了什么，再列出支撑它的具体数字，最后补一句这对业务意味着什么；
+   - ## 数据与处理：简要说明数据规模、质量问题和做过的清洗动作（前后行数/缺失变化）；
+   - ## 图表与产物：逐个说明生成的图表应该看什么、得出什么印象，并提及可下载的数据文件；
+   - ## 注意事项与建议：指出数据或方法的局限性，再给 2-3 条具体可执行的下一步建议。
+4. 引用统计指标时必须当场用大白话解释，例如写“差异显著（p=0.001，即这种差距只有 0.1% 的可能是随机巧合）”，不允许只堆术语不解释；
+5. 数字对比尽量换算成读者有感的形式（倍数、百分比、排名），而不是只列原始值；
+6. 如需表格，使用 Markdown 表格语法，列数不超过 5 列，表头用业务语言而非字段名。
+
+用户目标：{query}
+
+执行结果：
+{evidence}""",
+        "fallback_plan": {
+            "objective_template": "基于当前数据集完成可验证的分析：{query}",
+            "steps": [
+                {
+                    "id": "inspect",
+                    "title": "检查数据质量",
+                    "instruction": "检查字段、类型、缺失、重复和样例，指出最重要的数据质量问题。",
+                    "success_criteria": "返回数据规模、字段类型、缺失和重复情况。",
+                },
+                {
+                    "id": "prepare",
+                    "title": "准备分析数据",
+                    "instruction": "根据已发现的问题采用保守策略完成必要清洗，并保存清洗结果。",
+                    "success_criteria": "说明处理动作和前后数据变化，生成清洗数据产物。",
+                },
+                {
+                    "id": "analyze",
+                    "title": "执行统计分析",
+                    "instruction": "围绕用户目标执行描述统计、关系分析和适用的统计检验：{query}",
+                    "success_criteria": "给出样本量、关键指标及适用时的显著性或模型指标。",
+                },
+                {
+                    "id": "visualize",
+                    "title": "生成图表与导出",
+                    "instruction": "创建最有解释力的图表并导出当前分析数据。",
+                    "success_criteria": "至少生成一个可读的交互图表和一个数据文件产物；存在极端值时图表须同时保留主体尺度与全量视图。",
+                },
+            ],
+        },
+    },
+    "en": {
+        "system_prompt": """You are a rigorous, proactive data analysis expert. You select the next minimal necessary action through a ReAct loop, and you may only read and modify data using the provided tools.
+
+Working standards:
+1. Never guess the data structure; before any cleaning, statistics, or plotting, confirm the fields, types, and missing values.
+2. If a tool fails due to column type, date format, numeric format, or encoding issues, inspect the error first, then call repair_data_format, and after the fix retry the original operation once.
+3. repair_data_format may only fix clear format issues; never arbitrarily alter negative numbers, outliers, duplicate records, or business missing values.
+4. Cleaning must follow a conservative strategy, reporting the row counts, missing values, and outlier changes before and after processing.
+5. Statistical conclusions must include the sample size, metrics, and — when applicable — p-values, effect sizes, and significance; correlation does not imply causation.
+6. Charts must match variable types and use clear titles; prefer heatmaps or relationship graphs for complex relationships. When extreme values would compress the main data, you must use the default auto scale of create_visualization to produce a "main-scale / full-range view" toggle; never deliver a chart where the normal points are all crammed onto the zero line, and never delete outliers just to make the chart look nice. When a grouped chart is missing certain category combinations, keep the tool-generated "no sample / no record" note; do not interpret a missing combination as the value 0 or a rendering failure.
+7. Only cite numbers and files actually returned by the tools; never fabricate results.
+8. Do not reveal hidden internal reasoning; briefly state only the actions performed and the verifiable results.
+9. Complete only the steps specified in the current plan; do not repeat work that is already done.
+10. transform_data only produces derived views and never alters the main data; do not export a filtered view as the final cleaned data.
+
+Analysis depth requirements:
+11. When running statistical analysis, prefer the metrics that best reveal the data's characteristics: distribution shape (skewness/kurtosis), dispersion, and quantiles rather than just the mean.
+12. When a significant relationship is found, proactively add effect sizes and confidence intervals to help the user judge practical significance rather than statistical significance alone.
+13. For multi-dimensional data, prefer grouped comparisons, small multiples, or heatmaps to reveal patterns; avoid cramming all information into a single chart.
+14. After each step, summarize the core finding in one sentence that includes specific numbers and what they mean for the analysis objective, so subsequent steps and the final report can cite it directly (e.g., "East China has the highest revenue at 1.2M, 2.3x that of the Northwest; regional difference is the primary driver of revenue").
+""",
+        "plan_template": """Create 2 to 6 executable steps for the data analysis task. The first step must inspect the data, and the last should include the necessary charts and exports. Do not write vague steps; each step must be completable by the data tools.
+Step design principles:
+- Inspection steps should specifically call out the fields and quality issues to focus on
+- Statistical steps should specify the method (e.g., correlation, regression, grouped comparison, distribution test)
+- Charting steps should specify the chart type and dimensions to display
+- Avoid duplicate steps; each step should have independent value
+
+User objective: {query}
+Data overview: {profile_text}""",
+        "execution_template": """Overall objective: {objective}
+Current plan step: {step_title}
+Specific task: {step_instruction}
+Completion criteria: {step_success_criteria}
+Data overview: {profile_brief}
+Completed steps:
+{completed_text}
+
+Execute only the current step. Use the tools to gather evidence, then report the actual results in a brief text.""",
+        "retry_template": """{execution_prompt}
+
+The previous tool call failed: {format_error}
+Automatic repair result: {repair_result}
+Please retry only the current step; do not expand the task scope.""",
+        "replan_template": """Review the execution progress of the data analysis plan. Based on the evidence gathered so far, decide whether the analysis can be concluded; otherwise, return only the subsequent steps that remain necessary, and remove any duplicates or steps that no longer add value.
+{payload}""",
+        "finalize_template": """Based on the tool execution results below, write a data analysis report in English for a business leader. The reader does not understand statistics, is short on time, and only wants to quickly know three things: what the conclusion is, what it is based on, and what to do next.
+
+Hard requirements:
+1. Only cite numbers and files that actually appear in the execution results; never fabricate data or unverified inferences;
+2. Keep the full text to 1200-2000 words; prioritize information density and avoid empty filler phrases such as "through analysis we can see" or "in summary";
+3. Organize the report into the following sections, each with a level-2 heading (## ):
+   - ## Executive Summary: 3-5 key points, the first of which must directly answer the user's analysis objective; each point is one core judgment with the key numbers **bolded**, so the reader can grasp the big picture in 30 seconds;
+   - ## Key Findings: ordered by business value from high to low; each finding follows three steps — first state in one sentence what was found, then list the specific numbers supporting it, and finally add one sentence on what it means for the business;
+   - ## Data & Processing: briefly describe the data scale, quality issues, and cleaning actions taken (row counts / missing-value changes before and after);
+   - ## Charts & Artifacts: explain one by one what to look at in each generated chart and what impression it gives, and mention the downloadable data files;
+   - ## Caveats & Recommendations: point out the limitations of the data or methods, then give 2-3 specific, actionable next-step recommendations.
+4. When citing statistical metrics, explain them in plain language on the spot — for example, write "the difference is significant (p=0.001, meaning there is only a 0.1% chance this gap is a random coincidence)"; never pile on jargon without explanation;
+5. Convert numeric comparisons into reader-friendly forms (multiples, percentages, rankings) rather than listing only raw values;
+6. If tables are needed, use Markdown table syntax with no more than 5 columns, and use business language rather than field names for the headers.
+
+User objective: {query}
+
+Execution results:
+{evidence}""",
+        "fallback_plan": {
+            "objective_template": "Complete a verifiable analysis based on the current dataset: {query}",
+            "steps": [
+                {
+                    "id": "inspect",
+                    "title": "Inspect data quality",
+                    "instruction": "Check the fields, types, missing values, duplicates, and samples, and call out the most important data quality issues.",
+                    "success_criteria": "Return the data scale, field types, and missing/duplicate counts.",
+                },
+                {
+                    "id": "prepare",
+                    "title": "Prepare analysis data",
+                    "instruction": "Apply a conservative strategy to complete the necessary cleaning based on the issues found, and save the cleaned result.",
+                    "success_criteria": "Describe the actions taken and the before/after data changes, and produce a cleaned data artifact.",
+                },
+                {
+                    "id": "analyze",
+                    "title": "Run statistical analysis",
+                    "instruction": "Run descriptive statistics, relationship analysis, and applicable statistical tests around the user's objective: {query}",
+                    "success_criteria": "Provide the sample size, key metrics, and significance or model metrics when applicable.",
+                },
+                {
+                    "id": "visualize",
+                    "title": "Generate charts and exports",
+                    "instruction": "Create the most explanatory charts and export the current analysis data.",
+                    "success_criteria": "Produce at least one readable interactive chart and one data file artifact; when extreme values are present, the chart must keep both a main-scale and a full-range view.",
+                },
+            ],
+        },
+    },
+}
 
 
-def _fallback_plan(query: str) -> AnalysisPlan:
-    """Build a default plan; query constraints are applied by the caller."""
+def get_prompts(language: str = "zh") -> dict[str, Any]:
+    """返回指定语言的提示词集合。
+
+    Args:
+        language: 语言代码（zh / en）。传入 None、空串或不支持的值时回退到 zh。
+
+    Returns:
+        包含 system_prompt / plan_template / execution_template /
+        retry_template / replan_template / finalize_template / fallback_plan
+        的字典。
+    """
+    key = (language or "zh").strip().lower()
+    return PROMPTS.get(key, PROMPTS["zh"])
+
+
+#: 向后兼容：旧的模块级常量名仍指向中文版本，已有导入无需改动。
+SYSTEM_PROMPT = PROMPTS["zh"]["system_prompt"]
+
+
+def _fallback_plan(query: str, prompts: dict[str, Any] | None = None) -> AnalysisPlan:
+    """Build a default plan; query constraints are applied by the caller.
+
+    Args:
+        query: 用户的分析任务描述，用于填充 objective 和 analyze 步骤模板。
+        prompts: 指定语言的提示词集合（由 ``get_prompts`` 返回）。为 None 时
+            回退到中文版本，保持 ``_fallback_plan(query)`` 的向后兼容。
+    """
+    fp = (prompts or get_prompts("zh"))["fallback_plan"]
+    steps = [
+        PlanStep(
+            id=step["id"],
+            title=step["title"],
+            instruction=step["instruction"].format(query=query),
+            success_criteria=step["success_criteria"],
+        )
+        for step in fp["steps"]
+    ]
     return AnalysisPlan(
-        objective=f"基于当前数据集完成可验证的分析：{query}",
-        steps=[
-            PlanStep(
-                id="inspect",
-                title="检查数据质量",
-                instruction="检查字段、类型、缺失、重复和样例，指出最重要的数据质量问题。",
-                success_criteria="返回数据规模、字段类型、缺失和重复情况。",
-            ),
-            PlanStep(
-                id="prepare",
-                title="准备分析数据",
-                instruction="根据已发现的问题采用保守策略完成必要清洗，并保存清洗结果。",
-                success_criteria="说明处理动作和前后数据变化，生成清洗数据产物。",
-            ),
-            PlanStep(
-                id="analyze",
-                title="执行统计分析",
-                instruction=f"围绕用户目标执行描述统计、关系分析和适用的统计检验：{query}",
-                success_criteria="给出样本量、关键指标及适用时的显著性或模型指标。",
-            ),
-            PlanStep(
-                id="visualize",
-                title="生成图表与导出",
-                instruction="创建最有解释力的图表并导出当前分析数据。",
-                success_criteria="至少生成一个可读的交互图表和一个数据文件产物；存在极端值时图表须同时保留主体尺度与全量视图。",
-            ),
-        ],
+        objective=fp["objective_template"].format(query=query),
+        steps=steps,
     )
 
 

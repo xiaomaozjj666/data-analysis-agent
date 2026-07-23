@@ -44,10 +44,16 @@ const DataTable = React.lazy(() => import("./components/DataTable"));
 const ReportView = React.lazy(() => import("./components/ReportView"));
 const CommandPalette = React.lazy(() => import("./components/CommandPalette"));
 const HelpPanel = React.lazy(() => import("./components/HelpPanel"));
+import useAuthBootstrap from "./hooks/useAuthBootstrap";
+import useSettingsPanel from "./hooks/useSettingsPanel";
+import useShortcuts from "./hooks/useShortcuts";
+import useTabPersistence from "./hooks/useTabPersistence";
 import useTheme from "./hooks/useTheme";
+import useTimer from "./hooks/useTimer";
 import { useAppStore } from "./store/useAppStore";
 import { api, ApiError, describeApiError, requestHeaders } from "./utils/api";
 import { consumeSSEStream } from "./utils/sse";
+import { SSE_EVENT_TYPES } from "./utils/sse-events";
 import { notifyAnalysisDone } from "./utils/notify";
 import { formatDuration, wait } from "./utils/format";
 import {
@@ -70,7 +76,6 @@ import type {
   RetryOffer,
   Session,
   Settings,
-  ToolTraceItem,
 } from "./types";
 
 // /api/auth 返回的轻量结构
@@ -210,63 +215,11 @@ function App() {
   // 移动端侧边栏抽屉开关：桌面端 sidebar 常驻，平板/手机折叠为抽屉
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  // Esc 键关闭预览模态框或设置面板（P0-4）。
-  // 之前 Esc 只对 previewItem 生效，设置面板打开时按 Esc 没反应，
-  // 用户必须移动鼠标到右上角点 X，破坏键盘操作流。
-  useEffect(() => {
-    if (!previewItem && !keyOpen) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      if (previewItem) closeArtifactPreview();
-      else if (keyOpen) { setKeyOpen(false); setApiKey(""); }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [previewItem, keyOpen]);
+  // 设置面板点击外部关闭（提取至 useSettingsPanel）。
+  useSettingsPanel(keyOpen, setKeyOpen);
 
-  // 设置面板点击外部关闭：mousedown 落在 settings-form 或 provider-block 之外时收起，
-  // 避免用户每次都得移动鼠标到右上角点 X。mousedown 而非 click，
-  // 在文本选区拖拽到面板外释放时不会误触关闭。
-  useEffect(() => {
-    if (!keyOpen) return;
-    const handler = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
-      if (!target.closest(".settings-form") && !target.closest(".provider-block")) {
-        setKeyOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [keyOpen, setKeyOpen]);
-
-  // Tab 持久化：activeTab 变化时同步到 lastActiveTab，切换历史会话时恢复，
-  // 避免每次切换都回到"分析" Tab，减少用户重复点击。
-  useEffect(() => {
-    setLastActiveTab(activeTab);
-  }, [activeTab, setLastActiveTab]);
-
-  useEffect(() => {
-    api<AuthStatus>("/api/auth")
-      .then((status) => {
-        setAuthRequired(!!status.required);
-        setAuthenticated(!!status.authenticated);
-        if (!status.required || status.authenticated) return api<SettingsResponse>("/api/settings");
-        return null;
-      })
-      .then((value) => {
-        if (value) {
-          setSettings(value);
-          setEffort(value.reasoning_effort);
-          setThinking(value.thinking_enabled);
-          setKeyOpen(!value.configured);
-        }
-        setAuthReady(true);
-      })
-      .catch((err: Error) => {
-        setAuthReady(true);
-        setError(`后端连接失败：${err.message}`);
-      });
-  }, []);
+  // Tab 持久化：activeTab 变化时同步到 lastActiveTab（提取至 useTabPersistence）。
+  useTabPersistence(activeTab, setLastActiveTab);
 
   // 拉取历史会话列表。鉴权通过后立即拉一次，让用户在初次进入时就能
   // 看到之前的会话；上传/切换/分析完成时也会调用，保持列表新鲜。
@@ -289,9 +242,12 @@ function App() {
     }
   };
 
-  useEffect(() => {
-    if (authReady && (!authRequired || authenticated)) fetchHistory();
-  }, [authReady, authRequired, authenticated]);
+  // 认证引导 + 鉴权就绪后拉取历史（提取至 useAuthBootstrap）。
+  useAuthBootstrap({
+    setAuthRequired, setAuthenticated, setAuthReady,
+    setSettings, setEffort, setThinking, setKeyOpen, setError,
+    fetchHistory, authReady, authRequired, authenticated,
+  });
 
   // 切换到历史会话：拉取完整 session payload，并恢复 result/plan/completed。
   // 失败时（404 等）按 handleSessionLost 处理，避免遗留半残状态。
@@ -342,54 +298,8 @@ function App() {
     }
   };
 
-  // 实时耗时：running 时持续刷新 elapsed = now - startedAtRef。
-  // 关键设计：
-  //   1. 用 ref 而非 session.analysis_started_at 作依赖——后者在 SSE
-  //      期间不会刷新到前端，会让 setInterval 永远不启动。
-  //   2. tick 频率 250ms（rAF 级别流畅），但只在"显示秒数"变化时
-  //      setState，避免每秒一次的视觉跳变和不必要的 React 渲染。
-  //   3. 后台 tab 暂停 setInterval（visibilitychange hidden），节省
-  //      CPU 并避免 throttled timer 造成累积漂移；回到前台立即 tick
-  //      一次追上真实耗时。
-  //   4. running 转 false 时 effect cleanup 清 interval，自然停止。
-  //   5. tick 每次都重新读 startedAtRef.current，而不是闭包捕获 started。
-  //      complete 帧后 refresh 会用服务端精确 started_at 校正 ref，闭包
-  //      捕获的旧值会让校正失效（下一帧用旧 started 重新算 elapsed 覆盖）。
-  useEffect(() => {
-    if (!running) return undefined;
-    if (!startedAtRef.current) return undefined;
-    let lastDisplayedSecond = -1;
-    let timer: number | null = null;
-    const tick = () => {
-      const started = startedAtRef.current;
-      if (!started) return;
-      const elapsed = Math.max(0, Date.now() / 1000 - started);
-      const currentSecond = Math.floor(elapsed);
-      // 只有秒数实际变化才 setState，250ms 的 tick 大多数时候是 no-op。
-      if (currentSecond !== lastDisplayedSecond) {
-        lastDisplayedSecond = currentSecond;
-        setElapsedSeconds(elapsed);
-      }
-    };
-    const onVisibilityChange = () => {
-      if (document.hidden) {
-        if (timer != null) {
-          window.clearInterval(timer);
-          timer = null;
-        }
-      } else if (timer == null) {
-        tick();
-        timer = window.setInterval(tick, 250);
-      }
-    };
-    tick();
-    timer = window.setInterval(tick, 250);
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => {
-      if (timer != null) window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-  }, [running]);
+  // 实时耗时：running 时持续刷新 elapsed = now - startedAtRef（提取至 useTimer）。
+  useTimer(running, startedAtRef, setElapsedSeconds);
 
   // 分析结束（running 转 false）时刷新历史，把当前会话的最新状态
   // 同步到侧边栏（产物数、状态、相对时间）。
@@ -418,58 +328,6 @@ function App() {
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [authReady, authRequired, authenticated, running]);
-
-  // 全局键盘快捷键：Cmd+K 命令面板、? 快捷键帮助、T 切换主题、Cmd+B 折叠侧栏、
-  // 1/2/3 切换 Tab、Cmd+. 停止分析。这些快捷键参考 Linear / Notion / VSCode，
-  // 让熟练用户完全脱离鼠标操作，是缩小与主流 Agent 体验差距的关键。
-  // 注意：在 input/textarea/contenteditable 中按键时跳过单字符快捷键（? T 1 2 3），
-  // 避免用户输入这些字符时误触发；Cmd 组合键不受此限制。
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      const isTyping = !!target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
-      const meta = event.metaKey || event.ctrlKey;
-
-      // Cmd+K：打开命令面板（任何焦点下都生效）
-      if (meta && event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        setCommandOpen((v) => !v);
-        return;
-      }
-      // Cmd+B：折叠/展开历史侧栏
-      if (meta && event.key.toLowerCase() === "b") {
-        event.preventDefault();
-        setHistoryExpanded((v) => !v);
-        return;
-      }
-      // Cmd+.：停止正在运行的分析
-      if (meta && event.key === ".") {
-        if (running) { event.preventDefault(); stopAnalysis(); }
-        else if (chatRunning) { event.preventDefault(); stopFollowUp(); }
-        return;
-      }
-      // 单字符快捷键：只在非输入态下生效
-      if (isTyping) return;
-      // ?：打开快捷键帮助面板（Shift+/）
-      if (event.key === "?" && !meta) {
-        event.preventDefault();
-        setHelpOpen((v) => !v);
-        return;
-      }
-      // T：切换主题
-      if (event.key.toLowerCase() === "t" && !meta && !event.altKey) {
-        event.preventDefault();
-        toggleTheme();
-        return;
-      }
-      // 1/2/3：切换分析/数据/产物 Tab
-      if (event.key === "1" && !meta) { event.preventDefault(); setActiveTab("analysis"); return; }
-      if (event.key === "2" && !meta) { event.preventDefault(); setActiveTab("data"); return; }
-      if (event.key === "3" && !meta) { event.preventDefault(); setActiveTab("artifacts"); return; }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [running, chatRunning, toggleTheme]);
 
   // 命令面板动作执行器：根据 action.id 路由到具体操作。
   // 用 useCallback 保持身份稳定，作为 props 传入 CommandPalette 时不会触发重渲染。
@@ -592,6 +450,15 @@ function App() {
     setCompareLoading(false);
     setPreviewFullscreen(false);
   }, []);
+
+  // 键盘快捷键：Esc 关闭预览/设置 + 全局 Cmd+K/Cmd+B/Cmd+./?/T/1-3（提取至 useShortcuts）。
+  // 放在 closeArtifactPreview 之后调用：它是 const useCallback，必须在求值前已定义；
+  // stopAnalysis/stopFollowUp 为函数声明（hoisted），可安全引用。
+  useShortcuts({
+    previewItem, keyOpen, closeArtifactPreview, setKeyOpen, setApiKey,
+    running, chatRunning, stopAnalysis, stopFollowUp, toggleTheme,
+    setCommandOpen, setHistoryExpanded, setHelpOpen, setActiveTab,
+  });
 
   // 加载对比图表：复用预览 LRU 缓存，命中则秒开，否则 fetch 后入缓存。
   // 与主预览共享 previewCacheRef，切换主图与对比图时互不重复请求。
@@ -1091,14 +958,14 @@ function App() {
         return next;
       });
       await consumeSSEStream(response, {
-        chat_chunk: (data) => {
+        [SSE_EVENT_TYPES.CHAT_CHUNK]: (data) => {
           // 流式追加到最后一个 assistant 气泡
           appendToLastAssistant((last) => ({
             ...last,
             content: (last.content || "") + (data.chunk || ""),
           }));
         },
-        thinking_chunk: (data) => {
+        [SSE_EVENT_TYPES.THINKING_CHUNK]: (data) => {
           // 思考过程追加到最后一个 assistant 气泡的 reasoning 字段，
           // ConversationBubble 内嵌的 ReasoningBlock 会自动展示。
           if (!data.chunk) return;
@@ -1107,16 +974,16 @@ function App() {
             reasoning: (last.reasoning || "") + (data.chunk || ""),
           }));
         },
-        tool_call: (data) => {
+        [SSE_EVENT_TYPES.TOOL_CALL]: (data) => {
           appendToLastAssistant((last) => ({
             ...last,
             tools: [...(last.tools || []), {
               call_id: data.call_id, name: data.name,
               status: "running", started_at: data.started_at,
-            } as ToolTraceItem],
+            }],
           }));
         },
-        tool_result: (data) => {
+        [SSE_EVENT_TYPES.TOOL_RESULT]: (data) => {
           appendToLastAssistant((last) => ({
             ...last,
             tools: (last.tools || []).map((t) => t.call_id === data.call_id
@@ -1124,7 +991,7 @@ function App() {
               : t),
           }));
         },
-        chat_done: (data) => {
+        [SSE_EVENT_TYPES.CHAT_DONE]: (data) => {
           // 终态：写入完整回复（防止 chunk 丢失），标记非流式，追加新产物
           appendToLastAssistant((last) => ({
             ...last,
@@ -1136,18 +1003,18 @@ function App() {
           }));
           if (data.artifacts?.length) {
             setSession((current) => current
-              ? { ...current, artifacts: [...(current.artifacts || []), ...data.artifacts] }
+              ? { ...current, artifacts: [...(current.artifacts || []), ...(data.artifacts || [])] }
               : current);
           }
         },
-        cancelled: (data) => {
+        [SSE_EVENT_TYPES.CANCELLED]: (data) => {
           appendToLastAssistant((last) => ({
             ...last,
             streaming: false,
             error: data.message || "追问已取消。",
           }));
         },
-        error: (data) => {
+        [SSE_EVENT_TYPES.ERROR]: (data) => {
           throw new Error(data.message || "追问失败");
         },
       }, { onChunk: resetIdleTimeout });
@@ -1281,22 +1148,22 @@ function App() {
       // 跨事件状态（completedPayload / sawEvent）通过闭包维护。
       // error 事件抛出的异常会被 consumeSSEStream 重新抛出，落到下面的 catch。
       await consumeSSEStream(response, {
-        started: () => {
+        [SSE_EVENT_TYPES.STARTED]: () => {
           if (session.id === runningSessionIdRef.current) setCurrentNodeTitle("后端已接收任务");
         },
-        progress: (data) => {
+        [SSE_EVENT_TYPES.PROGRESS]: (data) => {
           if (session.id === runningSessionIdRef.current) setCurrentNodeTitle(data.title || "正在分析");
         },
-        validate_dataset: () => {
+        [SSE_EVENT_TYPES.VALIDATE_DATASET]: () => {
           if (session.id === runningSessionIdRef.current) setCurrentNodeTitle("正在检查数据集结构");
         },
-        plan_analysis: (data) => {
+        [SSE_EVENT_TYPES.PLAN_ANALYSIS]: (data) => {
           if (session.id === runningSessionIdRef.current) {
             setPlan(data.plan || []);
             setCurrentNodeTitle("正在规划分析步骤");
           }
         },
-        plan_ready: (data) => {
+        [SSE_EVENT_TYPES.PLAN_READY]: (data) => {
           // plan_only=true 时后端在 plan_analysis 后结束流并发送 plan_ready，
           // 前端进入待审阅状态，等待用户编辑并批准计划再执行。
           if (session.id === runningSessionIdRef.current) {
@@ -1307,7 +1174,7 @@ function App() {
             setRunning(false);
           }
         },
-        step_progress: (data) => {
+        [SSE_EVENT_TYPES.STEP_PROGRESS]: (data) => {
           // 当前步骤的执行进度（百分比 / 工具调用数 / 提示文案）
           if (session.id === runningSessionIdRef.current) {
             setStepProgress({
@@ -1317,18 +1184,18 @@ function App() {
             });
           }
         },
-        execute_step: () => {
+        [SSE_EVENT_TYPES.EXECUTE_STEP]: () => {
           if (session.id === runningSessionIdRef.current) {
             setCurrentNodeTitle((current) => current || "正在执行分析步骤");
           }
         },
-        replan: (data) => {
+        [SSE_EVENT_TYPES.REPLAN]: (data) => {
           if (session.id === runningSessionIdRef.current) {
             setCompleted(data.completed_steps || []);
             setCurrentNodeTitle("正在审查进度并重规划");
           }
         },
-        thinking_chunk: (data) => {
+        [SSE_EVENT_TYPES.THINKING_CHUNK]: (data) => {
           // DeepSeek reasoning_content：流式思考过程。开始接收时打开 streaming 标记，
           // ReportView 顶部的 ReasoningBlock 会自动展开；接收完后由 report_chunk / complete
           // 阶段自然关闭 streaming。思考过程让用户看到 Agent 的推理链路，减少"黑盒等待"焦虑。
@@ -1338,7 +1205,7 @@ function App() {
             setReasoning((prev) => prev + (data.chunk || ""));
           }
         },
-        finalize: () => {
+        [SSE_EVENT_TYPES.FINALIZE]: () => {
           if (session.id === runningSessionIdRef.current) {
             setCurrentNodeTitle("正在汇总最终报告");
             // finalize 阶段开始输出报告正文，思考过程已结束，关闭 streaming
@@ -1348,7 +1215,7 @@ function App() {
             setResult((prev) => prev || { response: "", artifacts: [], plan, completed_steps: completed });
           }
         },
-        report_chunk: (data) => {
+        [SSE_EVENT_TYPES.REPORT_CHUNK]: (data) => {
           // 流式报告：逐字追加，用户看着报告逐字写出，而不是等 30-60 秒看完整报告。
           // 节流：不直接 setResult（每个 token 触发 ReactMarkdown 全量重解析 AST），
           // 而是写入 ref 缓冲，80ms 批量刷新一次。长报告（5000+ 字）在低端设备更流畅。
@@ -1369,7 +1236,7 @@ function App() {
             }
           }
         },
-        tool_call: (data) => {
+        [SSE_EVENT_TYPES.TOOL_CALL]: (data) => {
           // 工具调用开始：追加到时间线，让用户看到 ReAct 内部正在做什么
           if (session.id === runningSessionIdRef.current) {
             setToolTrace((prev) => [...prev, {
@@ -1378,10 +1245,10 @@ function App() {
               input_preview: data.input_preview,
               status: "running",
               started_at: data.started_at,
-            } as ToolTraceItem]);
+            }]);
           }
         },
-        tool_result: (data) => {
+        [SSE_EVENT_TYPES.TOOL_RESULT]: (data) => {
           // 工具调用结束：更新对应 call_id 的状态和耗时
           if (session.id === runningSessionIdRef.current) {
             setToolTrace((prev) => prev.map((item) => item.call_id === data.call_id
@@ -1390,10 +1257,10 @@ function App() {
             ));
           }
         },
-        complete: (data) => {
+        [SSE_EVENT_TYPES.COMPLETE]: (data) => {
           // complete 帧仍需记录 completedPayload，以便结束后 setRunning(false)
           // 和刷新 history，让历史列表反映新状态（即使用户已切到历史会话）。
-          completedPayload = data as AnalysisResult;
+          completedPayload = data;
           if (session.id === runningSessionIdRef.current) {
             // 清除节流定时器并丢弃缓冲：complete 帧的 data 是权威最终结果，
             // pending flush 不得覆盖它。
@@ -1402,22 +1269,22 @@ function App() {
               reportFlushTimerRef.current = null;
             }
             reportBufferRef.current = "";
-            setResult(data as AnalysisResult);
-            setPlan((data as AnalysisResult).plan || []);
-            setCompleted((data as AnalysisResult).completed_steps || []);
+            setResult(data);
+            setPlan(data.plan || []);
+            setCompleted(data.completed_steps || []);
             // 乐观更新 artifacts，refresh 失败时仍能看到产物。
-            setSession((current) => (current ? { ...current, artifacts: (data as AnalysisResult).artifacts || [] } : current));
+            setSession((current) => (current ? { ...current, artifacts: data.artifacts || [] } : current));
             setCurrentNodeTitle("");
             // 思考过程与用量收尾：complete 帧可能携带最终 reasoning / usage。
             setReasoningStreaming(false);
-            if ((data as AnalysisResult).reasoning) setReasoning((data as AnalysisResult).reasoning || "");
-            if ((data as AnalysisResult).usage) setUsage((data as AnalysisResult).usage || null);
+            if (data.reasoning) setReasoning(data.reasoning || "");
+            if (data.usage) setUsage(data.usage || null);
             // 步骤进度归位：分析完成后不再显示步骤内进度条
             setStepProgress(null);
           }
           notifyAnalysisDone("分析已完成", nextTask || "数据分析任务已完成");
         },
-        cancelled: (data) => {
+        [SSE_EVENT_TYPES.CANCELLED]: (data) => {
           // 仅在用户未通过 stopAnalysis 主动取消时显示后端取消消息，避免重复 setError。
           if (!cancelRequested.current && session.id === runningSessionIdRef.current) {
             setError(data.message || "分析已取消。");
@@ -1432,7 +1299,7 @@ function App() {
             setRetryOffer({ task: nextTask, reason: "cancelled", canResume: true, plan, completed });
           }
         },
-        error: (data) => {
+        [SSE_EVENT_TYPES.ERROR]: (data) => {
           // 立即刷新缓冲：让用户看到出错前已生成的报告内容
           flushReportBuffer();
           // 出错时退出审批模式，避免 UI 卡在待审阅状态
@@ -1854,7 +1721,7 @@ function App() {
       </aside>
       {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} aria-hidden="true" />}
 
-      <main className={session ? "main" : "main is-empty"}>
+      <main className={session ? "app-main" : "app-main is-empty"}>
         <header className="topbar">
           <button type="button" className="sidebar-toggle" onClick={() => setSidebarOpen(true)} aria-label="打开侧边栏"><Menu size={18} /></button>
           <div className="breadcrumb">
