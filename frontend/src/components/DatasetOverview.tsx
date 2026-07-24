@@ -1,5 +1,7 @@
 import React from "react";
 import { Database } from "lucide-react";
+import Counter from "./rb/Counter";
+import StaggerReveal from "./rb/StaggerReveal";
 import type { DatasetProfile, ColumnInfo } from "../types";
 
 interface DatasetOverviewProps {
@@ -65,7 +67,7 @@ const DatasetOverview = React.memo(function DatasetOverview({ profile }: Dataset
       <div className="quality-summary">
         <div className="quality-summary-head">
           <span className="quality-summary-label">整体完整度</span>
-          <span className="quality-summary-score">{scorePct}%</span>
+          <span className="quality-summary-score"><Counter value={scorePct} suffix="%" /></span>
         </div>
         <div
           className="quality-summary-bar"
@@ -95,7 +97,9 @@ const DatasetOverview = React.memo(function DatasetOverview({ profile }: Dataset
           <tbody>
             {columns.length === 0 ? (
               <tr><td colSpan={7} className="quality-empty">暂无字段信息</td></tr>
-            ) : columns.map((column) => {
+            ) : (
+              <StaggerReveal stagger={0.04} duration={0.35}>
+                {columns.map((column) => {
               const missing = column.missing ?? Math.max(0, rowTotal - (column.non_null ?? rowTotal));
               const rate = rowTotal > 0 ? missing / rowTotal : 0;
               const ratePct = Math.round(rate * 100);
@@ -138,7 +142,9 @@ const DatasetOverview = React.memo(function DatasetOverview({ profile }: Dataset
                   </td>
                 </tr>
               );
-            })}
+                })}
+              </StaggerReveal>
+            )}
           </tbody>
         </table>
       </div>

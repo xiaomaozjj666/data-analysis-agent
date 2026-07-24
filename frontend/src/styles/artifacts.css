@@ -8,8 +8,11 @@
 .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
 
 /* 图表卡片：垂直布局（缩略图 → 信息 → 操作），checkbox 与引擎徽章浮于缩略图上方 */
-.chart-card { position: relative; min-height: 164px; display: flex; flex-direction: column; gap: 12px; padding: 16px; overflow: hidden; background: var(--canvas-default); border: 1px solid var(--border-default); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); transition: border-color var(--duration) var(--ease-out), box-shadow var(--duration) var(--ease-out), transform var(--duration) var(--ease-out); }
-.chart-card:hover { border-color: var(--accent-fg); box-shadow: var(--shadow-lg); transform: translateY(-3px); }
+/* SpotlightCard 包裹 chart-card 提供 RB 光斑效果 */
+.rb-spotlight-card.chart-card { position: relative; min-height: 164px; border-radius: var(--radius-lg); transition: border-color var(--duration) var(--ease-out), box-shadow var(--duration) var(--ease-out), transform var(--duration) var(--ease-out); }
+.rb-spotlight-card.chart-card:hover { box-shadow: var(--shadow-lg); transform: translateY(-3px); }
+.chart-card-inner { display: flex; flex-direction: column; gap: 12px; padding: 16px; overflow: hidden; background: var(--canvas-default); border: 1px solid var(--border-default); border-radius: var(--radius-lg); }
+.chart-card-inner:hover { border-color: var(--accent-fg); }
 
 /* 缩略图容器：固定高度，点击触发预览；背景使用 subtle 底色避免透明 PNG 视觉割裂 */
 .chart-thumbnail { position: relative; height: 140px; display: flex; align-items: center; justify-content: center; background: var(--canvas-subtle); border: 1px solid var(--border-muted); border-radius: var(--radius-md); overflow: hidden; cursor: pointer; transition: border-color var(--duration-fast) var(--ease-out); }

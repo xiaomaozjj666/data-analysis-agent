@@ -1,0 +1,185 @@
+/* ============================================================
+   React Bits 风格组件样式
+   零依赖纯 CSS 实现，支持暗色模式与 prefers-reduced-motion
+   ============================================================ */
+
+/* ── Shiny Text ── 光泽流动文字 */
+.rb-shiny-text {
+  background: linear-gradient(
+    var(--shiny-spread, 120deg),
+    var(--shiny-color, currentColor) 30%,
+    var(--shiny-shine, #fff) 50%,
+    var(--shiny-color, currentColor) 70%
+  );
+  background-size: 300% 100%;
+  background-position: 100% 0;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: var(--shiny-speed, 2.5s) var(--shiny-delay, 0s) infinite shiny-sweep-left;
+}
+.rb-shiny-text.pause-on-hover:hover {
+  animation-play-state: paused;
+}
+
+@keyframes shiny-sweep-left {
+  0% { background-position: 200% 0; }
+  100% { background-position: -100% 0; }
+}
+@keyframes shiny-sweep-right {
+  0% { background-position: -100% 0; }
+  100% { background-position: 200% 0; }
+}
+
+/* ── Counter ── 数字计数器 */
+.rb-counter {
+  font-variant-numeric: tabular-nums;
+  display: inline-block;
+}
+
+/* ── Spotlight Card ── 鼠标跟随光斑卡片 */
+.rb-spotlight-card {
+  position: relative;
+  overflow: hidden;
+}
+.rb-spotlight-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    var(--spot-radius, 200px) circle at var(--spot-x, 50%) var(--spot-y, 50%),
+    rgba(var(--spot-color, 255, 255, 255), var(--spot-opacity, 0)),
+    transparent 70%
+  );
+  pointer-events: none;
+  transition: --spot-opacity 0.2s ease;
+  z-index: 1;
+}
+.rb-spotlight-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 1px solid rgba(var(--spot-color, 255, 255, 255), 0.08);
+  border-radius: inherit;
+  pointer-events: none;
+  transition: border-color 0.3s ease;
+}
+.rb-spotlight-card:hover::after {
+  border-color: rgba(var(--spot-color, 255, 255, 255), 0.2);
+}
+.rb-spotlight-card > * {
+  position: relative;
+  z-index: 2;
+}
+
+/* ── Dot Field ── 点阵背景 */
+.rb-dot-field {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.rb-dot {
+  position: absolute;
+  width: var(--dot-size, 2px);
+  height: var(--dot-size, 2px);
+  border-radius: 50%;
+  background: var(--dot-color, rgba(128, 128, 145, 0.25));
+  animation: rb-dot-breathe 4s ease-in-out infinite;
+  will-change: opacity, transform;
+}
+@keyframes rb-dot-breathe {
+  0%, 100% { opacity: 0.3; transform: scale(1); }
+  50% { opacity: 0.8; transform: scale(1.4); }
+}
+
+/* ── Stagger Reveal ── 交错入场 */
+.rb-stagger-item {
+  animation: rb-stagger-in forwards;
+  animation-fill-mode: both;
+  opacity: 0;
+}
+@keyframes rb-stagger-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ── Animated List ── 动画列表 */
+.rb-animated-list {
+  position: relative;
+}
+.rb-list-scroll {
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.rb-list-item {
+  animation: rb-list-slide-in 0.4s ease-out forwards;
+  animation-fill-mode: both;
+  opacity: 0;
+}
+.rb-list-item.is-selected {
+  /* 选中样式由外部控制 */
+}
+@keyframes rb-list-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+.rb-list-fade {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 24px;
+  pointer-events: none;
+  z-index: 2;
+}
+.rb-list-fade-top {
+  top: 0;
+  background: linear-gradient(to bottom, var(--bg-primary, #fff), transparent);
+}
+.rb-list-fade-bottom {
+  bottom: 0;
+  background: linear-gradient(to top, var(--bg-primary, #fff), transparent);
+}
+
+/* ── 暗色模式适配 ── */
+[data-theme="dark"] .rb-list-fade-top {
+  background: linear-gradient(to bottom, var(--bg-primary, #1a1d29), transparent);
+}
+[data-theme="dark"] .rb-list-fade-bottom {
+  background: linear-gradient(to top, var(--bg-primary, #1a1d29), transparent);
+}
+
+/* ── 无障碍：尊重用户的动画偏好 ── */
+@media (prefers-reduced-motion: reduce) {
+  .rb-shiny-text {
+    animation: none;
+    background: var(--shiny-color, currentColor);
+    -webkit-text-fill-color: var(--shiny-color, currentColor);
+  }
+  .rb-dot {
+    animation: none;
+    opacity: 0.4;
+  }
+  .rb-stagger-item {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+  .rb-list-item {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
