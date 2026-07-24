@@ -100,10 +100,10 @@ function EmptyWorkspace({ uploading, onUpload, onFileDrop }: EmptyWorkspaceProps
       onClick={handleSectionClick}
       onKeyDown={handleSectionKeyDown}
     >
-      <DotField className="empty-grid-bg" dotRadius={2} dotSpacing={24} cursorRadius={400} bulgeStrength={80} gradientFrom="rgba(91, 91, 214, 0.3)" gradientTo="rgba(128, 128, 145, 0.2)" glowColor="var(--accent-color, #5b5bd6)" sparkle />
+      <DotField className="empty-grid-bg" dotRadius={2} dotSpacing={24} cursorRadius={400} bulgeStrength={56} gradientFrom="rgba(91, 91, 214, 0.18)" gradientTo="rgba(128, 128, 145, 0.12)" glowColor="transparent" />
       <div className="empty-copy">
         <span className="section-kicker">新建分析</span>
-        <h2><ShinyText text="从一份数据开始" color="var(--text-primary)" shineColor="var(--accent-color)" speed={3} /></h2>
+        <h2><ShinyText text="从一份数据开始" color="var(--fg-default)" shineColor="var(--accent-fg)" speed={3} /></h2>
         {/* 支持格式徽章：纯装饰，告知用户可上传的文件类型 */}
         <div className="empty-formats" aria-hidden="true">
           <span className="format-badge"><FileSpreadsheet size={12} />CSV</span>
