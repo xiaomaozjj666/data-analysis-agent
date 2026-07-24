@@ -1,12 +1,17 @@
 /* ---------- 空工作台 ---------- */
-/* 极简居中布局：几何数据网格 + 呼吸浮动动画，主视觉回归文案与上传入口。
-   参考 Linear/Vercel/Notion 的克制留白，告别厚重悬浮插画。
+/* 极简居中布局：点阵背景 + 鼠标跟随光斑，主视觉回归文案与上传入口。
    整个工作区都是可交互落点：负 margin 突破 .app-main 的 padding，
-   让拖拽与点击上传覆盖右侧全部区域，而非仅中间内容小块。
-   两级交互反馈：hover 轻微灰底（可点击），drag 靛蓝底+文案强调（可投放）。
-   RB DotField 背景层叠加在网格下方，提供呼吸式点阵动效。 */
-.empty-grid-bg { z-index: 0; opacity: 0.7; }
+   让拖拽与点击上传覆盖右侧全部区域。 */
+/* DotField 背景层：absolute 铺满整个 section，点呼吸动画 */
+.empty-grid-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  opacity: 0.6;
+  pointer-events: none;
+}
 .empty-workspace {
+  position: relative;
   min-height: calc(100vh - 64px);
   display: flex;
   flex-direction: column;
@@ -18,9 +23,15 @@
   cursor: pointer;
   overflow: hidden;
   transition: background var(--duration) var(--ease-out);
+  /* 鼠标跟随光斑：整个 section 都有效，radial-gradient 跟随 --mouse-x/y */
+  background: radial-gradient(
+    400px circle at var(--mouse-x, 50%) var(--mouse-y, 50%),
+    var(--accent-subtle),
+    transparent 80%
+  );
 }
-/* hover：整个区域轻微灰底，配合 pointer 光标让用户感知"可点击" */
-.empty-workspace:hover { background: var(--canvas-subtle); }
+/* hover 时保持光斑不覆盖（光斑已由 --mouse-x/y 控制） */
+.empty-workspace:hover { background: radial-gradient(400px circle at var(--mouse-x, 50%) var(--mouse-y, 50%), var(--accent-subtle), transparent 80%); }
 .empty-workspace.is-drag-over {
   background: var(--accent-subtle);
   outline: 2px dashed var(--accent-fg);
@@ -30,55 +41,10 @@
 /* 拖拽态：提示文案变为强调色，明确告知"松开即上传" */
 .empty-workspace.is-drag-over .empty-copy p { color: var(--accent-fg); font-weight: 600; }
 
-/* 几何数据网格：缩小居中，整体呼吸浮动；保留 5×4 格子意象但弱化视觉权重。
-   组件仍会写入 --mouse-x/--mouse-y，此处不再渲染光斑，保留变量避免空引用。 */
-.empty-grid {
-  position: relative;
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  width: min(28vw, 200px);
-  aspect-ratio: 1.25;
-  background: transparent;
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
-  overflow: visible;
-  animation: gentle-float 3s ease-in-out infinite;
-  --mouse-x: 50%;
-  --mouse-y: 50%;
-}
-/* 隐藏旧的表头/首列装饰层与 tab，回归极简 */
-.empty-grid::before,
-.empty-grid::after { display: none; }
-.grid-tab { display: none; }
-
-/* 单元格：去除边框，改为柔和圆角小块，保留对角 staggered 呼吸但极度克制 */
-.empty-grid i {
-  position: relative;
-  min-height: auto;
-  border: 0;
-  border-radius: 4px;
-  background: var(--canvas-subtle);
-  z-index: 1;
-  animation: cell-breathe 4.2s ease-in-out infinite;
-  animation-delay: calc(var(--cell-index, 0) * 0.1s);
-  transition: background-color var(--duration) var(--ease-out);
-}
-/* 高亮格子：品牌色暗示"数据已填充" */
-.empty-grid i:nth-child(7),
-.empty-grid i:nth-child(13),
-.empty-grid i:nth-child(19) {
-  background: var(--accent-subtle);
-}
-.empty-grid i:nth-child(13) {
-  background: var(--accent-fg);
-  opacity: 0.18;
-}
-/* 移除旧的悬浮涟漪，避免与整体浮动冲突 */
-.empty-grid i:hover { background: var(--canvas-subtle); transform: none; box-shadow: none; }
-
-/* 居中文案 */
+/* 居中文案：z-index 确保在 DotField 背景之上 */
 .empty-copy {
+  position: relative;
+  z-index: 2;
   text-align: center;
   max-width: 420px;
 }
