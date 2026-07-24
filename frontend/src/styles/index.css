@@ -35,4 +35,5 @@
 @import "./empty-state.css";
 @import "./animations.css";
 @import "./rb-components.css";
+/* React Bits 组件自带 CSS（通过组件 import './X.css' 加载，此处无需额外导入） */
 @import "./responsive.css";
