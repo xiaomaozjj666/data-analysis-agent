@@ -2,6 +2,7 @@ import React, { useMemo, useState } from "react";
 import { Download, ExternalLink, FileSpreadsheet } from "lucide-react";
 import { API_URL, pickChartIcon } from "../constants";
 import { formatBytes } from "../utils/format";
+import SpotlightCard from "./rb/SpotlightCard";
 import type { Artifact } from "../types";
 
 interface ArtifactCenterProps {
@@ -92,7 +93,8 @@ const ArtifactCenter = React.memo(function ArtifactCenter({
               const { Icon, label } = pickChartIcon(item.name);
               const isSelected = selected.has(item.name);
               return (
-                <article className="chart-card" key={item.name}>
+                <SpotlightCard className="chart-card" key={item.name} radius={180} color="91, 91, 214" intensity={0.06}>
+                <article className="chart-card-inner">
                   {hasBatchDownload && (
                     <input
                       type="checkbox"
@@ -144,6 +146,7 @@ const ArtifactCenter = React.memo(function ArtifactCenter({
                     </button>
                   </div>
                 </article>
+                </SpotlightCard>
               );
             })}
           </div>

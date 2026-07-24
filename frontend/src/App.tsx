@@ -44,7 +44,10 @@ const DataTable = React.lazy(() => import("./components/DataTable"));
 const ReportView = React.lazy(() => import("./components/ReportView"));
 const CommandPalette = React.lazy(() => import("./components/CommandPalette"));
 const HelpPanel = React.lazy(() => import("./components/HelpPanel"));
+import useAnalysisRunner from "./hooks/useAnalysisRunner";
+import useArtifactPreview from "./hooks/useArtifactPreview";
 import useAuthBootstrap from "./hooks/useAuthBootstrap";
+import useChatRunner from "./hooks/useChatRunner";
 import useSettingsPanel from "./hooks/useSettingsPanel";
 import useShortcuts from "./hooks/useShortcuts";
 import useTabPersistence from "./hooks/useTabPersistence";
@@ -52,28 +55,21 @@ import useTheme from "./hooks/useTheme";
 import useTimer from "./hooks/useTimer";
 import { useAppStore } from "./store/useAppStore";
 import { api, ApiError, describeApiError, requestHeaders } from "./utils/api";
-import { consumeSSEStream } from "./utils/sse";
-import { SSE_EVENT_TYPES } from "./utils/sse-events";
-import { notifyAnalysisDone } from "./utils/notify";
 import { formatDuration, wait } from "./utils/format";
 import {
   API_URL,
   ACTIVE_ANALYSIS_STATES,
   COMMAND_ACTIONS,
   MAX_UPLOAD_BYTES_CLIENT,
-  PREVIEW_CACHE_MAX,
   presets,
 } from "./constants";
 import type {
-  AnalysisResult,
   Artifact,
   CommandAction,
-  CompletedStep,
   DatasetProfile,
   FollowUpMessage,
   HistorySessionItem,
   PlanStep,
-  RetryOffer,
   Session,
   Settings,
 } from "./types";
@@ -157,56 +153,38 @@ function App() {
 
   // refs 保持局部状态：useRef 不迁移到 store（控制器、缓存、闭包内
   // 读取的最新值不需要触发重渲染）。
-  const followUpInputRef = useRef<HTMLTextAreaElement>(null);
-  const chatControllerRef = useRef<AbortController | null>(null);
-  // 分析开始时间戳（秒）。startAnalysis 时用客户端时间立即赋值，
-  // 避免 useEffect 依赖 session.analysis_started_at —— 该字段只在
-  // 后端 set_running() 后存在，前端 session 对象在 SSE 期间不会刷新，
-  // 依赖它会导致 setInterval 永远不启动，计时停在 0。
-  const startedAtRef = useRef<number | null>(null);
-  // 正在运行的 SSE 所属 session id。用户切换到历史会话时这个 ref 仍是原 session，
-  // SSE 帧到达时若 currentSession.id !== runningSessionId，说明用户在查看历史，
-  // 不应覆盖 plan/completed/result 等 UI 状态。
-  const runningSessionIdRef = useRef<string | null>(null);
+  // 分析 / 追问 / 预览相关 ref 已随逻辑提取至 useAnalysisRunner /
+  // useChatRunner / useArtifactPreview，这里仅保留 App.tsx 仍直接使用的 ref。
   const fileInput = useRef<HTMLInputElement>(null);
   const taskInput = useRef<HTMLTextAreaElement>(null);
-  const analysisController = useRef<AbortController | null>(null);
-  const previewController = useRef<AbortController | null>(null);
-  // 预览 HTML LRU 缓存：每个图表 HTML 完全自包含（含 Plotly.js ~3.5MB），
-  // 重复打开同一图表时秒开，避免重新 fetch + 解析。最多缓存 5 条。
-  const previewCacheRef = useRef<Map<string, string>>(new Map());
   const retryController = useRef<AbortController | null>(null);
-  const cancelRequested = useRef(false);
-  const lastTaskRef = useRef("");
-  // 流式报告节流缓冲：report_chunk 每个 token 都直接 setResult 会触发
-  // ReactMarkdown 全量重解析 AST，长报告（5000+ 字）在低端设备卡顿。
-  // 改为缓冲 chunks，80ms 批量刷新一次（每秒约 12 次，人眼感知流畅）。
-  const reportBufferRef = useRef("");
-  const reportFlushTimerRef = useRef<number | null>(null);
   // 按 sessionId 保存草稿：切换历史会话时不丢失当前正在输入的任务
   const taskDraftsRef = useRef<Record<string, string>>({});
 
   // 主题（light/dark）：useTheme 内部读取 localStorage，无则跟随系统。
   const { theme, toggle: toggleTheme } = useTheme();
 
-  // === Batch 4：图表内联编辑 ===
-  // 预览模态中可对图表产物进行标题/主色就地编辑，
-  // 调用 PUT /api/sessions/{id}/artifacts/{filename}/edit 更新 HTML 和 JSON。
-  const [chartEditOpen, setChartEditOpen] = useState(false);
-  const [chartEditTitle, setChartEditTitle] = useState("");
-  const [chartEditColor, setChartEditColor] = useState("#245C55");
-  const [chartEditSaving, setChartEditSaving] = useState(false);
-
-  // === Batch B1：图表预览增强 ===
-  // previewFullscreen：全屏展示图表（#17）
-  // compareMode/compareItem/compareHtml/compareLoading：图表对比并排展示（#22）
-  // pngDownloading：通过 postMessage 通道触发 iframe 内图表导出 PNG（#23）
-  const [previewFullscreen, setPreviewFullscreen] = useState(false);
-  const [compareMode, setCompareMode] = useState(false);
-  const [compareItem, setCompareItem] = useState<Artifact | null>(null);
-  const [compareHtml, setCompareHtml] = useState("");
-  const [compareLoading, setCompareLoading] = useState(false);
-  const [pngDownloading, setPngDownloading] = useState(false);
+  // === 分析 / 追问 / 产物预览逻辑提取至独立 hook ===
+  // useAnalysisRunner：startAnalysis / stopAnalysis 及 startedAtRef /
+  // runningSessionIdRef / lastTaskRef / analysisController 等共享 ref。
+  // handleSessionLost 为 function declaration（hoisted），此处即可引用；
+  // 其内部读取的 analysisController / chatControllerRef / retryController
+  // 在它被实际调用时均已赋值，无 TDZ 风险。
+  const {
+    startAnalysis, stopAnalysis,
+    analysisController, startedAtRef, runningSessionIdRef, lastTaskRef,
+  } = useAnalysisRunner({ handleSessionLost, retryController });
+  // useChatRunner：startFollowUp / stopFollowUp 及 chatControllerRef /
+  // followUpInputRef（供 handleSessionLost / deleteSession / ConversationThread 共享）。
+  const { startFollowUp, stopFollowUp, chatControllerRef, followUpInputRef } = useChatRunner();
+  // useArtifactPreview：图表预览模态、对比/全屏/PNG 导出、图表内联编辑。
+  const {
+    openArtifactPreview, closeArtifactPreview, loadCompareChart, downloadPng, editChart,
+    chartEditOpen, setChartEditOpen, chartEditTitle, setChartEditTitle,
+    chartEditColor, setChartEditColor, chartEditSaving,
+    previewFullscreen, setPreviewFullscreen, compareMode, setCompareMode,
+    compareItem, compareHtml, compareLoading, pngDownloading,
+  } = useArtifactPreview();
 
   // === Batch A2：设置面板连接测试 ===
   // testingKey：测试进行中；testResult：测试结果（ok 标识成功/失败，message 为提示文案）
@@ -370,160 +348,20 @@ function App() {
     window.setTimeout(() => followUpInputRef.current?.focus(), 0);
   }, []);
 
-  // useCallback：openArtifactPreview / downloadArtifact 作为 props 传给
-  // React.memo(ArtifactCenter)。若每次渲染都创建新函数，memo 比较失败，
-  // ArtifactCenter 仍然每次重渲染。useCallback 让函数身份稳定，memo 才
-  // 能真正跳过无关重渲染。
-  const openArtifactPreview = useCallback(async (item: Artifact) => {
-    if (!item.preview_url) return;
-    previewController.current?.abort();
-    const controller = new AbortController();
-    previewController.current = controller;
-    setPreviewItem(item);
-    setPreviewError("");
-    // 打开新预览时重置对比/全屏状态，避免上一张图的对比布局残留到新图。
-    setCompareMode(false);
-    setCompareItem(null);
-    setCompareHtml("");
-    setPreviewFullscreen(false);
-    // LRU 缓存命中：直接展示已加载的 HTML，跳过 fetch + 解析（Plotly.js ~3.5MB）。
-    // 重复打开同一图表时秒开，多个图表来回切换无需重新加载。
-    const cacheKey = item.preview_url;
-    const cached = previewCacheRef.current.get(cacheKey);
-    if (cached !== undefined) {
-      // LRU：删除再插入，将命中条目移到 Map 末尾标记为最近使用
-      previewCacheRef.current.delete(cacheKey);
-      previewCacheRef.current.set(cacheKey, cached);
-      setPreviewHtml(cached);
-      setPreviewLoading(false);
-      return;
-    }
-    setPreviewHtml("");
-    setPreviewLoading(true);
-    try {
-      // 预览仍使用请求头鉴权，主访问令牌不会进入 URL、历史记录或服务器 access log。
-      // 服务端返回完全离线的文档，再交给无同源权限的 sandbox iframe 执行。
-      const response = await fetch(`${API_URL}${item.preview_url}`, {
-        headers: requestHeaders(),
-        signal: controller.signal,
-      });
-      const html = await response.text();
-      if (!response.ok) {
-        let payload: unknown = html;
-        try {
-          payload = JSON.parse(html);
-        } catch {
-          // 非 JSON 错误正文交给统一错误描述处理。
-        }
-        throw new Error(describeApiError(payload, response.status));
-      }
-      // 缓存结果：超过上限时淘汰 Map 中最旧（最久未使用）的条目
-      previewCacheRef.current.set(cacheKey, html);
-      if (previewCacheRef.current.size > PREVIEW_CACHE_MAX) {
-        const oldest = previewCacheRef.current.keys().next().value;
-        if (oldest !== undefined) previewCacheRef.current.delete(oldest);
-      }
-      setPreviewHtml(html);
-      // loading 状态由 iframe onLoad 关闭，确保用户看到的是完成渲染的图表。
-    } catch (err) {
-      const error = err as Error;
-      if (error.name !== "AbortError") {
-        setPreviewLoading(false);
-        setPreviewError(`图表加载失败：${error.message}`);
-      }
-    } finally {
-      if (previewController.current === controller) previewController.current = null;
-    }
-  }, []);
-
-  const closeArtifactPreview = useCallback(() => {
-    previewController.current?.abort();
-    previewController.current = null;
-    setPreviewItem(null);
-    setPreviewHtml("");
-    setPreviewLoading(false);
-    setPreviewError("");
-    // 关闭预览时清空对比/全屏状态，下次打开时干净起步。
-    setCompareMode(false);
-    setCompareItem(null);
-    setCompareHtml("");
-    setCompareLoading(false);
-    setPreviewFullscreen(false);
-  }, []);
-
+  // useCallback：downloadArtifact 作为 props 传给 React.memo(ArtifactCenter)。
+  // 若每次渲染都创建新函数，memo 比较失败，ArtifactCenter 仍然每次重渲染。
+  // useCallback 让函数身份稳定，memo 才能真正跳过无关重渲染。
+  // openArtifactPreview / closeArtifactPreview 已提取至 useArtifactPreview。
   // 键盘快捷键：Esc 关闭预览/设置 + 全局 Cmd+K/Cmd+B/Cmd+./?/T/1-3（提取至 useShortcuts）。
-  // 放在 closeArtifactPreview 之后调用：它是 const useCallback，必须在求值前已定义；
-  // stopAnalysis/stopFollowUp 为函数声明（hoisted），可安全引用。
+  // closeArtifactPreview / stopAnalysis / stopFollowUp 由 useArtifactPreview /
+  // useAnalysisRunner / useChatRunner 返回（hook 在上方已调用），此处可直接引用。
   useShortcuts({
     previewItem, keyOpen, closeArtifactPreview, setKeyOpen, setApiKey,
     running, chatRunning, stopAnalysis, stopFollowUp, toggleTheme,
     setCommandOpen, setHistoryExpanded, setHelpOpen, setActiveTab,
   });
 
-  // 加载对比图表：复用预览 LRU 缓存，命中则秒开，否则 fetch 后入缓存。
-  // 与主预览共享 previewCacheRef，切换主图与对比图时互不重复请求。
-  const loadCompareChart = useCallback(async (item: Artifact) => {
-    if (!item.preview_url) return;
-    setCompareItem(item);
-    setCompareLoading(true);
-    setCompareHtml("");
-    const cacheKey = item.preview_url;
-    const cached = previewCacheRef.current.get(cacheKey);
-    if (cached !== undefined) {
-      // LRU：删除再插入，将命中条目移到 Map 末尾标记为最近使用
-      previewCacheRef.current.delete(cacheKey);
-      previewCacheRef.current.set(cacheKey, cached);
-      setCompareHtml(cached);
-      setCompareLoading(false);
-      return;
-    }
-    try {
-      const response = await fetch(`${API_URL}${item.preview_url}`, {
-        headers: requestHeaders(),
-      });
-      const html = await response.text();
-      if (response.ok) {
-        previewCacheRef.current.set(cacheKey, html);
-        if (previewCacheRef.current.size > PREVIEW_CACHE_MAX) {
-          const oldest = previewCacheRef.current.keys().next().value;
-          if (oldest !== undefined) previewCacheRef.current.delete(oldest);
-        }
-        setCompareHtml(html);
-      }
-    } catch {
-      // 对比加载失败时不阻塞主图，静默忽略
-    } finally {
-      setCompareLoading(false);
-    }
-  }, []);
-
-  // 通过 postMessage 通道让 iframe 内图表导出 PNG（#23）。
-  // iframe sandbox 只保留 allow-scripts（不含 allow-same-origin），
-  // 因此不能用 contentDocument 直接读取，改由图表脚本回传 dataURL。
-  // 5 秒超时兜底，避免图表脚本未注册监听时按钮永远 disabled。
-  const downloadPng = useCallback(() => {
-    const iframe = document.querySelector<HTMLIFrameElement>(".preview-frame iframe");
-    if (!iframe?.contentWindow) return;
-    setPngDownloading(true);
-    const handler = (e: MessageEvent) => {
-      if (e.data?.type === "png-data" && e.data.data) {
-        const a = document.createElement("a");
-        a.href = e.data.data as string;
-        a.download = `${previewItem?.name?.replace(/\.html$/, "") || "chart"}.png`;
-        a.click();
-        window.removeEventListener("message", handler);
-        setPngDownloading(false);
-      }
-    };
-    window.addEventListener("message", handler);
-    iframe.contentWindow.postMessage({ type: "download-png" }, "*");
-    // 超时兜底：5 秒未收到回传则解绑监听并恢复按钮状态
-    window.setTimeout(() => {
-      window.removeEventListener("message", handler);
-      setPngDownloading(false);
-    }, 5000);
-  }, [previewItem]);
-
+  // loadCompareChart / downloadPng 已提取至 useArtifactPreview。
   const downloadArtifact = useCallback(async (item: Artifact) => {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 120000);
@@ -714,42 +552,7 @@ function App() {
     }
   }, [session?.id, history, setHistory]);
 
-  // === Batch 4：图表内联编辑 ===
-  // 修改图表标题或主色，后端更新 HTML 和 JSON 产物；前端清除预览缓存后重新加载。
-  const editChart = useCallback(async () => {
-    if (!session || !previewItem) return;
-    setChartEditSaving(true);
-    try {
-      const response = await fetch(`${API_URL}/api/sessions/${session.id}/artifacts/${previewItem.name}/edit`, {
-        method: "PUT",
-        headers: requestHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({ title: chartEditTitle || undefined, color: chartEditColor || undefined }),
-      });
-      if (!response.ok) throw new Error("图表编辑失败");
-      // 清除预览缓存：下次打开会重新拉取更新后的 HTML
-      previewCacheRef.current.clear();
-      setPreviewHtml("");
-      setChartEditOpen(false);
-      // 重新打开预览，加载更新后的图表
-      openArtifactPreview(previewItem);
-      // 刷新 session 以获取更新的 artifacts（描述等可能被后端覆盖）
-      const updated = await api<Session>(`/api/sessions/${session.id}`);
-      setSession(updated);
-    } catch (err) {
-      setError(`图表编辑失败：${err instanceof Error ? err.message : "未知错误"}`);
-    } finally {
-      setChartEditSaving(false);
-    }
-  }, [session, previewItem, chartEditTitle, chartEditColor, openArtifactPreview]);
-
-  // 打开预览时初始化编辑表单（标题取自产物描述，颜色用默认品牌色）
-  useEffect(() => {
-    if (previewItem) {
-      setChartEditTitle(previewItem.description || previewItem.name);
-      setChartEditColor("#245C55");
-      setChartEditOpen(false);
-    }
-  }, [previewItem]);
+  // editChart 及"打开预览时初始化编辑表单"的 useEffect 已提取至 useArtifactPreview。
 
   // 连接测试：在保存前先用当前 Key 发起一次轻量 PUT /api/settings 请求，
   // 仅验证连通性与 Key 有效性，不写入持久化（不带 persist_key）。
@@ -890,486 +693,6 @@ function App() {
       window.removeEventListener("empty-workspace:extra-files", onExtraFiles as EventListener);
     };
   }, []);
-
-  async function stopAnalysis() {
-    if (!session || !running || stopping) return;
-    cancelRequested.current = true;
-    setStopping(true);
-    const cancelRequest = api(`/api/sessions/${session.id}/cancel`, {
-      method: "POST",
-      timeoutMs: 10000,
-    }).catch(() => null);
-    // 同时中断 SSE 流和 retry 轮询，确保用户点击停止后所有后台请求都结束。
-    analysisController.current?.abort();
-    retryController.current?.abort();
-    await cancelRequest;
-    setRunning(false);
-    setStopping(false);
-    setRetryChecking(false);
-    setCurrentNodeTitle("");
-    setRetryOffer(null);
-    setError("分析已停止。如果模型正在响应，后端会在本轮结束后安全退出，已完成步骤不会丢失。");
-  }
-
-  // 轻量追问：基于已有分析结果继续提问，走 /chat/stream 端点。
-  // 与 startAnalysis 的区别：
-  //   - 不触发 plan→execute→finalize 工作流，单次 ReAct 循环回答
-  //   - 回答渲染为对话气泡（而非主报告区），保留主报告不动
-  //   - 工具调用时间线内嵌在气泡内，不占用 PlanPanel 的全局 toolTrace
-  //   - 新产物追加到 session.artifacts，让产物中心即时更新
-  async function startFollowUp() {
-    const message = followUpInput.trim();
-    if (!session || !message || chatRunning || running) return;
-    setChatRunning(true);
-    setError("");
-    setFollowUpInput("");
-    // 乐观插入用户气泡 + 空壳 assistant 气泡，让用户立即看到自己的提问
-    const userBubble: FollowUpMessage = { role: "user", content: message };
-    const assistantBubble: FollowUpMessage = { role: "assistant", content: "", streaming: true, tools: [] };
-    setFollowUps((prev) => [...prev, userBubble, assistantBubble]);
-    const controller = new AbortController();
-    chatControllerRef.current = controller;
-    let idleTimeout: number | null = null;
-    const resetIdleTimeout = () => {
-      if (idleTimeout != null) window.clearTimeout(idleTimeout);
-      idleTimeout = window.setTimeout(() => controller.abort(), 120000);
-    };
-    resetIdleTimeout();
-    try {
-      const response = await fetch(`${API_URL}/api/sessions/${session.id}/chat/stream`, {
-        method: "POST",
-        headers: requestHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({ task: message }),
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        throw new ApiError(describeApiError(payload, response.status), response.status);
-      }
-      // SSE 事件分发：buffer 拆分 / event+data 提取 / JSON 解析由
-      // consumeSSEStream 统一处理，这里只声明各事件的业务逻辑。
-      // error 事件抛出的异常会被 consumeSSEStream 重新抛出，落到下面的 catch。
-      const appendToLastAssistant = (mutate: (last: FollowUpMessage) => FollowUpMessage) => setFollowUps((prev) => {
-        const next = [...prev];
-        const last = next[next.length - 1];
-        if (last && last.role === "assistant") {
-          next[next.length - 1] = mutate(last);
-        }
-        return next;
-      });
-      await consumeSSEStream(response, {
-        [SSE_EVENT_TYPES.CHAT_CHUNK]: (data) => {
-          // 流式追加到最后一个 assistant 气泡
-          appendToLastAssistant((last) => ({
-            ...last,
-            content: (last.content || "") + (data.chunk || ""),
-          }));
-        },
-        [SSE_EVENT_TYPES.THINKING_CHUNK]: (data) => {
-          // 思考过程追加到最后一个 assistant 气泡的 reasoning 字段，
-          // ConversationBubble 内嵌的 ReasoningBlock 会自动展示。
-          if (!data.chunk) return;
-          appendToLastAssistant((last) => ({
-            ...last,
-            reasoning: (last.reasoning || "") + (data.chunk || ""),
-          }));
-        },
-        [SSE_EVENT_TYPES.TOOL_CALL]: (data) => {
-          appendToLastAssistant((last) => ({
-            ...last,
-            tools: [...(last.tools || []), {
-              call_id: data.call_id, name: data.name,
-              status: "running", started_at: data.started_at,
-            }],
-          }));
-        },
-        [SSE_EVENT_TYPES.TOOL_RESULT]: (data) => {
-          appendToLastAssistant((last) => ({
-            ...last,
-            tools: (last.tools || []).map((t) => t.call_id === data.call_id
-              ? { ...t, status: "done", duration_ms: data.duration_ms }
-              : t),
-          }));
-        },
-        [SSE_EVENT_TYPES.CHAT_DONE]: (data) => {
-          // 终态：写入完整回复（防止 chunk 丢失），标记非流式，追加新产物
-          appendToLastAssistant((last) => ({
-            ...last,
-            content: data.response || last.content,
-            streaming: false,
-            // 后端可能在终态一次性给出完整 reasoning / usage，覆盖流式累计值
-            reasoning: data.reasoning || last.reasoning,
-            usage: data.usage || last.usage,
-          }));
-          if (data.artifacts?.length) {
-            setSession((current) => current
-              ? { ...current, artifacts: [...(current.artifacts || []), ...(data.artifacts || [])] }
-              : current);
-          }
-        },
-        [SSE_EVENT_TYPES.CANCELLED]: (data) => {
-          appendToLastAssistant((last) => ({
-            ...last,
-            streaming: false,
-            error: data.message || "追问已取消。",
-          }));
-        },
-        [SSE_EVENT_TYPES.ERROR]: (data) => {
-          throw new Error(data.message || "追问失败");
-        },
-      }, { onChunk: resetIdleTimeout });
-    } catch (err) {
-      const error = err as Error;
-      if (error.name === "AbortError") {
-        setFollowUps((prev) => {
-          const next = [...prev];
-          const last = next[next.length - 1];
-          if (last && last.role === "assistant" && last.streaming) {
-            next[next.length - 1] = { ...last, streaming: false, error: "追问已取消或超时。" };
-          }
-          return next;
-        });
-      } else {
-        setFollowUps((prev) => {
-          const next = [...prev];
-          const last = next[next.length - 1];
-          if (last && last.role === "assistant") {
-            next[next.length - 1] = { ...last, streaming: false, error: error.message };
-          }
-          return next;
-        });
-      }
-    } finally {
-      if (idleTimeout != null) window.clearTimeout(idleTimeout);
-      if (chatControllerRef.current === controller) chatControllerRef.current = null;
-      setChatRunning(false);
-    }
-  }
-
-  function stopFollowUp() {
-    chatControllerRef.current?.abort();
-  }
-
-  async function startAnalysis(
-    nextTask: string = task,
-    resumeFrom: { plan: PlanStep[]; completed_steps: CompletedStep[] } | null = null,
-    planOnly: boolean = false,
-  ) {
-    if (!session || !nextTask.trim() || running) return;
-    if ("Notification" in window && Notification.permission === "default") {
-      try { await Notification.requestPermission(); } catch { /* noop */ }
-    }
-    setRunning(true);
-    setError("");
-    // 断点续跑时不清空 plan/completed，让用户看到已完成的步骤保持绿色对勾状态；
-    // 全新分析时才清空。
-    if (!resumeFrom) {
-      setResult(null);
-      setPlan([]);
-      setCompleted([]);
-    } else {
-      // 续跑时保留已有 plan 和 completed，只清空 result（旧报告不再适用）
-      setResult(null);
-    }
-    setCurrentNodeTitle("");
-    setRetryOffer(null);
-    // 重置计划审批与步骤进度态：新一轮分析从干净状态开始
-    setAwaitingApproval(false);
-    setStepProgress(null);
-    setPendingObjective("");
-    // 立即用客户端时间戳启动计时。setInterval 会每秒刷新 elapsedSeconds。
-    // complete 帧后用后端返回的精确 elapsed_seconds 覆盖一次，消除客户端
-    // 与服务端时钟漂移带来的误差（通常 < 1 秒）。
-    startedAtRef.current = Date.now() / 1000;
-    // 记录正在运行的 session id，SSE 帧到达时据此判断是否仍在前台查看该会话。
-    // 用户切换到历史会话后，runningSessionIdRef 与 session.id 不一致，
-    // SSE 处理器跳过 UI 覆盖，避免历史视图被运行中的分析数据覆盖。
-    runningSessionIdRef.current = session.id;
-    setElapsedSeconds(0);
-    // 清空上次的工具调用时间线和报告，为新分析腾出空间
-    setToolTrace([]);
-    setResult(null);
-    // 重置流式报告节流缓冲：清除上一轮可能残留的 pending flush 和缓冲内容
-    if (reportFlushTimerRef.current != null) {
-      window.clearTimeout(reportFlushTimerRef.current);
-      reportFlushTimerRef.current = null;
-    }
-    reportBufferRef.current = "";
-    // 重置 reasoning / usage：新一轮分析的思考过程和用量从 0 开始累计
-    setReasoning("");
-    setReasoningStreaming(false);
-    setUsage(null);
-    // 新分析开始时清空追问历史，避免上轮的追问残留混淆当前分析
-    setFollowUps([]);
-    // 任务已提交运行，清空输入框，避免用户以为还没发起分析。
-    // lastTaskRef 仍保留实际任务文本，供 retry 与日志追踪使用。
-    setTask("");
-    lastTaskRef.current = nextTask;
-    const controller = new AbortController();
-    analysisController.current = controller;
-    cancelRequested.current = false;
-    let idleTimeout: number | null = null;
-    let completedPayload: AnalysisResult | null = null;
-    let sawEvent = false;
-    const resetIdleTimeout = () => {
-      if (idleTimeout != null) window.clearTimeout(idleTimeout);
-      idleTimeout = window.setTimeout(() => controller.abort(), 180000);
-    };
-    resetIdleTimeout();
-    // 节流刷新：将缓冲区内容批量写入 state，避免每个 token 都触发 ReactMarkdown 重解析。
-    // 定义在 try 之前，以便 complete/cancelled/error/finally 都能调用。
-    const flushReportBuffer = () => {
-      if (reportFlushTimerRef.current != null) {
-        window.clearTimeout(reportFlushTimerRef.current);
-        reportFlushTimerRef.current = null;
-      }
-      if (reportBufferRef.current) {
-        const buffered = reportBufferRef.current;
-        reportBufferRef.current = "";
-        setResult((prev) => prev
-          ? { ...prev, response: buffered }
-          : { response: buffered, artifacts: [], plan, completed_steps: completed }
-        );
-      }
-    };
-    try {
-      const response = await fetch(`${API_URL}/api/sessions/${session.id}/analyze/stream`, {
-        method: "POST",
-        headers: requestHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({ task: nextTask, resume_from: resumeFrom, plan_only: planOnly }),
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        throw new ApiError(describeApiError(payload, response.status), response.status);
-      }
-      // SSE 事件分发：buffer 拆分 / event+data 提取 / JSON 解析由
-      // consumeSSEStream 统一处理，这里只声明各事件的业务逻辑。
-      // 跨事件状态（completedPayload / sawEvent）通过闭包维护。
-      // error 事件抛出的异常会被 consumeSSEStream 重新抛出，落到下面的 catch。
-      await consumeSSEStream(response, {
-        [SSE_EVENT_TYPES.STARTED]: () => {
-          if (session.id === runningSessionIdRef.current) setCurrentNodeTitle("后端已接收任务");
-        },
-        [SSE_EVENT_TYPES.PROGRESS]: (data) => {
-          if (session.id === runningSessionIdRef.current) setCurrentNodeTitle(data.title || "正在分析");
-        },
-        [SSE_EVENT_TYPES.VALIDATE_DATASET]: () => {
-          if (session.id === runningSessionIdRef.current) setCurrentNodeTitle("正在检查数据集结构");
-        },
-        [SSE_EVENT_TYPES.PLAN_ANALYSIS]: (data) => {
-          if (session.id === runningSessionIdRef.current) {
-            setPlan(data.plan || []);
-            setCurrentNodeTitle("正在规划分析步骤");
-          }
-        },
-        [SSE_EVENT_TYPES.PLAN_READY]: (data) => {
-          // plan_only=true 时后端在 plan_analysis 后结束流并发送 plan_ready，
-          // 前端进入待审阅状态，等待用户编辑并批准计划再执行。
-          if (session.id === runningSessionIdRef.current) {
-            setPlan(data.plan || []);
-            setPendingObjective(data.objective || "");
-            setAwaitingApproval(true);
-            setCurrentNodeTitle("计划已生成，等待审阅");
-            setRunning(false);
-          }
-        },
-        [SSE_EVENT_TYPES.STEP_PROGRESS]: (data) => {
-          // 当前步骤的执行进度（百分比 / 工具调用数 / 提示文案）
-          if (session.id === runningSessionIdRef.current) {
-            setStepProgress({
-              progress: data.progress || 0,
-              toolCalls: data.tool_calls || 0,
-              message: data.message || "",
-            });
-          }
-        },
-        [SSE_EVENT_TYPES.EXECUTE_STEP]: () => {
-          if (session.id === runningSessionIdRef.current) {
-            setCurrentNodeTitle((current) => current || "正在执行分析步骤");
-          }
-        },
-        [SSE_EVENT_TYPES.REPLAN]: (data) => {
-          if (session.id === runningSessionIdRef.current) {
-            setCompleted(data.completed_steps || []);
-            setCurrentNodeTitle("正在审查进度并重规划");
-          }
-        },
-        [SSE_EVENT_TYPES.THINKING_CHUNK]: (data) => {
-          // DeepSeek reasoning_content：流式思考过程。开始接收时打开 streaming 标记，
-          // ReportView 顶部的 ReasoningBlock 会自动展开；接收完后由 report_chunk / complete
-          // 阶段自然关闭 streaming。思考过程让用户看到 Agent 的推理链路，减少"黑盒等待"焦虑。
-          if (session.id === runningSessionIdRef.current) {
-            if (!data.chunk) return;
-            setReasoningStreaming(true);
-            setReasoning((prev) => prev + (data.chunk || ""));
-          }
-        },
-        [SSE_EVENT_TYPES.FINALIZE]: () => {
-          if (session.id === runningSessionIdRef.current) {
-            setCurrentNodeTitle("正在汇总最终报告");
-            // finalize 阶段开始输出报告正文，思考过程已结束，关闭 streaming
-            setReasoningStreaming(false);
-            // 创建空壳 result，让 ReportView 立即显示"正在生成报告…"占位，
-            // 后续 report_chunk 事件会逐字追加 response，实现流式打字效果。
-            setResult((prev) => prev || { response: "", artifacts: [], plan, completed_steps: completed });
-          }
-        },
-        [SSE_EVENT_TYPES.REPORT_CHUNK]: (data) => {
-          // 流式报告：逐字追加，用户看着报告逐字写出，而不是等 30-60 秒看完整报告。
-          // 节流：不直接 setResult（每个 token 触发 ReactMarkdown 全量重解析 AST），
-          // 而是写入 ref 缓冲，80ms 批量刷新一次。长报告（5000+ 字）在低端设备更流畅。
-          if (session.id === runningSessionIdRef.current) {
-            reportBufferRef.current += (data.chunk || "");
-            if (reportFlushTimerRef.current == null) {
-              reportFlushTimerRef.current = window.setTimeout(() => {
-                reportFlushTimerRef.current = null;
-                if (reportBufferRef.current) {
-                  const buffered = reportBufferRef.current;
-                  reportBufferRef.current = "";
-                  setResult((prev) => prev
-                    ? { ...prev, response: buffered }
-                    : { response: buffered, artifacts: [], plan, completed_steps: completed }
-                  );
-                }
-              }, 80);
-            }
-          }
-        },
-        [SSE_EVENT_TYPES.TOOL_CALL]: (data) => {
-          // 工具调用开始：追加到时间线，让用户看到 ReAct 内部正在做什么
-          if (session.id === runningSessionIdRef.current) {
-            setToolTrace((prev) => [...prev, {
-              call_id: data.call_id,
-              name: data.name,
-              input_preview: data.input_preview,
-              status: "running",
-              started_at: data.started_at,
-            }]);
-          }
-        },
-        [SSE_EVENT_TYPES.TOOL_RESULT]: (data) => {
-          // 工具调用结束：更新对应 call_id 的状态和耗时
-          if (session.id === runningSessionIdRef.current) {
-            setToolTrace((prev) => prev.map((item) => item.call_id === data.call_id
-              ? { ...item, status: "done", output_preview: data.output_preview, duration_ms: data.duration_ms }
-              : item
-            ));
-          }
-        },
-        [SSE_EVENT_TYPES.COMPLETE]: (data) => {
-          // complete 帧仍需记录 completedPayload，以便结束后 setRunning(false)
-          // 和刷新 history，让历史列表反映新状态（即使用户已切到历史会话）。
-          completedPayload = data;
-          if (session.id === runningSessionIdRef.current) {
-            // 清除节流定时器并丢弃缓冲：complete 帧的 data 是权威最终结果，
-            // pending flush 不得覆盖它。
-            if (reportFlushTimerRef.current != null) {
-              window.clearTimeout(reportFlushTimerRef.current);
-              reportFlushTimerRef.current = null;
-            }
-            reportBufferRef.current = "";
-            setResult(data);
-            setPlan(data.plan || []);
-            setCompleted(data.completed_steps || []);
-            // 乐观更新 artifacts，refresh 失败时仍能看到产物。
-            setSession((current) => (current ? { ...current, artifacts: data.artifacts || [] } : current));
-            setCurrentNodeTitle("");
-            // 思考过程与用量收尾：complete 帧可能携带最终 reasoning / usage。
-            setReasoningStreaming(false);
-            if (data.reasoning) setReasoning(data.reasoning || "");
-            if (data.usage) setUsage(data.usage || null);
-            // 步骤进度归位：分析完成后不再显示步骤内进度条
-            setStepProgress(null);
-          }
-          notifyAnalysisDone("分析已完成", nextTask || "数据分析任务已完成");
-        },
-        [SSE_EVENT_TYPES.CANCELLED]: (data) => {
-          // 仅在用户未通过 stopAnalysis 主动取消时显示后端取消消息，避免重复 setError。
-          if (!cancelRequested.current && session.id === runningSessionIdRef.current) {
-            setError(data.message || "分析已取消。");
-          }
-          // 立即刷新缓冲：让用户看到取消前已生成的报告内容
-          flushReportBuffer();
-          // 取消时退出审批模式，避免 UI 卡在待审阅状态
-          setAwaitingApproval(false);
-          setStepProgress(null);
-          // 断点续跑：取消时若有已完成步骤，提供"继续分析"入口
-          if (completed.length > 0) {
-            setRetryOffer({ task: nextTask, reason: "cancelled", canResume: true, plan, completed });
-          }
-        },
-        [SSE_EVENT_TYPES.ERROR]: (data) => {
-          // 立即刷新缓冲：让用户看到出错前已生成的报告内容
-          flushReportBuffer();
-          // 出错时退出审批模式，避免 UI 卡在待审阅状态
-          setAwaitingApproval(false);
-          setStepProgress(null);
-          notifyAnalysisDone("分析失败", data.message || "数据分析任务执行出错");
-          throw new Error(data.message || "分析失败");
-        },
-        // heartbeat: 仅用于保活，重置 idle timer 即可；不更新 UI。
-      }, {
-        onChunk: resetIdleTimeout,
-        onEvent: () => { sawEvent = true; },
-      });
-      if (completedPayload) {
-        // 仅在用户仍在查看运行 session 时才 refresh + 更新 UI；用户切换到
-        // 历史会话后不需要把当前 session 的最新状态刷到 UI（历史会话有自己的数据）。
-        const stillViewingRunningSession = session.id === runningSessionIdRef.current;
-        try {
-          const refreshed = await api<Session & { analysis_started_at?: number | null }>(`/api/sessions/${session.id}`);
-          if (stillViewingRunningSession) {
-            setSession(refreshed);
-            // 用服务端精确的 started_at / elapsed_seconds 校正客户端估算，
-            // 消除时钟漂移带来的 1 秒以内误差。
-            if (refreshed.analysis_started_at) {
-              startedAtRef.current = refreshed.analysis_started_at;
-            }
-            setElapsedSeconds(refreshed.elapsed_seconds ?? null);
-          }
-        } catch {
-          // refresh 失败时保留 complete 帧的乐观更新，不阻塞用户。
-        }
-      }
-    } catch (err) {
-      const error = err as Error;
-      // 通用：取消/失败时若有已完成步骤，附加 canResume 标记让重试栏显示"继续分析"
-      const resumePayload: RetryOffer | null = completed.length > 0
-        ? { task: nextTask, canResume: true, plan, completed }
-        : null;
-      if (error.name === "AbortError" && cancelRequested.current) {
-        setError("分析已取消，已完成的步骤不会继续扩展。");
-        if (resumePayload) setRetryOffer({ ...resumePayload, reason: "cancelled" });
-      } else if (error.name === "AbortError") {
-        // idle timeout：长时间未收到事件。
-        setError("长时间未收到分析进度，连接已断开。");
-        setRetryOffer(resumePayload ? { ...resumePayload, reason: "idle" } : { task: nextTask, reason: "idle" });
-      } else if (!sawEvent && error.name === "TypeError") {
-        // fetch 网络层错误（DNS/CORS/离线），尚未收到任何 SSE 帧。
-        setError(`无法连接分析服务：${error.message}`);
-        setRetryOffer(resumePayload ? { ...resumePayload, reason: "network" } : { task: nextTask, reason: "network" });
-      } else if (error instanceof ApiError && error.status === 404) {
-        // 重运行时服务端 session 已被清理，引导用户重新上传。
-        handleSessionLost("会话已失效（服务端数据已被清理），请重新上传数据集后再开始分析。");
-      } else {
-        setError(error.message);
-        setRetryOffer(resumePayload ? { ...resumePayload, reason: "error" } : { task: nextTask, reason: "error" });
-      }
-    } finally {
-      if (idleTimeout != null) window.clearTimeout(idleTimeout);
-      // 安全网：客户端 abort（如 idle timeout / stopAnalysis）可能未触发
-      // complete/cancelled/error 事件，此处 flush 残留缓冲确保已生成的
-      // 报告内容不丢失。complete 已将缓冲清空，此处为空操作，不会覆盖。
-      flushReportBuffer();
-      if (analysisController.current === controller) analysisController.current = null;
-      setRunning(false);
-      setCurrentNodeTitle("");
-      // 分析结束（无论成功/取消/失败）都关闭 reasoning streaming，
-      // 避免下次进入会话时 ReasoningBlock 仍显示流式光标。
-      setReasoningStreaming(false);
-    }
-  }
 
   function restoreCompletedAnalysis(latest: Session): boolean {
     const savedResult = latest.last_result;

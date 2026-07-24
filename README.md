@@ -22,7 +22,7 @@ flowchart LR
 
 - `src/data_agent/api.py`：文件、配置、会话、SSE 分析和产物下载接口。
 - `src/data_agent/agent.py`：`validate → plan → execute → replan → finalize` 状态图。
-- `src/data_agent/tools.py`：检查、清洗、转换、统计、可视化和导出工具。
+- `src/data_agent/tools/`：检查、清洗、转换、统计、可视化和导出工具（按职责拆分为 `builder`/`charts`/`_cleaning`/`_helpers`）。
 - `src/data_agent/deployment.py`：LangSmith Agent Server 图入口。
 - `langgraph.json`：LangSmith Deployment 构建配置和自定义 FastAPI 路由。
 

@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { REMARK_PLUGINS } from "../constants";
 import { markdownComponents, ReasoningBlock, UsageChip } from "./ReportParts";
+import ShinyText from "./rb/ShinyText";
 import type { AnalysisResult, Artifact, TokenUsage } from "../types";
 
 interface ReportViewProps {
@@ -478,7 +479,7 @@ const ReportView = React.memo(function ReportView({
       <div className="report-meta">
         <div className="report-title">
           <FileChartColumn size={15} />
-          <span>分析报告</span>
+          <ShinyText text="分析报告" color="var(--text-primary)" shineColor="var(--accent-color, #5b5bd6)" speed={4} yoyo />
           {streaming ? (
             <small className="report-count is-streaming"><LoaderCircle size={11} className="spin" />生成中</small>
           ) : (
