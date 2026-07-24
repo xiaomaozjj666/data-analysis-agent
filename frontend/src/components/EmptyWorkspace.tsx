@@ -1,5 +1,7 @@
 import React, { useCallback, useRef, useState } from "react";
 import { Braces, FileSpreadsheet, LoaderCircle, Sparkles, Table2, Upload } from "lucide-react";
+import DotField from "./rb/DotField";
+import ShinyText from "./rb/ShinyText";
 
 interface EmptyWorkspaceProps {
   uploading: boolean;
