@@ -17,20 +17,19 @@ function isSupportedFile(file: File): boolean {
 }
 
 function EmptyWorkspace({ uploading, onUpload, onFileDrop }: EmptyWorkspaceProps) {
-  // 鼠标跟随光斑：跟踪鼠标在 grid 上的相对位置，更新 CSS 变量，
-  // 由 styles.css 的 radial-gradient 渲染柔和光晕。参考 Linear/Vercel
-  // 空状态的 spotlight 效果——比静态装饰更有"活物感"。
-  const gridRef = useRef<HTMLDivElement>(null);
+  // 鼠标跟随光斑：跟踪鼠标在整个工作区的相对位置，更新 CSS 变量，
+  // 由 empty-state.css 的 radial-gradient 渲染全屏柔和光晕。
+  const sectionRef = useRef<HTMLElement>(null);
   const [dragOver, setDragOver] = useState(false);
   const dragCounter = useRef(0);
-  const handleMouseMove = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
-    const grid = gridRef.current;
-    if (!grid) return;
-    const rect = grid.getBoundingClientRect();
+  const handleMouseMove = useCallback((event: React.MouseEvent<HTMLElement>) => {
+    const el = sectionRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
     const x = ((event.clientX - rect.left) / rect.width) * 100;
     const y = ((event.clientY - rect.top) / rect.height) * 100;
-    grid.style.setProperty("--mouse-x", `${x}%`);
-    grid.style.setProperty("--mouse-y", `${y}%`);
+    el.style.setProperty("--mouse-x", `${x}%`);
+    el.style.setProperty("--mouse-y", `${y}%`);
   }, []);
 
   const handleDragEnter = useCallback((e: React.DragEvent<HTMLDivElement>) => {
@@ -88,10 +87,12 @@ function EmptyWorkspace({ uploading, onUpload, onFileDrop }: EmptyWorkspaceProps
 
   return (
     <section
+      ref={sectionRef}
       className={`empty-workspace${dragOver ? " is-drag-over" : ""}`}
       role="button"
       tabIndex={0}
       aria-label="上传数据文件开始分析，或拖拽文件到此区域"
+      onMouseMove={handleMouseMove}
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
@@ -100,17 +101,6 @@ function EmptyWorkspace({ uploading, onUpload, onFileDrop }: EmptyWorkspaceProps
       onKeyDown={handleSectionKeyDown}
     >
       <DotField className="empty-grid-bg" gap={28} size={2} color="rgba(128, 128, 145, 0.2)" glowColor="rgba(91, 91, 214, 0.12)" />
-      <div
-        className="empty-grid"
-        aria-hidden="true"
-        ref={gridRef}
-        onMouseMove={handleMouseMove}
-      >
-        <span className="grid-tab" />
-        {Array.from({ length: 20 }, (_, index) => (
-          <i key={index} style={{ "--cell-index": index } as React.CSSProperties} />
-        ))}
-      </div>
       <div className="empty-copy">
         <span className="section-kicker">新建分析</span>
         <h2><ShinyText text="从一份数据开始" color="var(--text-primary)" shineColor="var(--accent-color)" speed={3} /></h2>
