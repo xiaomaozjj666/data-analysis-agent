@@ -100,7 +100,7 @@ function EmptyWorkspace({ uploading, onUpload, onFileDrop }: EmptyWorkspaceProps
       onClick={handleSectionClick}
       onKeyDown={handleSectionKeyDown}
     >
-      <DotField className="empty-grid-bg" dotRadius={2} dotSpacing={24} cursorRadius={400} bulgeStrength={56} gradientFrom="rgba(91, 91, 214, 0.18)" gradientTo="rgba(128, 128, 145, 0.12)" glowColor="transparent" />
+      <DotField className="empty-grid-bg" dotRadius={2} dotSpacing={24} cursorRadius={460} bulgeStrength={88} gradientFrom="rgba(91, 91, 214, 0.32)" gradientTo="rgba(120, 120, 140, 0.22)" glowColor="transparent" />
       <div className="empty-copy">
         <span className="section-kicker">新建分析</span>
         <h2><ShinyText text="从一份数据开始" color="var(--fg-default)" shineColor="var(--accent-fg)" speed={3} /></h2>

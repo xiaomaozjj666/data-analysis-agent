@@ -7,7 +7,7 @@
   position: absolute;
   inset: 0;
   z-index: 0;
-  opacity: 0.6;
+  opacity: 0.9;
   pointer-events: none;
 }
 .empty-workspace {
@@ -23,15 +23,16 @@
   cursor: pointer;
   overflow: hidden;
   transition: background var(--duration) var(--ease-out);
-  /* 鼠标跟随光斑：整个 section 都有效，radial-gradient 跟随 --mouse-x/y */
+  /* 鼠标跟随光斑：整个 section 都有效，radial-gradient 跟随 --mouse-x/y。
+     用带透明度的靛蓝晕染，白底/暗底均可见且克制（非彩色光圈）。 */
   background: radial-gradient(
-    400px circle at var(--mouse-x, 50%) var(--mouse-y, 50%),
-    var(--accent-subtle),
-    transparent 80%
+    480px circle at var(--mouse-x, 50%) var(--mouse-y, 50%),
+    rgba(91, 91, 214, 0.09),
+    transparent 75%
   );
 }
 /* hover 时保持光斑不覆盖（光斑已由 --mouse-x/y 控制） */
-.empty-workspace:hover { background: radial-gradient(400px circle at var(--mouse-x, 50%) var(--mouse-y, 50%), var(--accent-subtle), transparent 80%); }
+.empty-workspace:hover { background: radial-gradient(480px circle at var(--mouse-x, 50%) var(--mouse-y, 50%), rgba(91, 91, 214, 0.09), transparent 75%); }
 .empty-workspace.is-drag-over {
   background: var(--accent-subtle);
   outline: 2px dashed var(--accent-fg);
