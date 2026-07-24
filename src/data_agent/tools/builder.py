@@ -45,7 +45,7 @@ from ._cleaning import (
     _parse_numeric_columns,
     _trim_string_columns,
 )
-from ._helpers import _human_column_label
+from ._helpers import _human_column_label, _nice_ticks, _plotly_axis_tickformat
 from .charts import (
     _BOOLEAN_VALUE_LABELS,
     _HAS_RECORDS_COLUMN,
@@ -60,6 +60,7 @@ from .charts import (
     _humanize_chart_title,
     _localize_boolean_categories,
     _numeric_columns,
+    _plotly_auto_interpret,
 )
 
 logger = logging.getLogger(__name__)
@@ -152,6 +153,81 @@ _AGGREGATION_LABELS = {
     "min": "最小值",
     "max": "最大值",
 }
+
+
+def _apply_plotly_nice_ticks(
+    fig: px.Figure,
+    chart_type: str,
+    x: str | None,
+    y: str | None,
+    scale_details: dict[str, Any],
+) -> None:
+    """对 Plotly 图表的数值轴应用 nice ticks（圆数刻度）。
+
+    遍历所有 trace 收集 x/y 数值范围，计算 nice step 后设置
+    dtick/tick0/tickmode。若 _apply_outlier_scale_controls 已设置范围
+    （robust 模式），优先用该范围计算 nice ticks。category 轴跳过。
+    """
+    try:
+        axis_ranges = scale_details.get("axis_ranges", {}) or {}
+        # Y 轴（数值型图表都有）
+        if y and chart_type in {"bar", "line", "area", "scatter", "histogram", "box", "violin"}:
+            y_range = axis_ranges.get("y")
+            if y_range:
+                vmin, vmax = float(y_range[0]), float(y_range[1])
+            else:
+                values = _collect_trace_values(fig, "y")
+                if not values:
+                    return
+                vmin, vmax = float(min(values)), float(max(values))
+            nice_min, nice_max, step = _nice_ticks(vmin, vmax, n=5)
+            if step > 0:
+                fig.update_yaxes(
+                    tickmode="linear",
+                    dtick=step,
+                    tick0=nice_min,
+                    tickformat=_plotly_axis_tickformat((nice_min, nice_max)),
+                )
+        # X 轴（仅散点图等数值 X 轴）
+        if x and chart_type in {"scatter", "scatter_3d"}:
+            x_range = axis_ranges.get("x")
+            if x_range:
+                vmin, vmax = float(x_range[0]), float(x_range[1])
+            else:
+                values = _collect_trace_values(fig, "x")
+                if not values:
+                    return
+                vmin, vmax = float(min(values)), float(max(values))
+            nice_min, nice_max, step = _nice_ticks(vmin, vmax, n=5)
+            if step > 0:
+                fig.update_xaxes(
+                    tickmode="linear",
+                    dtick=step,
+                    tick0=nice_min,
+                    tickformat=_plotly_axis_tickformat((nice_min, nice_max)),
+                )
+    except Exception:
+        # nice ticks 是 best-effort，不能影响图表生成
+        pass
+
+
+def _collect_trace_values(fig: px.Figure, axis: str) -> list[float]:
+    """从 Plotly figure 的所有 trace 收集指定轴的数值数据。"""
+    values: list[float] = []
+    for trace in fig.data:
+        if getattr(trace, "name", None) == "极端值提示":
+            continue
+        raw = getattr(trace, axis, None)
+        if raw is None:
+            continue
+        for v in raw:
+            try:
+                num = float(v)
+                if pd.notna(num) and np.isfinite(num):
+                    values.append(num)
+            except (TypeError, ValueError):
+                continue
+    return values
 
 
 def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
@@ -770,6 +846,10 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             automargin=True,
             separatethousands=True,
         )
+        # === nice ticks：对数值轴应用圆数刻度（1/2/5/10 倍数）===
+        # 仅对 value 类型的轴生效，category/time 轴跳过。
+        # 若 _apply_outlier_scale_controls 已设置范围，优先用其范围计算 nice ticks。
+        _apply_plotly_nice_ticks(fig, chart_type, x, y, scale_details)
         if chart_type == "bar":
             fig.update_traces(marker_line_color="rgba(16,42,42,0.16)", marker_line_width=0.8, selector={"type": "bar"})
             if aggregation != "none" and _HOVER_TEXT_COLUMN in df.columns:
@@ -806,13 +886,31 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         html_path = workspace.artifacts_dir / f"{stem}.html"
         shared_plotly = workspace.ensure_plotly_bundle()
         relative_script = shared_plotly.relative_to(workspace.artifacts_dir).as_posix() if shared_plotly else None
+        # Plotly 白话解读：与 ECharts _auto_interpret 语义对齐
+        interpretation = _plotly_auto_interpret(
+            df, chart_type=chart_type, x=x, y=y, color=color,
+            aggregation=aggregation, title=display_title,
+        )
+        interpretation_block = ""
+        if interpretation:
+            interpretation_block = (
+                '<div class="plotly-interpretation">'
+                '<div class="plotly-interpretation-title">数据解读</div>'
+                f'{escape(interpretation)}'
+                '</div>'
+            )
         html_template = (
             "<!doctype html><html><head><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
             "<title>{title}</title><script src='{script}'></script>"
-            "<style>html,body{{width:100%;height:100%;margin:0;background:#fbfaf5;overflow:hidden}}"
-            ".plotly-graph-div{{width:100% !important;height:100% !important;min-height:560px}}</style>"
-            "</head><body>{div}{dark_script}</body></html>"
+            "<style>html,body{{width:100%;height:100%;margin:0;background:#fbfaf5;overflow:hidden;font-family:'IBM Plex Sans','Noto Sans SC',sans-serif}}"
+            ".plotly-graph-div{{width:100% !important;height:100% !important;min-height:440px}}"
+            ".layout{{display:flex;flex-direction:column;height:100%}}"
+            ".chart-wrap{{flex:1;min-height:0}}"
+            ".plotly-interpretation{{border-top:1px solid #e5e7eb;padding:14px 24px;background:#f9fafb;font-size:13px;line-height:1.75;color:#374151;max-height:160px;overflow-y:auto}}"
+            ".plotly-interpretation-title{{font-size:12px;color:#6b7280;font-weight:600;margin-bottom:6px;letter-spacing:0.5px}}"
+            "</style>"
+            "</head><body><div class='layout'><div class='chart-wrap'>{div}</div>{interpretation}</div>{dark_script}</body></html>"
             if relative_script
             else None
         )
@@ -842,6 +940,7 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                     title=escape(display_title),
                     script=relative_script,
                     div=div,
+                    interpretation=interpretation_block,
                     dark_script=_PLOTLY_DARK_MODE_SCRIPT,
                 ),
             )

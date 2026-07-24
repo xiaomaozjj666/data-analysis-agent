@@ -19,6 +19,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from data_agent.tools._helpers import _human_column_label as _build_axis_label
+from data_agent.tools._helpers import _nice_ticks
 from data_agent.workspace import ECHARTS_CDN_URL, DataWorkspace, _atomic_write_text
 
 # === 全局视觉 token（学术级商务色板，对标 Nature/Lancet 期刊配图）===
@@ -170,18 +172,52 @@ def _series_color(index: int) -> str:
     return _ECHARTS_PALETTE[index % len(_ECHARTS_PALETTE)]
 
 
-def _build_axis_label(text: str | None) -> str:
-    """轴标签：把英文列名映射为中文可读标签（与 Plotly 分支一致）。"""
-    if not text:
-        return ""
-    # 复用 tools.py 的列名映射逻辑（避免循环导入，内联简单映射）
-    _COLUMN_LABELS = {
-        "units": "销量", "revenue": "收入", "sales": "销售额", "profit": "利润",
-        "product": "产品", "region": "区域", "channel": "渠道", "category": "类别",
-        "customer_rating": "客户评分", "unit_price": "单价", "discount_rate": "折扣率",
-        "order_date": "订单日期", "date": "日期", "count": "记录数", "is_returned": "是否退货",
+# === 坐标轴 nice ticks 工具 ===
+
+def _echarts_value_axis(df: pd.DataFrame, y: str | None, *, name: str, scale: bool = True) -> dict[str, Any]:
+    """构建数值型 yAxis：应用 nice ticks 对齐刻度到 1/2/5/10 倍数，
+    并用大数值自适应 formatter（万/亿）让坐标轴可读。"""
+    base: dict[str, Any] = {**_ECHARTS_BASE_AXIS, "type": "value", "name": name, "scale": scale}
+    if y and y in df.columns:
+        numeric = pd.to_numeric(df[y], errors="coerce").dropna()
+        if len(numeric) > 0:
+            vmin, vmax = float(numeric.min()), float(numeric.max())
+            nice_min, nice_max, step = _nice_ticks(vmin, vmax, n=5)
+            base["min"] = nice_min
+            base["max"] = nice_max
+            base["interval"] = step
+            # axisLabel formatter 用 JS 函数字符串注入 _nice_axis_formatter 逻辑。
+            # ECharts option 是 JSON，但 formatter 字段支持函数字符串（前端 eval）。
+            base["axisLabel"] = {
+                **_ECHARTS_BASE_AXIS["axisLabel"],
+                "formatter": _ECHARTS_AXIS_LABEL_FORMATTER_JS,
+            }
+            return base
+    # 无数据或非数值：仅加 formatter 以备数据更新
+    base["axisLabel"] = {
+        **_ECHARTS_BASE_AXIS["axisLabel"],
+        "formatter": _ECHARTS_AXIS_LABEL_FORMATTER_JS,
     }
-    return _COLUMN_LABELS.get(str(text), str(text).replace("_", " ").strip())
+    return base
+
+
+# ECharts axisLabel formatter JS 函数：大数值自适应万/亿单位。
+# 注入到 option 的 axisLabel.formatter，前端 ECharts 会作为函数执行。
+_ECHARTS_AXIS_LABEL_FORMATTER_JS = (
+    "function(value){"
+    "if(value===0||value===null||isNaN(value)){return '0';}"
+    "var sign=value<0?'-':'';var abs=Math.abs(value);"
+    "if(abs>=100000000){return sign+(abs/100000000).toFixed(2).replace(/0+$/,'').replace(/\\.$/,'')+'亿';}"
+    "if(abs>=10000){return sign+(abs/10000).toFixed(2).replace(/0+$/,'').replace(/\\.$/,'')+'万';}"
+    "if(abs>=1000){return value.toLocaleString();}"
+    "if(abs>=10){return abs.toFixed(1).replace(/0+$/,'').replace(/\\.$/,'');}"
+    "if(abs>=1){return abs.toFixed(2).replace(/0+$/,'').replace(/\\.$/,'');}"
+    "if(abs>=0.01){return abs.toFixed(3).replace(/0+$/,'').replace(/\\.$/,'');}"
+    "if(abs>=0.001){return abs.toFixed(4).replace(/0+$/,'').replace(/\\.$/,'');}"
+    "if(abs>0){return abs.toExponential(2);}"
+    "return '0';"
+    "}"
+)
 
 
 # === 自动白话解读：纯数据驱动，不依赖 LLM ===
@@ -381,7 +417,7 @@ def _echarts_bar(
         "color": _ECHARTS_PALETTE,
         "xAxis": [{**_ECHARTS_BASE_AXIS, "type": "category", "data": categories, "name": x_label,
                    "axisLabel": {**_ECHARTS_BASE_AXIS["axisLabel"], "rotate": 30 if len(categories) > 8 else 0}}],
-        "yAxis": [{**_ECHARTS_BASE_AXIS, "type": "value", "name": f"{y_label}{agg_suffix}"}],
+        "yAxis": [_echarts_value_axis(df, y, name=f"{y_label}{agg_suffix}", scale=False)],
     }
 
     if color:
@@ -473,8 +509,7 @@ def _echarts_line(
         "toolbox": {**_ECHARTS_BASE_TOOLBOX},
         "color": _ECHARTS_PALETTE,
         "xAxis": [{**_ECHARTS_BASE_AXIS, "type": "category", "boundaryGap": False, "data": categories, "name": x_label}],
-        "yAxis": [{**_ECHARTS_BASE_AXIS, "type": "value", "name": f"{y_label}{agg_suffix}",
-                   "scale": True}],  # scale=True 让 Y 轴自适应非零起点
+        "yAxis": [_echarts_value_axis(df, y, name=f"{y_label}{agg_suffix}", scale=True)],  # scale=True 让 Y 轴自适应非零起点
         "dataZoom": [
             {"type": "inside", "start": 0, "end": 100},
             {"type": "slider", "start": 0, "end": 100, "height": 22, "bottom": 16,
@@ -556,8 +591,8 @@ def _echarts_scatter(
         "grid": {**_ECHARTS_BASE_GRID},
         "toolbox": {**_ECHARTS_BASE_TOOLBOX},
         "color": _ECHARTS_PALETTE,
-        "xAxis": [{**_ECHARTS_BASE_AXIS, "type": "value", "name": x_label, "scale": True}],
-        "yAxis": [{**_ECHARTS_BASE_AXIS, "type": "value", "name": y_label, "scale": True}],
+        "xAxis": [_echarts_value_axis(df, x, name=x_label, scale=True)],
+        "yAxis": [_echarts_value_axis(df, y, name=y_label, scale=True)],
         "dataZoom": [
             {"type": "inside", "xAxisIndex": 0, "filterMode": "none"},
             {"type": "inside", "yAxisIndex": 0, "filterMode": "none"},
@@ -706,7 +741,7 @@ def _echarts_histogram(
         "color": [_ECHARTS_PALETTE[0]],
         "xAxis": [{**_ECHARTS_BASE_AXIS, "type": "category", "data": categories, "name": x_label,
                    "axisLabel": {**_ECHARTS_BASE_AXIS["axisLabel"], "rotate": 35}}],
-        "yAxis": [{**_ECHARTS_BASE_AXIS, "type": "value", "name": "频数"}],
+        "yAxis": [_echarts_value_axis(df, x, name="频数", scale=False)],
         "series": [{
             "name": "频数",
             "type": "bar",
@@ -753,7 +788,7 @@ def _echarts_box(
         "toolbox": {**_ECHARTS_BASE_TOOLBOX},
         "color": _ECHARTS_PALETTE,
         "xAxis": [{**_ECHARTS_BASE_AXIS, "type": "category", "data": categories, "name": x_label}],
-        "yAxis": [{**_ECHARTS_BASE_AXIS, "type": "value", "name": y_label, "scale": True}],
+        "yAxis": [_echarts_value_axis(df, y, name=y_label, scale=True)],
         "series": [{
             "name": y_label,
             "type": "boxplot",
