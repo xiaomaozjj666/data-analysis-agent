@@ -8,8 +8,10 @@
 .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
 
 /* 图表卡片：垂直布局（缩略图 → 信息 → 操作），checkbox 与引擎徽章浮于缩略图上方 */
-/* GlareHover 包裹 chart-card 提供 RB 眩光效果 */
-.chart-card-glare { border-radius: var(--radius-lg); transition: box-shadow var(--duration) var(--ease-out), transform var(--duration) var(--ease-out); }
+/* GlareHover 包裹 chart-card 提供 RB 眩光效果；
+   覆盖 GlareHover 默认的 display:grid + place-items:center，
+   否则 .chart-card 只占内容宽度而不撑满 grid 列，导致卡片视觉错位。 */
+.chart-card-glare { display: block; border-radius: var(--radius-lg); transition: box-shadow var(--duration) var(--ease-out), transform var(--duration) var(--ease-out); }
 .chart-card-glare:hover { box-shadow: var(--shadow-lg); transform: translateY(-3px); }
 .chart-card { display: flex; flex-direction: column; gap: 12px; padding: 16px; overflow: hidden; background: var(--canvas-default); border: 1px solid var(--border-default); border-radius: var(--radius-lg); transition: border-color var(--duration) var(--ease-out); }
 .chart-card:hover { border-color: var(--accent-fg); }
