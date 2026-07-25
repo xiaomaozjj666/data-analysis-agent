@@ -13,4 +13,18 @@
   .glare-hover::before {
     display: none;
   }
+  /* 新增组件的 reduced-motion 处理 */
+  .chat-bubble.is-user,
+  .chat-bubble.is-assistant {
+    animation: none !important;
+  }
+  .metric {
+    animation: none !important;
+  }
+  .chart-card {
+    animation: none !important;
+  }
+  .error-banner {
+    animation: none !important;
+  }
 }

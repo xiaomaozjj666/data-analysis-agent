@@ -627,7 +627,7 @@ class DataWorkspace:
             if isinstance(item, dict) and item.get("name")
         }
         for path in sorted(self.artifacts_dir.iterdir()):
-            if not path.is_file() or path.name == PLOTLY_BUNDLE_NAME:
+            if not path.is_file() or path.name in (PLOTLY_BUNDLE_NAME, ECHARTS_BUNDLE_NAME):
                 continue
             suffix = path.suffix.lower()
             saved = metadata_by_name.get(path.name, {})

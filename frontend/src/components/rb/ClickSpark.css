@@ -1,0 +1,58 @@
+/* React Bits — ClickSpark CSS */
+.click-spark {
+  position: relative;
+  display: inline-flex;
+  color: var(--accent-fg);
+}
+
+.click-spark-container {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10;
+  overflow: visible;
+}
+
+.click-spark-svg {
+  position: absolute;
+  pointer-events: none;
+  animation: spark-burst var(--spark-duration, 400ms) ease-out forwards;
+}
+
+.click-spark-svg line {
+  animation: spark-line var(--spark-duration, 400ms) ease-out forwards;
+  transform-origin: center;
+}
+
+@keyframes spark-burst {
+  0% {
+    transform: scale(0.3);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1.2);
+    opacity: 0;
+  }
+}
+
+@keyframes spark-line {
+  0% {
+    stroke-dasharray: 0 20;
+    opacity: 1;
+  }
+  50% {
+    stroke-dasharray: 12 20;
+    opacity: 1;
+  }
+  100% {
+    stroke-dasharray: 0 20;
+    opacity: 0;
+  }
+}
+
+/* Accessibility: no sparks for reduced-motion */
+@media (prefers-reduced-motion: reduce) {
+  .click-spark-svg {
+    display: none;
+  }
+}

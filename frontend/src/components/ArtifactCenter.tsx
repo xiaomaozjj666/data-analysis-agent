@@ -2,7 +2,7 @@ import React, { useMemo, useState } from "react";
 import { Download, ExternalLink, FileSpreadsheet } from "lucide-react";
 import { API_URL, pickChartIcon } from "../constants";
 import { formatBytes } from "../utils/format";
-import GlareHover from "./rb/GlareHover";
+import SpotlightCard from "./rb/SpotlightCard";
 import type { Artifact } from "../types";
 
 interface ArtifactCenterProps {
@@ -93,8 +93,8 @@ const ArtifactCenter = React.memo(function ArtifactCenter({
               const { Icon, label } = pickChartIcon(item.name);
               const isSelected = selected.has(item.name);
               return (
-                <GlareHover key={item.name} className="chart-card-glare" glareColor="#5b5bd6" glareOpacity={0.15} glareSize={300} glareAngle={-45}>
-                <article className="chart-card">
+                <SpotlightCard key={item.name} className="chart-card-spotlight" spotlightColor="rgba(91, 91, 214, 0.12)" spotlightRadius={280} tiltMax={4} hoverScale={1.015}>
+                <article className="chart-card" style={{ animationDelay: `${index * 60}ms` }}>
                   {hasBatchDownload && (
                     <input
                       type="checkbox"
@@ -146,7 +146,7 @@ const ArtifactCenter = React.memo(function ArtifactCenter({
                     </button>
                   </div>
                 </article>
-                </GlareHover>
+                </SpotlightCard>
               );
             })}
           </div>

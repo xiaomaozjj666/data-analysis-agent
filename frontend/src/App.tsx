@@ -48,6 +48,7 @@ import useAnalysisRunner from "./hooks/useAnalysisRunner";
 import useArtifactPreview from "./hooks/useArtifactPreview";
 import useAuthBootstrap from "./hooks/useAuthBootstrap";
 import useChatRunner from "./hooks/useChatRunner";
+import useScrollProgress from "./hooks/useScrollProgress";
 import useSettingsPanel from "./hooks/useSettingsPanel";
 import useShortcuts from "./hooks/useShortcuts";
 import useTabPersistence from "./hooks/useTabPersistence";
@@ -180,6 +181,7 @@ function App() {
   // useArtifactPreview：图表预览模态、对比/全屏/PNG 导出、图表内联编辑。
   const {
     openArtifactPreview, closeArtifactPreview, loadCompareChart, downloadPng, editChart,
+    onPreviewIframeLoaded,
     chartEditOpen, setChartEditOpen, chartEditTitle, setChartEditTitle,
     chartEditColor, setChartEditColor, chartEditSaving,
     previewFullscreen, setPreviewFullscreen, compareMode, setCompareMode,
@@ -195,6 +197,9 @@ function App() {
 
   // 设置面板点击外部关闭（提取至 useSettingsPanel）。
   useSettingsPanel(keyOpen, setKeyOpen);
+
+  // Scroll 进度指示器：顶栏底部品牌色进度条。
+  useScrollProgress();
 
   // Tab 持久化：activeTab 变化时同步到 lastActiveTab（提取至 useTabPersistence）。
   useTabPersistence(activeTab, setLastActiveTab);
@@ -1314,7 +1319,7 @@ function App() {
             </nav>
 
             {activeTab === "analysis" && (
-              <div className="analysis-grid" id="tabpanel-analysis" role="tabpanel" aria-labelledby="tab-analysis" tabIndex={0}>
+              <div className="analysis-grid tab-content-enter" key="tab-analysis" id="tabpanel-analysis" role="tabpanel" aria-labelledby="tab-analysis" tabIndex={0}>
                 <section className="analysis-column">
                   {result ? (
                     <>
@@ -1366,7 +1371,7 @@ function App() {
             )}
 
             {activeTab === "data" && (
-              <section className="data-view" id="tabpanel-data" role="tabpanel" aria-labelledby="tab-data" tabIndex={0}>
+              <section className="data-view tab-content-enter" key="tab-data" id="tabpanel-data" role="tabpanel" aria-labelledby="tab-data" tabIndex={0}>
                 <div className="section-title">
                   <div><span className="section-kicker">数据预览</span><h2>原始记录</h2></div>
                   <small>前 100 行</small>
@@ -1378,7 +1383,7 @@ function App() {
             )}
 
             {activeTab === "artifacts" && (
-              <section className="artifact-view" id="tabpanel-artifacts" role="tabpanel" aria-labelledby="tab-artifacts" tabIndex={0}>
+              <section className="artifact-view tab-content-enter" key="tab-artifacts" id="tabpanel-artifacts" role="tabpanel" aria-labelledby="tab-artifacts" tabIndex={0}>
                 <div className="section-title artifact-title">
                   <div><span className="section-kicker">结果中心</span><h2>值得保留的结论</h2></div>
                   <small>中间文件已自动收起</small>
@@ -1497,7 +1502,8 @@ function App() {
                     referrerPolicy="no-referrer"
                     srcDoc={previewHtml}
                     onLoad={(e) => {
-                      setPreviewLoading(false);
+                      // 清掉 openArtifactPreview 启动的兜底超时定时器并关闭 loading。
+                      onPreviewIframeLoaded();
                       try {
                         const iframe = e.target as HTMLIFrameElement;
                         // 注意：可选链不能用于赋值左侧，这里直接访问 contentWindow

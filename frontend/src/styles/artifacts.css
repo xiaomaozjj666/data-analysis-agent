@@ -8,13 +8,18 @@
 .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
 
 /* 图表卡片：垂直布局（缩略图 → 信息 → 操作），checkbox 与引擎徽章浮于缩略图上方 */
-/* GlareHover 包裹 chart-card 提供 RB 眩光效果；
-   覆盖 GlareHover 默认的 display:grid + place-items:center，
-   否则 .chart-card 只占内容宽度而不撑满 grid 列，导致卡片视觉错位。 */
-.chart-card-glare { display: block; border-radius: var(--radius-lg); transition: box-shadow var(--duration) var(--ease-out), transform var(--duration) var(--ease-out); }
-.chart-card-glare:hover { box-shadow: var(--shadow-lg); transform: translateY(-3px); }
-.chart-card { display: flex; flex-direction: column; gap: 12px; padding: 16px; overflow: hidden; background: var(--canvas-default); border: 1px solid var(--border-default); border-radius: var(--radius-lg); transition: border-color var(--duration) var(--ease-out); }
+/* SpotlightCard 包裹 chart-card 提供聚光灯 + 3D tilt 效果；
+   保留 chart-card 本身的内容样式，外层 spotlight-card 负责交互动效。 */
+.chart-card-spotlight { border-radius: var(--radius-lg); }
+.chart-card-spotlight .spotlight-card-content { display: flex; flex-direction: column; height: 100%; }
+.chart-card { display: flex; flex-direction: column; gap: 12px; padding: 16px; overflow: hidden; background: var(--canvas-default); border: 1px solid var(--border-default); border-radius: var(--radius-lg); transition: border-color var(--duration) var(--ease-out); animation: chart-card-in 0.4s var(--ease-out) both; }
 .chart-card:hover { border-color: var(--accent-fg); }
+
+/* 图表卡片交错入场动画 */
+@keyframes chart-card-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
 
 /* 缩略图容器：固定高度，点击触发预览；背景使用 subtle 底色避免透明 PNG 视觉割裂 */
 .chart-thumbnail { position: relative; height: 140px; display: flex; align-items: center; justify-content: center; background: var(--canvas-subtle); border: 1px solid var(--border-muted); border-radius: var(--radius-md); overflow: hidden; cursor: pointer; transition: border-color var(--duration-fast) var(--ease-out); }

@@ -177,8 +177,11 @@
 .history-empty p { margin: 0; font-size: var(--text-sm); line-height: 1.55; }
 
 /* 时间分组：组标题极淡，与列表项形成层级 */
-.history-group { margin-top: 6px; }
-.history-group:first-of-type { margin-top: 4px; }
+.history-group { margin-top: 6px; animation: history-group-in 0.35s var(--ease-out) both; }
+.history-group:first-of-type { margin-top: 4px; animation-delay: 0ms; }
+.history-group:nth-of-type(2) { animation-delay: 60ms; }
+.history-group:nth-of-type(3) { animation-delay: 120ms; }
+.history-group:nth-of-type(n+4) { animation-delay: 180ms; }
 .history-group-label { display: block; padding: 4px 12px 2px; color: var(--fg-subtle); font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
 
 /* history-list：桌面端不再独立限高与滚动，让侧栏 .sidebar 统一处理滚动，
@@ -186,12 +189,23 @@
    移动端（sidebar 改为相对定位 + 高度自适应）由 responsive.css 中
    .history-list { max-height: none } 进一步放开高度，避免列表过长撑高首屏。 */
 .history-list { margin: 2px 0 4px; padding: 0 4px; list-style: none; }
-.history-list li { margin: 0; position: relative; }
-.history-list li > button { width: 100%; display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 8px; border: 0; border-radius: var(--radius-md); background: transparent; text-align: left; }
-.history-list li > button:hover { background: var(--control-hover); }
+.history-list li { margin: 0; position: relative; animation: history-item-in 0.3s var(--ease-out) both; }
+.history-list li:nth-child(1) { animation-delay: 0ms; }
+.history-list li:nth-child(2) { animation-delay: 30ms; }
+.history-list li:nth-child(3) { animation-delay: 60ms; }
+.history-list li:nth-child(4) { animation-delay: 90ms; }
+.history-list li:nth-child(5) { animation-delay: 120ms; }
+.history-list li:nth-child(n+6) { animation-delay: 150ms; }
+.history-list li > button { width: 100%; display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 8px; border: 0; border-radius: var(--radius-md); background: transparent; text-align: left; transition: background var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-out); }
+.history-list li > button:hover { background: var(--control-hover); transform: translateX(2px); }
+.history-list li > button:active { transform: scale(0.98); }
 /* 当前会话：左侧竖条 + 浅蓝底，比单纯背景色更醒目 */
 .history-list li.is-active > button { background: var(--accent-subtle); }
-.history-list li.is-active::before { content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 2px; border-radius: 1px; background: var(--accent-fg); }
+.history-list li.is-active::before { content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 2px; border-radius: 1px; background: var(--accent-fg); animation: active-bar-in 0.25s var(--ease-out) both; }
+@keyframes active-bar-in {
+  from { transform: scaleY(0); opacity: 0; }
+  to { transform: scaleY(1); opacity: 1; }
+}
 .history-list li > button > svg:first-child { color: var(--accent-fg); flex: 0 0 auto; }
 .history-list li > button > span { min-width: 0; flex: 1; }
 .history-list li strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-sm); font-weight: 600; color: var(--fg-default); }
@@ -265,6 +279,7 @@
   gap: 4px;
   padding: 0 8px;
   margin: 0 0 6px;
+  animation: history-expand 0.25s var(--ease-out) both;
 }
 .history-filter-chips {
   display: flex;
@@ -290,14 +305,56 @@
   line-height: 1;
   cursor: pointer;
   white-space: nowrap;
-  transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out);
+  transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-out);
 }
 .history-chip:hover {
   background: var(--control-hover);
   color: var(--fg-default);
+  transform: translateY(-1px);
+}
+.history-chip:active {
+  transform: scale(0.95);
 }
 .history-chip.is-active {
   background: var(--accent-fg);
   color: #fff;
   border-color: var(--accent-fg);
+}
+
+/* ---------- 历史会话入场动画 ---------- */
+@keyframes history-item-in {
+  from { opacity: 0; transform: translateX(-8px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes history-group-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* 展开/折叠内容区滑入 */
+.history-section > .history-filter-row,
+.history-section > .history-refresh,
+.history-section > .history-import,
+.history-section > .history-group,
+.history-section > .history-empty,
+.history-section > .history-skeleton,
+.history-section > .history-search-empty {
+  animation: history-expand 0.25s var(--ease-out) both;
+}
+@keyframes history-expand {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* prefers-reduced-motion：禁用历史面板动画 */
+@media (prefers-reduced-motion: reduce) {
+  .history-list li,
+  .history-group,
+  .history-section > .history-filter-row,
+  .history-section > .history-refresh,
+  .history-section > .history-import,
+  .history-section > .history-group,
+  .history-section > .history-empty {
+    animation: none !important;
+  }
 }

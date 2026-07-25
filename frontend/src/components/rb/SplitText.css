@@ -1,0 +1,20 @@
+/* React Bits — SplitText CSS */
+.split-text {
+  display: inline-flex;
+  flex-wrap: wrap;
+  overflow: hidden;
+}
+.split-text-char {
+  display: inline-block;
+  will-change: transform, opacity, filter;
+}
+
+/* Accessibility: respect reduced-motion preference */
+@media (prefers-reduced-motion: reduce) {
+  .split-text-char {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+    filter: none !important;
+  }
+}

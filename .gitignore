@@ -6,6 +6,8 @@ __pycache__/
 .env
 runs/
 .playwright-cli/
+.pw-browsers/
+_test_screenshots/
 .ruff_cache/
 .langgraph_api/
 .qoder/

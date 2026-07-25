@@ -61,6 +61,7 @@ from .charts import (
     _localize_boolean_categories,
     _numeric_columns,
     _plotly_auto_interpret,
+    _validate_chart_semantics,
 )
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,16 @@ _CHART_COLORS = [
 #: 避免 applyTheme 首次执行时改变浅色图表的视觉。
 _PLOTLY_DARK_MODE_SCRIPT = """<script>
 (function() {
+  // 运行时错误上报：图表脚本执行失败且画布未渲染时，把错误消息回传
+  // 父页面（{type:'chart-error'}），让预览面板显示具体错误而不是永远空白。
+  // 延迟检查 .main-svg 避免把非致命错误误报成渲染失败。
+  window.addEventListener('error', function(e) {
+    setTimeout(function() {
+      if (!document.querySelector('.plotly-graph-div .main-svg')) {
+        try { parent.postMessage({type: 'chart-error', message: String((e && e.message) || '图表脚本执行失败')}, '*'); } catch (_) {}
+      }
+    }, 300);
+  });
   function applyTheme() {
     var isDark = document.documentElement.dataset.theme === 'dark' ||
                  window.matchMedia('(prefers-color-scheme: dark)').matches;
@@ -679,6 +690,19 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         requested.extend(path_columns or [])
         requested.extend(dimensions or [])
         _checked_columns(df, requested)
+        # 意义性防护：拦截 ID 列分布图、常量列图、高基数不可读图表，
+        # 报错文案带修正建议（换列/传 top_n/换图型）供模型下一轮自行纠正。
+        _validate_chart_semantics(
+            df,
+            chart_type=chart_type,
+            x=x,
+            y=y,
+            color=color,
+            values=values,
+            path_columns=path_columns,
+            dimensions=dimensions,
+            top_n=top_n,
+        )
         if top_n is not None:
             if not x or not 1 <= top_n <= 500:
                 raise ValueError("top_n 需要 x，且必须在 1 到 500 之间。")

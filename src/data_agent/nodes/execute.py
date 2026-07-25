@@ -81,12 +81,15 @@ def execute_step(agent: DataAnalysisAgent, state: WorkflowState) -> dict[str, An
         f"- {item['title']}: {item.get('summary', '')[:800]}" for item in completed
     ) or "尚无"
     # 增强上下文：把数据概况传递给 ReAct 执行器，避免每步都重新 inspect_data。
+    # 附带每列的 dtype 与 unique 计数：模型选图前能直接判断列基数
+    # （unique ≈ 行数→标识符列，unique = 1→常量列），从源头避免无意义图表。
     profile_brief = json.dumps(
         {
             "rows": state.get("dataset_profile", {}).get("rows"),
             "columns": state.get("dataset_profile", {}).get("columns"),
-            "column_names": [
-                col["name"] for col in state.get("dataset_profile", {}).get("column_info", [])[:15]
+            "column_brief": [
+                {"name": col["name"], "dtype": col.get("dtype"), "unique": col.get("unique")}
+                for col in state.get("dataset_profile", {}).get("column_info", [])[:20]
             ],
         },
         ensure_ascii=False,
