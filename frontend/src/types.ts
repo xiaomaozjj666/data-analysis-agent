@@ -76,6 +76,16 @@ export interface CompletedStep {
   summary?: string;
 }
 
+// 步骤内进度（后端 step_progress 事件）：百分比 / 工具调用数 / 提示文案，
+// stepIndex/totalSteps 为复合进度上下文（"步骤 2/4"），旧事件无此字段时隐藏前缀。
+export interface StepProgress {
+  progress: number;
+  toolCalls: number;
+  message: string;
+  stepIndex?: number;
+  totalSteps?: number;
+}
+
 // Artifact
 export interface Artifact {
   name: string;

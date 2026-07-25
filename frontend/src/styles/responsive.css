@@ -200,4 +200,58 @@
 
   /* 帮助面板宽度改为 90vw */
   .help-panel { width: 90vw; }
+
+  /* 指标带改为单列堆叠，避免双列时数值被截断 */
+  .metrics-band { grid-template-columns: 1fr; }
+  .metric { border-right: 0; }
+  .metric:nth-child(3) { border-bottom: 1px solid var(--border-muted); }
+
+  /* 数据集标题占满行宽，换文件按钮不与标题抢空间 */
+  .dataset-header h1 { max-width: 100%; }
+
+  /* 预设任务按钮横向可滚动，避免换行占用过多纵向空间 */
+  .preset-row { overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  .preset-row::-webkit-scrollbar { display: none; }
+  .preset-row button { flex-shrink: 0; }
+
+  /* 预览面板标题给操作区让出更多空间 */
+  .preview-panel h2 { max-width: 46vw; }
+
+  /* 报告正文 padding 收窄 */
+  .report-body { padding: 14px 12px 18px; }
+
+  /* 步骤进度提示允许换行，避免"步骤 X/Y · 消息 · 预估"超出被截断 */
+  .step-progress small { white-space: normal; line-height: 1.6; }
+}
+
+/* ---------- 4. 触控设备适配（pointer: coarse） ----------
+   手指触控的最小可点击目标为 44×44px（WCAG 2.5.5 / iOS HIG）。
+   仅对触控设备放大高频小控件，鼠标环境保持原有紧凑布局。 ---------- */
+@media (pointer: coarse) {
+  /* 顶栏图标按钮 / 预览关闭 / 下载等图标类按钮 */
+  .icon-button { min-width: 44px; min-height: 44px; }
+
+  /* 错误条关闭按钮 */
+  .error-close { min-width: 44px; min-height: 44px; }
+
+  /* 错误恢复操作：重试 / 继续等待 */
+  .retry-button, .resume-button { min-height: 44px; padding-inline: 16px; }
+
+  /* tab 切换按钮增加纵向点击区域 */
+  .tabs button { min-height: 44px; }
+
+  /* 预设任务按钮 */
+  .preset-row button { min-height: 40px; }
+
+  /* 工具调用折叠开关 */
+  .tool-trace-toggle { min-height: 44px; }
+
+  /* 侧栏抽屉开关 */
+  .sidebar-toggle { min-width: 44px; min-height: 44px; }
+
+  /* 历史会话条目：整行可点，保证足够高度 */
+  .history-list li > button { min-height: 44px; }
+
+  /* 预览面板顶部操作按钮 */
+  .preview-actions > button { min-width: 40px; min-height: 40px; }
 }

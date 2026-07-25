@@ -87,10 +87,21 @@ class ToolTraceCallback(BaseCallbackHandler):
     ``_call_count``，按 20%/次累加并封顶 90%，前端据此渲染步骤进度条，
     让用户在长步骤内也能感知"已经走到第几次工具调用"。``reset()``
     在步骤边界重置计数器，保证每个 execute_step 独立计数。
+
+    step_index / total_steps 由 execute_step 传入，随 step_progress 一起
+    推送，前端据此渲染"步骤 2/4 · 第 3 次工具调用"的复合进度，长分析
+    时用户能同时看到全局位置与步骤内位置，缓解等待焦虑。
     """
 
-    def __init__(self, event_callback: Callable[[str, dict[str, Any]], None]) -> None:
+    def __init__(
+        self,
+        event_callback: Callable[[str, dict[str, Any]], None],
+        step_index: int = 0,
+        total_steps: int = 0,
+    ) -> None:
         self.event_callback = event_callback
+        self.step_index = step_index
+        self.total_steps = total_steps
         self._tool_starts: dict[str, float] = {}
         # 当前步骤内的工具调用计数。每次 on_tool_start 自增，
         # reset() 在步骤边界清零。用于推送 step_progress 进度估计。
@@ -128,6 +139,10 @@ class ToolTraceCallback(BaseCallbackHandler):
                 "progress": min(90, self._call_count * 20),
                 "tool_calls": self._call_count,
                 "message": f"第 {self._call_count} 次工具调用",
+                # 复合进度上下文：前端据此渲染"步骤 2/4"前缀。0 表示未知
+                # （如未来在 plan 外复用本回调），前端隐藏前缀保持兼容。
+                "step_index": self.step_index,
+                "total_steps": self.total_steps,
             })
         except Exception:
             pass

@@ -4,7 +4,7 @@ import { api, describeApiError, requestHeaders } from "../utils/api";
 import { API_URL, PREVIEW_CACHE_MAX } from "../constants";
 import type { Artifact, Session } from "../types";
 
-interface UseArtifactPreviewResult {
+export interface UseArtifactPreviewResult {
   openArtifactPreview: (item: Artifact) => Promise<void>;
   closeArtifactPreview: () => void;
   loadCompareChart: (item: Artifact) => Promise<void>;

@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { AnalysisResult, CompletedStep, PlanStep } from "../types";
+import type { AnalysisResult, CompletedStep, PlanStep, StepProgress } from "../types";
 import type { Updater } from "./types";
 
 // === 分析任务 + 计划审批 slice ===
@@ -15,7 +15,7 @@ interface AnalysisState {
   running: boolean;
   awaitingApproval: boolean;
   pendingObjective: string;
-  stepProgress: { progress: number; toolCalls: number; message: string } | null;
+  stepProgress: StepProgress | null;
   currentNodeTitle: string;
   setTask: (v: string) => void;
   setPlan: (v: PlanStep[]) => void;
@@ -24,7 +24,7 @@ interface AnalysisState {
   setRunning: (v: boolean) => void;
   setAwaitingApproval: (v: boolean) => void;
   setPendingObjective: (v: string) => void;
-  setStepProgress: (v: { progress: number; toolCalls: number; message: string } | null) => void;
+  setStepProgress: (v: StepProgress | null) => void;
   setCurrentNodeTitle: (updater: Updater<string>) => void;
 }
 

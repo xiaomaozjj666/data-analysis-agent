@@ -109,3 +109,34 @@ def test_atomic_write_text_cleans_up_tmp_on_failure(tmp_path):
     with pytest.raises(OSError):
         _atomic_write_text(target, "content")
     assert not target.with_suffix(target.suffix + ".tmp").exists()
+
+
+def test_profile_degrades_deep_memory_for_large_tables(tmp_path, monkeypatch):
+    """超过单元格阈值时 memory_usage 降级为 deep=False，但 unique/duplicated 保持全量精确。
+
+    把阈值 monkeypatch 为 1 强制走浅路径：profile 仍需返回 float 型 memory_mb，
+    且图表语义防护依赖的 unique 计数、duplicate_rows 不受降级影响。
+    """
+    import data_agent.workspace as workspace_module
+
+    monkeypatch.setattr(workspace_module, "_PROFILE_DEEP_MEMORY_MAX_CELLS", 1)
+    source = tmp_path / "big.csv"
+    pd.DataFrame(
+        {"name": ["alpha", "beta", "alpha", "alpha"], "value": [1, 2, 2, 1]}
+    ).to_csv(source, index=False)
+    workspace = DataWorkspace(tmp_path / "runs")
+    profile = workspace.load(source)
+
+    assert isinstance(profile["memory_mb"], float)
+    assert profile["memory_mb"] >= 0
+    name_info = next(c for c in profile["column_info"] if c["name"] == "name")
+    assert name_info["unique"] == 2  # 降级只影响内存统计，unique 仍全量精确
+    assert profile["duplicate_rows"] == 1  # 第 4 行重复第 1 行，duplicated 仍全量精确
+
+
+def test_profile_keeps_deep_memory_for_small_tables(workspace):
+    """未超阈值的小表保持 deep=True 精确统计（object 列逐对象计量，值更大）。"""
+    profile = workspace.profile()
+    df = workspace.dataframe
+    deep_mb = round(float(df.memory_usage(deep=True).sum() / 1024**2), 3)
+    assert profile["memory_mb"] == deep_mb

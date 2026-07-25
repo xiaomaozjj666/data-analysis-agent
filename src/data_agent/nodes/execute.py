@@ -108,7 +108,9 @@ def execute_step(agent: DataAnalysisAgent, state: WorkflowState) -> dict[str, An
     # 工具追踪：ToolTraceCallback 把 ReAct 循环内每次工具调用实时
     # 推送到前端，让用户看到"正在读取数据→正在清洗→正在生成图表"，
     # 而不是只看到"正在执行 (2/4)"一行字等 30 秒。
-    tool_tracer = ToolTraceCallback(agent.event_callback)
+    # step_index/total_steps 随 step_progress 事件一起推送，前端渲染
+    # "步骤 2/4 · 第 3 次工具调用"的复合进度。
+    tool_tracer = ToolTraceCallback(agent.event_callback, step_index=step_index, total_steps=total_steps)
     try:
         result = agent.react_agent.invoke(
             {"messages": [*state.get("input_messages", []), HumanMessage(content=execution_prompt)]},

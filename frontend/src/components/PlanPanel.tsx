@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { ToolTraceItem } from "./ToolTraceItem";
 import { formatDuration } from "../utils/format";
-import type { CompletedStep, PlanStep, ToolTraceItem as ToolTraceItemType } from "../types";
+import type { CompletedStep, PlanStep, StepProgress, ToolTraceItem as ToolTraceItemType } from "../types";
 
 interface PlanPanelProps {
   plan: PlanStep[];
@@ -24,7 +24,7 @@ interface PlanPanelProps {
   toolTrace?: ToolTraceItemType[];
   // Batch 4：计划审批 / 步骤进度 / 重跑入口
   awaitingApproval?: boolean;
-  stepProgress?: { progress: number; toolCalls: number; message: string } | null;
+  stepProgress?: StepProgress | null;
   onApprovePlan?: (editedPlan: PlanStep[]) => void;
   onCancelApproval?: () => void;
   onRerunFromStep?: (index: number) => void;
@@ -143,15 +143,18 @@ const PlanPanel = React.memo(function PlanPanel({
       )}
 
       {/* 步骤内进度：后端在执行单步时推送 step_progress，
-          显示当前步骤的预估进度百分比和工具调用次数 */}
+          展示"步骤 2/4 · 第 3 次工具调用 · 预估 60%"的复合进度，
+          让用户同时看到全局位置与步骤内位置；旧事件无步骤序号时隐藏前缀 */}
       {running && stepProgress && (
         <div className="step-progress" aria-live="polite">
           <div className="step-progress-bar">
             <span style={{ width: `${stepProgress.progress}%` }} />
           </div>
           <small>
+            {(stepProgress.stepIndex ?? 0) > 0 && (stepProgress.totalSteps ?? 0) > 0 && (
+              <strong className="step-progress-step">步骤 {stepProgress.stepIndex}/{stepProgress.totalSteps} · </strong>
+            )}
             {stepProgress.message}
-            {stepProgress.toolCalls > 0 && ` · 工具调用 ${stepProgress.toolCalls} 次`}
             {" · 预估 "}
             {stepProgress.progress}%
           </small>

@@ -64,6 +64,14 @@ _PROFILE_CACHE_MAX_ENTRIES = 4
 #: CSV 编码探测顺序：UTF-8 BOM → UTF-8 → GB18030（覆盖中文 Windows 场景）。
 _CSV_ENCODING_CANDIDATES = ("utf-8-sig", "utf-8", "gb18030")
 
+#: profile() 中深度内存统计（memory_usage(deep=True)）的单元格上限。
+#: deep=True 需要逐个遍历 Python 对象（object 列每个字符串都要 sizeof），
+#: 大表（如 50 万行 × 30 列）会卡住上传接口数秒生成首次 profile。
+#: 超过阈值时降级为 deep=False 估算（object 列按指针大小计，偏小但秒回）；
+#: nunique / duplicated 保持全量——它们是 C 层哈希实现且图表语义防护
+#: （标识符列/常量列判定）依赖精确的 unique 计数，不能采样。
+_PROFILE_DEEP_MEMORY_MAX_CELLS = 5_000_000
+
 
 def _atomic_write_text(path: Path, content: str, *, encoding: str = "utf-8") -> None:
     """Write text atomically: write to a sibling .tmp file then rename.
@@ -467,6 +475,9 @@ class DataWorkspace:
         df = self.dataframe
         missing = df.isna().sum()
         unique = df.nunique(dropna=True)
+        # 大表降级：单元格数超阈值时用 deep=False 估算内存，避免逐对象遍历
+        # 阻塞上传接口；unique/duplicated 保持全量（图表语义防护依赖精确计数）。
+        deep_memory = len(df) * max(len(df.columns), 1) <= _PROFILE_DEEP_MEMORY_MAX_CELLS
         column_info = [
             {
                 "name": str(column),
@@ -483,7 +494,7 @@ class DataWorkspace:
                 "rows": len(df),
                 "columns": len(df.columns),
                 "duplicate_rows": int(df.duplicated().sum()),
-                "memory_mb": round(float(df.memory_usage(deep=True).sum() / 1024**2), 3),
+                "memory_mb": round(float(df.memory_usage(deep=deep_memory).sum() / 1024**2), 3),
                 "load_warnings": list(self.load_warnings),
                 "column_info": column_info,
                 "sample": df.head(sample_rows),

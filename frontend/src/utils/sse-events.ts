@@ -56,7 +56,7 @@ export interface SSEEventPayload {
   validate_dataset: Record<string, never>;
   plan_analysis: { plan?: PlanStep[] };
   plan_ready: { plan?: PlanStep[]; objective?: string };
-  step_progress: { progress?: number; tool_calls?: number; message?: string };
+  step_progress: { progress?: number; tool_calls?: number; message?: string; step_index?: number; total_steps?: number };
   execute_step: Record<string, never>;
   replan: { completed_steps?: CompletedStep[] };
   thinking_chunk: { chunk?: string };
