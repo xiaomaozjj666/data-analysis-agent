@@ -6,6 +6,7 @@ import Aurora from "./rb/Aurora";
 import SplitText from "./rb/SplitText";
 import ShinyText from "./rb/ShinyText";
 import ClickSpark from "./rb/ClickSpark";
+import RotatingText from "./rb/RotatingText";
 
 interface EmptyWorkspaceProps {
   uploading: boolean;
@@ -130,6 +131,12 @@ function EmptyWorkspace({ uploading, onUpload, onFileDrop }: EmptyWorkspaceProps
             <SplitText text="从一份数据开始" splitBy="char" stagger={0.04} delay={0.2} onComplete={() => setTitleDone(true)} />
           )}
         </h2>
+        {/* 场景词轮播：传达"能分析什么"，降低首次使用的想象成本；
+            对屏幕阅读器隐藏（轮播文本反复播报是噪音） */}
+        <p className="empty-scene" aria-hidden="true">
+          看清楚你的
+          <RotatingText words={["销售趋势", "用户增长", "成本结构", "异常波动", "实验效果"]} />
+        </p>
         {/* 支持格式徽章：带 stagger 入场动画 */}
         <motion.div
           className="empty-formats"

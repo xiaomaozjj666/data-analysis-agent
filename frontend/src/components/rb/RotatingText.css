@@ -1,0 +1,23 @@
+/* React Bits — RotatingText CSS */
+.rotating-text {
+  display: inline-flex;
+  overflow: hidden;
+  vertical-align: bottom;
+  color: var(--accent-fg);
+  font-weight: 600;
+}
+.rotating-text-word {
+  display: inline-block;
+  animation: rotating-word-in 0.45s var(--ease-out, cubic-bezier(0.22, 1, 0.36, 1)) both;
+}
+
+@keyframes rotating-word-in {
+  0% { opacity: 0; transform: translateY(0.9em); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rotating-text-word {
+    animation: none;
+  }
+}

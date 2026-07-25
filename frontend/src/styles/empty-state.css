@@ -69,6 +69,19 @@
   transition: color var(--duration) var(--ease-out), font-weight var(--duration) var(--ease-out);
 }
 
+/* 场景词轮播行：紧贴标题下方，比副标题更轻量；轮播词固定 4 字宽
+   左对齐，切换时不引起整行宽度跳动 */
+.empty-scene {
+  margin: 0 0 14px !important;
+  font-size: var(--text-sm) !important;
+  color: var(--fg-subtle) !important;
+}
+.empty-scene .rotating-text {
+  min-width: 4em;
+  margin-left: 5px;
+  justify-content: flex-start;
+}
+
 /* 支持格式徽章：纯装饰药丸，置于标题与拖拽提示之间，弱化呈现 */
 .empty-formats {
   display: flex;

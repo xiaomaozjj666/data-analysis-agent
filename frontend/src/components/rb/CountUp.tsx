@@ -48,12 +48,17 @@ const CountUp = memo(({
   const ref = useRef<HTMLSpanElement>(null);
   const isInView = useInView(ref, { once: true, amount: 0.3 });
   const [displayValue, setDisplayValue] = useState(start);
-  const hasAnimated = useRef(false);
+  // 记录已动画到的目标值：end 变化时（如产物数运行中增长）从当前
+  // 显示值继续滚到新目标，而非停在首次动画的旧值。
+  const animatedEndRef = useRef<number | null>(null);
+  const displayRef = useRef(start);
 
   useEffect(() => {
     const shouldStart = triggerOnView ? isInView : true;
-    if (!shouldStart || hasAnimated.current) return;
-    hasAnimated.current = true;
+    if (!shouldStart || animatedEndRef.current === end) return;
+    // 首次从 start 起步，后续 end 变化从当前显示值接续，避免数字回跳
+    const from = animatedEndRef.current === null ? start : displayRef.current;
+    animatedEndRef.current = end;
 
     let startTime: number | null = null;
     let raf: number;
@@ -63,8 +68,9 @@ const CountUp = memo(({
       const elapsed = timestamp - startTime;
       const progress = Math.min(elapsed / duration, 1);
       const easedProgress = easing(progress);
-      const current = start + (end - start) * easedProgress;
+      const current = from + (end - from) * easedProgress;
 
+      displayRef.current = current;
       setDisplayValue(current);
 
       if (progress < 1) {
