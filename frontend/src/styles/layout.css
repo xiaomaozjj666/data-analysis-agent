@@ -13,6 +13,7 @@
   border-right: 1px solid var(--border-default);
   box-shadow: 1px 0 0 rgba(26, 35, 50, 0.02);
   overflow-y: auto;
+  transition: transform 0.3s var(--ease-spring), opacity 0.3s var(--ease-out);
 }
 /* 主区限宽居中，宽屏下比例更协调；padding 加大提升留白节奏 */
 .app-main { min-width: 0; width: 100%; max-width: 1360px; margin: 0 auto; padding: 0 48px 64px; }
@@ -23,6 +24,7 @@
 /* ---------- 顶栏 ---------- */
 /* 顶栏白底 + 下边框 + 轻阴影，做出顶部栏分区感，不再和画布融为一体 */
 .topbar {
+  position: relative;
   height: 60px;
   display: flex;
   align-items: center;
@@ -33,6 +35,20 @@
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-xs);
   margin-bottom: 4px;
+}
+/* Scroll 进度指示器：顶栏底部 1px 品牌色进度条 */
+.topbar::after {
+  content: "";
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  height: 2px;
+  width: var(--scroll-progress, 0%);
+  background: var(--accent-fg);
+  border-radius: 0 1px 1px 0;
+  opacity: 0.7;
+  transition: width 0.15s linear;
+  pointer-events: none;
 }
 .breadcrumb { min-width: 0; display: flex; align-items: center; gap: 6px; color: var(--fg-subtle); font-size: var(--text-sm); font-weight: 400; }
 .breadcrumb > svg { color: var(--fg-subtle); flex: 0 0 auto; }

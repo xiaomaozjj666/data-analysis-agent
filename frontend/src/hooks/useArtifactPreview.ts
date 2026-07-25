@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useAppStore } from "../store/useAppStore";
+import { useAppStore, useUIStore } from "../store/useAppStore";
 import { api, describeApiError, requestHeaders } from "../utils/api";
 import { API_URL, PREVIEW_CACHE_MAX } from "../constants";
 import type { Artifact, Session } from "../types";
@@ -10,6 +10,9 @@ interface UseArtifactPreviewResult {
   loadCompareChart: (item: Artifact) => Promise<void>;
   downloadPng: () => void;
   editChart: () => Promise<void>;
+  // iframe onLoad 回调：清掉 openArtifactPreview 启动的兜底超时定时器，
+  // 表示 iframe 已成功加载（无论图表脚本是否渲染完成，至少文档框架已就绪）。
+  onPreviewIframeLoaded: () => void;
   // 图表内联编辑表单状态（标题 / 主色 / 保存中标记 / 面板开关）
   chartEditOpen: boolean;
   setChartEditOpen: React.Dispatch<React.SetStateAction<boolean>>;
@@ -46,6 +49,9 @@ function useArtifactPreview(): UseArtifactPreviewResult {
   // 预览 HTML LRU 缓存：每个图表 HTML 完全自包含（含 Plotly.js ~3.5MB），
   // 重复打开同一图表时秒开，避免重新 fetch + 解析。最多缓存 5 条。
   const previewCacheRef = useRef<Map<string, string>>(new Map());
+  // iframe onLoad 超时定时器：若 iframe 加载超时未触发 onLoad，则标记为失败，
+  // 避免 loading 状态永久卡住（曾导致预览空白无任何提示）。
+  const loadTimeoutRef = useRef<number | null>(null);
 
   // === Batch 4：图表内联编辑 ===
   // 预览模态中可对图表产物进行标题/主色就地编辑，
@@ -66,6 +72,38 @@ function useArtifactPreview(): UseArtifactPreviewResult {
   const [compareLoading, setCompareLoading] = useState(false);
   const [pngDownloading, setPngDownloading] = useState(false);
 
+  // 校验预览 HTML 是否为后端内联 JS 库后的自包含文档。
+  // 历史问题：旧版本后端未内联 echarts.min.js / plotly.min.js，iframe 在
+  // about:blank 环境下无法解析相对路径脚本导致图表空白；前端 LRU 缓存又
+  // 持续复用这份坏 HTML，用户每次点开都空白。这里在写入缓存和 state 前
+  // 做一次防御性校验：若 HTML 仍引用外部脚本或缺少关键库标记，丢弃并报错。
+  const isValidPreviewHtml = useCallback((html: string): boolean => {
+    if (!html || html.length < 200) return false;
+    // 必须包含内联的 ECharts 或 Plotly 库标记（后端 _inline_*_bundle 注入）
+    const hasEcharts = html.includes("echarts.init") || html.includes("echarts.min.js");
+    const hasPlotly = html.includes("Plotly.newPlot") || html.includes("plotly.min.js");
+    if (!hasEcharts && !hasPlotly) return false;
+    // 不能残留相对路径 <script src="xxx.min.js">：iframe srcdoc 无同源基础，
+    // 相对路径会解析为 about:blank/xxx.min.js 永远 404，图表静默失败。
+    if (/<script\s+src=["'](?!https?:|blob:|data:)[^"']*\.js["']/i.test(html)) {
+      return false;
+    }
+    return true;
+  }, []);
+
+  // 图表运行时错误上报脚本：新版后端已在生成 HTML 时注入，但历史会话
+  // 里的旧图表 HTML 不含该脚本。这里在展示前统一补注入（已含 'chart-error'
+  // 标记的跳过），让历史会话的图表渲染失败时同样能回传具体错误。
+  const withChartErrorReporter = useCallback((html: string): string => {
+    if (html.includes("chart-error")) return html;
+    const reporter =
+      "<script>(function(){window.addEventListener('error',function(e){setTimeout(function(){" +
+      "var ok=document.querySelector('.plotly-graph-div .main-svg')||window.__echartsInstance;" +
+      "if(!ok){try{parent.postMessage({type:'chart-error',message:String((e&&e.message)||'图表脚本执行失败')},'*');}catch(_){}}" +
+      "},300);});})();</" + "script>";
+    return html.replace(/<head>/i, "<head>" + reporter);
+  }, []);
+
   // useCallback：openArtifactPreview / downloadArtifact 作为 props 传给
   // React.memo(ArtifactCenter)。若每次渲染都创建新函数，memo 比较失败，
   // ArtifactCenter 仍然每次重渲染。useCallback 让函数身份稳定，memo 才
@@ -82,17 +120,28 @@ function useArtifactPreview(): UseArtifactPreviewResult {
     setCompareItem(null);
     setCompareHtml("");
     setPreviewFullscreen(false);
+    // 清理上一轮可能残留的 onLoad 超时定时器
+    if (loadTimeoutRef.current !== null) {
+      window.clearTimeout(loadTimeoutRef.current);
+      loadTimeoutRef.current = null;
+    }
     // LRU 缓存命中：直接展示已加载的 HTML，跳过 fetch + 解析（Plotly.js ~3.5MB）。
     // 重复打开同一图表时秒开，多个图表来回切换无需重新加载。
     const cacheKey = item.preview_url;
     const cached = previewCacheRef.current.get(cacheKey);
     if (cached !== undefined) {
-      // LRU：删除再插入，将命中条目移到 Map 末尾标记为最近使用
-      previewCacheRef.current.delete(cacheKey);
-      previewCacheRef.current.set(cacheKey, cached);
-      setPreviewHtml(cached);
-      setPreviewLoading(false);
-      return;
+      // 防御性校验：缓存中的 HTML 可能是旧版本（后端未内联 JS 库时缓存），
+      // 命中后再次校验，若已失效则删除并重新拉取，避免永久空白。
+      if (!isValidPreviewHtml(cached)) {
+        previewCacheRef.current.delete(cacheKey);
+      } else {
+        // LRU：删除再插入，将命中条目移到 Map 末尾标记为最近使用
+        previewCacheRef.current.delete(cacheKey);
+        previewCacheRef.current.set(cacheKey, cached);
+        setPreviewHtml(withChartErrorReporter(cached));
+        setPreviewLoading(false);
+        return;
+      }
     }
     setPreviewHtml("");
     setPreviewLoading(true);
@@ -113,14 +162,29 @@ function useArtifactPreview(): UseArtifactPreviewResult {
         }
         throw new Error(describeApiError(payload, response.status));
       }
+      // 写入缓存前校验：拒绝缓存非自包含的 HTML，防止坏 HTML 在 LRU 中
+      // 长期复用导致后续每次打开都空白。
+      if (!isValidPreviewHtml(html)) {
+        throw new Error("预览文档缺少内联图表库，请重新生成产物或刷新页面后重试。");
+      }
       // 缓存结果：超过上限时淘汰 Map 中最旧（最久未使用）的条目
       previewCacheRef.current.set(cacheKey, html);
       if (previewCacheRef.current.size > PREVIEW_CACHE_MAX) {
         const oldest = previewCacheRef.current.keys().next().value;
         if (oldest !== undefined) previewCacheRef.current.delete(oldest);
       }
-      setPreviewHtml(html);
+      setPreviewHtml(withChartErrorReporter(html));
       // loading 状态由 iframe onLoad 关闭，确保用户看到的是完成渲染的图表。
+      // 兜底超时：若 8 秒内 onLoad 未触发（极端情况下 iframe 静默失败），
+      // 强制关闭 loading 并提示错误，避免用户盯着空白骨架屏。
+      if (loadTimeoutRef.current !== null) {
+        window.clearTimeout(loadTimeoutRef.current);
+      }
+      loadTimeoutRef.current = window.setTimeout(() => {
+        loadTimeoutRef.current = null;
+        setPreviewLoading(false);
+        setPreviewError("图表加载超时，请检查网络或重新生成产物后重试。");
+      }, 8000);
     } catch (err) {
       const error = err as Error;
       if (error.name !== "AbortError") {
@@ -130,11 +194,16 @@ function useArtifactPreview(): UseArtifactPreviewResult {
     } finally {
       if (previewController.current === controller) previewController.current = null;
     }
-  }, []);
+  }, [isValidPreviewHtml, withChartErrorReporter]);
 
   const closeArtifactPreview = useCallback(() => {
     previewController.current?.abort();
     previewController.current = null;
+    // 关闭预览时清理 onLoad 超时定时器，避免定时器在模态关闭后仍触发错误态。
+    if (loadTimeoutRef.current !== null) {
+      window.clearTimeout(loadTimeoutRef.current);
+      loadTimeoutRef.current = null;
+    }
     setPreviewItem(null);
     setPreviewHtml("");
     setPreviewLoading(false);
@@ -147,6 +216,49 @@ function useArtifactPreview(): UseArtifactPreviewResult {
     setPreviewFullscreen(false);
   }, []);
 
+  // iframe onLoad 回调：由 App.tsx 的 <iframe onLoad> 调用。
+  // 清掉 openArtifactPreview 启动的兜底超时定时器，并关闭 loading 状态。
+  // 即使图表脚本因 CSP/sandbox 限制未能渲染，文档框架 onLoad 触发也意味着
+  // iframe 本身没有静默失败，可信任后续图表脚本的异步渲染。
+  const onPreviewIframeLoaded = useCallback(() => {
+    if (loadTimeoutRef.current !== null) {
+      window.clearTimeout(loadTimeoutRef.current);
+      loadTimeoutRef.current = null;
+    }
+    setPreviewLoading(false);
+  }, []);
+
+  // 组件卸载时清理定时器和 AbortController，避免内存泄漏与卸载后 setState。
+  useEffect(() => {
+    return () => {
+      if (loadTimeoutRef.current !== null) {
+        window.clearTimeout(loadTimeoutRef.current);
+        loadTimeoutRef.current = null;
+      }
+      previewController.current?.abort();
+    };
+  }, []);
+
+  // 图表运行时错误上报：iframe 内图表脚本执行失败且画布未渲染时，
+  // 后端注入的脚本会 postMessage({type:'chart-error', message}) 回传。
+  // 这里转成可见的错误提示 + 重试按钮，消灭“图表静默空白”这一
+  // 最难排查的失败形态；同时清掉坏 HTML 的预览缓存，重试时重新拉取。
+  useEffect(() => {
+    const handler = (e: MessageEvent) => {
+      if (e.data?.type === "chart-error" && typeof e.data.message === "string") {
+        // 用 slice store 的 getState 读当前预览项，避免把 previewItem 加进
+        // 依赖数组导致监听器反复解绑/重绑。
+        const item = useUIStore.getState().previewItem;
+        if (!item) return;
+        if (item.preview_url) previewCacheRef.current.delete(item.preview_url);
+        setPreviewLoading(false);
+        setPreviewError(`图表渲染出错：${e.data.message.slice(0, 200)}。可重试或重新生成该图表。`);
+      }
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, []);
+
   // 加载对比图表：复用预览 LRU 缓存，命中则秒开，否则 fetch 后入缓存。
   // 与主预览共享 previewCacheRef，切换主图与对比图时互不重复请求。
   const loadCompareChart = useCallback(async (item: Artifact) => {
@@ -157,32 +269,37 @@ function useArtifactPreview(): UseArtifactPreviewResult {
     const cacheKey = item.preview_url;
     const cached = previewCacheRef.current.get(cacheKey);
     if (cached !== undefined) {
-      // LRU：删除再插入，将命中条目移到 Map 末尾标记为最近使用
-      previewCacheRef.current.delete(cacheKey);
-      previewCacheRef.current.set(cacheKey, cached);
-      setCompareHtml(cached);
-      setCompareLoading(false);
-      return;
+      // 防御性校验：与主预览一致，命中后再次校验避免复用坏 HTML。
+      if (!isValidPreviewHtml(cached)) {
+        previewCacheRef.current.delete(cacheKey);
+      } else {
+        // LRU：删除再插入，将命中条目移到 Map 末尾标记为最近使用
+        previewCacheRef.current.delete(cacheKey);
+        previewCacheRef.current.set(cacheKey, cached);
+        setCompareHtml(withChartErrorReporter(cached));
+        setCompareLoading(false);
+        return;
+      }
     }
     try {
       const response = await fetch(`${API_URL}${item.preview_url}`, {
         headers: requestHeaders(),
       });
       const html = await response.text();
-      if (response.ok) {
+      if (response.ok && isValidPreviewHtml(html)) {
         previewCacheRef.current.set(cacheKey, html);
         if (previewCacheRef.current.size > PREVIEW_CACHE_MAX) {
           const oldest = previewCacheRef.current.keys().next().value;
           if (oldest !== undefined) previewCacheRef.current.delete(oldest);
         }
-        setCompareHtml(html);
+        setCompareHtml(withChartErrorReporter(html));
       }
     } catch {
       // 对比加载失败时不阻塞主图，静默忽略
     } finally {
       setCompareLoading(false);
     }
-  }, []);
+  }, [isValidPreviewHtml, withChartErrorReporter]);
 
   // 通过 postMessage 通道让 iframe 内图表导出 PNG（#23）。
   // iframe sandbox 只保留 allow-scripts（不含 allow-same-origin），
@@ -254,6 +371,7 @@ function useArtifactPreview(): UseArtifactPreviewResult {
     loadCompareChart,
     downloadPng,
     editChart,
+    onPreviewIframeLoaded,
     chartEditOpen, setChartEditOpen,
     chartEditTitle, setChartEditTitle,
     chartEditColor, setChartEditColor,

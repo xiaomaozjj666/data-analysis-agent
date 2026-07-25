@@ -8,10 +8,25 @@
 .conversation-list { max-height: 640px; overflow-y: auto; padding: 20px 24px; display: flex; flex-direction: column; gap: 16px; scroll-behavior: smooth; }
 .conversation-list:empty { display: none; }
 /* 用户气泡：右对齐 + 主色底 + 白字，与 ChatGPT 用户消息风格一致 */
-.chat-bubble.is-user { align-self: flex-end; max-width: 80%; }
+.chat-bubble.is-user { align-self: flex-end; max-width: 80%; animation: bubble-in-right 0.35s var(--ease-out) both; }
+.chat-bubble.is-user:nth-child(2) { animation-delay: 30ms; }
+.chat-bubble.is-user:nth-child(3) { animation-delay: 60ms; }
 .chat-bubble.is-user .chat-bubble-content { padding: 10px 14px; background: var(--accent-fg); color: #fff; border-radius: var(--radius-md) var(--radius-md) var(--radius-sm) var(--radius-md); font-size: var(--text-sm); line-height: 1.65; box-shadow: var(--shadow-sm); word-break: break-word; }
 /* 助手气泡：左对齐 + 卡片底 + Markdown，宽度撑满，让图表和表格有空间 */
-.chat-bubble.is-assistant { align-self: stretch; display: flex; flex-direction: column; gap: 8px; }
+.chat-bubble.is-assistant { align-self: stretch; display: flex; flex-direction: column; gap: 8px; animation: bubble-in-left 0.35s var(--ease-out) both; }
+.chat-bubble.is-assistant:nth-child(2) { animation-delay: 40ms; }
+.chat-bubble.is-assistant:nth-child(3) { animation-delay: 80ms; }
+.chat-bubble.is-assistant:nth-child(n+4) { animation-delay: 100ms; }
+
+/* 气泡入场动画 */
+@keyframes bubble-in-right {
+  from { opacity: 0; transform: translateX(12px) scale(0.95); }
+  to { opacity: 1; transform: translateX(0) scale(1); }
+}
+@keyframes bubble-in-left {
+  from { opacity: 0; transform: translateX(-12px) scale(0.95); }
+  to { opacity: 1; transform: translateX(0) scale(1); }
+}
 .chat-bubble.is-assistant .chat-bubble-content { padding: 14px 16px; background: var(--canvas-subtle); border: 1px solid var(--border-muted); border-radius: var(--radius-sm) var(--radius-md) var(--radius-md) var(--radius-md); color: var(--fg-default); font-size: var(--text-sm); line-height: 1.75; word-break: break-word; }
 .chat-bubble.is-assistant .chat-bubble-content.is-streaming { border-color: var(--accent-fg); box-shadow: 0 0 0 2px var(--accent-subtle); }
 /* 助手气泡内的 Markdown 排版：复用 report-body 的字号但稍微收紧 */
@@ -233,24 +248,30 @@
 .usage-chip strong { color: var(--fg-default); font-weight: 600; }
 .usage-chip .usage-sep { color: var(--fg-subtle); }
 
-/* ---------- 思考占位（替换原"正在思考…"纯文字）---------- */
+/* ---------- 思考占位（更精致的波形动画）---------- */
 .thinking-placeholder {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   color: var(--fg-muted);
   font-size: var(--text-sm);
 }
 .thinking-placeholder .thinking-dots {
   display: inline-flex;
-  gap: 3px;
+  gap: 4px;
 }
 .thinking-placeholder .thinking-dots span {
-  width: 4px;
-  height: 4px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
   background: var(--accent-fg);
-  animation: thinking-bounce 1.2s infinite ease-in-out;
+  animation: thinking-wave 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  opacity: 0.7;
 }
 .thinking-placeholder .thinking-dots span:nth-child(2) { animation-delay: 0.15s; }
 .thinking-placeholder .thinking-dots span:nth-child(3) { animation-delay: 0.3s; }
+
+@keyframes thinking-wave {
+  0%, 60%, 100% { transform: translateY(0) scale(1); opacity: 0.5; }
+  30% { transform: translateY(-5px) scale(1.2); opacity: 1; }
+}

@@ -1,5 +1,6 @@
 import React from "react";
 import { Database } from "lucide-react";
+import CountUp from "./rb/CountUp";
 import type { DatasetProfile, ColumnInfo } from "../types";
 
 interface DatasetOverviewProps {
@@ -65,7 +66,7 @@ const DatasetOverview = React.memo(function DatasetOverview({ profile }: Dataset
       <div className="quality-summary">
         <div className="quality-summary-head">
           <span className="quality-summary-label">整体完整度</span>
-          <span className="quality-summary-score">{scorePct}%</span>
+          <span className="quality-summary-score"><CountUp end={scorePct} duration={1200} suffix="%" /></span>
         </div>
         <div
           className="quality-summary-bar"

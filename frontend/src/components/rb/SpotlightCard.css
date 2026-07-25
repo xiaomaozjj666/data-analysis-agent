@@ -1,0 +1,78 @@
+/* React Bits — SpotlightCard CSS */
+.spotlight-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--radius-lg);
+  transition: transform 0.3s var(--ease-out), box-shadow 0.3s var(--ease-out);
+  will-change: transform;
+}
+
+/* Tilt transform on hover */
+.spotlight-card.has-tilt:hover {
+  transform: perspective(var(--spotlight-perspective, 800px))
+    rotateX(var(--tilt-x, 0deg))
+    rotateY(var(--tilt-y, 0deg))
+    scale(var(--spotlight-hover-scale, 1.02));
+  box-shadow: var(--shadow-lg);
+}
+
+/* Spotlight overlay: mouse-tracked radial gradient */
+.spotlight-card-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  border-radius: inherit;
+  opacity: 0;
+  background: radial-gradient(
+    var(--spotlight-radius, 250px) circle at var(--spotlight-x, -9999px) var(--spotlight-y, -9999px),
+    var(--spotlight-color, rgba(91, 91, 214, 0.12)),
+    transparent 100%
+  );
+  transition: opacity 0.3s var(--ease-out);
+}
+
+.spotlight-card:hover .spotlight-card-overlay {
+  opacity: 1;
+}
+
+/* Content wrapper ensures children are above the overlay */
+.spotlight-card-content {
+  position: relative;
+  z-index: 2;
+}
+
+/* Subtle border glow on hover */
+.spotlight-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  border: 1px solid transparent;
+  pointer-events: none;
+  z-index: 3;
+  transition: border-color 0.3s var(--ease-out);
+}
+
+.spotlight-card:hover::after {
+  border-color: var(--accent-fg);
+}
+
+/* Dark mode adjustments */
+[data-theme="dark"] .spotlight-card-overlay {
+  background: radial-gradient(
+    var(--spotlight-radius, 250px) circle at var(--spotlight-x, -9999px) var(--spotlight-y, -9999px),
+    rgba(124, 124, 240, 0.15),
+    transparent 100%
+  );
+}
+
+/* Accessibility: disable tilt and complex motion for reduced-motion users */
+@media (prefers-reduced-motion: reduce) {
+  .spotlight-card.has-tilt:hover {
+    transform: none;
+  }
+  .spotlight-card-overlay {
+    display: none;
+  }
+}

@@ -1,5 +1,10 @@
 /* 错误横幅：GitHub flash 风格 */
-.error-banner { min-height: 44px; display: flex; align-items: center; gap: 10px; margin: 14px 0; padding: 9px 12px; background: var(--danger-subtle); border: 1px solid var(--danger-border); border-radius: var(--radius-md); color: var(--danger-fg); font-size: var(--text-sm); animation: banner-in var(--duration) var(--ease-out); }
+.error-banner { min-height: 44px; display: flex; align-items: center; gap: 10px; margin: 14px 0; padding: 9px 12px; background: var(--danger-subtle); border: 1px solid var(--danger-border); border-radius: var(--radius-md); color: var(--danger-fg); font-size: var(--text-sm); animation: banner-spring 0.4s var(--ease-spring); }
+@keyframes banner-spring {
+  0% { opacity: 0; transform: translateY(-8px) scale(0.97); }
+  60% { transform: translateY(2px) scale(1.01); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
 .error-banner > svg { color: var(--danger-fg); flex: 0 0 auto; }
 .error-banner span { min-width: 0; flex: 1; }
 /* 仅命中关闭按钮，避免选择器特异性盖过 .retry-button 导致其宽度被压窄、
@@ -25,7 +30,15 @@
 .change-file { height: 36px; padding: 0 14px; flex: 0 0 auto; }
 
 .metrics-band { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid var(--border-muted); border-bottom: 1px solid var(--border-muted); }
-.metric { min-height: 88px; display: flex; flex-direction: column; justify-content: center; padding: 18px 28px; border-right: 1px solid var(--border-muted); transition: background var(--duration-fast) var(--ease-out); }
+.metric { min-height: 88px; display: flex; flex-direction: column; justify-content: center; padding: 18px 28px; border-right: 1px solid var(--border-muted); transition: background var(--duration-fast) var(--ease-out); animation: metric-in 0.5s var(--ease-out) both; }
+.metric:nth-child(1) { animation-delay: 0ms; }
+.metric:nth-child(2) { animation-delay: 80ms; }
+.metric:nth-child(3) { animation-delay: 160ms; }
+.metric:nth-child(4) { animation-delay: 240ms; }
+@keyframes metric-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 .metric:first-child { padding-left: 0; }
 .metric:last-child { border-right: 0; }
 .metric:hover { background: var(--canvas-subtle); }
@@ -61,6 +74,15 @@
 .tabs button.active svg { color: var(--accent-fg); }
 .tabs button span { min-width: 20px; height: 18px; display: grid; place-items: center; padding: 0 6px; border-radius: var(--radius-full); background: var(--neutral-muted); color: var(--fg-muted); font-size: var(--text-xs); font-weight: 500; }
 .tabs button.active span { background: var(--accent-subtle); color: var(--accent-fg); }
+
+/* Tab 内容切换动画：内容区 fade + translateY 入场 */
+.tab-content-enter {
+  animation: tab-fade-in 0.3s var(--ease-out) both;
+}
+@keyframes tab-fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 
 /* ---------- 分析任务区 ---------- */
 /* analysis-grid：右列用 minmax(320px, 380px) 兼顾窄屏与内容密度，

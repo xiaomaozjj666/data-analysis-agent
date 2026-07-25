@@ -978,6 +978,16 @@ def _echarts_sunburst(
 #: 通过 setOption 合并更新颜色属性，不触碰数据。浅色回退值与 _ECHARTS_*_COLOR 一致。
 _ECHARTS_DARK_MODE_SCRIPT = """<script>
 (function() {
+  // 运行时错误上报：图表脚本执行失败且实例未创建时，把错误消息回传
+  // 父页面（{type:'chart-error'}），让预览面板显示具体错误而不是永远空白。
+  // 延迟检查 __echartsInstance 避免把非致命错误误报成渲染失败。
+  window.addEventListener('error', function(e) {
+    setTimeout(function() {
+      if (!window.__echartsInstance) {
+        try { parent.postMessage({type: 'chart-error', message: String((e && e.message) || '图表脚本执行失败')}, '*'); } catch (_) {}
+      }
+    }, 300);
+  });
   function applyTheme() {
     var isDark = document.documentElement.dataset.theme === 'dark' ||
                  window.matchMedia('(prefers-color-scheme: dark)').matches;

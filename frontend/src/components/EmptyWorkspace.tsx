@@ -1,7 +1,11 @@
 import React, { useCallback, useRef, useState } from "react";
 import { Braces, FileSpreadsheet, LoaderCircle, Sparkles, Table2, Upload } from "lucide-react";
+import { motion } from "motion/react";
 import DotField from "./rb/DotField";
+import Aurora from "./rb/Aurora";
+import SplitText from "./rb/SplitText";
 import ShinyText from "./rb/ShinyText";
+import ClickSpark from "./rb/ClickSpark";
 
 interface EmptyWorkspaceProps {
   uploading: boolean;
@@ -21,7 +25,22 @@ function EmptyWorkspace({ uploading, onUpload, onFileDrop }: EmptyWorkspaceProps
   // 由 empty-state.css 的 radial-gradient 渲染全屏柔和光晕。
   const sectionRef = useRef<HTMLElement>(null);
   const [dragOver, setDragOver] = useState(false);
+  const [titleDone, setTitleDone] = useState(false);
   const dragCounter = useRef(0);
+  // Magnetic button: track mouse offset for subtle pull effect
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const handleBtnMouseMove = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
+    const btn = btnRef.current;
+    if (!btn) return;
+    const rect = btn.getBoundingClientRect();
+    const x = (e.clientX - rect.left - rect.width / 2) * 0.08;
+    const y = (e.clientY - rect.top - rect.height / 2) * 0.08;
+    btn.style.transform = `translate(${x}px, ${y}px)`;
+  }, []);
+  const handleBtnMouseLeave = useCallback(() => {
+    const btn = btnRef.current;
+    if (btn) btn.style.transform = "translate(0, 0)";
+  }, []);
   const handleMouseMove = useCallback((event: React.MouseEvent<HTMLElement>) => {
     const el = sectionRef.current;
     if (!el) return;
@@ -100,23 +119,56 @@ function EmptyWorkspace({ uploading, onUpload, onFileDrop }: EmptyWorkspaceProps
       onClick={handleSectionClick}
       onKeyDown={handleSectionKeyDown}
     >
+      <Aurora className="empty-aurora-bg" colorPrimary="rgba(91, 91, 214, 0.25)" colorSecondary="rgba(139, 92, 246, 0.15)" colorTertiary="rgba(59, 130, 246, 0.12)" speed={0.7} blur={80} opacity={0.8} />
       <DotField className="empty-grid-bg" dotRadius={2} dotSpacing={24} cursorRadius={460} bulgeStrength={88} gradientFrom="rgba(91, 91, 214, 0.32)" gradientTo="rgba(120, 120, 140, 0.22)" glowColor="transparent" />
       <div className="empty-copy">
         <span className="section-kicker">新建分析</span>
-        <h2><ShinyText text="从一份数据开始" color="var(--fg-default)" shineColor="var(--accent-fg)" speed={3} /></h2>
-        {/* 支持格式徽章：纯装饰，告知用户可上传的文件类型 */}
-        <div className="empty-formats" aria-hidden="true">
-          <span className="format-badge"><FileSpreadsheet size={12} />CSV</span>
-          <span className="format-badge"><FileSpreadsheet size={12} />Excel</span>
-          <span className="format-badge"><Braces size={12} />JSON</span>
-          <span className="format-badge"><Table2 size={12} />Parquet</span>
-        </div>
+        <h2>
+          {titleDone ? (
+            <ShinyText text="从一份数据开始" color="var(--fg-default)" shineColor="var(--accent-fg)" speed={3} />
+          ) : (
+            <SplitText text="从一份数据开始" splitBy="char" stagger={0.04} delay={0.2} onComplete={() => setTitleDone(true)} />
+          )}
+        </h2>
+        {/* 支持格式徽章：带 stagger 入场动画 */}
+        <motion.div
+          className="empty-formats"
+          aria-hidden="true"
+          initial="hidden"
+          animate="visible"
+          variants={{ hidden: {}, visible: { transition: { staggerChildren: 0.08, delayChildren: 0.6 } } }}
+        >
+          {[
+            { icon: <FileSpreadsheet size={12} />, label: "CSV" },
+            { icon: <FileSpreadsheet size={12} />, label: "Excel" },
+            { icon: <Braces size={12} />, label: "JSON" },
+            { icon: <Table2 size={12} />, label: "Parquet" },
+          ].map((item) => (
+            <motion.span
+              key={item.label}
+              className="format-badge"
+              variants={{ hidden: { opacity: 0, y: 8, scale: 0.9 }, visible: { opacity: 1, y: 0, scale: 1 } }}
+            >
+              {item.icon}{item.label}
+            </motion.span>
+          ))}
+        </motion.div>
         <p>CSV、Excel、JSON 或 Parquet{dragOver ? " · 松开以上传" : " · 或拖拽文件到此"}</p>
         <div className="empty-actions">
-          <button className="primary empty-upload-button" onClick={onUpload} disabled={uploading}>
-            {uploading ? <LoaderCircle className="spin" size={17} /> : <Upload size={17} />}
-            {uploading ? "正在读取" : "选择数据文件"}
-          </button>
+          <ClickSpark sparkColor="var(--accent-fg)" sparkLength={14}>
+            <button
+              ref={btnRef}
+              className="primary empty-upload-button"
+              onClick={onUpload}
+              disabled={uploading}
+              onMouseMove={handleBtnMouseMove}
+              onMouseLeave={handleBtnMouseLeave}
+              style={{ transition: "transform 0.2s var(--ease-out), background 0.15s, box-shadow 0.15s" }}
+            >
+              {uploading ? <LoaderCircle className="spin" size={17} /> : <Upload size={17} />}
+              {uploading ? "正在读取" : "选择数据文件"}
+            </button>
+          </ClickSpark>
           <button
             type="button"
             className="empty-sample-button"

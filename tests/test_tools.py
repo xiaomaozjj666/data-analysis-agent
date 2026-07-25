@@ -315,3 +315,76 @@ def test_grouped_bars_explain_absent_category_combinations(tmp_path):
     assert channel_result["category_coverage"]["total_combinations"] == 6
     assert channel_result["category_coverage"]["missing_count"] == 3
     assert sum(annotation.text == "○" for annotation in channel.layout.annotations) == 3
+
+
+def _semantic_workspace(tmp_path):
+    """构造含 ID 列/常量列/高基数列的数据集，验证图表意义性防护。"""
+    rows = 60
+    source = tmp_path / "semantic.csv"
+    pd.DataFrame(
+        {
+            "order_id": [f"ORD{i:04d}" for i in range(rows)],
+            "用户编号": range(1000, 1000 + rows),
+            "region": ["East", "West", "North"] * (rows // 3),
+            "city": [f"城市{i % 25}" for i in range(rows)],
+            "constant": ["同一值"] * rows,
+            "sales": [float(100 + (i * 37) % 400) for i in range(rows)],
+        }
+    ).to_csv(source, index=False)
+    workspace = DataWorkspace(tmp_path / "runs", session_id="semantic_guard")
+    workspace.load(source, copy_into_workspace=True)
+    return workspace
+
+
+def test_visualization_rejects_id_and_constant_columns(tmp_path):
+    """意义性防护：ID 列分布图、常量列图必须被拒绝并给出修正建议。"""
+    visualization = tool_map(_semantic_workspace(tmp_path))["create_visualization"]
+
+    # 英文 ID 列（命名 + 逐行唯一）作柱状图 x → 拒绝
+    for params in (
+        {"chart_type": "bar", "x": "order_id", "aggregation": "count"},
+        {"chart_type": "pie", "x": "用户编号", "values": "sales"},
+        {"chart_type": "bar", "x": "region", "y": "sales", "aggregation": "sum", "color": "order_id"},
+    ):
+        try:
+            visualization.invoke(params)
+        except Exception as exc:
+            assert "标识符" in str(exc)
+        else:
+            raise AssertionError(f"expected identifier-column chart to be rejected: {params}")
+
+    # 常量列作任何角色 → 拒绝
+    try:
+        visualization.invoke({"chart_type": "histogram", "x": "constant"})
+    except Exception as exc:
+        assert "只有一个取值" in str(exc)
+    else:
+        raise AssertionError("expected constant-column chart to be rejected")
+
+
+def test_visualization_high_cardinality_requires_top_n(tmp_path):
+    """意义性防护：高基数饼图需要 top_n，传入后可正常生成；业务列不受影响。"""
+    visualization = tool_map(_semantic_workspace(tmp_path))["create_visualization"]
+
+    # 25 个类别的饼图（上限 20）→ 拒绝并提示 top_n
+    try:
+        visualization.invoke({"chart_type": "pie", "x": "city", "values": "sales"})
+    except Exception as exc:
+        assert "top_n" in str(exc)
+    else:
+        raise AssertionError("expected high-cardinality pie to be rejected")
+
+    # 传 top_n 后通过防护并正常产出
+    top_result = json.loads(
+        visualization.invoke({"chart_type": "pie", "x": "city", "values": "sales", "top_n": 10})
+    )
+    assert Path(top_result["html"]).exists()
+
+    # 低基数业务列不受防护影响
+    ok_result = json.loads(
+        visualization.invoke(
+            {"chart_type": "bar", "x": "region", "y": "sales", "aggregation": "sum", "title": "区域销售"}
+        )
+    )
+    assert Path(ok_result["html"]).exists()
+
