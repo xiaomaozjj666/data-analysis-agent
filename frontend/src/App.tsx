@@ -2,27 +2,17 @@ import React, { Suspense, useCallback, useEffect, useRef, useState } from "react
 import {
   AlertTriangle,
   BarChart3,
-  Check,
   ChevronRight,
-  Columns2,
   Command,
-  Download,
-  Eye,
-  EyeOff,
-  FileImage,
   FilePlus2,
   FileSpreadsheet,
   Keyboard,
-  KeyRound,
   ListChecks,
   LoaderCircle,
-  Maximize2,
   Menu,
   Moon,
-  Palette,
   Play,
   RefreshCw,
-  Settings2,
   Square,
   Sun,
   Table2,
@@ -36,6 +26,8 @@ import ConversationThread from "./components/ConversationThread";
 import PlanPanel from "./components/PlanPanel";
 import HistoryPanel from "./components/HistoryPanel";
 import ArtifactCenter from "./components/ArtifactCenter";
+import SettingsPanel from "./components/SettingsPanel";
+import PreviewModal from "./components/PreviewModal";
 // 代码分割/懒加载（#16）：重型组件延迟加载，减小首次 bundle 体积。
 // - CommandPalette / HelpPanel：弹层，仅在用户触发（Cmd+K / ?）时显示
 // - ReportView：含 ReactMarkdown，仅在分析完成后渲染（result 非空）
@@ -48,6 +40,7 @@ import useAnalysisRunner from "./hooks/useAnalysisRunner";
 import useArtifactPreview from "./hooks/useArtifactPreview";
 import useAuthBootstrap from "./hooks/useAuthBootstrap";
 import useChatRunner from "./hooks/useChatRunner";
+import useDownloads from "./hooks/useDownloads";
 import useScrollProgress from "./hooks/useScrollProgress";
 import useSettingsPanel from "./hooks/useSettingsPanel";
 import useShortcuts from "./hooks/useShortcuts";
@@ -65,14 +58,13 @@ import {
   presets,
 } from "./constants";
 import type {
-  Artifact,
   CommandAction,
   DatasetProfile,
   FollowUpMessage,
   HistorySessionItem,
   PlanStep,
+  RetryOffer,
   Session,
-  Settings,
 } from "./types";
 
 // /api/auth 返回的轻量结构
@@ -80,9 +72,6 @@ interface AuthStatus {
   required?: boolean;
   authenticated?: boolean;
 }
-
-// /api/settings PUT 返回带可选 warning
-interface SettingsResponse extends Settings {}
 
 // /api/sessions GET 列表响应
 interface SessionListResponse {
@@ -99,8 +88,10 @@ function App() {
     // 认证
     authRequired, authenticated, authReady,
     setAuthRequired, setAuthenticated, setAuthReady,
-    // 配置
-    settings, apiKey, effort, thinking,
+    // 配置（apiKey/effort/thinking 的编辑逻辑已移至 SettingsPanel；
+    // setSettings/setEffort/setThinking 仍供 useAuthBootstrap 初始化，
+    // setApiKey 供 useShortcuts 的 Esc 清空逻辑使用）
+    settings,
     setSettings, setApiKey, setEffort, setThinking,
     // 会话
     session, activeTab,
@@ -112,15 +103,17 @@ function App() {
     // 计划审批：plan_only 流程的待审阅状态、步骤进度
     awaitingApproval, pendingObjective, stepProgress,
     setAwaitingApproval, setPendingObjective, setStepProgress,
-    // UI
-    uploading, previewItem, previewHtml, previewLoading, previewError, currentNodeTitle,
-    setUploading, setPreviewItem, setPreviewHtml, setPreviewLoading, setPreviewError, setCurrentNodeTitle,
+    // UI（previewHtml/previewLoading/previewError 及其 setter 已交由
+    // useArtifactPreview / PreviewModal 消费，App 不再直接读写）
+    uploading, previewItem, currentNodeTitle,
+    setUploading, setCurrentNodeTitle,
     // 错误
     error, errorExpanded,
     setError, setErrorExpanded,
-    // Key UI
-    showKey, keyOpen,
-    setShowKey, setKeyOpen,
+    // Key UI（showKey 已移至 SettingsPanel；keyOpen/setKeyOpen 供
+    // useSettingsPanel / useShortcuts / 命令面板动作使用）
+    keyOpen,
+    setKeyOpen,
     // 工具调用时间线（toolTrace）：ReAct 执行器内部每次工具调用实时推送，
     // 让用户看到"正在读取数据→正在清洗→正在生成图表"的过程
     toolTrace, setToolTrace,
@@ -132,9 +125,9 @@ function App() {
     // 重试
     retryOffer, retryChecking,
     setRetryOffer, setRetryChecking,
-    // Busy：保存设置 / 停止分析的 busy 状态，防止连点发多请求
-    savingSettings, stopping,
-    setSavingSettings, setStopping,
+    // Busy：停止分析的 busy 状态（保存设置的 busy 已移至 SettingsPanel）
+    stopping,
+    setStopping,
     // 历史（historyError 区分"没数据"和"加载失败"，避免用户误以为数据丢失）
     history, historyLoading, historyError, historyExpanded, switchingSessionId,
     setHistory, setHistoryLoading, setHistoryError, setHistoryExpanded, setSwitchingSessionId,
@@ -174,24 +167,17 @@ function App() {
   const {
     startAnalysis, stopAnalysis,
     analysisController, startedAtRef, runningSessionIdRef, lastTaskRef,
-  } = useAnalysisRunner({ handleSessionLost, retryController });
+  } = useAnalysisRunner({ handleSessionLost, retryController, autoRecover: retryAnalysis });
   // useChatRunner：startFollowUp / stopFollowUp 及 chatControllerRef /
   // followUpInputRef（供 handleSessionLost / deleteSession / ConversationThread 共享）。
   const { startFollowUp, stopFollowUp, chatControllerRef, followUpInputRef } = useChatRunner();
   // useArtifactPreview：图表预览模态、对比/全屏/PNG 导出、图表内联编辑。
-  const {
-    openArtifactPreview, closeArtifactPreview, loadCompareChart, downloadPng, editChart,
-    onPreviewIframeLoaded,
-    chartEditOpen, setChartEditOpen, chartEditTitle, setChartEditTitle,
-    chartEditColor, setChartEditColor, chartEditSaving,
-    previewFullscreen, setPreviewFullscreen, compareMode, setCompareMode,
-    compareItem, compareHtml, compareLoading, pngDownloading,
-  } = useArtifactPreview();
+  // 完整返回值整体传给 PreviewModal，App 仅直接使用开/关两个回调。
+  const artifactPreview = useArtifactPreview();
+  const { openArtifactPreview, closeArtifactPreview } = artifactPreview;
+  // useDownloads：单产物下载 / 批量下载 / 会话导出 ZIP。
+  const { downloadArtifact, batchDownload, exportSession } = useDownloads();
 
-  // === Batch A2：设置面板连接测试 ===
-  // testingKey：测试进行中；testResult：测试结果（ok 标识成功/失败，message 为提示文案）
-  const [testingKey, setTestingKey] = useState(false);
-  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   // 移动端侧边栏抽屉开关：桌面端 sidebar 常驻，平板/手机折叠为抽屉
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -366,104 +352,8 @@ function App() {
     setCommandOpen, setHistoryExpanded, setHelpOpen, setActiveTab,
   });
 
-  // loadCompareChart / downloadPng 已提取至 useArtifactPreview。
-  const downloadArtifact = useCallback(async (item: Artifact) => {
-    const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 120000);
-    try {
-      const response = await fetch(`${API_URL}${item.download_url}`, {
-        headers: requestHeaders(),
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        const contentType = response.headers.get("content-type") || "";
-        const payload: unknown = contentType.includes("application/json")
-          ? await response.json().catch(() => ({}))
-          : await response.text().catch(() => "");
-        throw new Error(describeApiError(payload, response.status));
-      }
-      const blob = await response.blob();
-      const link = document.createElement("a");
-      link.href = URL.createObjectURL(blob);
-      link.download = item.name;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(link.href);
-    } catch (err) {
-      const error = err as Error;
-      setError(`下载失败：${error.name === "AbortError" ? "下载超时，请稍后重试。" : error.message}`);
-    } finally {
-      window.clearTimeout(timeout);
-    }
-  }, []);
-
-  // 批量下载：用户在产物中心选中多张图表后一次性触发下载。
-  // 顺序触发（间隔 300ms）避免浏览器并发下载限制和后端瞬时压力；
-  // 任一文件失败不中断后续，最终汇总成功/失败数量。
-  const batchDownload = useCallback(async (items: Artifact[]) => {
-    if (!items.length) return;
-    let succeeded = 0;
-    let failed = 0;
-    for (const item of items) {
-      const controller = new AbortController();
-      const timeout = window.setTimeout(() => controller.abort(), 120000);
-      try {
-        const response = await fetch(`${API_URL}${item.download_url}`, {
-          headers: requestHeaders(),
-          signal: controller.signal,
-        });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const blob = await response.blob();
-        const link = document.createElement("a");
-        link.href = URL.createObjectURL(blob);
-        link.download = item.name;
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        URL.revokeObjectURL(link.href);
-        succeeded += 1;
-      } catch {
-        failed += 1;
-      } finally {
-        window.clearTimeout(timeout);
-      }
-      // 浏览器需要时间处理每次下载对话框，间隔过短会被合并或丢弃。
-      await wait(300);
-    }
-    if (failed > 0) {
-      setError(`批量下载完成：成功 ${succeeded} 个，失败 ${failed} 个。`);
-    }
-  }, []);
-
-  // === Batch 4：会话导出/导入 ===
-  // 导出会话为 ZIP：浏览器侧生成下载链接，文件名格式 `<filename>_<id>.zip`。
-  // requestHeaders() 不带 Content-Type，避免后端按 JSON 解析二进制流。
-  const exportSession = useCallback(async (item: HistorySessionItem) => {
-    try {
-      const response = await fetch(`${API_URL}/api/sessions/${item.id}/export`, {
-        headers: requestHeaders(),
-      });
-      if (!response.ok) {
-        const contentType = response.headers.get("content-type") || "";
-        const payload: unknown = contentType.includes("application/json")
-          ? await response.json().catch(() => ({}))
-          : await response.text().catch(() => "");
-        throw new Error(describeApiError(payload, response.status));
-      }
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${item.filename || "session"}_${item.id}.zip`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      setError(`导出会话失败：${err instanceof Error ? err.message : "未知错误"}`);
-    }
-  }, []);
+  // loadCompareChart / downloadPng 已提取至 useArtifactPreview；
+  // downloadArtifact / batchDownload / exportSession 已提取至 useDownloads。
 
   // 导入会话：multipart 上传 ZIP，后端返回完整 session payload；
   // 成功后刷新历史并切到新会话。FormData 不能带 Content-Type，
@@ -558,68 +448,7 @@ function App() {
   }, [session?.id, history, setHistory]);
 
   // editChart 及"打开预览时初始化编辑表单"的 useEffect 已提取至 useArtifactPreview。
-
-  // 连接测试：在保存前先用当前 Key 发起一次轻量 PUT /api/settings 请求，
-  // 仅验证连通性与 Key 有效性，不写入持久化（不带 persist_key）。
-  // 成功时展示后端 warning（如配额提示），失败时展示 detail / HTTP 状态码。
-  // 与 saveSettings 的区别：不 setSettings / 不 setKeyOpen / 不清空 apiKey，
-  // 让用户在确认 Key 有效后再正式保存。
-  const testConnection = useCallback(async () => {
-    setTestingKey(true);
-    setTestResult(null);
-    try {
-      const response = await fetch(`${API_URL}/api/settings`, {
-        method: "PUT",
-        headers: requestHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({
-          provider: settings?.provider || "deepseek",
-          api_key: apiKey,
-          model: settings?.model || "deepseek-chat",
-          base_url: settings?.base_url,
-          thinking_enabled: thinking,
-          reasoning_effort: effort,
-        }),
-      });
-      if (response.ok) {
-        const data = await response.json() as { warning?: string };
-        setTestResult({ ok: true, message: data.warning || "连接成功" });
-      } else {
-        const data = await response.json().catch(() => ({})) as { detail?: string };
-        setTestResult({ ok: false, message: data.detail || `HTTP ${response.status}` });
-      }
-    } catch (err) {
-      setTestResult({ ok: false, message: err instanceof Error ? err.message : "连接失败" });
-    } finally {
-      setTestingKey(false);
-    }
-  }, [apiKey, settings, thinking, effort]);
-
-  async function saveSettings() {
-    if (savingSettings) return;
-    setError("");
-    setSavingSettings(true);
-    try {
-      const payload = await api<SettingsResponse>("/api/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          api_key: apiKey || undefined,
-          thinking_enabled: thinking,
-          reasoning_effort: effort,
-          persist_key: true,
-        }),
-      });
-      setSettings(payload);
-      setApiKey("");
-      setKeyOpen(false);
-      if (payload.warning) setError(payload.warning);
-    } catch (err) {
-      const error = err as Error;
-      setError(error.message);
-    } finally {
-      setSavingSettings(false);
-    }
-  }
+  // 连接测试 testConnection / 保存设置 saveSettings 已随设置面板迁至 SettingsPanel。
 
   async function uploadFile(file: File | undefined | null) {
     if (!file) return;
@@ -767,10 +596,14 @@ function App() {
     setError(message || "会话已失效，请重新上传数据集后再开始分析。");
   }
 
-  async function retryAnalysis() {
-    if (!retryOffer) return;
-    const retryTask = retryOffer.task;
-    if (retryOffer.reason === "ready") {
+  // offerOverride：SSE 断线自动恢复（useAnalysisRunner 的 autoRecover）直接
+  // 传入刚构造的 offer——此时 store 的 retryOffer 虽已 set，但本函数闭包
+  // 捕获的仍是上一次渲染的旧值（可能为 null），显式传参避开闭包陷阱。
+  async function retryAnalysis(offerOverride?: RetryOffer) {
+    const offer = offerOverride ?? retryOffer;
+    if (!offer) return;
+    const retryTask = offer.task;
+    if (offer.reason === "ready") {
       setRetryOffer(null);
       startAnalysis(retryTask);
       return;
@@ -976,67 +809,8 @@ function App() {
 
         <div className="sidebar-spacer" />
 
-        <div className="provider-block">
-          <span className="sidebar-label">分析引擎</span>
-          <button className="model-line" onClick={() => setKeyOpen((value) => !value)}>
-            <span>
-              <i className={settings?.configured ? "online" : ""} />
-              <span><strong>{settings?.model || "deepseek-chat"}</strong><small>{settings?.configured ? "已连接" : "等待配置"}</small></span>
-            </span>
-            <Settings2 size={15} />
-          </button>
-          {keyOpen && (
-            <>
-              {/* 遮罩层：固定定位覆盖全屏，点击任意位置收起设置面板。
-                  z-index 19 低于 settings-form 的 20，避免遮挡表单交互 */}
-              <div className="settings-backdrop" onClick={() => setKeyOpen(false)} aria-hidden="true" />
-              <form className="settings-form" onSubmit={(event) => { event.preventDefault(); saveSettings(); }}>
-              <div className="settings-title">
-                <strong>模型设置</strong>
-                <button type="button" title="收起设置（Esc）" aria-label="收起设置" onClick={() => { setKeyOpen(false); setApiKey(""); }}><X size={15} /></button>
-              </div>
-              <label>API Key</label>
-              <div className="secret-input">
-                <KeyRound size={14} />
-                <input
-                  type={showKey ? "text" : "password"}
-                  value={apiKey}
-                  onChange={(event) => setApiKey(event.target.value)}
-                  placeholder={settings?.configured ? "已安全保存，留空则不变" : "输入 DeepSeek Key"}
-                />
-                <button type="button" title={showKey ? "隐藏 Key" : "显示 Key"} onClick={() => setShowKey((value) => !value)}>
-                  {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
-                </button>
-              </div>
-              <label className="toggle-row">
-                <span>思考模式</span>
-                <input type="checkbox" checked={thinking} onChange={(event) => setThinking(event.target.checked)} />
-              </label>
-              <label>推理强度</label>
-              <div className="segment">
-                {[{ value: "high", label: "标准" }, { value: "max", label: "深度" }].map(({ value, label }) => (
-                  <button type="button" key={value} title={value === "high" ? "标准推理速度，适合大多数场景" : "最深推理，效果更好但更慢"} className={effort === value ? "selected" : ""} onClick={() => setEffort(value)}>{label}</button>
-                ))}
-              </div>
-              {/* 连接测试结果：成功绿色、失败红色，提示文案来自后端 warning / detail */}
-              {testResult && (
-                <div className={`test-result ${testResult.ok ? "ok" : "fail"}`}>
-                  {testResult.ok ? "✓ " : "✗ "}{testResult.message}
-                </div>
-              )}
-              {/* 操作区：测试连接（次操作）+ 保存（主操作）并排展示 */}
-              <div className="settings-actions">
-                <button type="button" className="test-button" onClick={testConnection} disabled={testingKey || !apiKey}>
-                  {testingKey ? "测试中…" : "测试连接"}
-                </button>
-                <button type="submit" className="save-button" disabled={savingSettings}>
-                  {savingSettings ? <><LoaderCircle size={14} className="spin" />保存中…</> : <><Check size={14} />保存设置</>}
-                </button>
-              </div>
-              </form>
-            </>
-          )}
-        </div>
+        {/* 分析引擎区块：model-line + 设置面板，已提取至 SettingsPanel 组件 */}
+        <SettingsPanel />
 
         <div className="sidebar-foot">
           <span><i className={settings?.langsmith_tracing ? "online" : ""} />LangSmith</span>
@@ -1122,7 +896,7 @@ function App() {
               <button
                 type="button"
                 className="retry-button"
-                onClick={retryAnalysis}
+                onClick={() => retryAnalysis()}
                 disabled={retryChecking}
                 aria-busy={retryChecking}
               >
@@ -1158,7 +932,7 @@ function App() {
             <button
               type="button"
               className="retry-button"
-              onClick={retryAnalysis}
+              onClick={() => retryAnalysis()}
               disabled={retryChecking}
               aria-busy={retryChecking}
             >
@@ -1399,148 +1173,9 @@ function App() {
           </>
         )}
       </main>
-      {previewItem && (
-        <div
-          className="preview-backdrop"
-          role="presentation"
-          onClick={(event) => {
-            // 用 onClick 而非 onMouseDown，同时覆盖鼠标点击和触摸结束，
-            // 避免纯触屏设备上 mousedown 被 preventDefault 或延迟 300ms。
-            if (event.target === event.currentTarget) closeArtifactPreview();
-          }}
-        >
-          <section className={`preview-panel ${previewFullscreen ? "is-fullscreen" : ""}`} role="dialog" aria-modal="true" aria-label={`预览 ${previewItem.description || previewItem.name}`}>
-            <header>
-              <div>
-                <span className="section-kicker">交互图表</span>
-                <h2>{previewItem.description || previewItem.name}</h2>
-              </div>
-              <div className="preview-actions">
-                <button type="button" onClick={() => downloadArtifact(previewItem)}><Download size={15} />下载</button>
-                {/* PNG 导出（#23）：通过 postMessage 让 iframe 内图表渲染为 PNG 后回传 dataURL */}
-                <button type="button" title="下载为 PNG 图片" onClick={downloadPng} disabled={pngDownloading}>
-                  <FileImage size={15} />
-                  {pngDownloading ? "导出中…" : "PNG"}
-                </button>
-                {/* 图表对比（#22）：仅当存在其他可视化产物时可点击，并排展示两张图 */}
-                {session?.artifacts?.filter(a => a.kind === "visualization" && a.name !== previewItem?.name).length ? (
-                  <button type="button" title="对比其他图表" onClick={() => setCompareMode(v => !v)}>
-                    <Columns2 size={15} />
-                    对比
-                  </button>
-                ) : null}
-                {/* 图表编辑：切换内联编辑面板，修改标题或主色后调用后端更新产物 */}
-                <button type="button" onClick={() => setChartEditOpen(!chartEditOpen)} title="编辑图表" aria-label="编辑图表标题或主色">
-                  <Palette size={15} />
-                  编辑
-                </button>
-                {/* 全屏切换（#17）：撑满视口，配合响应式 resize 自适应图表尺寸 */}
-                <button type="button" title="全屏" onClick={() => setPreviewFullscreen(v => !v)}>
-                  <Maximize2 size={15} />
-                </button>
-                <button type="button" className="icon-button" title="关闭预览 (Esc)" onClick={closeArtifactPreview}><X size={17} /></button>
-              </div>
-            </header>
-            {chartEditOpen && (
-              <div className="chart-edit-panel">
-                <label>
-                  <span>标题</span>
-                  <input type="text" value={chartEditTitle} onChange={(e) => setChartEditTitle(e.target.value)} placeholder="图表标题" />
-                </label>
-                <label>
-                  <span>主色</span>
-                  <input type="color" value={chartEditColor} onChange={(e) => setChartEditColor(e.target.value)} aria-label="图表主色" />
-                </label>
-                <button type="button" onClick={editChart} disabled={chartEditSaving}>
-                  {chartEditSaving ? "保存中…" : "应用修改"}
-                </button>
-              </div>
-            )}
-            {/* 对比图表选择器：列出当前会话中除主图外的可视化产物 */}
-            {compareMode && (
-              <div className="compare-selector">
-                <span>选择对比图表：</span>
-                {session?.artifacts?.filter(a => a.kind === "visualization" && a.name !== previewItem?.name).map(a => (
-                  <button
-                    key={a.name}
-                    type="button"
-                    className={compareItem?.name === a.name ? "active" : ""}
-                    onClick={() => loadCompareChart(a)}
-                  >
-                    {a.description || a.name}
-                  </button>
-                ))}
-              </div>
-            )}
-            <div className={`preview-stage ${compareMode && compareItem ? "is-comparing" : ""}`}>
-              {previewError && (
-                <div className="preview-loading preview-error">
-                  <AlertTriangle size={18} />
-                  <span>{previewError}</span>
-                  <button type="button" className="retry-button" onClick={() => openArtifactPreview(previewItem)}>
-                    <RefreshCw size={13} />重试
-                  </button>
-                </div>
-              )}
-              {/* 主图表 */}
-              <div className="preview-frame">
-                {/* 加载骨架屏（#26）：替代旋转 spinner，视觉上预告柱状图布局 */}
-                {previewLoading && !previewError && (
-                  <div className="preview-skeleton">
-                    <div className="skeleton-chart">
-                      <div className="skeleton-bar" style={{ width: "60%", height: "40%" }} />
-                      <div className="skeleton-bar" style={{ width: "80%", height: "60%" }} />
-                      <div className="skeleton-bar" style={{ width: "45%", height: "30%" }} />
-                    </div>
-                    <small>正在准备交互图表…</small>
-                  </div>
-                )}
-                {previewHtml && !previewError && (
-                  <iframe
-                    title={previewItem.description || previewItem.name}
-                    sandbox="allow-scripts"
-                    referrerPolicy="no-referrer"
-                    srcDoc={previewHtml}
-                    onLoad={(e) => {
-                      // 清掉 openArtifactPreview 启动的兜底超时定时器并关闭 loading。
-                      onPreviewIframeLoaded();
-                      try {
-                        const iframe = e.target as HTMLIFrameElement;
-                        // 注意：可选链不能用于赋值左侧，这里直接访问 contentWindow
-                        // 在 sandbox 跨域时访问 contentWindow.document 会抛错，
-                        // 由外层 try/catch 捕获后 noop。
-                        iframe.contentWindow!.document.documentElement.dataset.theme = theme;
-                      } catch { /* sandbox 跨域时 noop，图表脚本回退到 prefers-color-scheme */ }
-                    }}
-                    onError={() => {
-                      setPreviewLoading(false);
-                      setPreviewError("图表加载失败，请检查网络或重新生成产物。");
-                    }}
-                  />
-                )}
-              </div>
-              {/* 对比图表：并排在右侧展示，复用主预览的 LRU 缓存 */}
-              {compareMode && compareItem && (
-                <div className="preview-frame">
-                  {compareLoading && (
-                    <div className="preview-skeleton">
-                      <div className="skeleton-chart">
-                        <div className="skeleton-bar" style={{ width: "60%", height: "40%" }} />
-                        <div className="skeleton-bar" style={{ width: "80%", height: "60%" }} />
-                        <div className="skeleton-bar" style={{ width: "45%", height: "30%" }} />
-                      </div>
-                      <small>正在准备对比图表…</small>
-                    </div>
-                  )}
-                  {compareHtml && (
-                    <iframe title={compareItem.name} sandbox="allow-scripts" referrerPolicy="no-referrer" srcDoc={compareHtml} />
-                  )}
-                </div>
-              )}
-            </div>
-          </section>
-        </div>
-      )}
+      {/* 产物预览模态：图表预览/对比/全屏/PNG/内联编辑，已提取至 PreviewModal；
+          previewItem 为空时组件内部直接返回 null */}
+      <PreviewModal preview={artifactPreview} theme={theme} onDownload={downloadArtifact} />
       {commandOpen && (
         <Suspense fallback={null}>
           <CommandPalette

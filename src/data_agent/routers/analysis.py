@@ -54,6 +54,50 @@ def _client_error_detail(exc: Exception) -> str:
     return text
 
 
+#: 错误分类规则：(code, 友好提示, 关键词元组)。按顺序匹配，命中即停。
+#: 关键词对照 openai SDK / LangChain 抛出的异常类名与消息（DeepSeek 兼容
+#: OpenAI 协议）：APITimeoutError/"timed out" → 超时；RateLimitError/429 → 限流；
+#: "insufficient balance"/402 → 余额不足；AuthenticationError/401 → Key 无效。
+#: 用关键词而非 isinstance 判断：避免强依赖 openai 异常类层级（LangChain
+#: 可能包装/转换异常），且对未来更换 SDK 版本更鲁棒。
+_ERROR_CLASSIFY_RULES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("model_timeout", "模型响应超时，可能是网络波动或服务繁忙，稍后重试通常可恢复",
+     ("apitimeouterror", "timed out", "timeout", "超时")),
+    ("quota_exhausted", "模型账户余额不足，请充值后重试",
+     ("insufficient balance", "insufficient_quota", "error code: 402", "余额不足")),
+    ("rate_limited", "请求触发模型限流，请稍等片刻再重试",
+     ("ratelimiterror", "rate limit", "error code: 429", "too many requests")),
+    ("auth_failed", "API Key 无效或已过期，请在设置中重新配置",
+     ("authenticationerror", "invalid api key", "error code: 401", "unauthorized")),
+    ("connection_failed", "无法连接模型服务，请检查网络或 base_url 配置",
+     ("apiconnectionerror", "connection error", "connect timeout", "name resolution")),
+)
+
+
+def _classify_analysis_error(exc: Exception) -> tuple[str, str]:
+    """把异常归类为 (code, hint)，供前端展示针对性文案与重试策略。
+
+    未命中任何规则时回退 ("analysis_failed", "")，保持与旧版行为一致。
+    """
+    text = f"{type(exc).__name__}: {exc}".lower()
+    for code, hint, keywords in _ERROR_CLASSIFY_RULES:
+        if any(keyword in text for keyword in keywords):
+            return code, hint
+    return "analysis_failed", ""
+
+
+def _error_payload(exc: Exception, *, prefix: str = "") -> dict[str, str]:
+    """组装 SSE error 事件载荷：分类错误码 + 友好提示 + 原始简短文案。
+
+    hint 非空时拼到 message 前缀，前端无需额外适配即可展示针对性文案；
+    同时保留独立的 code/hint 字段，供前端未来按错误码定制重试策略。
+    """
+    code, hint = _classify_analysis_error(exc)
+    detail = _client_error_detail(exc)
+    message = f"{hint}（{detail}）" if hint else f"{prefix}{detail}"
+    return {"message": message, "code": code, "hint": hint}
+
+
 def _safe_emit(loop: asyncio.AbstractEventLoop, queue: asyncio.Queue, item: tuple[str, Any] | None) -> None:
     """跨线程安全推送 SSE 事件到事件循环的队列。
 
@@ -142,7 +186,7 @@ def analyze(session_id: str, request: AnalyzeRequest) -> dict[str, Any]:
         record.set_finished("failed")
         api.registry.persist(session_id, record)
         raise HTTPException(
-            status_code=502, detail=f"分析执行失败：{_client_error_detail(exc)}"
+            status_code=502, detail=f"分析执行失败：{_error_payload(exc)['message']}"
         ) from exc
     finally:
         record.current_task = ""
@@ -257,11 +301,7 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
             logger.exception("Analysis worker failed for session %s", session_id)
             record.set_finished("failed")
             api.registry.persist(session_id, record)
-            _safe_emit(
-                loop,
-                queue,
-                ("error", {"message": _client_error_detail(exc), "code": "analysis_failed"}),
-            )
+            _safe_emit(loop, queue, ("error", _error_payload(exc)))
         finally:
             record.current_task = ""
             # Always clear the cancel event so the next analysis on this
@@ -419,7 +459,7 @@ async def chat_stream(session_id: str, request: AnalyzeRequest) -> StreamingResp
             _safe_emit(loop, queue, ("cancelled", {"message": "追问已取消。"}))
         except Exception as exc:
             logger.exception("Chat worker failed for session %s", session_id)
-            _safe_emit(loop, queue, ("error", {"message": f"追问失败：{_client_error_detail(exc)}", "code": "chat_failed"}))
+            _safe_emit(loop, queue, ("error", _error_payload(exc, prefix="追问失败：")))
         finally:
             record.current_task = ""
             record.cancel_event.clear()

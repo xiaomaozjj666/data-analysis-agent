@@ -775,3 +775,100 @@ def test_rename_session_rejects_unknown_session(tmp_path, monkeypatch):
     assert client.patch("/api/sessions/api_nonexistent", json={"title": "x"}).status_code == 404
 
 
+# ---------------------------------------------------------------------------
+# 错误分级与 SSE 进度事件（routers/analysis.py + callbacks.py）
+# ---------------------------------------------------------------------------
+
+
+def test_classify_analysis_error_maps_known_failures():
+    """关键词分级应把 openai/LangChain 风格异常归到对应错误码。"""
+    from data_agent.routers.analysis import _classify_analysis_error
+
+    cases = [
+        (TimeoutError("Request timed out."), "model_timeout"),
+        (Exception("Error code: 402 - Insufficient Balance"), "quota_exhausted"),
+        (Exception("Error code: 429 - Too Many Requests"), "rate_limited"),
+        (Exception("AuthenticationError: invalid api key provided"), "auth_failed"),
+        (Exception("APIConnectionError: Connection error."), "connection_failed"),
+    ]
+    for exc, expected_code in cases:
+        code, hint = _classify_analysis_error(exc)
+        assert code == expected_code, f"{exc!r} 应归类为 {expected_code}，实际 {code}"
+        assert hint, f"{expected_code} 应携带非空友好提示"
+
+
+def test_classify_analysis_error_falls_back_to_generic():
+    """未命中任何关键词时回退 analysis_failed + 空 hint（保持旧版行为）。"""
+    from data_agent.routers.analysis import _classify_analysis_error
+
+    assert _classify_analysis_error(ValueError("列 region 不存在")) == ("analysis_failed", "")
+
+
+def test_error_payload_prepends_hint_and_keeps_code():
+    """命中分级时 message = hint（原始文案），并保留独立 code/hint 字段。"""
+    from data_agent.routers.analysis import _error_payload
+
+    payload = _error_payload(Exception("Error code: 402 - Insufficient Balance"))
+    assert payload["code"] == "quota_exhausted"
+    assert payload["message"].startswith(payload["hint"])
+    assert "Error code: 402 - Insufficient Balance" in payload["message"]
+
+
+def test_error_payload_fallback_uses_prefix():
+    """未分级异常沿用 prefix + 原始文案，hint 为空。"""
+    from data_agent.routers.analysis import _error_payload
+
+    payload = _error_payload(ValueError("列 region 不存在"), prefix="分析失败：")
+    assert payload == {
+        "message": "分析失败：列 region 不存在",
+        "code": "analysis_failed",
+        "hint": "",
+    }
+
+
+def test_tool_trace_callback_emits_step_progress_with_context():
+    """每次 on_tool_start 应推送 step_progress，携带步骤序号与封顶 90% 的进度。"""
+    from data_agent.callbacks import ToolTraceCallback
+
+    events: list[tuple[str, dict]] = []
+    cb = ToolTraceCallback(lambda event, payload: events.append((event, payload)), step_index=2, total_steps=4)
+
+    cb.on_tool_start({"name": "run_python"}, "print(1)", run_id="r1")
+    progress = [payload for event, payload in events if event == "step_progress"]
+    assert progress[-1] == {
+        "progress": 20,
+        "tool_calls": 1,
+        "message": "第 1 次工具调用",
+        "step_index": 2,
+        "total_steps": 4,
+    }
+    # tool_call 事件与 step_progress 成对推送
+    assert any(event == "tool_call" and payload["name"] == "run_python" for event, payload in events)
+
+    # 连续调用：进度按 20%/次 递增并封顶 90%
+    for i in range(6):
+        cb.on_tool_start({"name": "run_python"}, "x", run_id=f"r{i + 2}")
+    progress = [payload for event, payload in events if event == "step_progress"]
+    assert progress[-1]["progress"] == 90
+    assert progress[-1]["tool_calls"] == 7
+
+    # reset() 在步骤边界清零计数
+    cb.reset()
+    cb.on_tool_start({"name": "run_python"}, "x", run_id="r-next")
+    progress = [payload for event, payload in events if event == "step_progress"]
+    assert progress[-1]["tool_calls"] == 1
+    assert progress[-1]["progress"] == 20
+
+
+def test_tool_trace_callback_swallows_event_callback_errors():
+    """事件回调抛错不能中断 ReAct 循环（工具调用照常执行）。"""
+    from data_agent.callbacks import ToolTraceCallback
+
+    def broken_callback(event: str, payload: dict) -> None:
+        raise RuntimeError("sink 崩溃")
+
+    cb = ToolTraceCallback(broken_callback)
+    cb.on_tool_start({"name": "run_python"}, "x", run_id="r1")  # 不应抛出
+    cb.on_tool_end("ok", run_id="r1")  # 不应抛出
+
+

@@ -15,6 +15,11 @@ interface UseAnalysisRunnerDeps {
   handleSessionLost: (message?: string) => void;
   // 重试轮询控制器：stopAnalysis 需要中断它，与 analysisController 一起 abort。
   retryController: RefObject<AbortController | null>;
+  // SSE 断线自动恢复：连接中断（idle 超时 / 中途网络错误）时后台分析
+  // 很可能仍在运行，自动触发 App.tsx 的 retryAnalysis 状态轮询恢复结果，
+  // 而不是等用户手动点"检查状态"。retryAnalysis 也是 function
+  // declaration（hoisted），同 handleSessionLost 无 TDZ 风险。
+  autoRecover?: (offer: RetryOffer) => void;
 }
 
 interface UseAnalysisRunnerResult {
@@ -37,7 +42,7 @@ interface UseAnalysisRunnerResult {
 // （每次渲染重建，闭包始终读取最新 store 值），与原 function 声明语义相同。
 // 相关 ref（控制器、计时、缓冲等）在此创建并按需导出给 App.tsx 共享。
 function useAnalysisRunner(deps: UseAnalysisRunnerDeps): UseAnalysisRunnerResult {
-  const { handleSessionLost, retryController } = deps;
+  const { handleSessionLost, retryController, autoRecover } = deps;
 
   // 所有 UI 状态从 Zustand store 获取，与原 App.tsx 同源。
   const {
@@ -212,12 +217,16 @@ function useAnalysisRunner(deps: UseAnalysisRunnerDeps): UseAnalysisRunnerResult
           }
         },
         [SSE_EVENT_TYPES.STEP_PROGRESS]: (data) => {
-          // 当前步骤的执行进度（百分比 / 工具调用数 / 提示文案）
+          // 当前步骤的执行进度（百分比 / 工具调用数 / 提示文案）；
+          // step_index/total_steps 为复合进度上下文，PlanPanel 据此渲染
+          // "步骤 2/4 · 第 3 次工具调用"，旧后端无此字段时隐藏前缀。
           if (session.id === runningSessionIdRef.current) {
             setStepProgress({
               progress: data.progress || 0,
               toolCalls: data.tool_calls || 0,
               message: data.message || "",
+              stepIndex: data.step_index || 0,
+              totalSteps: data.total_steps || 0,
             });
           }
         },
@@ -379,13 +388,34 @@ function useAnalysisRunner(deps: UseAnalysisRunnerDeps): UseAnalysisRunnerResult
         setError("分析已取消，已完成的步骤不会继续扩展。");
         if (resumePayload) setRetryOffer({ ...resumePayload, reason: "cancelled" });
       } else if (error.name === "AbortError") {
-        // idle timeout：长时间未收到事件。
-        setError("长时间未收到分析进度，连接已断开。");
-        setRetryOffer(resumePayload ? { ...resumePayload, reason: "idle" } : { task: nextTask, reason: "idle" });
+        // idle timeout：长时间未收到事件。后台分析很可能仍在运行（单次 LLM
+        // 调用可能超长），自动触发状态轮询恢复，而非等用户手动点检查。
+        const offer: RetryOffer = resumePayload ? { ...resumePayload, reason: "idle" } : { task: nextTask, reason: "idle" };
+        setRetryOffer(offer);
+        if (autoRecover) {
+          setError("长时间未收到分析进度，正在自动检查后台任务状态…");
+          // setTimeout(0)：让 finally 块先完成 running/nodeTitle 等收尾清理，
+          // 再启动恢复轮询，避免轮询内的状态赋值被 finally 覆盖。
+          window.setTimeout(() => autoRecover(offer), 0);
+        } else {
+          setError("长时间未收到分析进度，连接已断开。");
+        }
       } else if (!sawEvent && error.name === "TypeError") {
-        // fetch 网络层错误（DNS/CORS/离线），尚未收到任何 SSE 帧。
+        // fetch 网络层错误（DNS/CORS/离线），尚未收到任何 SSE 帧：
+        // 后端大概率没收到任务，不自动轮询，保留手动重试入口。
         setError(`无法连接分析服务：${error.message}`);
         setRetryOffer(resumePayload ? { ...resumePayload, reason: "network" } : { task: nextTask, reason: "network" });
+      } else if (error.name === "TypeError") {
+        // 中途网络错误（已收到过 SSE 帧后断线）：后台任务仍在运行，
+        // 自动触发状态轮询恢复，网络恢复后无需用户介入即可拿到结果。
+        const offer: RetryOffer = resumePayload ? { ...resumePayload, reason: "network" } : { task: nextTask, reason: "network" };
+        setRetryOffer(offer);
+        if (autoRecover) {
+          setError("与服务器的连接中断，正在自动检查后台任务状态…");
+          window.setTimeout(() => autoRecover(offer), 0);
+        } else {
+          setError(`与服务器的连接中断：${error.message}`);
+        }
       } else if (error instanceof ApiError && error.status === 404) {
         // 重运行时服务端 session 已被清理，引导用户重新上传。
         handleSessionLost("会话已失效（服务端数据已被清理），请重新上传数据集后再开始分析。");
