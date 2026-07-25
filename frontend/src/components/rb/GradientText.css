@@ -1,0 +1,22 @@
+/* React Bits — GradientText CSS */
+.gradient-text {
+  background-image: var(--gt-gradient);
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: gradient-text-flow var(--gt-duration) linear infinite;
+}
+
+@keyframes gradient-text-flow {
+  0% { background-position: 0% 50%; }
+  100% { background-position: 300% 50%; }
+}
+
+/* reduced-motion：停掉位移动画但保留静态渐变配色 */
+@media (prefers-reduced-motion: reduce) {
+  .gradient-text {
+    animation: none;
+  }
+}

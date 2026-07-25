@@ -1,0 +1,63 @@
+/* React Bits — StarBorder CSS */
+.star-border {
+  position: relative;
+  display: inline-flex;
+  padding: 1.5px; /* 光带露出的缝隙宽度 */
+  border-radius: calc(var(--radius-md) + 1.5px);
+  overflow: hidden;
+  isolation: isolate; /* 光带 z-index 不逃逸影响外部层叠 */
+}
+.star-border-inner {
+  position: relative;
+  z-index: 2;
+  display: inline-flex;
+  width: 100%;
+}
+/* 子按钮撑满 wrapper，视觉上与未包装时一致 */
+.star-border-inner > * {
+  width: 100%;
+}
+
+/* 两条光带：radial-gradient 亮点沿水平方向往复移动，
+   top 带从右往左、bottom 带从左往右，形成环绕错觉 */
+.star-border-glow {
+  position: absolute;
+  z-index: 1;
+  width: 220%;
+  height: 45%;
+  pointer-events: none;
+  opacity: 0.75;
+}
+.star-border-glow--top {
+  top: 0;
+  right: -60%;
+  background: radial-gradient(circle at 50% 0%, var(--sb-color) 0%, transparent 55%);
+  animation: star-border-top var(--sb-duration) linear infinite alternate;
+}
+.star-border-glow--bottom {
+  bottom: 0;
+  left: -60%;
+  background: radial-gradient(circle at 50% 100%, var(--sb-color) 0%, transparent 55%);
+  animation: star-border-bottom var(--sb-duration) linear infinite alternate;
+}
+
+@keyframes star-border-top {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-40%); }
+}
+@keyframes star-border-bottom {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(40%); }
+}
+
+/* 关闭态：无光带时缝隙用透明填充，尺寸不跳变 */
+.star-border--off {
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .star-border-glow {
+    animation: none;
+    opacity: 0.35; /* 保留静态微光，不移动 */
+  }
+}

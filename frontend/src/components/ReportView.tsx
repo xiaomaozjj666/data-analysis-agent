@@ -15,6 +15,7 @@ import {
 import { REMARK_PLUGINS } from "../constants";
 import { markdownComponents, ReasoningBlock, UsageChip } from "./ReportParts";
 import ShinyText from "./rb/ShinyText";
+import GradientText from "./rb/GradientText";
 import type { AnalysisResult, Artifact, TokenUsage } from "../types";
 
 interface ReportViewProps {
@@ -479,7 +480,13 @@ const ReportView = React.memo(function ReportView({
       <div className="report-meta">
         <div className="report-title">
           <FileChartColumn size={15} />
-          <ShinyText text="分析报告" color="var(--text-primary)" shineColor="var(--accent-color, #5b5bd6)" speed={4} yoyo />
+          {/* 流式中用 ShinyText 循环微光暗示"进行中"，完成后切 GradientText
+              静态流动渐变，作为报告完成的视觉奖励 */}
+          {streaming ? (
+            <ShinyText text="分析报告" color="var(--text-primary)" shineColor="var(--accent-color, #5b5bd6)" speed={4} yoyo />
+          ) : (
+            <GradientText speed={7}>分析报告</GradientText>
+          )}
           {streaming ? (
             <small className="report-count is-streaming"><LoaderCircle size={11} className="spin" />生成中</small>
           ) : (

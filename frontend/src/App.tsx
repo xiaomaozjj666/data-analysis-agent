@@ -28,6 +28,12 @@ import HistoryPanel from "./components/HistoryPanel";
 import ArtifactCenter from "./components/ArtifactCenter";
 import SettingsPanel from "./components/SettingsPanel";
 import PreviewModal from "./components/PreviewModal";
+// React Bits 风格动效（手写、零新增依赖）：品牌渐变 / 指标数字滚动 /
+// 主 CTA 流光描边 / 数据概览滚动入场，均兼容暗色与 prefers-reduced-motion。
+import CountUp from "./components/rb/CountUp";
+import GradientText from "./components/rb/GradientText";
+import Reveal from "./components/rb/Reveal";
+import StarBorder from "./components/rb/StarBorder";
 // 代码分割/懒加载（#16）：重型组件延迟加载，减小首次 bundle 体积。
 // - CommandPalette / HelpPanel：弹层，仅在用户触发（Cmd+K / ?）时显示
 // - ReportView：含 ReactMarkdown，仅在分析完成后渲染（result 非空）
@@ -748,7 +754,7 @@ function App() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="wordmark">
-          <strong>数据台</strong>
+          <strong><GradientText speed={8}>数据台</GradientText></strong>
           <span>DATA DESK</span>
         </div>
 
@@ -965,16 +971,16 @@ function App() {
                   分析产物 → 跳转产物 Tab。缺失率保持静态展示。 */}
               <button type="button" className="metric metric-clickable" onClick={() => setActiveTab("data")} title="查看数据预览">
                 <span>记录</span>
-                <strong>{rows.toLocaleString()}<small>行</small></strong>
+                <strong><CountUp end={rows} duration={1100} /><small>行</small></strong>
               </button>
               <button type="button" className="metric metric-clickable" onClick={() => setActiveTab("data")} title="查看数据预览">
                 <span>字段</span>
-                <strong>{columns}<small>列</small></strong>
+                <strong><CountUp end={columns} duration={900} /><small>列</small></strong>
               </button>
               <Metric label="缺失率" value={missingRate} unit="%" />
               <button type="button" className="metric metric-clickable" onClick={() => setActiveTab("artifacts")} title="查看分析产物">
                 <span>分析产物</span>
-                <strong>{session.artifacts?.length || 0}<small>项</small></strong>
+                <strong><CountUp end={session.artifacts?.length || 0} duration={900} /><small>项</small></strong>
               </button>
             </section>
 
@@ -1038,9 +1044,11 @@ function App() {
                         <ListChecks size={15} />
                         审阅计划
                       </button>
-                      <button className="run-button" onClick={() => startAnalysis()} disabled={!task.trim() || !settings?.configured}>
-                        <Play size={15} fill="currentColor" />运行分析
-                      </button>
+                      <StarBorder disabled={!task.trim() || !settings?.configured}>
+                        <button className="run-button" onClick={() => startAnalysis()} disabled={!task.trim() || !settings?.configured}>
+                          <Play size={15} fill="currentColor" />运行分析
+                        </button>
+                      </StarBorder>
                     </>
                   )}
                 </div>
@@ -1125,7 +1133,9 @@ function App() {
                       />
                     </>
                   ) : (
-                    <DatasetOverview profile={profile} />
+                    <Reveal>
+                      <DatasetOverview profile={profile} />
+                    </Reveal>
                   )}
                 </section>
                 <PlanPanel
