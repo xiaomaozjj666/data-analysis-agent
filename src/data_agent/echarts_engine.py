@@ -574,7 +574,7 @@ def _bar_tooltip_formatter(x_label: str, y_label: str, agg_suffix: str):
         "html+='<span style=\"font-weight:500;\">'+(p.value==null?'—':p.value.toLocaleString())+'</span>';"
         "html+='</div>';"
         "});"
-        "if(params.length>1){html+='<div style=\"margin-top:6px;border-top:1px solid #e4e6ea;padding-top:6px;\">合计：'+total.toLocaleString()+'</div>';}"
+        "if(params.length>1){html+='<div style=\"margin-top:6px;border-top:1px solid var(--tt-border,#e4e6ea);padding-top:6px;\">合计：'+total.toLocaleString()+'</div>';}"
         "return html;"
         "}"
     )
@@ -856,7 +856,10 @@ def _echarts_histogram(
         "color": [_ECHARTS_PALETTE[0]],
         "xAxis": [{**_ECHARTS_BASE_AXIS, "type": "category", "data": categories, "name": x_label,
                    "axisLabel": {**_ECHARTS_BASE_AXIS["axisLabel"], "rotate": 35}}],
-        "yAxis": [_echarts_value_axis(df, x, name="频数", scale=False)],
+        # Y 轴范围必须按分箱频数计算（并入 0 作基线）；若误用原始 x 列取值，
+        # 数据量级与频数不匹配时柱体会被压扁或冲出绘图区。
+        "yAxis": [_echarts_value_axis(df, None, name="频数", scale=False,
+                                       values=[0.0, *(float(c) for c in data)])],
         "series": [{
             "name": "频数",
             "type": "bar",
@@ -1177,20 +1180,30 @@ def _echarts_sunburst(
 
     aggregate(tree)
 
+    # 按顶级类目定色：同一父系继承同色相（子级降透明度区分层次），
+    # 颜色表达"属于哪个大类"；若按层级深度定色，同层类目全部同色，
+    # 颜色失去区分意义。rgba 形态可被暗色脚本的前缀映射同步提亮。
+    def paint(node: dict[str, Any], color: str, depth: int) -> None:
+        alpha = max(1.0 - depth * 0.18, 0.5)
+        node.setdefault("itemStyle", {})["color"] = (
+            color if depth == 0 else _hex_to_rgba(color, round(alpha, 2))
+        )
+        for child in node.get("children", []):
+            paint(child, color, depth + 1)
+
+    for i, top in enumerate(tree["children"]):
+        paint(top, _series_color(i), 0)
+
     chart_type = "treemap" if is_treemap else "sunburst"
     series: dict[str, Any] = {
         "name": title,
         "type": chart_type,
         "data": tree["children"],
-        "label": {"color": _ECHARTS_TEXT_COLOR, "fontSize": 12},
+        # 标签直接落在色块上：亮色板明度下白字对比最佳；暗色下映射表
+        # 会把 #fff 翻成暗底色，恰好落在提亮色块上仍保持可读
+        "label": {"color": "#ffffff", "fontSize": 12},
         "itemStyle": {"borderColor": "#fff", "borderWidth": 2, "gapWidth": 2},
         "emphasis": {"itemStyle": {"shadowBlur": 10, "shadowColor": "rgba(0,0,0,0.15)"}},
-        "levels": [
-            {"itemStyle": {"color": _ECHARTS_PALETTE[0]}},
-            {"itemStyle": {"color": _ECHARTS_PALETTE[1]}},
-            {"itemStyle": {"color": _ECHARTS_PALETTE[2]}},
-            {"itemStyle": {"color": _ECHARTS_PALETTE[3]}},
-        ],
     }
     if not is_treemap:
         series["radius"] = ["20%", "90%"]
@@ -1262,10 +1275,11 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
     var t = {}, i;
     for (i = 0; i < LP.length; i++) t[toDark ? LP[i] : DP[i]] = toDark ? DP[i] : LP[i];
     if (toDark) {
-      // 符号描边白→融入暗底；系列级深色文字→亮字
+      // 符号描边白→融入暗底；系列级深色文字→亮字；柱顶标签等次级文字→暗色次级色
       t['#fff'] = '#1a1b1e'; t['#ffffff'] = '#1a1b1e'; t['#1a1d29'] = '#e8eaed';
+      t['#6b7280'] = '#9aa0a6';
     } else {
-      t['#1a1b1e'] = '#ffffff'; t['#e8eaed'] = '#1a1d29';
+      t['#1a1b1e'] = '#ffffff'; t['#e8eaed'] = '#1a1d29'; t['#9aa0a6'] = '#6b7280';
     }
     return t;
   }
@@ -1320,9 +1334,13 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
         color: isDark ? DP : LP,
         textStyle: { color: textColor },
         title: { textStyle: { color: textColor }, subtextStyle: { color: labelColor } },
-        legend: { textStyle: { color: labelColor } },
+        legend: { textStyle: { color: labelColor },
+                  // 未激活图例：亮灰在暗底上反而比激活项更显眼，暗色换成暗灰
+                  inactiveColor: isDark ? '#5f6368' : '#d1d5db' },
         toolbox: { iconStyle: { borderColor: labelColor },
-                   emphasis: { iconStyle: { borderColor: isDark ? '#6fa8d6' : '#2C5F8D' } } },
+                   emphasis: { iconStyle: { borderColor: isDark ? '#6fa8d6' : '#2C5F8D' } },
+                   // 工具箱导出 PNG 背景跟随主题，避免暗色图表配白底不可读
+                   feature: { saveAsImage: { backgroundColor: isDark ? '#1a1b1e' : '#ffffff' } } },
         tooltip: { backgroundColor: tooltipBg, borderColor: axisColor, textStyle: { color: textColor } }
       };
       try {
@@ -1372,11 +1390,42 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
           var rf = isDark ? LR : DR, rt = isDark ? DR : LR;
           update.series = cur.series.map(function(s) {
             var m = mapNode(s, tbl, rf, rt);
+            if (s.type === 'treemap' || s.type === 'sunburst') {
+              // 层级图节点色在 data 树里（mapNode 跳过 data），对 data 单独递归：
+              // name/value 不在色表中不受影响，只翻节点 itemStyle 颜色
+              m.data = s.data.map(function(d) {
+                var node = {};
+                for (var k in d) {
+                  if (!Object.prototype.hasOwnProperty.call(d, k)) continue;
+                  node[k] = (k === 'itemStyle' || k === 'children')
+                    ? mapNode(d[k], tbl, rf, rt) : d[k];
+                }
+                return node;
+              });
+            }
+            if (s.type === 'boxplot' && Array.isArray(s.data)) {
+              // 箱体颜色在数据项级 itemStyle（mapNode 跳过 data），单独映射：
+              // 保留五数概括 value，只翻转填充/描边色，暗底下箱体同步提亮
+              m.data = s.data.map(function(d) {
+                if (!d || !d.itemStyle) return d;
+                return { value: d.value, itemStyle: mapNode(d.itemStyle, tbl, rf, rt) };
+              });
+            }
             if (s.type === 'heatmap') {
               m.itemStyle = m.itemStyle || {};
               m.itemStyle.borderColor = isDark ? '#1a1b1e' : '#ffffff';
               m.label = m.label || {};
               m.label.color = isDark ? '#e8eaed' : '#1a1d29';
+              // 数据项级预置白字（亮色深格）：暗色色板极值格反转为亮色，
+              // 同步翻成深字保证强相关/高值格可读，切回亮色还原白字
+              if (Array.isArray(s.data)) {
+                m.data = s.data.map(function(d) {
+                  if (d && d.label && d.label.color) {
+                    return { value: d.value, label: { color: isDark ? '#16324a' : '#ffffff' } };
+                  }
+                  return d;
+                });
+              }
             }
             if (s.type === 'scatter' && s.name === '\u5747\u503c') {
               m.itemStyle = { color: isDark ? '#1a1b1e' : '#ffffff',
@@ -1389,8 +1438,9 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
       } catch (e) { /* noop */ }
     }
     document.documentElement.style.background = isDark ? '#1a1b1e' : '#ffffff';
-    // tooltip 内联说明文字色：所有 formatter 用 var(--tt-muted) 引用，这里统一切换
+    // tooltip 内联说明文字/分隔线：formatter 用 var(--tt-muted)/var(--tt-border) 引用，这里统一切换
     document.documentElement.style.setProperty('--tt-muted', isDark ? '#9aa0a6' : '#6b7280');
+    document.documentElement.style.setProperty('--tt-border', isDark ? '#2e2f33' : '#e4e6ea');
     document.body.style.background = isDark ? '#1a1b1e' : '#ffffff';
     document.body.style.color = isDark ? '#e8eaed' : '#1a1d29';
     var interp = document.querySelector('.interpretation');
