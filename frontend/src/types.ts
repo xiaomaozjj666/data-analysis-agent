@@ -160,6 +160,8 @@ export interface Settings {
   langsmith_tracing?: boolean;
   storage_status?: string;
   warning?: string;
+  // 服务端上传大小上限（字节）；旧后端无此字段时前端回退本地默认值
+  max_upload_bytes?: number;
   [key: string]: unknown;
 }
 

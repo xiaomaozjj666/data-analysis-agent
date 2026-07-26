@@ -10,8 +10,12 @@ import RotatingText from "./rb/RotatingText";
 
 interface EmptyWorkspaceProps {
   uploading: boolean;
+  // 上传进度百分比（0-100）；null 表示无可展示进度（未在上传或长度不可计）
+  uploadProgress?: number | null;
   onUpload: () => void;
   onFileDrop: (file: File) => void;
+  // 取消进行中的上传：大文件上传耗时长，给用户反悔的机会
+  onCancelUpload?: () => void;
 }
 
 // 支持的文件扩展名，与 App.tsx 文件输入 accept 保持一致
@@ -21,7 +25,7 @@ function isSupportedFile(file: File): boolean {
   return SUPPORTED_EXTENSIONS.some((ext) => name.endsWith(ext));
 }
 
-function EmptyWorkspace({ uploading, onUpload, onFileDrop }: EmptyWorkspaceProps) {
+function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCancelUpload }: EmptyWorkspaceProps) {
   // 鼠标跟随光斑：跟踪鼠标在整个工作区的相对位置，更新 CSS 变量，
   // 由 empty-state.css 的 radial-gradient 渲染全屏柔和光晕。
   const sectionRef = useRef<HTMLElement>(null);
@@ -173,7 +177,7 @@ function EmptyWorkspace({ uploading, onUpload, onFileDrop }: EmptyWorkspaceProps
               style={{ transition: "transform 0.2s var(--ease-out), background 0.15s, box-shadow 0.15s" }}
             >
               {uploading ? <LoaderCircle className="spin" size={17} /> : <Upload size={17} />}
-              {uploading ? "正在读取" : "选择数据文件"}
+              {uploading ? (uploadProgress != null ? `上传中 ${uploadProgress}%` : "正在读取") : "选择数据文件"}
             </button>
           </ClickSpark>
           <button
@@ -187,6 +191,23 @@ function EmptyWorkspace({ uploading, onUpload, onFileDrop }: EmptyWorkspaceProps
             加载示例数据体验
           </button>
         </div>
+        {/* 上传进度条 + 取消：仅在上传中且有真实进度时展示。
+            100% 后服务端仍在解析文件（读取/探测编码），文案切换为"正在解析"。 */}
+        {uploading && uploadProgress != null && (
+          <div className="empty-upload-progress" role="progressbar" aria-valuenow={uploadProgress} aria-valuemin={0} aria-valuemax={100}>
+            <div className="empty-upload-progress-track">
+              <span style={{ width: `${uploadProgress}%` }} />
+            </div>
+            <div className="empty-upload-progress-meta">
+              <small>{uploadProgress >= 100 ? "上传完成，正在解析数据…" : `已上传 ${uploadProgress}%`}</small>
+              {onCancelUpload && uploadProgress < 100 && (
+                <button type="button" className="empty-upload-cancel" onClick={(e) => { e.stopPropagation(); onCancelUpload(); }}>
+                  取消上传
+                </button>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </section>
   );

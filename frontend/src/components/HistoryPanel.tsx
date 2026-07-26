@@ -49,6 +49,9 @@ interface HistoryPanelProps {
   onToggle: () => void;
   historyError?: boolean;
   switchingSessionId?: string | null;
+  // 正在导出 ZIP 的会话 id：对应条目的导出按钮显示 loading 并禁用，
+  // 避免后端打包耗时时用户误以为没点到而重复触发。
+  exportingSessionId?: string | null;
   // Batch 4：会话导入/导出
   onExportSession?: (item: HistorySessionItem) => void;
   onImportSession?: (file: File) => void;
@@ -67,7 +70,7 @@ interface HistoryPanelProps {
 //   4. 当前会话用左侧竖条 + 浅蓝底高亮，比单纯背景色更醒目。
 const HistoryPanel = React.memo(function HistoryPanel({
   sessions, currentSessionId, onSelect, onRefresh, loading, expanded, onToggle, historyError, switchingSessionId,
-  onExportSession, onImportSession, onDeleteSession, onRenameSession,
+  exportingSessionId, onExportSession, onImportSession, onDeleteSession, onRenameSession,
 }: HistoryPanelProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
@@ -226,6 +229,7 @@ const HistoryPanel = React.memo(function HistoryPanel({
                       active={item.id === currentSessionId}
                       switching={switchingSessionId === item.id}
                       switchingAny={switchingSessionId != null}
+                      exporting={exportingSessionId === item.id}
                       onSelect={onSelect}
                       onExport={onExportSession}
                       onDelete={onDeleteSession}
@@ -252,6 +256,7 @@ interface HistoryItemProps {
   active: boolean;
   switching: boolean;
   switchingAny: boolean;
+  exporting?: boolean;
   onSelect: (item: HistorySessionItem) => void;
   onExport?: (item: HistorySessionItem) => void;
   onDelete?: (item: HistorySessionItem) => void;
@@ -259,7 +264,7 @@ interface HistoryItemProps {
 }
 
 const HistoryItem = React.memo(function HistoryItem({
-  item, active, switching, switchingAny, onSelect, onExport, onDelete, onRename,
+  item, active, switching, switchingAny, exporting, onSelect, onExport, onDelete, onRename,
 }: HistoryItemProps) {
   const status = describeHistoryStatus(item.analysis_status);
   // 显示名优先用自定义标题，没有则回退 filename
@@ -382,11 +387,12 @@ const HistoryItem = React.memo(function HistoryItem({
           <button
             type="button"
             className="history-action-btn history-export"
-            onClick={(e) => { e.stopPropagation(); onExport(item); }}
-            title="导出会话"
-            aria-label={`导出会话 ${displayName}`}
+            onClick={(e) => { e.stopPropagation(); if (!exporting) onExport(item); }}
+            disabled={exporting}
+            title={exporting ? "正在导出…" : "导出会话"}
+            aria-label={exporting ? `正在导出会话 ${displayName}` : `导出会话 ${displayName}`}
           >
-            <Download size={12} />
+            {exporting ? <LoaderCircle size={12} className="spin" /> : <Download size={12} />}
           </button>
         )}
         {onDelete && (

@@ -322,7 +322,11 @@ class DataWorkspace:
                 return repaired
             except UnicodeDecodeError as exc:
                 last_error = exc
-        raise ValueError(f"无法识别文件编码：{last_error}")
+        raise ValueError(
+            "无法识别文件编码：已尝试 UTF-8、GB18030 等常见编码均失败。"
+            "请用 Excel 或文本编辑器将文件另存为 UTF-8 编码的 CSV 后重新上传。"
+            f"（技术详情：{last_error}）"
+        )
 
     def repair_format(
         self,

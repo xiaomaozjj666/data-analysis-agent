@@ -8,6 +8,7 @@ import {
   Clock,
   LoaderCircle,
   Network,
+  RotateCcw,
   Rows3,
   Trash2,
 } from "lucide-react";
@@ -103,6 +104,14 @@ const PlanPanel = React.memo(function PlanPanel({
     if (!onCancelApproval) return;
     onCancelApproval();
   };
+
+  // 还原为原始计划：丢弃全部编辑（改动/删除/排序），重新深拷贝 store
+  // 中的原始 plan。改乱了不用逐项恢复，一键回到模型生成的版本。
+  const resetPlan = () => {
+    setEditedPlan(plan.map((step) => ({ ...step })));
+  };
+  // 是否有可还原的改动：无改动时禁用按钮，避免无意义点击
+  const planEdited = JSON.stringify(editedPlan) !== JSON.stringify(plan);
 
   return (
     <aside className="plan-panel" aria-label="执行记录">
@@ -252,9 +261,19 @@ const PlanPanel = React.memo(function PlanPanel({
         </ol>
       )}
 
-      {/* 审批操作区：批准执行 / 取消 */}
+      {/* 审批操作区：还原 / 取消 / 批准执行 */}
       {editMode && (
         <div className="plan-approval-actions">
+          <button
+            type="button"
+            className="plan-reset-btn"
+            onClick={resetPlan}
+            disabled={!planEdited}
+            title="丢弃所有编辑，恢复为模型生成的原始计划"
+          >
+            <RotateCcw size={12} />
+            还原
+          </button>
           <button type="button" className="cancel-btn" onClick={cancelApproval}>
             取消
           </button>
