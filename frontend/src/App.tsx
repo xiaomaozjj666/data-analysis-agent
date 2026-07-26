@@ -34,6 +34,8 @@ import CountUp from "./components/rb/CountUp";
 import GradientText from "./components/rb/GradientText";
 import Reveal from "./components/rb/Reveal";
 import StarBorder from "./components/rb/StarBorder";
+import GlareHover from "./components/rb/GlareHover";
+import ClickSpark from "./components/rb/ClickSpark";
 // 代码分割/懒加载（#16）：重型组件延迟加载，减小首次 bundle 体积。
 // - CommandPalette / HelpPanel：弹层，仅在用户触发（Cmd+K / ?）时显示
 // - ReportView：含 ReactMarkdown，仅在分析完成后渲染（result 非空）
@@ -162,7 +164,7 @@ function App() {
   const taskDraftsRef = useRef<Record<string, string>>({});
 
   // 主题（light/dark）：useTheme 内部读取 localStorage，无则跟随系统。
-  const { theme, toggle: toggleTheme } = useTheme();
+  const { theme, toggle: toggleTheme, setTheme } = useTheme();
 
   // === 分析 / 追问 / 产物预览逻辑提取至独立 hook ===
   // useAnalysisRunner：startAnalysis / stopAnalysis 及 startedAtRef /
@@ -186,6 +188,28 @@ function App() {
 
   // 移动端侧边栏抽屉开关：桌面端 sidebar 常驻，平板/手机折叠为抽屉
   const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // 移动端手势关闭抽屉（#4）：在抽屉上向左滑动即可收起。
+  // 记录 touchstart 坐标，touchend 时判断为"水平向左滑动为主且超过阈值"才关闭，
+  // 避免与列表纵向滚动冲突。桌面端 sidebar 常驻，这些处理器不会触发。
+  const sidebarTouchX = useRef<number | null>(null);
+  const sidebarTouchY = useRef<number | null>(null);
+  const onSidebarTouchStart = (e: React.TouchEvent) => {
+    if (!sidebarOpen) return;
+    const t = e.touches[0];
+    sidebarTouchX.current = t.clientX;
+    sidebarTouchY.current = t.clientY;
+  };
+  const onSidebarTouchEnd = (e: React.TouchEvent) => {
+    if (sidebarTouchX.current == null || sidebarTouchY.current == null) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - sidebarTouchX.current;
+    const dy = t.clientY - sidebarTouchY.current;
+    // 向左滑动（dx 为负）超过 55px，且横向位移大于纵向位移 → 判定为关闭手势
+    if (dx < -55 && Math.abs(dx) > Math.abs(dy)) setSidebarOpen(false);
+    sidebarTouchX.current = null;
+    sidebarTouchY.current = null;
+  };
 
   // 设置面板点击外部关闭（提取至 useSettingsPanel）。
   useSettingsPanel(keyOpen, setKeyOpen);
@@ -752,33 +776,48 @@ function App() {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      <aside
+        className={`sidebar ${sidebarOpen ? "is-open" : ""}`}
+        onTouchStart={onSidebarTouchStart}
+        onTouchEnd={onSidebarTouchEnd}
+      >
         <div className="wordmark">
           <strong><GradientText speed={8}>数据台</GradientText></strong>
           <span>DATA DESK</span>
         </div>
 
-        <button className="new-analysis" onClick={() => fileInput.current?.click()} disabled={uploading}>
-          <FilePlus2 size={17} />
-          新建分析
-        </button>
+        {/* ReactBits ClickSpark：点击时白色火花迸发，强化"新建"这一主操作的确认感；
+            spark 层 pointer-events:none 不影响点击，reduced-motion 下自动隐藏 */}
+        <ClickSpark sparkColor="#ffffff" sparkCount={8} sparkLength={14} className="sidebar-spark">
+          <button className="new-analysis" onClick={() => fileInput.current?.click()} disabled={uploading}>
+            <FilePlus2 size={17} />
+            新建分析
+          </button>
+        </ClickSpark>
 
         <div className="sidebar-section">
           <span className="sidebar-label">当前数据</span>
+          {/* ReactBits GlareHover：悬停流光扫过数据卡片/上传入口。
+              borderColor 透明避免与按钮自身边框叠加；.sidebar-glare 撑满宽度并
+              放开 overflow，防止按钮 hover 的 translateX/阴影被裁切 */}
           {session ? (
-            <button className="dataset-button" onClick={() => fileInput.current?.click()}>
-              <FileSpreadsheet size={17} />
-              <span>
-                <strong>{session.filename}</strong>
-                <small>{rows.toLocaleString()} 行 · {columns} 列</small>
-              </span>
-              <RefreshCw size={13} />
-            </button>
+            <GlareHover className="sidebar-glare" borderRadius="var(--radius-md)" borderColor="transparent">
+              <button className="dataset-button" onClick={() => fileInput.current?.click()}>
+                <FileSpreadsheet size={17} />
+                <span>
+                  <strong>{session.filename}</strong>
+                  <small>{rows.toLocaleString()} 行 · {columns} 列</small>
+                </span>
+                <RefreshCw size={13} />
+              </button>
+            </GlareHover>
           ) : (
-            <button className="upload-button" onClick={() => fileInput.current?.click()} disabled={uploading}>
-              {uploading ? <LoaderCircle className="spin" size={17} /> : <Upload size={17} />}
-              {uploading ? "正在读取" : "选择数据文件"}
-            </button>
+            <GlareHover className="sidebar-glare" borderRadius="var(--radius-md)" borderColor="transparent">
+              <button className="upload-button" onClick={() => fileInput.current?.click()} disabled={uploading}>
+                {uploading ? <LoaderCircle className="spin" size={17} /> : <Upload size={17} />}
+                {uploading ? "正在读取" : "选择数据文件"}
+              </button>
+            </GlareHover>
           )}
           <input
             ref={fileInput}
@@ -839,36 +878,49 @@ function App() {
           </div>
           <div className="topbar-actions">
             <div className="api-status"><i className={settings ? "online" : ""} />{settings ? "服务正常" : "连接中"}</div>
-            {/* 命令面板入口：点击等价于 Cmd+K，给不熟悉快捷键的用户一个可见入口 */}
-            <button
-              type="button"
-              className="icon-button topbar-action"
-              title="命令面板 (⌘K)"
-              aria-label="打开命令面板"
-              onClick={() => setCommandOpen(true)}
-            >
-              <Command size={16} />
-            </button>
+            {/* 命令面板入口：点击等价于 Cmd+K，给不熟悉快捷键的用户一个可见入口。
+                与主题按钮统一用 GlareHover 悬停流光，顶栏三个图标按钮交互一致 */}
+            <GlareHover borderRadius="var(--radius-md)" borderColor="transparent">
+              <button
+                type="button"
+                className="icon-button topbar-action"
+                title="命令面板 (⌘K)"
+                aria-label="打开命令面板"
+                onClick={() => setCommandOpen(true)}
+              >
+                <Command size={16} />
+              </button>
+            </GlareHover>
             {/* 快捷键帮助入口：与 ? 快捷键等价 */}
-            <button
-              type="button"
-              className="icon-button topbar-action"
-              title="键盘快捷键 (?)"
-              aria-label="查看键盘快捷键"
-              onClick={() => setHelpOpen(true)}
+            <GlareHover borderRadius="var(--radius-md)" borderColor="transparent">
+              <button
+                type="button"
+                className="icon-button topbar-action"
+                title="键盘快捷键 (?)"
+                aria-label="查看键盘快捷键"
+                onClick={() => setHelpOpen(true)}
+              >
+                <Keyboard size={16} />
+              </button>
+            </GlareHover>
+            {/* 主题切换：太阳/月亮图标随当前 theme 切换，与 T 快捷键等价。
+                外层用 ReactBits 的 GlareHover 做悬停流光（默认 accent #5b5bd6），
+                原生 <button> 保留无障碍属性与点击；glare 在 icon 之下、仅作悬停反馈。 */}
+            <GlareHover
+              borderRadius="var(--radius-md)"
+              borderColor="transparent"
+              className="theme-toggle-glare"
             >
-              <Keyboard size={16} />
-            </button>
-            {/* 主题切换：太阳/月亮图标随当前 theme 切换，与 T 快捷键等价 */}
-            <button
-              type="button"
-              className="icon-button topbar-action theme-toggle"
-              title={theme === "dark" ? "切换到亮色 (T)" : "切换到暗色 (T)"}
-              aria-label="切换主题"
-              onClick={toggleTheme}
-            >
-              {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
-            </button>
+              <button
+                type="button"
+                className="icon-button topbar-action theme-toggle"
+                title={theme === "dark" ? "切换到亮色 (T)" : "切换到暗色 (T)"}
+                aria-label="切换主题"
+                onClick={toggleTheme}
+              >
+                {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+              </button>
+            </GlareHover>
           </div>
         </header>
 
@@ -1044,11 +1096,15 @@ function App() {
                         <ListChecks size={15} />
                         审阅计划
                       </button>
-                      <StarBorder disabled={!task.trim() || !settings?.configured}>
-                        <button className="run-button" onClick={() => startAnalysis()} disabled={!task.trim() || !settings?.configured}>
-                          <Play size={15} fill="currentColor" />运行分析
-                        </button>
-                      </StarBorder>
+                      {/* ClickSpark + StarBorder：点击"运行分析"时品牌色火花迸发，
+                          给最重要的操作一个明确的启动反馈（火花层不拦截点击） */}
+                      <ClickSpark sparkColor="#5b5bd6" sparkCount={10} sparkLength={16}>
+                        <StarBorder disabled={!task.trim() || !settings?.configured}>
+                          <button className="run-button" onClick={() => startAnalysis()} disabled={!task.trim() || !settings?.configured}>
+                            <Play size={15} fill="currentColor" />运行分析
+                          </button>
+                        </StarBorder>
+                      </ClickSpark>
                     </>
                   )}
                 </div>
@@ -1185,7 +1241,7 @@ function App() {
       </main>
       {/* 产物预览模态：图表预览/对比/全屏/PNG/内联编辑，已提取至 PreviewModal；
           previewItem 为空时组件内部直接返回 null */}
-      <PreviewModal preview={artifactPreview} theme={theme} onDownload={downloadArtifact} />
+      <PreviewModal preview={artifactPreview} theme={theme} setTheme={setTheme} onDownload={downloadArtifact} />
       {commandOpen && (
         <Suspense fallback={null}>
           <CommandPalette

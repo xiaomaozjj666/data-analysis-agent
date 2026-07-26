@@ -104,6 +104,35 @@ function useArtifactPreview(): UseArtifactPreviewResult {
     return html.replace(/<head>/i, "<head>" + reporter);
   }, []);
 
+  // 主题桥接（#1）：让 iframe 内图表主题与 React 顶栏统一，消灭"要点两次才能全暗"。
+  // 统一在前端注入，无需重建历史 HTML——所有图表（新/历史）都内置了
+  // #theme-toggle 按钮 + 监听 data-theme 变化的 MutationObserver，因此：
+  //   父 → 子：父页面 postMessage({type:'set-theme'})，此桥接改写 data-theme，
+  //           触发图表自身的 observer 重新应用主题；
+  //   子 → 父：图表内按钮点击后回传 {type:'chart-theme-changed'}，父页面同步 React 主题。
+  // 消息里都带显式 theme 值，父页面用 setTheme(值) 幂等赋值，重复消息不会来回抖动。
+  const withThemeBridge = useCallback((html: string): string => {
+    if (html.includes("chart-theme-bridge")) return html;
+    const bridge =
+      "<script>/*chart-theme-bridge*/(function(){" +
+      "window.addEventListener('message',function(e){" +
+      "if(e.data&&e.data.type==='set-theme'&&(e.data.theme==='dark'||e.data.theme==='light')){" +
+      "if(document.documentElement.dataset.theme!==e.data.theme){" +
+      "document.documentElement.dataset.theme=e.data.theme;" +
+      "try{localStorage.setItem('echarts-theme',e.data.theme);}catch(_){}}}});" +
+      "function bind(){var b=document.getElementById('theme-toggle');if(b){b.addEventListener('click',function(){" +
+      "setTimeout(function(){try{parent.postMessage({type:'chart-theme-changed',theme:document.documentElement.dataset.theme||'light'},'*');}catch(_){}} ,60);});}}" +
+      "if(document.readyState!=='loading'){bind();}else{document.addEventListener('DOMContentLoaded',bind);}" +
+      "})();</" + "script>";
+    return html.replace(/<head>/i, "<head>" + bridge);
+  }, []);
+
+  // 组合注入：错误上报 + 主题桥接，两者都幂等（含标记防重复注入）。
+  const prepareHtml = useCallback(
+    (html: string): string => withThemeBridge(withChartErrorReporter(html)),
+    [withThemeBridge, withChartErrorReporter],
+  );
+
   // useCallback：openArtifactPreview / downloadArtifact 作为 props 传给
   // React.memo(ArtifactCenter)。若每次渲染都创建新函数，memo 比较失败，
   // ArtifactCenter 仍然每次重渲染。useCallback 让函数身份稳定，memo 才
@@ -147,7 +176,7 @@ function useArtifactPreview(): UseArtifactPreviewResult {
       if (response.status === 304 && cached) {
         previewCacheRef.current.delete(cacheKey);
         previewCacheRef.current.set(cacheKey, cached); // LRU 触活
-        setPreviewHtml(withChartErrorReporter(cached.html));
+        setPreviewHtml(prepareHtml(cached.html));
         setPreviewLoading(false);
         return;
       }
@@ -174,7 +203,7 @@ function useArtifactPreview(): UseArtifactPreviewResult {
         const oldest = previewCacheRef.current.keys().next().value;
         if (oldest !== undefined) previewCacheRef.current.delete(oldest);
       }
-      setPreviewHtml(withChartErrorReporter(html));
+      setPreviewHtml(prepareHtml(html));
       // loading 状态由 iframe onLoad 关闭，确保用户看到的是完成渲染的图表。
       // 兜底超时：若 8 秒内 onLoad 未触发（极端情况下 iframe 静默失败），
       // 强制关闭 loading 并提示错误，避免用户盯着空白骨架屏。
@@ -195,7 +224,7 @@ function useArtifactPreview(): UseArtifactPreviewResult {
     } finally {
       if (previewController.current === controller) previewController.current = null;
     }
-  }, [isValidPreviewHtml, withChartErrorReporter]);
+  }, [isValidPreviewHtml, prepareHtml]);
 
   const closeArtifactPreview = useCallback(() => {
     previewController.current?.abort();
@@ -280,7 +309,7 @@ function useArtifactPreview(): UseArtifactPreviewResult {
       if (response.status === 304 && cached) {
         previewCacheRef.current.delete(cacheKey);
         previewCacheRef.current.set(cacheKey, cached); // LRU 触活
-        setCompareHtml(withChartErrorReporter(cached.html));
+        setCompareHtml(prepareHtml(cached.html));
         return;
       }
       const html = await response.text();
@@ -291,14 +320,14 @@ function useArtifactPreview(): UseArtifactPreviewResult {
           const oldest = previewCacheRef.current.keys().next().value;
           if (oldest !== undefined) previewCacheRef.current.delete(oldest);
         }
-        setCompareHtml(withChartErrorReporter(html));
+        setCompareHtml(prepareHtml(html));
       }
     } catch {
       // 对比加载失败时不阻塞主图，静默忽略
     } finally {
       setCompareLoading(false);
     }
-  }, [isValidPreviewHtml, withChartErrorReporter]);
+  }, [isValidPreviewHtml, prepareHtml]);
 
   // 通过 postMessage 通道让 iframe 内图表导出 PNG（#23）。
   // iframe sandbox 只保留 allow-scripts（不含 allow-same-origin），

@@ -4,6 +4,10 @@
 .preview-panel > header { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 0 22px; background: var(--canvas-default); border-bottom: 1px solid var(--border-muted); }
 .preview-panel h2 { max-width: 68vw; margin: 4px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-md); font-weight: 700; }
 .preview-actions { display: flex; align-items: center; gap: 8px; }
+/* 预览操作栏微交互：hover 轻微上浮 + active 归位，与顶栏按钮手感一致 */
+.preview-actions > button { transition: background-color var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out); }
+.preview-actions > button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: var(--shadow-xs); }
+.preview-actions > button:active:not(:disabled) { transform: translateY(0); box-shadow: none; }
 .preview-stage { position: relative; min-height: 0; padding: 18px; display: flex; flex-direction: column; gap: 8px; grid-row: -2 / -1; }
 .preview-stage iframe { width: 100%; display: block; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--canvas-default); box-shadow: var(--shadow-sm); }
 .preview-loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--fg-muted); font-size: var(--text-sm); }

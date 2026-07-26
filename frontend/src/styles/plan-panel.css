@@ -32,6 +32,15 @@
 .plan-list p { margin: 4px 0 0; color: var(--fg-muted); font-size: var(--text-sm); line-height: 1.6; }
 .plan-list li.done .step-mark { background: var(--success-fg); border-color: var(--success-fg); color: #fff; box-shadow: 0 2px 6px rgba(21, 128, 61, 0.25); }
 .plan-list li.done strong { color: var(--success-fg); }
+/* 步骤完成动画（#3）：某步从"进行中"转为"已完成"时，圆点回弹一下并向外扩散一圈
+   成功色光晕，给长任务等待中的"又完成一步"一个明确正反馈。CSS 动画只在 .done
+   被应用的那一刻播放一次，后续无关重渲染不会重放；恢复已完成会话时各步骤一次性轻快弹入。 */
+.plan-list li.done .step-mark { animation: step-done-pop 0.42s cubic-bezier(0.34, 1.56, 0.64, 1); }
+@keyframes step-done-pop {
+  0% { transform: scale(0.5); }
+  55% { transform: scale(1.18); box-shadow: 0 0 0 7px rgba(21, 128, 61, 0.16); }
+  100% { transform: scale(1); }
+}
 .plan-list li.active .step-mark { background: var(--accent-subtle); border-color: var(--accent-fg); color: var(--accent-fg); box-shadow: 0 0 0 4px var(--accent-subtle); transform: scale(1.06); }
 .plan-list li.active strong { color: var(--accent-fg); }
 .architecture-note { min-height: 40px; display: flex; align-items: center; gap: 8px; padding: 0 18px; background: var(--canvas-subtle); border-top: 1px solid var(--border-muted); color: var(--fg-muted); font-size: var(--text-xs); font-weight: 500; }
@@ -249,4 +258,9 @@
   word-break: break-all;
   max-height: 160px;
   overflow-y: auto;
+}
+
+/* prefers-reduced-motion：关闭步骤完成的弹跳动画（#3），保留静态完成态样式 */
+@media (prefers-reduced-motion: reduce) {
+  .plan-list li.done .step-mark { animation: none !important; }
 }
