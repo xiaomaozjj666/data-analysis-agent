@@ -169,6 +169,13 @@ def _safe_value(value: Any) -> Any:
     return value
 
 
+def _rows_data(df: pd.DataFrame, cols: list[str]) -> list[list[Any]]:
+    """按列抽取构建 series data：itertuples 比 iterrows 快一个数量级，
+    大数据散点图的生成耗时从秒级降到毫秒级。"""
+    return [[_safe_value(v) for v in row]
+            for row in df[cols].itertuples(index=False, name=None)]
+
+
 def _format_number(value: Any, *, precision: int = 2) -> str:
     """数字格式化：整数加千分位，浮点保留 precision 位，None 显示 —。"""
     if value is None:
@@ -710,16 +717,17 @@ def _echarts_scatter(
 
     if color:
         color_levels = list(pd.unique(df[color].dropna()))
+        data_cols = [x, y] + ([size] if size and size in df.columns else [])
         series = []
         for idx, level in enumerate(color_levels):
             sub = df[df[color] == level]
-            data = [[_safe_value(r[x]), _safe_value(r[y])] + (
-                [_safe_value(r[size])] if size and size in df.columns else []
-            ) for _, r in sub.iterrows()]
+            data = _rows_data(sub, data_cols)
             series.append({
                 "name": str(level),
                 "type": "scatter",
                 "data": data,
+                # 超过阈值自动启用 large 模式：万级点量下浏览器仍能丝滑交互
+                "large": True, "largeThreshold": 4000,
                 "symbolSize": _size_func(size, size_min, size_max) if size else 10,
                 "itemStyle": {
                     "color": _series_color(idx),
@@ -734,13 +742,12 @@ def _echarts_scatter(
         base["legend"]["data"] = [str(item) for item in color_levels]
         base["series"] = series
     else:
-        data = [[_safe_value(r[x]), _safe_value(r[y])] + (
-            [_safe_value(r[size])] if size and size in df.columns else []
-        ) for _, r in df.iterrows()]
+        data = _rows_data(df, [x, y] + ([size] if size and size in df.columns else []))
         base["series"] = [{
             "name": y_label,
             "type": "scatter",
             "data": data,
+            "large": True, "largeThreshold": 4000,
             "symbolSize": _size_func(size, size_min, size_max) if size else 10,
             "itemStyle": {
                 "color": _ECHARTS_PALETTE[0],
@@ -1141,9 +1148,7 @@ def _echarts_scatter3d(
         symbol_size = 9
 
     def row_data(sub: pd.DataFrame) -> list[list[Any]]:
-        extra = [size] if has_size else []
-        return [[_safe_value(r[x]), _safe_value(r[y]), _safe_value(r[z])]
-                + [_safe_value(r[c]) for c in extra] for _, r in sub.iterrows()]
+        return _rows_data(sub, [x, y, z] + ([size] if has_size else []))
 
     levels = list(pd.unique(df[color].dropna())) if color and color in df.columns else []
     groups = ([(str(lv), df[df[color] == lv], _series_color(idx)) for idx, lv in enumerate(levels)]
@@ -1290,7 +1295,7 @@ def _echarts_scatter_matrix(
                     series.append({
                         "name": gname, "type": "scatter",
                         "xAxisIndex": k, "yAxisIndex": k,
-                        "data": [[_safe_value(r[dim_x]), _safe_value(r[dim_y])] for _, r in sub.iterrows()],
+                        "data": _rows_data(sub, [dim_x, dim_y]),
                         "symbolSize": 6,
                         "itemStyle": {"color": gcolor, "opacity": 0.7,
                                       "borderWidth": 0.5, "borderColor": "#fff"},
@@ -1330,19 +1335,32 @@ def _echarts_sunburst(
     if not path_columns:
         return {"title": {"text": title}}
 
-    # 构建层级树
+    # 预聚合：重复路径先按 groupby 合并（有 values 列求和，否则计数），
+    # 把建树规模从 O(行数) 压到 O(唯一路径数)；旧实现逐行线性扫描子节点
+    # 大数据下是 O(n²)，且重复路径叶子值会被最后一行覆盖而非累加。
+    if values and values in df.columns:
+        agg_df = df.groupby(path_columns, dropna=False, sort=False)[values].sum().reset_index()
+    else:
+        agg_df = df.groupby(path_columns, dropna=False, sort=False).size().reset_index(name="__count__")
+
+    # 构建层级树：路径元组→节点字典索引，避免逐子节点线性查找
     tree: dict[str, Any] = {"name": "全部", "children": []}
-    for _, row in df.iterrows():
+    node_index: dict[tuple[str, ...], dict[str, Any]] = {}
+    last_depth = len(path_columns) - 1
+    for row in agg_df.itertuples(index=False, name=None):
         current = tree
-        for depth, col in enumerate(path_columns):
-            name = str(row[col])
-            existing = next((c for c in current["children"] if c["name"] == name), None)
-            if existing is None:
-                existing = {"name": name, "children": []}
-                current["children"].append(existing)
-            current = existing
-            if depth == len(path_columns) - 1:
-                current["value"] = _safe_value(row[values]) if values and values in df.columns else 1
+        path: tuple[str, ...] = ()
+        for depth in range(len(path_columns)):
+            name = str(row[depth])
+            path = (*path, name)
+            node = node_index.get(path)
+            if node is None:
+                node = {"name": name, "children": []}
+                node_index[path] = node
+                current["children"].append(node)
+            current = node
+            if depth == last_depth:
+                current["value"] = _safe_value(row[len(path_columns)])
 
     # 聚合叶子值到父节点
     def aggregate(node: dict[str, Any]) -> float:

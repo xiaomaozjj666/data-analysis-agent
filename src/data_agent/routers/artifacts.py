@@ -48,6 +48,32 @@ _ECHARTS_TAG_PATTERN = re.compile(
 )
 
 
+_BUNDLE_TEXT_CACHE: dict[tuple[str, int], str] = {}
+_BUNDLE_CACHE_MAX = 6
+
+
+def _read_bundle_cached(path: Path) -> str | None:
+    """读 bundle 文本带进程级缓存：echarts/plotly 压缩包 1~3.6MB，每次
+    预览/下载都从磁盘重读代价高。各会话目录里的 bundle 是同一 CDN
+    版本的拷贝，用（文件名, 字节数）做键即可跨会话复用；上限 6 条
+    防止内存无限增长。读失败返 None，调用方保持原 HTML 不变。"""
+    try:
+        key = (path.name, path.stat().st_size)
+    except OSError:
+        return None
+    cached = _BUNDLE_TEXT_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if len(_BUNDLE_TEXT_CACHE) >= _BUNDLE_CACHE_MAX:
+        _BUNDLE_TEXT_CACHE.pop(next(iter(_BUNDLE_TEXT_CACHE)))
+    _BUNDLE_TEXT_CACHE[key] = text
+    return text
+
+
 def _inline_echarts_bundle(record: SessionRecord, html_text: str) -> str:
     """Replace the ECharts ``<script src>`` tag with the full source so previews
     and downloads stay self-contained when the bundle was downloaded locally.
@@ -58,9 +84,8 @@ def _inline_echarts_bundle(record: SessionRecord, html_text: str) -> str:
     bundle_path = record.workspace.artifacts_dir / ECHARTS_BUNDLE_NAME
     if not bundle_path.is_file():
         return html_text
-    try:
-        echarts_js = bundle_path.read_text(encoding="utf-8")
-    except OSError:
+    echarts_js = _read_bundle_cached(bundle_path)
+    if echarts_js is None:
         return html_text
     return _ECHARTS_TAG_PATTERN.sub(
         lambda _match: f"<script>{echarts_js}</script>", html_text, count=1
@@ -88,9 +113,8 @@ def _inline_plotly_bundle(record: SessionRecord, html_text: str) -> str:
     bundle_path = record.workspace.artifacts_dir / PLOTLY_BUNDLE_NAME
     if not bundle_path.is_file():
         return html_text
-    try:
-        plotly_js = bundle_path.read_text(encoding="utf-8")
-    except OSError:
+    plotly_js = _read_bundle_cached(bundle_path)
+    if plotly_js is None:
         return html_text
     # Use a lambda replacement so backslashes in plotly_js (e.g. "\s" inside
     # the minified source) are treated literally instead of as regex escapes.
