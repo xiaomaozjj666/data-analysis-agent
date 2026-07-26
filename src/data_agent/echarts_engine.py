@@ -188,25 +188,35 @@ def _series_color(index: int) -> str:
 
 # === 坐标轴 nice ticks 工具 ===
 
-def _echarts_value_axis(df: pd.DataFrame, y: str | None, *, name: str, scale: bool = True) -> dict[str, Any]:
+def _echarts_value_axis(
+    df: pd.DataFrame, y: str | None, *, name: str, scale: bool = True,
+    values: list[float] | None = None,
+) -> dict[str, Any]:
     """构建数值型 yAxis：应用 nice ticks 对齐刻度到 1/2/5/10 倍数，
-    并用大数值自适应 formatter（万/亿）让坐标轴可读。"""
+    并用大数值自适应 formatter（万/亿）让坐标轴可读。
+
+    values 可覆盖取值来源：堆叠图的轴范围必须按各类目堆叠总和计算，
+    而非单列 min/max，否则堆叠后的线/面会冲出绘图区顶部。
+    """
     base: dict[str, Any] = {**_ECHARTS_BASE_AXIS, "type": "value", "name": name, "scale": scale}
-    if y and y in df.columns:
+    numeric = pd.Series(dtype=float)
+    if values is not None:
+        numeric = pd.to_numeric(pd.Series(values), errors="coerce").dropna()
+    elif y and y in df.columns:
         numeric = pd.to_numeric(df[y], errors="coerce").dropna()
-        if len(numeric) > 0:
-            vmin, vmax = float(numeric.min()), float(numeric.max())
-            nice_min, nice_max, step = _nice_ticks(vmin, vmax, n=5)
-            base["min"] = nice_min
-            base["max"] = nice_max
-            base["interval"] = step
-            # axisLabel formatter 用 JS 函数字符串注入 _nice_axis_formatter 逻辑。
-            # ECharts option 是 JSON，但 formatter 字段支持函数字符串（前端 eval）。
-            base["axisLabel"] = {
-                **_ECHARTS_BASE_AXIS["axisLabel"],
-                "formatter": _ECHARTS_AXIS_LABEL_FORMATTER_JS,
-            }
-            return base
+    if len(numeric) > 0:
+        vmin, vmax = float(numeric.min()), float(numeric.max())
+        nice_min, nice_max, step = _nice_ticks(vmin, vmax, n=5)
+        base["min"] = nice_min
+        base["max"] = nice_max
+        base["interval"] = step
+        # axisLabel formatter 用 JS 函数字符串注入 _nice_axis_formatter 逻辑。
+        # ECharts option 是 JSON，但 formatter 字段支持函数字符串（前端 eval）。
+        base["axisLabel"] = {
+            **_ECHARTS_BASE_AXIS["axisLabel"],
+            "formatter": _ECHARTS_AXIS_LABEL_FORMATTER_JS,
+        }
+        return base
     # 无数据或非数值：仅加 formatter 以备数据更新
     base["axisLabel"] = {
         **_ECHARTS_BASE_AXIS["axisLabel"],
@@ -582,6 +592,14 @@ def _echarts_line(
     categories = [str(v) for v in df[x].tolist()]
     chart_type = "line"
 
+    # 堆叠面积图（area + color 多系列）：Y 轴范围必须按各类目堆叠总和计算，
+    # 否则用单列 min/max 会让堆叠后的线/面冲出绘图区顶部；并入 0 保证堆叠基线可见。
+    stacked = area and bool(color) and y is not None
+    axis_values: list[float] | None = None
+    if stacked:
+        totals = df.groupby(x, sort=False)[y].sum(min_count=1).dropna()
+        axis_values = [0.0, *(float(v) for v in totals.tolist())]
+
     base: dict[str, Any] = {
         "title": {**_ECHARTS_BASE_TITLE, "text": title, "subtext": f"{x_label} × {y_label}{agg_suffix}"},
         "tooltip": {**_ECHARTS_BASE_TOOLTIP, "trigger": "axis", "axisPointer": {"type": "line"}},
@@ -590,7 +608,9 @@ def _echarts_line(
         "toolbox": {**_ECHARTS_BASE_TOOLBOX},
         "color": _ECHARTS_PALETTE,
         "xAxis": [{**_ECHARTS_BASE_AXIS, "type": "category", "boundaryGap": False, "data": categories, "name": x_label}],
-        "yAxis": [_echarts_value_axis(df, y, name=f"{y_label}{agg_suffix}", scale=True)],  # scale=True 让 Y 轴自适应非零起点
+        # 堆叠时 scale=False 从 0 起；非堆叠 scale=True 让 Y 轴自适应非零起点
+        "yAxis": [_echarts_value_axis(df, y, name=f"{y_label}{agg_suffix}",
+                                       scale=not stacked, values=axis_values)],
         "dataZoom": [
             {"type": "inside", "start": 0, "end": 100},
             {"type": "slider", "start": 0, "end": 100, "height": 22, "bottom": 16,
@@ -1226,6 +1246,60 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
     btn.setAttribute('aria-label', isDark ? '切换到亮色' : '切换到暗色');
   }
 
+  // 系列色板双向映射：亮色学术色板为白底设计，在 #1a1b1e 暗底上明度不足发闷；
+  // 切暗色时逐色提亮（保持色相），映射为双射，切回亮色可精确还原。
+  // LP/DP 顺序与 Python _ECHARTS_PALETTE 一致；LR/DR 是 _hex_to_rgba 输出的前缀形态。
+  var LP = ['#2c5f8d', '#d97745', '#4f9d7c', '#c75d63', '#7a6fb0',
+            '#d2a63c', '#4b8fa8', '#8a9a5b', '#b07b9e', '#5e7a8c'];
+  var DP = ['#6fa8d6', '#e89a6e', '#6fbf9c', '#e08a8f', '#a79ed6',
+            '#e0bc6a', '#74b4cc', '#adbf7e', '#cfa0c0', '#8ca6b8'];
+  var LR = ['rgba(44,95,141,', 'rgba(217,119,69,', 'rgba(79,157,124,', 'rgba(199,93,99,', 'rgba(122,111,176,',
+            'rgba(210,166,60,', 'rgba(75,143,168,', 'rgba(138,154,91,', 'rgba(176,123,158,', 'rgba(94,122,140,'];
+  var DR = ['rgba(111,168,214,', 'rgba(232,154,110,', 'rgba(111,191,156,', 'rgba(224,138,143,', 'rgba(167,158,214,',
+            'rgba(224,188,106,', 'rgba(116,180,204,', 'rgba(173,191,126,', 'rgba(207,160,192,', 'rgba(140,166,184,'];
+
+  function colorTable(toDark) {
+    var t = {}, i;
+    for (i = 0; i < LP.length; i++) t[toDark ? LP[i] : DP[i]] = toDark ? DP[i] : LP[i];
+    if (toDark) {
+      // 符号描边白→融入暗底；系列级深色文字→亮字
+      t['#fff'] = '#1a1b1e'; t['#ffffff'] = '#1a1b1e'; t['#1a1d29'] = '#e8eaed';
+    } else {
+      t['#1a1b1e'] = '#ffffff'; t['#e8eaed'] = '#1a1d29';
+    }
+    return t;
+  }
+
+  function swapColor(s, table, rf, rt) {
+    var lower = s.toLowerCase();
+    if (table[lower]) return table[lower];
+    for (var i = 0; i < rf.length; i++) {
+      if (lower.indexOf(rf[i]) === 0) return rt[i] + lower.slice(rf[i].length);
+    }
+    return s;
+  }
+
+  // 递归替换系列中的颜色引用（实色/rgba/渐变 colorStops）；
+  // 跳过 data 键：数据项级颜色（如热力图深色格白字）由 Python 预置，不参与主题翻转；
+  // 函数（formatter）原样保留引用。
+  function mapNode(node, table, rf, rt) {
+    if (typeof node === 'string') return swapColor(node, table, rf, rt);
+    if (Array.isArray(node)) {
+      var arr = [];
+      for (var i = 0; i < node.length; i++) arr.push(mapNode(node[i], table, rf, rt));
+      return arr;
+    }
+    if (node && typeof node === 'object') {
+      var out = {};
+      for (var k in node) {
+        if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
+        out[k] = (k === 'data') ? node[k] : mapNode(node[k], table, rf, rt);
+      }
+      return out;
+    }
+    return node;
+  }
+
   function applyTheme() {
     var isDark = getIsDark();
     var chart = window.__echartsInstance;
@@ -1242,9 +1316,13 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
       };
       var update = {
         backgroundColor: isDark ? '#1a1b1e' : '#ffffff',
+        // 顶层调色板跟随主题：饼/旭日/矩形树等靠 palette 自动分色的图同步提亮
+        color: isDark ? DP : LP,
         textStyle: { color: textColor },
         title: { textStyle: { color: textColor }, subtextStyle: { color: labelColor } },
         legend: { textStyle: { color: labelColor } },
+        toolbox: { iconStyle: { borderColor: labelColor },
+                   emphasis: { iconStyle: { borderColor: isDark ? '#6fa8d6' : '#2C5F8D' } } },
         tooltip: { backgroundColor: tooltipBg, borderColor: axisColor, textStyle: { color: textColor } }
       };
       try {
@@ -1252,12 +1330,15 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
         if (cur.xAxis && cur.xAxis.length) update.xAxis = cur.xAxis.map(function() { return axisUpdate(); });
         if (cur.yAxis && cur.yAxis.length) update.yAxis = cur.yAxis.map(function() { return axisUpdate(); });
         if (cur.parallelAxis && cur.parallelAxis.length) update.parallelAxis = cur.parallelAxis.map(function() { return axisUpdate(); });
-        // dataZoom 滑条：亮灰槽底/拖动把手在暗底上会形成亮条，跟随主题换成中性深灰
+        // dataZoom 滑条：亮灰槽底/拖动把手在暗底上会形成亮条，跟随主题换成中性深灰；
+        // 填充色/把手色同步切换主色亮暗版本
         if (cur.dataZoom && cur.dataZoom.length) {
           update.dataZoom = cur.dataZoom.map(function(d) {
             if (d.type !== 'slider') return {};
             return { backgroundColor: isDark ? '#242528' : '#eceef1',
                      moveHandleStyle: { color: isDark ? '#3a3b40' : '#D2DBEE' },
+                     fillerColor: isDark ? 'rgba(111,168,214,0.15)' : 'rgba(44,95,141,0.12)',
+                     handleStyle: { color: isDark ? '#6fa8d6' : '#2C5F8D' },
                      textStyle: { color: labelColor } };
           });
         }
@@ -1284,20 +1365,24 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
             return upd;
           });
         }
-        // 热力图/箱线图系列级颜色跟随主题：单元格描边融入背景；标签基础色
-        // 切换（Python 预置的深色格白字是数据项级，优先级更高不受影响）；
-        // 均值菱形改为背景色填充 + 文字色描边，两套主题下都清晰。
+        // 系列级颜色跟随主题：递归映射把线色/柱色/渐变填充整体切到亮暗对应色板；
+        // 热力图单元格描边融入背景；箱线图均值菱形改为背景色填充 + 文字色描边。
         if (cur.series && cur.series.length) {
+          var tbl = colorTable(isDark);
+          var rf = isDark ? LR : DR, rt = isDark ? DR : LR;
           update.series = cur.series.map(function(s) {
+            var m = mapNode(s, tbl, rf, rt);
             if (s.type === 'heatmap') {
-              return { itemStyle: { borderColor: isDark ? '#1a1b1e' : '#ffffff' },
-                       label: { color: isDark ? '#e8eaed' : '#1a1d29' } };
+              m.itemStyle = m.itemStyle || {};
+              m.itemStyle.borderColor = isDark ? '#1a1b1e' : '#ffffff';
+              m.label = m.label || {};
+              m.label.color = isDark ? '#e8eaed' : '#1a1d29';
             }
             if (s.type === 'scatter' && s.name === '\u5747\u503c') {
-              return { itemStyle: { color: isDark ? '#1a1b1e' : '#ffffff',
-                                    borderColor: isDark ? '#e8eaed' : '#1a1d29' } };
+              m.itemStyle = { color: isDark ? '#1a1b1e' : '#ffffff',
+                              borderColor: isDark ? '#e8eaed' : '#1a1d29', borderWidth: 1.5 };
             }
-            return {};
+            return m;
           });
         }
         chart.setOption(update);
