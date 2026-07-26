@@ -16,11 +16,12 @@ from __future__ import annotations
 
 import json
 import re
+from email.utils import formatdate
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 
 from data_agent.registry import ChartEditRequest, SessionRecord, _artifact_file
@@ -114,18 +115,53 @@ def _harden_preview_document(html_text: str) -> str:
     return f"<!doctype html><html><head>{meta}</head><body>{html_text}</body></html>"
 
 
+# 历史产物可能以非 UTF-8（如 Windows 默认 GBK / GB18030）写出，直接
+# read_text(encoding="utf-8") 会抛 UnicodeDecodeError 或在早前版本里产生
+# 中文乱码。这里按“utf-8-sig → utf-8 → gb18030”顺序探测，与 CSV 层
+# _CSV_ENCODING_CANDIDATES 保持一致，确保任何历史 artifact 都能正确解码。
+_PREVIEW_TEXT_CANDIDATES = ("utf-8-sig", "utf-8", "gb18030")
+
+
+def _read_utf8_robust(path: Path) -> str:
+    """以容错方式读出 HTML 文本，优先 UTF-8，必要时回退 GBK/GB18030。"""
+    raw = path.read_bytes()
+    for enc in _PREVIEW_TEXT_CANDIDATES:
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    # 全都不行则按 latin-1 兜底（绝不抛错，最多是乱码字符而非崩溃）。
+    return raw.decode("latin-1")
+
+
+def _preview_etag(path: Path) -> str:
+    """基于文件 mtime + size 生成 ETag，文件重写即失效。"""
+    st = path.stat()
+    return f'"{int(st.st_mtime)}:{st.st_size}"'
+
+
 @router.get("/api/sessions/{session_id}/artifacts/{filename}/preview")
-def preview_artifact(session_id: str, filename: str) -> Response:
+def preview_artifact(session_id: str, filename: str, request: Request) -> Response:
     record, path = _artifact_file(session_id, filename)
     if path.suffix.lower() != ".html":
         raise HTTPException(status_code=415, detail="该产物不支持在线预览。")
-    html_text = _inline_plotly_bundle(record, path.read_text(encoding="utf-8"))
+    etag = _preview_etag(path)
+    # 条件请求：文件未变（ETag 一致）时直接返回 304，前端复用其 LRU 缓存，
+    # 既避免重复下载内联后的大体积 HTML（Plotly 约 3.5MB），又保证文件一旦
+    # 被重写（如重新生成图表）缓存立即失效、拿到最新内容，永不滞留旧版乱码。
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag})
+    html_text = _inline_plotly_bundle(record, _read_utf8_robust(path))
     html_text = _inline_echarts_bundle(record, html_text)
     html_text = _harden_preview_document(html_text)
     return Response(
         content=html_text,
         media_type="text/html",
-        headers={"Cache-Control": "private, no-store"},
+        headers={
+            "Cache-Control": "private, no-store",
+            "ETag": etag,
+            "Last-Modified": formatdate(path.stat().st_mtime, usegmt=True),
+        },
     )
 
 
@@ -134,7 +170,7 @@ def download_artifact(session_id: str, filename: str) -> Response:
     record, path = _artifact_file(session_id, filename)
     if path.suffix.lower() == ".html":
         # Downloads must remain self-contained so they open offline.
-        html_text = _inline_plotly_bundle(record, path.read_text(encoding="utf-8"))
+        html_text = _inline_plotly_bundle(record, _read_utf8_robust(path))
         html_text = _inline_echarts_bundle(record, html_text)
         return Response(
             content=html_text,

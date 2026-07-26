@@ -58,6 +58,7 @@ from .charts import (
     _chart_filename_stem,
     _checked_columns,
     _humanize_chart_title,
+    _infer_chart_type,
     _localize_boolean_categories,
     _numeric_columns,
     _plotly_auto_interpret,
@@ -638,7 +639,7 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
 
     @tool
     def create_visualization(
-        chart_type: Literal["bar", "line", "area", "scatter", "scatter_3d", "histogram", "box", "violin", "pie", "heatmap", "correlation_heatmap", "scatter_matrix", "sunburst", "treemap"],
+        chart_type: Literal["auto", "bar", "line", "area", "scatter", "scatter_3d", "histogram", "box", "violin", "pie", "heatmap", "correlation_heatmap", "scatter_matrix", "sunburst", "treemap"] = "auto",
         x: str | None = None,
         y: str | None = None,
         color: str | None = None,
@@ -663,6 +664,13 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         数据驱动的白话解读。两个引擎复用同一套数据准备逻辑（聚合、
         布尔值本地化、top_n、_checked_columns），上层无感知切换。
 
+        ``chart_type="auto"``（默认）会按数据列的类型与格式自动选择最合适
+        的图型：时间序列（datetime x）→ 折线图；两数值列 → 散点图；
+        分类列 + 数值列 → 柱状图（类别少且无 color 时退化成饼图做构成占比）；
+        单数值列分布 → 直方图；层级 path_columns → 旭日图；多数值列
+        （无 x/y）→ 相关性热力图；dimensions ≥3 → 散点矩阵。调用方仍可用
+        显式 chart_type 覆盖自动选择。
+
         Supports standard and complex plots including 3D scatter, correlation heatmap, scatter
         matrix, sunburst and treemap. For bar/line/area, aggregation groups by x and optional
         color. heatmap expects x, y and numeric values. scatter_matrix uses dimensions.
@@ -675,6 +683,38 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         # top_n 筛选）。对大 DataFrame（100K+ 行）避免无谓的深拷贝。
         # correlation_heatmap / scatter_matrix 等只读图表不需要 copy。
         _raw_df = workspace.dataframe
+        requested = [value for value in [x, y, color, z, size, values] if value]
+        requested.extend(path_columns or [])
+        requested.extend(dimensions or [])
+        # 先校验列存在性，确保后续自动选图能安全读取 df[x]/df[y]。
+        _checked_columns(_raw_df, requested)
+
+        # 自动选图：必须在“是否需要 copy”的判断之前解析出具体 chart_type，
+        # 否则 needs_mutation 会因 chart_type=='auto' 误判为无需改动（bar/line/
+        # area/pie/sunburst/treemap 需要 copy 做聚合/布尔本地化）。
+        was_auto = chart_type == "auto"
+        if was_auto:
+            chart_type = _infer_chart_type(
+                _raw_df, x=x, y=y, color=color, z=z, size=size,
+                values=values, path_columns=path_columns, dimensions=dimensions,
+                aggregation=aggregation, top_n=top_n,
+            )
+            # 纯分类计数场景（仅给 x、无 y）：自动用 count 聚合，避免空 series。
+            if chart_type == "bar" and y is None and aggregation == "none":
+                aggregation = "count"
+            # 没有 color 分组、且 x 含重复类别（如 product×channel 但没传 color）
+            # 时，柱图会出现重复类别导致错乱，自动按 x 求和聚合对齐到每类一行。
+            # 注：aggregation 仅对 bar/line/area 生效，饼图的重复聚合在下方单独处理。
+            if (
+                chart_type == "bar"
+                and y is not None
+                and aggregation == "none"
+                and not color
+            ):
+                non_null = _raw_df[x].dropna() if x else pd.Series(dtype=object)
+                if len(non_null) > non_null.nunique():
+                    aggregation = "sum"
+
         _has_bool = any(
             col and col in _raw_df.columns and pd.api.types.is_bool_dtype(_raw_df[col])
             for col in (x, color)
@@ -686,10 +726,13 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             or _has_bool
         )
         df = _raw_df.copy() if needs_mutation else _raw_df
-        requested = [value for value in [x, y, color, z, size, values] if value]
-        requested.extend(path_columns or [])
-        requested.extend(dimensions or [])
-        _checked_columns(df, requested)
+        # 自动选图推断为饼图、且 x 含重复类别（如 product×channel 但没传 color）
+        # 时，饼图生成器按原始行会产生同名扇区错乱；这里预先按 x 聚合求和，
+        # 两引擎饼图均按单行绘制（ECharts 生成器还会再 groupby，幂等）。
+        if was_auto and chart_type == "pie" and y is not None and not color:
+            non_null = df[x].dropna()
+            if len(non_null) > non_null.nunique():
+                df = df.groupby(x, dropna=False)[y].sum().reset_index()
         # 意义性防护：拦截 ID 列分布图、常量列图、高基数不可读图表，
         # 报错文案带修正建议（换列/传 top_n/换图型）供模型下一轮自行纠正。
         _validate_chart_semantics(
@@ -905,6 +948,7 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                 values=values, path_columns=path_columns, dimensions=dimensions,
                 aggregation=aggregation, title=title, bins=bins,
                 display_title=display_title, stem=stem,
+                chart_type_source="auto" if was_auto else "explicit",
             ))
         # === Plotly 原有渲染逻辑（默认分支，保持不变）===
         html_path = workspace.artifacts_dir / f"{stem}.html"
@@ -978,6 +1022,7 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         response: dict[str, Any] = {
             "status": "ok",
             "chart_type": chart_type,
+            "chart_type_source": "auto" if was_auto else "explicit",
             "rows_plotted": len(df),
             **scale_details,
             "category_coverage": {

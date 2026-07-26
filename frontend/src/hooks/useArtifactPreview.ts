@@ -48,7 +48,7 @@ function useArtifactPreview(): UseArtifactPreviewResult {
   const previewController = useRef<AbortController | null>(null);
   // 预览 HTML LRU 缓存：每个图表 HTML 完全自包含（含 Plotly.js ~3.5MB），
   // 重复打开同一图表时秒开，避免重新 fetch + 解析。最多缓存 5 条。
-  const previewCacheRef = useRef<Map<string, string>>(new Map());
+  const previewCacheRef = useRef<Map<string, { html: string; etag: string }>>(new Map());
   // iframe onLoad 超时定时器：若 iframe 加载超时未触发 onLoad，则标记为失败，
   // 避免 loading 状态永久卡住（曾导致预览空白无任何提示）。
   const loadTimeoutRef = useRef<number | null>(null);
@@ -125,33 +125,32 @@ function useArtifactPreview(): UseArtifactPreviewResult {
       window.clearTimeout(loadTimeoutRef.current);
       loadTimeoutRef.current = null;
     }
-    // LRU 缓存命中：直接展示已加载的 HTML，跳过 fetch + 解析（Plotly.js ~3.5MB）。
-    // 重复打开同一图表时秒开，多个图表来回切换无需重新加载。
+    // LRU 缓存：命中后不再“无条件秒开”，而是带上 If-None-Match 做一次条件
+    // 请求——文件没变时服务端返回 304（极小响应，避免重下 ~3.5MB 内联 HTML），
+    // 文件一旦被重写（如重新生成图表）则 200 返回最新内容，缓存立即失效。
+    // 这彻底消灭“URL 不变但文件已变、前端 LRU 长期复用旧乱码 HTML”的问题。
     const cacheKey = item.preview_url;
     const cached = previewCacheRef.current.get(cacheKey);
-    if (cached !== undefined) {
-      // 防御性校验：缓存中的 HTML 可能是旧版本（后端未内联 JS 库时缓存），
-      // 命中后再次校验，若已失效则删除并重新拉取，避免永久空白。
-      if (!isValidPreviewHtml(cached)) {
-        previewCacheRef.current.delete(cacheKey);
-      } else {
-        // LRU：删除再插入，将命中条目移到 Map 末尾标记为最近使用
-        previewCacheRef.current.delete(cacheKey);
-        previewCacheRef.current.set(cacheKey, cached);
-        setPreviewHtml(withChartErrorReporter(cached));
-        setPreviewLoading(false);
-        return;
-      }
-    }
     setPreviewHtml("");
     setPreviewLoading(true);
     try {
       // 预览仍使用请求头鉴权，主访问令牌不会进入 URL、历史记录或服务器 access log。
       // 服务端返回完全离线的文档，再交给无同源权限的 sandbox iframe 执行。
+      const reqHeaders = cached?.etag
+        ? requestHeaders({ "If-None-Match": cached.etag })
+        : requestHeaders();
       const response = await fetch(`${API_URL}${item.preview_url}`, {
-        headers: requestHeaders(),
+        headers: reqHeaders,
         signal: controller.signal,
       });
+      // 304：文件未变，直接复用内存缓存（已是编码正确的 HTML）。
+      if (response.status === 304 && cached) {
+        previewCacheRef.current.delete(cacheKey);
+        previewCacheRef.current.set(cacheKey, cached); // LRU 触活
+        setPreviewHtml(withChartErrorReporter(cached.html));
+        setPreviewLoading(false);
+        return;
+      }
       const html = await response.text();
       if (!response.ok) {
         let payload: unknown = html;
@@ -167,8 +166,10 @@ function useArtifactPreview(): UseArtifactPreviewResult {
       if (!isValidPreviewHtml(html)) {
         throw new Error("预览文档缺少内联图表库，请重新生成产物或刷新页面后重试。");
       }
-      // 缓存结果：超过上限时淘汰 Map 中最旧（最久未使用）的条目
-      previewCacheRef.current.set(cacheKey, html);
+      // 缓存结果：带上 ETag，下次打开时用于条件请求校验新鲜度。
+      // 超过上限时淘汰 Map 中最旧（最久未使用）的条目。
+      const etag = response.headers.get("etag") || "";
+      previewCacheRef.current.set(cacheKey, { html, etag });
       if (previewCacheRef.current.size > PREVIEW_CACHE_MAX) {
         const oldest = previewCacheRef.current.keys().next().value;
         if (oldest !== undefined) previewCacheRef.current.delete(oldest);
@@ -268,26 +269,24 @@ function useArtifactPreview(): UseArtifactPreviewResult {
     setCompareHtml("");
     const cacheKey = item.preview_url;
     const cached = previewCacheRef.current.get(cacheKey);
-    if (cached !== undefined) {
-      // 防御性校验：与主预览一致，命中后再次校验避免复用坏 HTML。
-      if (!isValidPreviewHtml(cached)) {
+    try {
+      const reqHeaders = cached?.etag
+        ? requestHeaders({ "If-None-Match": cached.etag })
+        : requestHeaders();
+      const response = await fetch(`${API_URL}${item.preview_url}`, {
+        headers: reqHeaders,
+      });
+      // 304：文件未变，复用缓存（已校验过的正确 HTML）。
+      if (response.status === 304 && cached) {
         previewCacheRef.current.delete(cacheKey);
-      } else {
-        // LRU：删除再插入，将命中条目移到 Map 末尾标记为最近使用
-        previewCacheRef.current.delete(cacheKey);
-        previewCacheRef.current.set(cacheKey, cached);
-        setCompareHtml(withChartErrorReporter(cached));
-        setCompareLoading(false);
+        previewCacheRef.current.set(cacheKey, cached); // LRU 触活
+        setCompareHtml(withChartErrorReporter(cached.html));
         return;
       }
-    }
-    try {
-      const response = await fetch(`${API_URL}${item.preview_url}`, {
-        headers: requestHeaders(),
-      });
       const html = await response.text();
       if (response.ok && isValidPreviewHtml(html)) {
-        previewCacheRef.current.set(cacheKey, html);
+        const etag = response.headers.get("etag") || "";
+        previewCacheRef.current.set(cacheKey, { html, etag });
         if (previewCacheRef.current.size > PREVIEW_CACHE_MAX) {
           const oldest = previewCacheRef.current.keys().next().value;
           if (oldest !== undefined) previewCacheRef.current.delete(oldest);

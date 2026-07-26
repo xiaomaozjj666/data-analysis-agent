@@ -328,3 +328,130 @@ def test_echarts_scatter_3d_degrades_to_2d(workspace, sample_df):
     option = json.loads(Path(result["echarts_json"]).read_text(encoding="utf-8"))
     assert option["series"][0]["type"] == "scatter"  # 2D scatter
     assert "2D" in option["title"]["text"] or "2D" in option["title"].get("subtext", "")
+
+
+# === chart_type="auto" 自动选图测试 ===
+from data_agent.tools.charts import _infer_chart_type  # noqa: E402
+
+
+def _infer(df, **kwargs):
+    base = dict(x=None, y=None, color=None, z=None, size=None, values=None,
+                path_columns=None, dimensions=None, aggregation="none", top_n=None)
+    base.update(kwargs)
+    return _infer_chart_type(df, **base)
+
+
+def test_infer_categorical_x_numeric_y_no_color_few_categories_is_pie():
+    df = pd.DataFrame({
+        "product": ["音箱", "键盘", "鼠标"],
+        "sales": [100, 200, 150],
+    })
+    assert _infer(df, x="product", y="sales") == "pie"
+
+
+def test_infer_categorical_x_numeric_y_with_color_is_bar():
+    df = pd.DataFrame({
+        "product": ["音箱", "键盘", "鼠标"],
+        "sales": [100, 200, 150],
+        "channel": ["线上", "门店", "线上"],
+    })
+    assert _infer(df, x="product", y="sales", color="channel") == "bar"
+
+
+def test_infer_categorical_x_numeric_y_many_categories_is_bar():
+    df = pd.DataFrame({
+        "product": [f"p{i}" for i in range(30)],
+        "sales": list(range(30)),
+    })
+    assert _infer(df, x="product", y="sales") == "bar"
+
+
+def test_infer_two_numeric_is_scatter():
+    df = pd.DataFrame({"sales": [1, 2, 3], "profit": [4, 5, 6]})
+    assert _infer(df, x="sales", y="profit") == "scatter"
+
+
+def test_infer_datetime_x_numeric_y_is_line():
+    df = pd.DataFrame({
+        "date": pd.date_range("2023-01-01", periods=5),
+        "val": [1, 2, 3, 4, 5],
+    })
+    assert _infer(df, x="date", y="val") == "line"
+
+
+def test_infer_date_string_x_is_line():
+    df = pd.DataFrame({
+        "date": ["2023-01-01", "2023-02-01", "2023-03-01"],
+        "val": [1, 2, 3],
+    })
+    assert _infer(df, x="date", y="val") == "line"
+
+
+def test_infer_numeric_distribution_is_histogram():
+    df = pd.DataFrame({"v": list(range(40))})
+    assert _infer(df, x="v") == "histogram"
+
+
+def test_infer_categorical_x_only_is_bar_count():
+    df = pd.DataFrame({"product": ["a", "b", "c"]})
+    assert _infer(df, x="product") == "bar"
+
+
+def test_infer_many_numeric_no_xy_is_correlation_heatmap():
+    df = pd.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6], "c": [7, 8, 9]})
+    assert _infer(df) == "correlation_heatmap"
+
+
+def test_infer_path_columns_is_sunburst():
+    df = pd.DataFrame({"r1": ["x", "y"], "r2": ["a", "b"]})
+    assert _infer(df, path_columns=["r1", "r2"]) == "sunburst"
+
+
+def test_infer_dimensions_three_is_scatter_matrix():
+    df = pd.DataFrame({"a": [1, 2], "b": [3, 4], "c": [5, 6]})
+    assert _infer(df, dimensions=["a", "b", "c"]) == "scatter_matrix"
+
+
+def test_infer_z_given_is_scatter_3d():
+    df = pd.DataFrame({"a": [1, 2], "b": [3, 4], "c": [5, 6]})
+    assert _infer(df, x="a", y="b", z="c") == "scatter_3d"
+
+
+def test_auto_create_visualization_resolves_and_reports_source(workspace, sample_df):
+    """auto 模式：推断饼图（product 3 类 + sales，无 color），响应标注来源。"""
+    tools = {t.name: t for t in build_tools(workspace)}
+    result = json.loads(tools["create_visualization"].invoke({
+        "chart_type": "auto", "x": "product", "y": "sales",
+        "chart_engine": "echarts", "title": "产品占比",
+    }))
+    assert result["status"] == "ok"
+    assert result["chart_type_source"] == "auto"
+    assert result["chart_type"] == "pie"
+    option = json.loads(Path(result["echarts_json"]).read_text(encoding="utf-8"))
+    assert option["series"][0]["type"] == "pie"
+    # 自动按 x 聚合后每个 product 应只有 1 个扇区（无重复）
+    assert len(option["series"][0]["data"]) == 3
+
+
+def test_auto_duplicate_x_without_color_aggregates(workspace, sample_df):
+    """auto 柱图：product 含重复行且无 color，应自动按 x 求和聚合。"""
+    tools = {t.name: t for t in build_tools(workspace)}
+    result = json.loads(tools["create_visualization"].invoke({
+        "chart_type": "auto", "x": "product", "y": "sales",
+        "chart_engine": "echarts",
+    }))
+    assert result["chart_type"] == "pie"  # product<=8 且无 color → pie
+    option = json.loads(Path(result["echarts_json"]).read_text(encoding="utf-8"))
+    assert len(option["series"][0]["data"]) == 3  # 聚合后 3 个唯一 product
+
+
+def test_explicit_chart_type_overrides_auto(workspace, sample_df):
+    """显式 chart_type 应覆盖自动选择，且 source 标注为 explicit。"""
+    tools = {t.name: t for t in build_tools(workspace)}
+    result = json.loads(tools["create_visualization"].invoke({
+        "chart_type": "bar", "x": "product", "y": "sales",
+        "color": "channel", "chart_engine": "echarts",
+    }))
+    assert result["chart_type_source"] == "explicit"
+    assert result["chart_type"] == "bar"
+
