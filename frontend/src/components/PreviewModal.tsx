@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { AlertTriangle, Columns2, Download, FileImage, Maximize2, Palette, RefreshCw, X } from "lucide-react";
 import { useAppStore } from "../store/useAppStore";
 import type { UseArtifactPreviewResult } from "../hooks/useArtifactPreview";
@@ -29,6 +29,37 @@ function PreviewModal({ preview, theme, setTheme, onDownload }: PreviewModalProp
     previewFullscreen, setPreviewFullscreen, compareMode, setCompareMode,
     compareItem, compareHtml, compareLoading, pngDownloading,
   } = preview;
+
+  // 焦点管理：打开时记录触发元素并聚焦面板，关闭时把焦点还回触发元素；
+  // Tab 在面板内循环（焦点陷阱），避免键盘用户穿透模态操作背后页面。
+  const panelRef = useRef<HTMLElement>(null);
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (!previewItem) return;
+    restoreFocusRef.current = document.activeElement as HTMLElement | null;
+    panelRef.current?.focus();
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Tab" || !panelRef.current) return;
+      const focusables = panelRef.current.querySelectorAll<HTMLElement>(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      );
+      if (!focusables.length) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      restoreFocusRef.current?.focus?.();
+    };
+  }, [previewItem]);
 
   // 主题联动（#1）父 → 子：React 主题变化或图表加载完成时，向所有预览 iframe
   // postMessage 当前主题；iframe 内桥接脚本改写 data-theme，触发图表重新着色。
@@ -64,11 +95,11 @@ function PreviewModal({ preview, theme, setTheme, onDownload }: PreviewModalProp
         if (event.target === event.currentTarget) closeArtifactPreview();
       }}
     >
-      <section className={`preview-panel ${previewFullscreen ? "is-fullscreen" : ""}`} role="dialog" aria-modal="true" aria-label={`预览 ${previewItem.description || previewItem.name}`}>
+      <section ref={panelRef} tabIndex={-1} className={`preview-panel ${previewFullscreen ? "is-fullscreen" : ""}`} role="dialog" aria-modal="true" aria-label={`预览 ${previewItem.description || previewItem.name}`}>
         <header>
           <div>
             <span className="section-kicker">交互图表</span>
-            <h2>{previewItem.description || previewItem.name}</h2>
+            <h2 title={previewItem.description || previewItem.name}>{previewItem.description || previewItem.name}</h2>
           </div>
           <div className="preview-actions">
             <button type="button" onClick={() => onDownload(previewItem)}><Download size={15} />下载</button>
@@ -90,10 +121,10 @@ function PreviewModal({ preview, theme, setTheme, onDownload }: PreviewModalProp
               编辑
             </button>
             {/* 全屏切换（#17）：撑满视口，配合响应式 resize 自适应图表尺寸 */}
-            <button type="button" title="全屏" onClick={() => setPreviewFullscreen(v => !v)}>
+            <button type="button" title="全屏" aria-label={previewFullscreen ? "退出全屏" : "全屏预览"} onClick={() => setPreviewFullscreen(v => !v)}>
               <Maximize2 size={15} />
             </button>
-            <button type="button" className="icon-button" title="关闭预览 (Esc)" onClick={closeArtifactPreview}><X size={17} /></button>
+            <button type="button" className="icon-button" title="关闭预览 (Esc)" aria-label="关闭预览" onClick={closeArtifactPreview}><X size={17} /></button>
           </div>
         </header>
         {chartEditOpen && (

@@ -40,15 +40,28 @@ const ConversationThread = React.memo(function ConversationThread({
   onEditMessage, theme, inputRef,
 }: ConversationThreadProps) {
   const listRef = useRef<HTMLDivElement>(null);
+  // 智能滚动跟随：用户上滑阅读历史时暂停自动滚底，回到底部附近或
+  // 发出新消息时恢复跟随，避免流式生成中强制把用户拽回底部。
+  const stickToBottomRef = useRef(true);
+  const prevCountRef = useRef(messages.length);
   const deferredLastContent = useDeferredValue(
     messages.length ? messages[messages.length - 1].content || "" : ""
   );
 
-  // 流式时自动滚动到底部，让用户看到最新生成的文字
+  const handleListScroll = () => {
+    const el = listRef.current;
+    if (!el) return;
+    stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+  };
+
+  // 流式时自动滚动到底部；新增消息（用户刚发送）时强制回底并重置跟随
   useEffect(() => {
-    if (listRef.current) {
-      listRef.current.scrollTop = listRef.current.scrollHeight;
-    }
+    const el = listRef.current;
+    if (!el) return;
+    const hasNewMessage = messages.length !== prevCountRef.current;
+    prevCountRef.current = messages.length;
+    if (hasNewMessage) stickToBottomRef.current = true;
+    if (stickToBottomRef.current) el.scrollTop = el.scrollHeight;
   }, [deferredLastContent, messages.length, running]);
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -69,7 +82,7 @@ const ConversationThread = React.memo(function ConversationThread({
         <small>基于当前数据集直接回答，无需重跑完整流程</small>
       </div>
       {messages.length > 0 && (
-        <div className="conversation-list" ref={listRef}>
+        <div className="conversation-list" ref={listRef} onScroll={handleListScroll}>
           {messages.map((msg, index) => (
             <ConversationBubble
               key={index}
@@ -134,8 +147,9 @@ const ConversationBubble = React.memo(function ConversationBubble({
 }: ConversationBubbleProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(message.content || "");
-  // 复制状态：copiedIndex 记录当前气泡是否已复制，1.8s 后自动恢复图标
-  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  // 复制状态：copied 成功 / failed 失败（剪贴板权限被拒或 HTTP 环境），
+  // 失败时明确告知而非静默吞掉，避免用户以为已复制成功。
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
 
   // 进入编辑模式时同步 draft
   useEffect(() => {
@@ -148,12 +162,15 @@ const ConversationBubble = React.memo(function ConversationBubble({
     [artifacts, onPreview, theme]
   );
 
-  // 复制消息内容到剪贴板，成功后切换图标 1.8s 提示已复制
-  const copyMessage = (text: string, idx: number) => {
+  // 复制消息内容到剪贴板：成功切 ✓ 图标 1.8s，失败切警告图标 3s 提示用户手动复制
+  const copyMessage = (text: string) => {
     navigator.clipboard.writeText(text).then(() => {
-      setCopiedIndex(idx);
-      window.setTimeout(() => setCopiedIndex(null), 1800);
-    }).catch(() => { /* 剪贴板权限被拒或不可用时静默 */ });
+      setCopyState("copied");
+      window.setTimeout(() => setCopyState("idle"), 1800);
+    }).catch(() => {
+      setCopyState("failed");
+      window.setTimeout(() => setCopyState("idle"), 3000);
+    });
   };
 
   if (message.role === "user") {
@@ -188,11 +205,11 @@ const ConversationBubble = React.memo(function ConversationBubble({
               <button
                 type="button"
                 className="chat-bubble-action-btn"
-                title="复制"
+                title={copyState === "failed" ? "复制失败，请手动选择文本复制" : "复制"}
                 aria-label="复制消息"
-                onClick={() => copyMessage(message.content || "", index)}
+                onClick={() => copyMessage(message.content || "")}
               >
-                {copiedIndex === index ? <Check size={12} /> : <Copy size={12} />}
+                {copyState === "copied" ? <Check size={12} /> : copyState === "failed" ? <AlertTriangle size={12} /> : <Copy size={12} />}
               </button>
               {canEdit && onEditMessage && (
                 <button
@@ -248,11 +265,11 @@ const ConversationBubble = React.memo(function ConversationBubble({
           <button
             type="button"
             className="chat-action"
-            title="复制"
+            title={copyState === "failed" ? "复制失败，请手动选择文本复制" : "复制"}
             aria-label="复制回复"
-            onClick={() => copyMessage(message.content || "", index)}
+            onClick={() => copyMessage(message.content || "")}
           >
-            {copiedIndex === index ? <Check size={12} /> : <Copy size={12} />}
+            {copyState === "copied" ? <Check size={12} /> : copyState === "failed" ? <AlertTriangle size={12} /> : <Copy size={12} />}
           </button>
         </div>
       )}
