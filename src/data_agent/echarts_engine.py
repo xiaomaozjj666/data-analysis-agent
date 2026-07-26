@@ -39,17 +39,18 @@ _ECHARTS_PALETTE = [
     "#5E7A8C",  # 灰蓝
 ]
 
-# 文本/网格/背景色（浅色主题，对标 Observable/Plot 极简风）
-_ECHARTS_TEXT_COLOR = "#1f2937"
+# 文本/网格/背景色：与前端 tokens.css 亮色令牌一致（fg-default/border-default），
+# 图表嵌在前端 iframe 里时不产生色差
+_ECHARTS_TEXT_COLOR = "#1a1d29"
 _ECHARTS_TEXT_SECONDARY = "#6b7280"
-_ECHARTS_GRID_COLOR = "#e5e7eb"
+_ECHARTS_GRID_COLOR = "#e4e6ea"
 _ECHARTS_BG_COLOR = "#ffffff"
-_ECHARTS_BORDER_COLOR = "#f3f4f6"
+_ECHARTS_BORDER_COLOR = "#eef0f3"
 
-# 字体栈：跨平台中英文兼容，统一字号梯度
+# 字体栈：与前端 tokens.css 一致（Inter 优先），图表与外层界面字形统一
 _ECHARTS_FONT_FAMILY = (
-    "'PingFang SC', 'Microsoft YaHei', 'Helvetica Neue', "
-    "'IBM Plex Sans', Arial, sans-serif"
+    "'Inter', 'IBM Plex Sans', 'Noto Sans SC', -apple-system, "
+    "'Segoe UI', 'PingFang SC', 'Microsoft YaHei UI', sans-serif"
 )
 
 # ECharts 主题常量：所有图表共享，保证视觉一致
@@ -563,7 +564,7 @@ def _bar_tooltip_formatter(x_label: str, y_label: str, agg_suffix: str):
         "html+='<span style=\"font-weight:500;\">'+(p.value==null?'—':p.value.toLocaleString())+'</span>';"
         "html+='</div>';"
         "});"
-        "if(params.length>1){html+='<div style=\"margin-top:6px;border-top:1px solid #e5e7eb;padding-top:6px;\">合计：'+total.toLocaleString()+'</div>';}"
+        "if(params.length>1){html+='<div style=\"margin-top:6px;border-top:1px solid #e4e6ea;padding-top:6px;\">合计：'+total.toLocaleString()+'</div>';}"
         "return html;"
         "}"
     )
@@ -593,7 +594,7 @@ def _echarts_line(
         "dataZoom": [
             {"type": "inside", "start": 0, "end": 100},
             {"type": "slider", "start": 0, "end": 100, "height": 22, "bottom": 16,
-             "borderColor": "transparent", "backgroundColor": "#f3f4f6",
+             "borderColor": "transparent", "backgroundColor": "#eceef1",
              "fillerColor": _hex_to_rgba(_ECHARTS_PALETTE[0], 0.12),
              "handleStyle": {"color": _ECHARTS_PALETTE[0]}, "textStyle": {"color": _ECHARTS_TEXT_SECONDARY}},
         ],
@@ -1229,17 +1230,18 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
     var isDark = getIsDark();
     var chart = window.__echartsInstance;
     if (chart) {
-      var axisColor = isDark ? '#2a3445' : '#e5e7eb';
-      var splitColor = isDark ? '#2a3445' : '#f3f4f6';
-      var labelColor = isDark ? '#9ca3af' : '#6b7280';
-      var textColor = isDark ? '#e6eaf0' : '#1f2937';
-      var tooltipBg = isDark ? 'rgba(28,36,51,0.98)' : 'rgba(255,255,255,0.98)';
+      // 暗色值与前端 tokens.css 一致（border/fg/canvas 令牌），亮色值与 Python 常量一致
+      var axisColor = isDark ? '#2e2f33' : '#e4e6ea';
+      var splitColor = isDark ? '#2e2f33' : '#eef0f3';
+      var labelColor = isDark ? '#9aa0a6' : '#6b7280';
+      var textColor = isDark ? '#e8eaed' : '#1a1d29';
+      var tooltipBg = isDark ? 'rgba(36,37,40,0.98)' : 'rgba(255,255,255,0.98)';
       var axisUpdate = function() {
         return { axisLabel: { color: labelColor }, axisLine: { lineStyle: { color: axisColor } },
                  splitLine: { lineStyle: { color: splitColor } }, nameTextStyle: { color: labelColor } };
       };
       var update = {
-        backgroundColor: isDark ? '#1c2433' : '#ffffff',
+        backgroundColor: isDark ? '#1a1b1e' : '#ffffff',
         textStyle: { color: textColor },
         title: { textStyle: { color: textColor }, subtextStyle: { color: labelColor } },
         legend: { textStyle: { color: labelColor } },
@@ -1250,6 +1252,15 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
         if (cur.xAxis && cur.xAxis.length) update.xAxis = cur.xAxis.map(function() { return axisUpdate(); });
         if (cur.yAxis && cur.yAxis.length) update.yAxis = cur.yAxis.map(function() { return axisUpdate(); });
         if (cur.parallelAxis && cur.parallelAxis.length) update.parallelAxis = cur.parallelAxis.map(function() { return axisUpdate(); });
+        // dataZoom 滑条：亮灰槽底/拖动把手在暗底上会形成亮条，跟随主题换成中性深灰
+        if (cur.dataZoom && cur.dataZoom.length) {
+          update.dataZoom = cur.dataZoom.map(function(d) {
+            if (d.type !== 'slider') return {};
+            return { backgroundColor: isDark ? '#242528' : '#eceef1',
+                     moveHandleStyle: { color: isDark ? '#3a3b40' : '#D2DBEE' },
+                     textStyle: { color: labelColor } };
+          });
+        }
         // visualMap：除文字色外，暗色下替换色板——浅色端（相关性中点 #F7F7F7、
         // 顺序色低端 #EDF3F9）在暗底上刺眼；首次运行时缓存浅色原值供切回。
         // 发散色板（>3 段）中点换暗底色，两端降饱和抬亮度。
@@ -1266,8 +1277,8 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
               var diverging = light.length > 3;
               upd.inRange = { color: isDark
                 ? (diverging
-                    ? ['#6FA3DC', '#4C79A9', '#3A5573', '#2a3445', '#5E3A42', '#A0525E', '#E0787F']
-                    : ['#26324a', '#3A6386', '#4E8FC7'])
+                    ? ['#6FA3DC', '#4C79A9', '#3c4654', '#2a2b2f', '#52383e', '#A0525E', '#E0787F']
+                    : ['#262b33', '#3A6386', '#4E8FC7'])
                 : light };
             }
             return upd;
@@ -1279,12 +1290,12 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
         if (cur.series && cur.series.length) {
           update.series = cur.series.map(function(s) {
             if (s.type === 'heatmap') {
-              return { itemStyle: { borderColor: isDark ? '#1c2433' : '#ffffff' },
-                       label: { color: isDark ? '#e6eaf0' : '#1f2937' } };
+              return { itemStyle: { borderColor: isDark ? '#1a1b1e' : '#ffffff' },
+                       label: { color: isDark ? '#e8eaed' : '#1a1d29' } };
             }
             if (s.type === 'scatter' && s.name === '\u5747\u503c') {
-              return { itemStyle: { color: isDark ? '#1c2433' : '#ffffff',
-                                    borderColor: isDark ? '#e6eaf0' : '#1f2937' } };
+              return { itemStyle: { color: isDark ? '#1a1b1e' : '#ffffff',
+                                    borderColor: isDark ? '#e8eaed' : '#1a1d29' } };
             }
             return {};
           });
@@ -1292,20 +1303,20 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
         chart.setOption(update);
       } catch (e) { /* noop */ }
     }
-    document.documentElement.style.background = isDark ? '#1c2433' : '#ffffff';
+    document.documentElement.style.background = isDark ? '#1a1b1e' : '#ffffff';
     // tooltip 内联说明文字色：所有 formatter 用 var(--tt-muted) 引用，这里统一切换
-    document.documentElement.style.setProperty('--tt-muted', isDark ? '#9ca3af' : '#6b7280');
-    document.body.style.background = isDark ? '#1c2433' : '#ffffff';
-    document.body.style.color = isDark ? '#e6eaf0' : '#1f2937';
+    document.documentElement.style.setProperty('--tt-muted', isDark ? '#9aa0a6' : '#6b7280');
+    document.body.style.background = isDark ? '#1a1b1e' : '#ffffff';
+    document.body.style.color = isDark ? '#e8eaed' : '#1a1d29';
     var interp = document.querySelector('.interpretation');
     if (interp) {
-      interp.style.background = isDark ? '#162032' : '#f9fafb';
-      interp.style.color = isDark ? '#cbd5e1' : '#374151';
-      interp.style.borderTopColor = isDark ? '#2a3445' : '#e5e7eb';
+      interp.style.background = isDark ? '#202124' : '#f9fafb';
+      interp.style.color = isDark ? '#bdc1c6' : '#374151';
+      interp.style.borderTopColor = isDark ? '#2e2f33' : '#e4e6ea';
     }
     var interpTitle = document.querySelector('.interpretation-title');
     if (interpTitle) {
-      interpTitle.style.color = isDark ? '#9ca3af' : '#6b7280';
+      interpTitle.style.color = isDark ? '#9aa0a6' : '#6b7280';
     }
     // 同步切换按钮图标与提示
     updateToggleUI(isDark);
@@ -1350,7 +1361,7 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
     if (e.data && e.data.type === 'download-png') {
       var chart = window.__echartsInstance;
       if (chart) {
-        var url = chart.getDataURL({type: 'png', pixelRatio: 2, backgroundColor: getIsDark() ? '#1c2433' : '#fff'});
+        var url = chart.getDataURL({type: 'png', pixelRatio: 2, backgroundColor: getIsDark() ? '#1a1b1e' : '#fff'});
         parent.postMessage({type: 'png-data', data: url}, '*');
       }
     }
@@ -1373,7 +1384,7 @@ _ECHARTS_HTML_TEMPLATE = """<!doctype html>
      这样预览模态（840px 高）里图表会完整显示，不再溢出看不见。 */
   #chart {{ width: 100%; height: 100%; min-height: 320px; }}
   .interpretation {{
-    border-top: 1px solid #e5e7eb;
+    border-top: 1px solid #e4e6ea;
     padding: 16px 24px;
     background: #f9fafb;
     font-size: 13px;
@@ -1396,18 +1407,18 @@ _ECHARTS_HTML_TEMPLATE = """<!doctype html>
   .theme-toggle {{
     position: absolute; top: 12px; right: 12px; z-index: 30;
     width: 34px; height: 34px; border-radius: 9px;
-    border: 1px solid #e5e7eb; background: rgba(255,255,255,0.92);
-    color: #1f2937; cursor: pointer;
+    border: 1px solid #e4e6ea; background: rgba(255,255,255,0.92);
+    color: #1a1d29; cursor: pointer;
     display: flex; align-items: center; justify-content: center;
     box-shadow: 0 2px 8px rgba(0,0,0,0.08);
     transition: background .15s, border-color .15s, transform .1s;
     -webkit-appearance: none; appearance: none; padding: 0;
   }}
-  .theme-toggle:hover {{ transform: translateY(-1px); border-color: #cbd5e1; }}
+  .theme-toggle:hover {{ transform: translateY(-1px); border-color: #c7ccd4; }}
   .theme-toggle:active {{ transform: translateY(0); }}
   .theme-toggle svg {{ display: block; }}
   html[data-theme='dark'] .theme-toggle {{
-    background: rgba(28,36,51,0.92); border-color: #2a3445; color: #e6eaf0;
+    background: rgba(26,27,30,0.92); border-color: #2e2f33; color: #e8eaed;
   }}
 </style>
 </head>
