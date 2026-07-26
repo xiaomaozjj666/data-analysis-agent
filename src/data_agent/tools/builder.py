@@ -783,6 +783,25 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         labels = {column: _human_column_label(str(column)) for column in df.columns}
         if y and aggregation in _AGGREGATION_LABELS:
             labels[y] = f"{_human_column_label(y)}（{_AGGREGATION_LABELS[aggregation]}）"
+        # 文件名用"类型_序号"格式（如 柱状图_01），不再把 LLM 给的整段标题
+        # 塞进文件名——以前会出现"客户评分按产品分布_ANOVA_p_0_0012_η²_..."
+        # 这种看不懂的乱码文件名。display_title 才是 UI 上展示的人话标题。
+        existing_chart_count = workspace.count_artifacts("visualization")
+        stem = _chart_filename_stem(chart_type, existing_chart_count)
+        display_title = _humanize_chart_title(title, chart_type)
+        # === 双引擎分派（先于 Plotly fig 构建）：echarts 请求直接走独立渲染分支，
+        # 避免白跑一次 Plotly 构建（scatter_3d 缺 z 时还会被 Plotly 校验误拦）===
+        if chart_engine == "echarts":
+            from data_agent.echarts_engine import _render_echarts
+            return json_text(_render_echarts(
+                workspace, df,
+                chart_type=chart_type, x=x, y=y, color=color, z=z, size=size,
+                values=values, path_columns=path_columns, dimensions=dimensions,
+                aggregation=aggregation, title=title, bins=bins,
+                display_title=display_title, stem=stem,
+                chart_type_source="auto" if was_auto else "explicit",
+            ))
+        # === Plotly 原有渲染逻辑（默认分支，保持不变）===
         common = {
             "data_frame": df,
             "title": title,
@@ -933,24 +952,6 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             fig.update_traces(marker={"size": 9, "opacity": 0.82, "line": {"width": 0.7, "color": "white"}}, selector={"type": "scatter"})
         if color:
             fig.update_layout(legend_title_text=_human_column_label(color))
-        # 文件名用"类型_序号"格式（如 柱状图_01），不再把 LLM 给的整段标题
-        # 塞进文件名——以前会出现"客户评分按产品分布_ANOVA_p_0_0012_η²_..."
-        # 这种看不懂的乱码文件名。display_title 才是 UI 上展示的人话标题。
-        existing_chart_count = workspace.count_artifacts("visualization")
-        stem = _chart_filename_stem(chart_type, existing_chart_count)
-        display_title = _humanize_chart_title(title, chart_type)
-        # === 双引擎分派：echarts 走独立渲染分支，plotly 走原有逻辑 ===
-        if chart_engine == "echarts":
-            from data_agent.echarts_engine import _render_echarts
-            return json_text(_render_echarts(
-                workspace, df,
-                chart_type=chart_type, x=x, y=y, color=color, z=z, size=size,
-                values=values, path_columns=path_columns, dimensions=dimensions,
-                aggregation=aggregation, title=title, bins=bins,
-                display_title=display_title, stem=stem,
-                chart_type_source="auto" if was_auto else "explicit",
-            ))
-        # === Plotly 原有渲染逻辑（默认分支，保持不变）===
         html_path = workspace.artifacts_dir / f"{stem}.html"
         shared_plotly = workspace.ensure_plotly_bundle()
         relative_script = shared_plotly.relative_to(workspace.artifacts_dir).as_posix() if shared_plotly else None

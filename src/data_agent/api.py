@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import asyncio  # noqa: F401 — 测试通过 data_agent.api.asyncio.wait_for 打补丁
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -81,6 +82,11 @@ from data_agent.routers.artifacts import (
 # ---------------------------------------------------------------------------
 # FastAPI 应用装配。
 # ---------------------------------------------------------------------------
+# LangSmith tracing 后台上报碰到免费额度限流时会刷 429 warning，
+# 不影响任何分析功能，降为 ERROR 级别避免淹没业务日志。
+logging.getLogger("langsmith").setLevel(logging.ERROR)
+logging.getLogger("langsmith.client").setLevel(logging.ERROR)
+
 app = FastAPI(
     title="Data Analysis Agent API",
     version="2.0.0",

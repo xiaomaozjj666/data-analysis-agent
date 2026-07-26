@@ -189,16 +189,21 @@ def test_echarts_correlation_heatmap(workspace, sample_df):
     assert option["visualMap"]["max"] == 1
 
 
-def test_echarts_scatter_matrix_uses_parallel(workspace, sample_df):
-    """散点矩阵：用平行坐标近似表达。"""
+def test_echarts_scatter_matrix_is_true_splom(workspace, sample_df):
+    """散点矩阵：N×N 多 grid 真 SPLOM，非对角散点 + 对角直方图。"""
     tools = {t.name: t for t in build_tools(workspace)}
     result = json.loads(tools["create_visualization"].invoke({
         "chart_type": "scatter_matrix", "dimensions": ["sales", "profit", "rating"],
         "chart_engine": "echarts",
     }))
     option = json.loads(Path(result["echarts_json"]).read_text(encoding="utf-8"))
-    assert option["series"][0]["type"] == "parallel"
-    assert len(option["parallelAxis"]) == 3
+    # 3×3 网格：9 个 grid，对应 9 对坐标轴
+    assert len(option["grid"]) == 9
+    assert len(option["xAxis"]) == 9
+    assert len(option["yAxis"]) == 9
+    types = {s["type"] for s in option["series"]}
+    assert types == {"scatter", "bar"}  # 非对角散点 + 对角直方图
+    assert sum(1 for s in option["series"] if s["type"] == "bar") == 3  # 对角线 3 格
 
 
 def test_echarts_sunburst_builds_hierarchy(workspace, sample_df):
@@ -318,11 +323,26 @@ def test_echarts_violin_falls_back_to_boxplot(workspace, sample_df):
     assert "小提琴" in option["title"]["subtext"]
 
 
-def test_echarts_scatter_3d_degrades_to_2d(workspace, sample_df):
-    """3D 散点降级为 2D + 标注。"""
+def test_echarts_scatter_3d_uses_gl(workspace, sample_df):
+    """z 轴有效时用 echarts-gl 真 3D 散点；缺 z 时降级 2D + 标注。"""
     tools = {t.name: t for t in build_tools(workspace)}
     result = json.loads(tools["create_visualization"].invoke({
         "chart_type": "scatter_3d", "x": "sales", "y": "profit", "z": "rating",
+        "chart_engine": "echarts",
+    }))
+    option = json.loads(Path(result["echarts_json"]).read_text(encoding="utf-8"))
+    assert option["series"][0]["type"] == "scatter3D"
+    assert "grid3D" in option and "zAxis3D" in option
+    # HTML 里需引入 echarts-gl bundle（本地下载或 CDN 直引）
+    html = Path(result["html"]).read_text(encoding="utf-8")
+    assert "echarts-gl" in html
+
+
+def test_echarts_scatter_3d_degrades_without_z(workspace, sample_df):
+    """缺失 z 轴时 3D 散点降级为 2D 并标注。"""
+    tools = {t.name: t for t in build_tools(workspace)}
+    result = json.loads(tools["create_visualization"].invoke({
+        "chart_type": "scatter_3d", "x": "sales", "y": "profit",
         "chart_engine": "echarts",
     }))
     option = json.loads(Path(result["echarts_json"]).read_text(encoding="utf-8"))
