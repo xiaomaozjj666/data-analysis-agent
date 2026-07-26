@@ -29,16 +29,29 @@ const ArtifactCenter = React.memo(function ArtifactCenter({
     [artifacts],
   );
 
+  // 已实际存在的图表引擎：仅当某引擎有图表时才显示对应筛选标签，
+  // 避免出现「点 Plotly 却什么都没有」——当前产物几乎全是 ECharts，
+  // Plotly 标签若无图表则直接不渲染。
+  const enginesPresent = useMemo(() => {
+    const set = new Set(charts.map((c) => c.engine));
+    return { echarts: set.has("echarts"), plotly: set.has("plotly") };
+  }, [charts]);
+
   // 筛选与排序状态
   const [filter, setFilter] = useState<"all" | "plotly" | "echarts">("all");
   const [sortBy, setSortBy] = useState<"default" | "name" | "size">("default");
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
+  // 防御：若当前 filter 指向实际不存在的引擎（如历史选择了 Plotly 但本批无
+  // Plotly 图），退化为 "all"，杜绝筛选后整块交互图表空白的情况。
+  const effectiveFilter: "all" | "plotly" | "echarts" =
+    filter === "all" ? "all" : enginesPresent[filter] ? filter : "all";
+
   // 按引擎筛选 + 按名称/大小排序
   const filteredCharts = useMemo(() => {
     let result = charts;
-    if (filter !== "all") {
-      result = result.filter((c) => c.engine === filter);
+    if (effectiveFilter !== "all") {
+      result = result.filter((c) => c.engine === effectiveFilter);
     }
     if (sortBy === "name") {
       result = [...result].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
@@ -46,7 +59,7 @@ const ArtifactCenter = React.memo(function ArtifactCenter({
       result = [...result].sort((a, b) => (b.size_bytes || 0) - (a.size_bytes || 0));
     }
     return result;
-  }, [charts, filter, sortBy]);
+  }, [charts, effectiveFilter, sortBy]);
 
   if (!artifacts.length) return <div className="empty-row">分析完成后，最终图表和数据文件会出现在这里。</div>;
 
@@ -54,23 +67,27 @@ const ArtifactCenter = React.memo(function ArtifactCenter({
 
   return (
     <div className="artifact-center">
-      {filteredCharts.length > 0 && (
+      {charts.length > 0 && (
         <section className="artifact-section">
           <div className="artifact-section-label">
             <span>交互图表</span>
-            <small>{filteredCharts.length} 张精选结果</small>
+            <small>{charts.length} 张精选结果</small>
           </div>
           {/* 筛选与排序控件 */}
           <div className="artifact-controls">
-            <button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>
+            <button className={effectiveFilter === "all" ? "active" : ""} onClick={() => setFilter("all")}>
               全部
             </button>
-            <button className={filter === "plotly" ? "active" : ""} onClick={() => setFilter("plotly")}>
-              Plotly
-            </button>
-            <button className={filter === "echarts" ? "active" : ""} onClick={() => setFilter("echarts")}>
-              ECharts
-            </button>
+            {enginesPresent.plotly && (
+              <button className={effectiveFilter === "plotly" ? "active" : ""} onClick={() => setFilter("plotly")}>
+                Plotly
+              </button>
+            )}
+            {enginesPresent.echarts && (
+              <button className={effectiveFilter === "echarts" ? "active" : ""} onClick={() => setFilter("echarts")}>
+                ECharts
+              </button>
+            )}
             <select value={sortBy} onChange={(e) => setSortBy(e.target.value as typeof sortBy)}>
               <option value="default">默认排序</option>
               <option value="name">按名称</option>
@@ -88,7 +105,8 @@ const ArtifactCenter = React.memo(function ArtifactCenter({
               </button>
             )}
           </div>
-          <div className="chart-grid">
+          {filteredCharts.length > 0 ? (
+            <div className="chart-grid">
             {filteredCharts.map((item, index) => {
               const { Icon, label } = pickChartIcon(item.name);
               const isSelected = selected.has(item.name);
@@ -149,7 +167,18 @@ const ArtifactCenter = React.memo(function ArtifactCenter({
                 </SpotlightCard>
               );
             })}
-          </div>
+            </div>
+          ) : (
+            <div className="empty-row">
+              当前筛选条件下暂无图表。本批产物仅包含{" "}
+              {enginesPresent.echarts && enginesPresent.plotly
+                ? "ECharts 与 Plotly"
+                : enginesPresent.echarts
+                  ? "ECharts"
+                  : "Plotly"}{" "}
+              图表。
+            </div>
+          )}
         </section>
       )}
       {files.length > 0 && (
