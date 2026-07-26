@@ -45,6 +45,9 @@ ECHARTS_BUNDLE_NAME = "echarts.min.js"
 #: ECharts 官方稳定版 CDN，首次生成 echarts 图表时下载到 artifacts_dir，
 #: 后续复用。下载失败时 fallback 到 CDN URL 直接引用（在线场景）。
 ECHARTS_CDN_URL = "https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"
+#: echarts-gl 扩展 bundle（3D 散点等 gl 系列需要），与主 bundle 同目录按需下载。
+ECHARTS_GL_BUNDLE_NAME = "echarts-gl.min.js"
+ECHARTS_GL_CDN_URL = "https://cdn.jsdelivr.net/npm/echarts-gl@2.0.9/dist/echarts-gl.min.js"
 
 #: 活动 DataFrame 的 checkpoint 文件名，用于重启后恢复。
 WORKSPACE_STATE_NAME = "workspace_state.parquet"
@@ -576,6 +579,27 @@ class DataWorkspace:
             return bundle
         except Exception:
             # 离线 / 网络受限场景：返回 None，调用方走 CDN 直引 fallback。
+            return None
+
+    def ensure_echarts_gl_bundle(self) -> Path | None:
+        """按需下载 echarts-gl 扩展 bundle，仅 3D 图表首次生成时触发。
+
+        与 ``ensure_echarts_bundle`` 同策略：首次从 CDN 下载到 artifacts_dir
+        后复用；失败返回 None，调用方 fallback 到 CDN URL 直引。
+        """
+        import urllib.request
+
+        bundle = (self.artifacts_dir / ECHARTS_GL_BUNDLE_NAME).resolve()
+        if bundle.exists() and bundle.stat().st_size > 0:
+            return bundle
+        try:
+            with urllib.request.urlopen(ECHARTS_GL_CDN_URL, timeout=20) as response:  # noqa: S310
+                content = response.read()
+            if not content or len(content) < 1024:
+                return None
+            bundle.write_bytes(content)
+            return bundle
+        except Exception:
             return None
 
     def snapshot_state(self) -> tuple[pd.DataFrame, set[Path]]:

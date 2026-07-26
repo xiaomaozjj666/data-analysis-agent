@@ -22,7 +22,12 @@ import pandas as pd
 
 from data_agent.tools._helpers import _human_column_label as _build_axis_label
 from data_agent.tools._helpers import _nice_ticks
-from data_agent.workspace import ECHARTS_CDN_URL, DataWorkspace, _atomic_write_text
+from data_agent.workspace import (
+    ECHARTS_CDN_URL,
+    ECHARTS_GL_CDN_URL,
+    DataWorkspace,
+    _atomic_write_text,
+)
 
 # === 全局视觉 token（学术级商务色板，对标 Nature/Lancet 期刊配图）===
 # 主色板：低饱和度、高辨识度、色盲友好，适配正式报告。
@@ -674,15 +679,11 @@ def _echarts_line(
 
 def _echarts_scatter(
     df: pd.DataFrame, *, x: str, y: str | None, color: str | None,
-    size: str | None, title: str, is_3d: bool = False,
+    size: str | None, title: str,
 ) -> dict[str, Any]:
-    """散点图 / 3D 散点图：支持颜色分组、大小维度、视觉映射。"""
+    """散点图：支持颜色分组、大小维度、视觉映射。"""
     x_label = _build_axis_label(x)
     y_label = _build_axis_label(y) if y else ""
-
-    if is_3d:
-        # 3D 散点需要 echarts-gl，bundle 不含；降级为 2D 散点 + 提示
-        pass
 
     base: dict[str, Any] = {
         "title": {**_ECHARTS_BASE_TITLE, "text": title, "subtext": f"{x_label} × {y_label}"},
@@ -1096,56 +1097,229 @@ def _echarts_heatmap(
     }
 
 
+def _echarts_scatter3d(
+    df: pd.DataFrame, *, x: str, y: str, z: str, color: str | None,
+    size: str | None, title: str,
+) -> dict[str, Any]:
+    """真 3D 散点图（echarts-gl）：拖拽旋转、滚轮缩放、颜色分组、大小维度。"""
+    x_label, y_label, z_label = _build_axis_label(x), _build_axis_label(y), _build_axis_label(z)
+
+    def axis3d(name: str) -> dict[str, Any]:
+        return {
+            "type": "value", "name": name, "scale": True,
+            "nameTextStyle": {"color": _ECHARTS_TEXT_SECONDARY, "fontSize": 12},
+            "axisLine": {"lineStyle": {"color": _ECHARTS_GRID_COLOR}},
+            "axisLabel": {"color": _ECHARTS_TEXT_SECONDARY, "fontSize": 10},
+            "splitLine": {"lineStyle": {"color": _ECHARTS_BORDER_COLOR}},
+        }
+
+    # tooltip：三轴 + 可选 size 维度，列名 json.dumps 转义防注入（与 2D 散点一致）
+    has_size = bool(size) and size in df.columns
+    labels_js = [json.dumps(lbl, ensure_ascii=False) for lbl in (x_label, y_label, z_label)]
+    lines = "".join(
+        f"html+='<span style=\"color:var(--tt-muted,#6b7280);\">'+{lbl}+'：</span><b>'+val[{idx}]+'</b><br/>';"
+        for idx, lbl in enumerate(labels_js)
+    )
+    if has_size:
+        size_label_js = json.dumps(_build_axis_label(size), ensure_ascii=False)
+        lines += f"html+='<span style=\"color:var(--tt-muted,#6b7280);\">'+{size_label_js}+'：</span><b>'+val[3]+'</b><br/>';"
+    tooltip_fmt = _JsFunction(
+        "function(params){var val=params.value;"
+        "var html='<div style=\"font-weight:600;margin-bottom:6px;\">'+params.seriesName+'</div>';"
+        + lines + "return html;}"
+    )
+
+    # size 维度在 3D 数据里位于 val[3]，归一化到 [6, 22]（3D 点过大会互相遮挡）
+    size_vals = pd.to_numeric(df[size], errors="coerce").dropna().tolist() if has_size else []
+    if size_vals:
+        size_min, size_max = float(min(size_vals)), float(max(size_vals))
+        symbol_size: Any = _JsFunction(
+            "function(val){var v=val[3];if(v==null||isNaN(v))return 8;"
+            f"var min={size_min},max={size_max};"
+            "if(max<=min)return 12;return 6+(v-min)/(max-min)*16;}")
+    else:
+        symbol_size = 9
+
+    def row_data(sub: pd.DataFrame) -> list[list[Any]]:
+        extra = [size] if has_size else []
+        return [[_safe_value(r[x]), _safe_value(r[y]), _safe_value(r[z])]
+                + [_safe_value(r[c]) for c in extra] for _, r in sub.iterrows()]
+
+    levels = list(pd.unique(df[color].dropna())) if color and color in df.columns else []
+    groups = ([(str(lv), df[df[color] == lv], _series_color(idx)) for idx, lv in enumerate(levels)]
+              if levels else [("样本", df, _ECHARTS_PALETTE[0])])
+    series = [{
+        "name": gname, "type": "scatter3D",
+        "data": row_data(sub),
+        "symbolSize": symbol_size,
+        "itemStyle": {"color": gcolor, "opacity": 0.82},
+        "emphasis": {"itemStyle": {"opacity": 1}},
+    } for gname, sub, gcolor in groups]
+
+    base: dict[str, Any] = {
+        "title": {**_ECHARTS_BASE_TITLE, "text": title,
+                  "subtext": f"{x_label} × {y_label} × {z_label}（拖拽旋转 · 滚轮缩放）"},
+        "tooltip": {**_ECHARTS_BASE_TOOLTIP, "trigger": "item", "formatter": tooltip_fmt},
+        "toolbox": {**_ECHARTS_BASE_TOOLBOX},
+        "color": _ECHARTS_PALETTE,
+        "grid3D": {
+            "boxWidth": 100, "boxDepth": 100, "boxHeight": 80,
+            "viewControl": {"projection": "perspective", "autoRotate": True,
+                            "autoRotateSpeed": 6, "autoRotateAfterStill": 6,
+                            "rotateSensitivity": 1.6, "distance": 230},
+            "light": {"main": {"intensity": 1.1, "shadow": False}, "ambient": {"intensity": 0.5}},
+        },
+        "xAxis3D": axis3d(x_label),
+        "yAxis3D": axis3d(y_label),
+        "zAxis3D": axis3d(z_label),
+        "series": series,
+    }
+    if levels:
+        base["legend"] = {**_ECHARTS_BASE_LEGEND, "data": [str(item) for item in levels]}
+    return base
+
+
+def _splom_cell_axis(
+    *, name: str | None, show_label: bool, is_category: bool,
+    data: list[str] | None = None,
+) -> dict[str, Any]:
+    """SPLOM 单元格坐标轴：仅边缘格显示刻度标签与变量名，内部格留白防拥挤。"""
+    axis: dict[str, Any] = {
+        "type": "category" if is_category else "value",
+        "scale": not is_category,
+        "axisLine": {"lineStyle": {"color": _ECHARTS_GRID_COLOR}},
+        "axisTick": {"show": False},
+        "axisLabel": {"show": show_label, "color": _ECHARTS_TEXT_SECONDARY, "fontSize": 10,
+                      # 小格子里大数值标签会互相重叠，用万/亿缩写压短
+                      **({} if is_category else {"formatter": _ECHARTS_AXIS_LABEL_FORMATTER_JS})},
+        "splitLine": {"show": not is_category, "lineStyle": {"color": _ECHARTS_BORDER_COLOR, "type": "dashed"}},
+    }
+    if is_category:
+        axis["data"] = data or []
+    if name:
+        axis.update({
+            "name": name, "nameLocation": "middle",
+            "nameTextStyle": {"color": _ECHARTS_TEXT_SECONDARY, "fontSize": 11, "fontWeight": 600},
+        })
+    return axis
+
+
 def _echarts_scatter_matrix(
     df: pd.DataFrame, *, dimensions: list[str], color: str | None, title: str,
 ) -> dict[str, Any]:
-    """散点矩阵：用平行坐标 + 雷达图组合近似表达（ECharts 无原生 SPLOM）。"""
+    """散点矩阵（SPLOM）：N×N 多 grid 网格，非对角为两两散点，对角为分布直方图。"""
     numeric = [d for d in dimensions if d in df.columns and pd.api.types.is_numeric_dtype(df[d])]
     if not numeric:
         return {"title": {"text": title}}
 
-    # 平行坐标：每条样本一条线，颜色按 color 分组
-    parallel_axes = [{
-        "dim": idx, "name": _build_axis_label(d),
-        "scale": True,
-        "axisLine": {"lineStyle": {"color": _ECHARTS_GRID_COLOR}},
-        "axisLabel": {"color": _ECHARTS_TEXT_SECONDARY, "fontSize": 11},
-        "splitLine": {"show": True, "lineStyle": {"color": _ECHARTS_BORDER_COLOR, "type": "dashed"}},
-        "nameTextStyle": {"color": _ECHARTS_TEXT_SECONDARY, "fontSize": 11},
-    } for idx, d in enumerate(numeric)]
+    notes: list[str] = []
+    if len(numeric) > 4:
+        notes.append(f"维度较多，仅展示前 4 个（共 {len(numeric)} 个）")
+        numeric = numeric[:4]
+    n = len(numeric)
+
+    # 对齐样本：数值列全部有效的行；样本过多时抽样，避免 N² 格渲染卡顿
+    cols = [*numeric] + ([color] if color and color in df.columns and color not in numeric else [])
+    work = df[cols].copy()
+    for c in numeric:
+        work[c] = pd.to_numeric(work[c], errors="coerce")
+    work = work.dropna(subset=numeric)
+    if len(work) > 400:
+        notes.append(f"样本较多，随机抽样 400 条展示（共 {len(work)} 条）")
+        work = work.sample(n=400, random_state=42)
+
+    # N×N 网格布局：百分比定位随容器缩放，左/下留白给刻度标签与变量名
+    left0, top0, gap_x, gap_y = 7.0, 15.0, 2.4, 3.2
+    cell_w = (95.0 - left0 - gap_x * (n - 1)) / n
+    cell_h = (86.0 - top0 - gap_y * (n - 1)) / n
+
+    grids: list[dict[str, Any]] = []
+    x_axes: list[dict[str, Any]] = []
+    y_axes: list[dict[str, Any]] = []
+    series: list[dict[str, Any]] = []
+    levels = list(pd.unique(work[color].dropna())) if color and color in work.columns else []
+
+    for i, dim_y in enumerate(numeric):  # 行：y 变量
+        for j, dim_x in enumerate(numeric):  # 列：x 变量
+            k = i * n + j
+            grids.append({
+                "left": f"{left0 + j * (cell_w + gap_x):.2f}%",
+                "top": f"{top0 + i * (cell_h + gap_y):.2f}%",
+                "width": f"{cell_w:.2f}%",
+                "height": f"{cell_h:.2f}%",
+            })
+            bottom = i == n - 1
+            leftmost = j == 0
+            x_label, y_label = _build_axis_label(dim_x), _build_axis_label(dim_y)
+
+            if i == j:
+                # 对角格：该变量的分布直方图，颜色取该变量在色板中的专属色
+                counts, edges = np.histogram(work[dim_x].astype(float), bins=10)
+                mids = [f"{(edges[b] + edges[b + 1]) / 2:.4g}" for b in range(len(counts))]
+                xa = _splom_cell_axis(name=x_label if bottom else None,
+                                      show_label=False, is_category=True, data=mids)
+                ya = _splom_cell_axis(name=y_label if leftmost else None,
+                                      show_label=False, is_category=False)
+                ya["scale"] = False
+                x_label_js = json.dumps(x_label, ensure_ascii=False)
+                series.append({
+                    "name": f"__hist_{i}", "type": "bar",
+                    "xAxisIndex": k, "yAxisIndex": k,
+                    "data": [int(c) for c in counts],
+                    "barWidth": "88%",
+                    "itemStyle": {"color": _hex_to_rgba(_series_color(i), 0.68),
+                                  "borderColor": _series_color(i), "borderWidth": 1,
+                                  "borderRadius": [2, 2, 0, 0]},
+                    "tooltip": {"formatter": _JsFunction(
+                        "function(p){return '<div style=\"font-weight:600;margin-bottom:6px;\">'+"
+                        f"{x_label_js}+' 分布</div>'"
+                        "+'<span style=\"color:var(--tt-muted,#6b7280);\">区间中值：</span><b>'+p.name+'</b><br/>'"
+                        "+'<span style=\"color:var(--tt-muted,#6b7280);\">频数：</span><b>'+p.value+'</b>';}")},
+                })
+            else:
+                # 非对角格：dim_x × dim_y 两两散点，颜色分组与其他格联动
+                xa = _splom_cell_axis(name=x_label if bottom else None,
+                                      show_label=bottom, is_category=False)
+                ya = _splom_cell_axis(name=y_label if leftmost else None,
+                                      show_label=leftmost, is_category=False)
+                pair_fmt = _scatter_tooltip_formatter(x_label, y_label, None)
+                groups = ([(str(lv), work[work[color] == lv], _series_color(idx))
+                           for idx, lv in enumerate(levels)]
+                          if levels else [("样本", work, _ECHARTS_PALETTE[0])])
+                for gname, sub, gcolor in groups:
+                    series.append({
+                        "name": gname, "type": "scatter",
+                        "xAxisIndex": k, "yAxisIndex": k,
+                        "data": [[_safe_value(r[dim_x]), _safe_value(r[dim_y])] for _, r in sub.iterrows()],
+                        "symbolSize": 6,
+                        "itemStyle": {"color": gcolor, "opacity": 0.7,
+                                      "borderWidth": 0.5, "borderColor": "#fff"},
+                        "emphasis": {"scale": 1.6, "itemStyle": {"opacity": 1}},
+                        "tooltip": {"formatter": pair_fmt},
+                    })
+
+            if bottom:
+                xa["nameGap"] = 24
+            if leftmost:
+                ya["nameGap"] = 38
+            xa["gridIndex"] = ya["gridIndex"] = k
+            x_axes.append(xa)
+            y_axes.append(ya)
 
     base: dict[str, Any] = {
-        "title": {**_ECHARTS_BASE_TITLE, "text": title, "subtext": "平行坐标多维视图"},
+        "title": {**_ECHARTS_BASE_TITLE, "text": title,
+                  "subtext": "；".join(notes) if notes else f"{n}×{n} 散点矩阵，对角线为分布直方图"},
         "tooltip": {**_ECHARTS_BASE_TOOLTIP, "trigger": "item"},
         "toolbox": {**_ECHARTS_BASE_TOOLBOX},
-        "parallelAxis": parallel_axes,
-        "parallel": {
-            "left": 64, "right": 32, "top": 112, "bottom": 60,
-            "parallelAxisDefault": {"axisLine": {"lineStyle": {"color": _ECHARTS_GRID_COLOR}}},
-        },
         "color": _ECHARTS_PALETTE,
-        "series": [],
+        "grid": grids,
+        "xAxis": x_axes,
+        "yAxis": y_axes,
+        "series": series,
     }
-
-    if color and color in df.columns:
-        levels = list(pd.unique(df[color].dropna()))
-        for idx, level in enumerate(levels):
-            sub = df[df[color] == level]
-            data = [[_safe_value(v) for v in r[numeric].tolist()] for _, r in sub.iterrows()]
-            base["series"].append({
-                "name": str(level), "type": "parallel", "data": data,
-                "lineStyle": {"color": _series_color(idx), "width": 1, "opacity": 0.5},
-                "emphasis": {"lineStyle": {"width": 2.5, "opacity": 1}},
-            })
+    if levels:
+        # 图例只收录颜色分组，隐藏对角直方图的内部系列名；点击图例可全矩阵联动筛选
         base["legend"] = {**_ECHARTS_BASE_LEGEND, "data": [str(item) for item in levels]}
-    else:
-        data = [[_safe_value(v) for v in r[numeric].tolist()] for _, r in df.iterrows()]
-        base["series"] = [{
-            "name": "样本", "type": "parallel", "data": data,
-            "lineStyle": {"color": _ECHARTS_PALETTE[0], "width": 1, "opacity": 0.5},
-            "emphasis": {"lineStyle": {"width": 2.5, "opacity": 1}},
-        }]
-
     return base
 
 
@@ -1348,6 +1522,19 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
         if (cur.xAxis && cur.xAxis.length) update.xAxis = cur.xAxis.map(function() { return axisUpdate(); });
         if (cur.yAxis && cur.yAxis.length) update.yAxis = cur.yAxis.map(function() { return axisUpdate(); });
         if (cur.parallelAxis && cur.parallelAxis.length) update.parallelAxis = cur.parallelAxis.map(function() { return axisUpdate(); });
+        // echarts-gl 3D 坐标轴不在 xAxis/yAxis 数组里，单独跟随主题；
+        // gl 2.x 的 axisLabel 兼容 color / textStyle.color 两种写法，两者都设
+        if (cur.xAxis3D) {
+          var axis3dUpdate = function() {
+            return { nameTextStyle: { color: labelColor },
+                     axisLine: { lineStyle: { color: axisColor } },
+                     axisLabel: { color: labelColor, textStyle: { color: labelColor } },
+                     splitLine: { lineStyle: { color: splitColor } } };
+          };
+          update.xAxis3D = axis3dUpdate();
+          update.yAxis3D = axis3dUpdate();
+          update.zAxis3D = axis3dUpdate();
+        }
         // dataZoom 滑条：亮灰槽底/拖动把手在暗底上会形成亮条，跟随主题换成中性深灰；
         // 填充色/把手色同步切换主色亮暗版本
         if (cur.dataZoom && cur.dataZoom.length) {
@@ -1510,7 +1697,7 @@ _ECHARTS_HTML_TEMPLATE = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title}</title>
-<script src="{script}"></script>
+<script src="{script}"></script>{extra_script}
 <style>
   * {{ box-sizing: border-box; margin: 0; padding: 0; }}
   html, body {{ width: 100%; height: 100%; background: {bg}; font-family: {font}; color: {text}; overflow: hidden; }}
@@ -1632,6 +1819,7 @@ def _build_echarts_html(
     option: dict[str, Any],
     script_src: str,
     interpretation: str,
+    extra_script_src: str | None = None,
 ) -> str:
     """组装 standalone HTML：ECharts option + 解读块 + 视觉规范。"""
     option_json = _serialize_option(option)
@@ -1649,6 +1837,9 @@ def _build_echarts_html(
     return _ECHARTS_HTML_TEMPLATE.format(
         title=escape(title),
         script=script_src,
+        extra_script=(
+            f'\n<script src="{extra_script_src}"></script>' if extra_script_src else ""
+        ),
         option=option_json,
         interpretation_block=interp_block,
         bg=_ECHARTS_BG_COLOR,
@@ -1684,11 +1875,13 @@ def _build_echarts_option(
     if chart_type == "area":
         return _echarts_line(df, x=x, y=y, color=color, aggregation=aggregation, title=title, area=True)
     if chart_type == "scatter":
-        return _echarts_scatter(df, x=x, y=y, color=color, size=size, title=title, is_3d=False)
+        return _echarts_scatter(df, x=x, y=y, color=color, size=size, title=title)
     if chart_type == "scatter_3d":
-        # echarts-gl 不在标准 bundle 内，降级为 2D 散点并标注
-        opt = _echarts_scatter(df, x=x, y=y, color=color, size=size, title=title + "（2D 视图）", is_3d=False)
-        opt["title"]["subtext"] = "3D 散点降级为 2D（ECharts 标准包不含 gl 模块）"
+        if x and y and z and z in df.columns and pd.api.types.is_numeric_dtype(df[z]):
+            return _echarts_scatter3d(df, x=x, y=y, z=z, color=color, size=size, title=title)
+        # 缺 z 轴或 z 非数值时无法构建 3D 坐标系，降级为 2D 散点并标注
+        opt = _echarts_scatter(df, x=x, y=y, color=color, size=size, title=title + "（2D 视图）")
+        opt["title"]["subtext"] = "缺少数值型 z 轴，3D 散点降级为 2D"
         return opt
     if chart_type == "histogram":
         return _echarts_histogram(df, x=x, color=color, bins=bins, title=title)
@@ -1756,12 +1949,22 @@ def _render_echarts(
         # 离线 fallback：直接引用 CDN（在线场景可用）
         relative_script = ECHARTS_CDN_URL
 
+    # 3D 系列需要 echarts-gl 扩展 bundle，按需下载 / CDN 直引
+    extra_script_src: str | None = None
+    if any(s.get("type") == "scatter3D" for s in option.get("series", [])):
+        gl_bundle = workspace.ensure_echarts_gl_bundle()
+        if gl_bundle is not None:
+            extra_script_src = gl_bundle.relative_to(workspace.artifacts_dir).as_posix()
+        else:
+            extra_script_src = ECHARTS_GL_CDN_URL
+
     html_path = workspace.artifacts_dir / f"{stem}.html"
     html_content = _build_echarts_html(
         title=display_title,
         option=option,
         script_src=relative_script,
         interpretation=interpretation,
+        extra_script_src=extra_script_src,
     )
     _atomic_write_text(html_path, html_content)
     workspace.register_artifact(html_path, "visualization", display_title)
