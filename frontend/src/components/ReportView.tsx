@@ -242,8 +242,23 @@ th, td { border: 1px solid #e4e6ea; padding: 8px 12px; text-align: left; vertica
 thead th { background: #f4f5f7; font-weight: 700; }
 tbody tr:nth-child(even) td { background: #fafbfc; }
 img { max-width: 100%; height: auto; }
+/* 暗色适配：导出的 HTML 跟随系统主题，深底亮字避免晚间阅读刺眼 */
+@media (prefers-color-scheme: dark) {
+  body { background: #16171a; color: #e8eaed; }
+  h2 { border-bottom-color: #2e2f33; }
+  h5, h6 { color: #9aa0a6; }
+  code, pre, blockquote { background: #242528; }
+  pre { border-color: #2e2f33; }
+  a { color: #8a8af2; border-bottom-color: #3a3b40; }
+  blockquote { border-left-color: #8a8af2; color: #9aa0a6; }
+  hr { border-top-color: #2e2f33; }
+  th, td { border-color: #2e2f33; }
+  thead th { background: #242528; }
+  tbody tr:nth-child(even) td { background: #1d1e21; }
+}
 @media print {
-  body { margin: 0; max-width: none; padding: 0 16px; }
+  /* 打印始终用亮色：深底打印耗墨且黑白打印机下对比度差 */
+  body { margin: 0; max-width: none; padding: 0 16px; background: #fff; color: #1a1d29; }
   pre, blockquote, table, tr { page-break-inside: avoid; }
   a { border-bottom: 0; }
 }

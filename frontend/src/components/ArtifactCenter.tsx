@@ -88,7 +88,7 @@ const ArtifactCenter = React.memo(function ArtifactCenter({
                 ECharts
               </button>
             )}
-            <select value={sortBy} onChange={(e) => setSortBy(e.target.value as typeof sortBy)}>
+            <select value={sortBy} onChange={(e) => setSortBy(e.target.value as typeof sortBy)} aria-label="图表排序方式">
               <option value="default">默认排序</option>
               <option value="name">按名称</option>
               <option value="size">按大小</option>
@@ -118,6 +118,7 @@ const ArtifactCenter = React.memo(function ArtifactCenter({
                       type="checkbox"
                       className="chart-card-checkbox"
                       checked={isSelected}
+                      aria-label={`选中 ${item.description || item.name}`}
                       onChange={(e) => {
                         const next = new Set(selected);
                         if (e.target.checked) {
@@ -151,7 +152,7 @@ const ArtifactCenter = React.memo(function ArtifactCenter({
                   <div className="chart-card-info">
                     <div className="chart-index">{String(index + 1).padStart(2, "0")}</div>
                     <div className="chart-card-text">
-                      <strong>{item.description || item.name}</strong>
+                      <strong title={item.description || item.name}>{item.description || item.name}</strong>
                       <small>{label} · {formatBytes(item.size_bytes)} · 点击查看交互</small>
                     </div>
                   </div>
@@ -188,7 +189,7 @@ const ArtifactCenter = React.memo(function ArtifactCenter({
             {files.map((item) => (
               <div key={item.name}>
                 <FileSpreadsheet size={17} />
-                <span><strong>{item.name}</strong><small>{item.description} {formatBytes(item.size_bytes)}</small></span>
+                <span><strong title={item.name}>{item.name}</strong><small>{item.description} {formatBytes(item.size_bytes)}</small></span>
                 <button className="artifact-download" title={`下载 ${item.name}`} onClick={() => onDownload(item)}><Download size={16} /></button>
               </div>
             ))}
