@@ -435,7 +435,7 @@ def _interpret_heatmap(df: pd.DataFrame, *, title: str, is_correlation: bool = F
             f"「{_build_axis_label(neg[0])}」与「{_build_axis_label(neg[1])}」呈明显负相关"
             f"（r={neg[2]:.2f}）。"
         )
-    return msg + "蓝色代表正相关、红色代表负相关，颜色越深关系越强，悬浮单元格查看精确值。"
+    return msg + "红色代表正相关、蓝色代表负相关，颜色越深关系越强，悬浮单元格查看精确值。"
 
 
 def _interpret_box(df: pd.DataFrame, *, x: str, y: str, title: str) -> str:
@@ -976,7 +976,7 @@ def _echarts_heatmap(
     细节设计：
     - tooltip 内嵌行列名映射（JS 作用域里拿不到 Python 变量，必须序列化进函数体）
     - 深色单元格标签自动切白字，缺失格显示空白而非 "null"
-    - 相关性用红—白—蓝发散色板（有正负号），普通数值用顺序蓝色渐变
+    - 相关性用 RdBu 蓝—白—红 7 段发散色板（红=正相关，符合统计惯例），普通数值用顺序蓝色渐变
     - 单元格过多时隐藏标签防重叠；全值相同时给 visualMap 撑出非零区间
     """
     if is_correlation:
@@ -1016,7 +1016,7 @@ def _echarts_heatmap(
             v = raw[i][j]
             cell: dict[str, Any] = {"value": [j, i, v]}
             if v is not None:
-                dark = abs(v) >= 0.55 if is_correlation else (v - vmin) / span >= 0.6
+                dark = abs(v) >= 0.75 if is_correlation else (v - vmin) / span >= 0.6
                 if dark:
                     cell["label"] = {"color": "#ffffff"}
             cells.append(cell)
@@ -1057,7 +1057,9 @@ def _echarts_heatmap(
             "min": vmin, "max": vmax, "calculable": True, "orient": "horizontal",
             "left": "center", "bottom": 16, "precision": 2,
             "textStyle": {"color": _ECHARTS_TEXT_SECONDARY},
-            "inRange": {"color": ["#C75D63", "#f3f4f6", "#2C5F8D"] if is_correlation
+            # 相关性：ColorBrewer RdBu 反转 7 段（蓝=负、红=正），多色标让中段不发灰
+            "inRange": {"color": ["#2166AC", "#67A9CF", "#D1E5F0", "#F7F7F7",
+                                   "#FDDBC7", "#EF8A62", "#B2182B"] if is_correlation
                         else ["#EDF3F9", "#8FB3D1", "#2C5F8D"]},
         },
         "series": [{
@@ -1248,8 +1250,9 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
         if (cur.xAxis && cur.xAxis.length) update.xAxis = cur.xAxis.map(function() { return axisUpdate(); });
         if (cur.yAxis && cur.yAxis.length) update.yAxis = cur.yAxis.map(function() { return axisUpdate(); });
         if (cur.parallelAxis && cur.parallelAxis.length) update.parallelAxis = cur.parallelAxis.map(function() { return axisUpdate(); });
-        // visualMap：除文字色外，暗色下替换色板——浅色端（相关性中点 #f3f4f6、
+        // visualMap：除文字色外，暗色下替换色板——浅色端（相关性中点 #F7F7F7、
         // 顺序色低端 #EDF3F9）在暗底上刺眼；首次运行时缓存浅色原值供切回。
+        // 发散色板（>3 段）中点换暗底色，两端降饱和抬亮度。
         if (cur.visualMap && cur.visualMap.length) {
           if (!window.__vmLightRange) {
             window.__vmLightRange = cur.visualMap.map(function(v) {
@@ -1259,10 +1262,12 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
           update.visualMap = cur.visualMap.map(function(v, i) {
             var light = window.__vmLightRange[i];
             var upd = { textStyle: { color: labelColor } };
-            if (light && light.length === 3) {
-              var diverging = light[1] === '#f3f4f6';
+            if (light && light.length) {
+              var diverging = light.length > 3;
               upd.inRange = { color: isDark
-                ? (diverging ? ['#C0606A', '#2a3445', '#5B8DBE'] : ['#26324a', '#3A6386', '#4E8FC7'])
+                ? (diverging
+                    ? ['#6FA3DC', '#4C79A9', '#3A5573', '#2a3445', '#5E3A42', '#A0525E', '#E0787F']
+                    : ['#26324a', '#3A6386', '#4E8FC7'])
                 : light };
             }
             return upd;
