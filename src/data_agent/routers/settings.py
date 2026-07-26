@@ -80,6 +80,9 @@ def get_settings() -> dict[str, Any]:
         "persistent_storage": api.session_storage.persistent,
         "storage_status": storage_status.get("status", "unknown"),
         "storage_message": storage_status.get("message", ""),
+        # 上传大小上限：前端据此做客户端预校验，避免与服务端配置脱节
+        # （服务端可通过 DATA_AGENT_MAX_UPLOAD_BYTES 调整）。
+        "max_upload_bytes": api.bootstrap_settings.max_upload_bytes,
     }
 
 

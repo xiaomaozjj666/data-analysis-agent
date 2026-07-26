@@ -4,6 +4,7 @@ import { api, ApiError, describeApiError, requestHeaders } from "../utils/api";
 import { consumeSSEStream } from "../utils/sse";
 import { SSE_EVENT_TYPES } from "../utils/sse-events";
 import { notifyAnalysisDone } from "../utils/notify";
+import { wait } from "../utils/format";
 import { API_URL } from "../constants";
 import type { AnalysisResult, CompletedStep, PlanStep, RetryOffer, Session } from "../types";
 
@@ -76,6 +77,9 @@ function useAnalysisRunner(deps: UseAnalysisRunnerDeps): UseAnalysisRunnerResult
     if (!session || !running || stopping) return;
     cancelRequested.current = true;
     setStopping(true);
+    // 立即给"取消中"过渡反馈：后端取消是协作式的（threading.Event），
+    // 要等当前模型调用结束才能安全退出，不能让用户误以为点了没反应。
+    setError("正在停止分析，等待后端安全退出…");
     const cancelRequest = api(`/api/sessions/${session.id}/cancel`, {
       method: "POST",
       timeoutMs: 10000,
@@ -85,11 +89,32 @@ function useAnalysisRunner(deps: UseAnalysisRunnerDeps): UseAnalysisRunnerResult
     retryController.current?.abort();
     await cancelRequest;
     setRunning(false);
-    setStopping(false);
     setRetryChecking(false);
     setCurrentNodeTitle("");
     setRetryOffer(null);
-    setError("分析已停止。如果模型正在响应，后端会在本轮结束后安全退出，已完成步骤不会丢失。");
+    // 轻量轮询会话状态直到后端真正退出 running/cancelling，最多等 15 秒；
+    // 期间 stopping 保持 true，停止按钮显示"停止中…"过渡态。
+    let finished = false;
+    try {
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        const refreshed = await api<Session & { analysis_status?: string }>(
+          `/api/sessions/${session.id}`,
+          { timeoutMs: 10000 },
+        );
+        const status = refreshed.analysis_status;
+        if (status !== "running" && status !== "cancelling") {
+          finished = true;
+          break;
+        }
+        await wait(1500);
+      }
+    } catch {
+      // 状态查询失败不阻塞取消流程，落到兼容文案。
+    }
+    setStopping(false);
+    setError(finished
+      ? "分析已停止，已完成步骤的结果已保留。"
+      : "已发送停止指令，后端会在当前模型调用结束后安全退出，已完成步骤不会丢失。");
   }
 
   async function startAnalysis(
@@ -158,6 +183,22 @@ function useAnalysisRunner(deps: UseAnalysisRunnerDeps): UseAnalysisRunnerResult
       idleTimeout = window.setTimeout(() => controller.abort(), 180000);
     };
     resetIdleTimeout();
+    // 慢响应软提示：60 秒未收到任何业务事件（心跳不算）时，在当前节点
+    // 标题后追加提示，缓解"卡住了吗？"的焦虑。区别于 180s idle 硬断线：
+    // 这里只提示不中断，单次 LLM 调用超过 1 分钟很常见。
+    const SLOW_HINT = "（模型响应较慢，仍在等待…）";
+    let slowTimer: number | null = null;
+    const resetSlowTimer = () => {
+      if (slowTimer != null) window.clearTimeout(slowTimer);
+      slowTimer = window.setTimeout(() => {
+        if (session.id !== runningSessionIdRef.current) return;
+        setCurrentNodeTitle((current) => {
+          const base = current || "正在分析";
+          return base.includes(SLOW_HINT) ? base : `${base}${SLOW_HINT}`;
+        });
+      }, 60000);
+    };
+    resetSlowTimer();
     // 节流刷新：将缓冲区内容批量写入 state，避免每个 token 都触发 ReactMarkdown 重解析。
     // 定义在 try 之前，以便 complete/cancelled/error/finally 都能调用。
     const flushReportBuffer = () => {
@@ -357,7 +398,11 @@ function useAnalysisRunner(deps: UseAnalysisRunnerDeps): UseAnalysisRunnerResult
         // heartbeat: 仅用于保活，重置 idle timer 即可；不更新 UI。
       }, {
         onChunk: resetIdleTimeout,
-        onEvent: () => { sawEvent = true; },
+        // 心跳仅保活，不算"有进展"：只有业务事件才重置慢响应提示计时器。
+        onEvent: (event) => {
+          sawEvent = true;
+          if (event !== "heartbeat") resetSlowTimer();
+        },
       });
       if (completedPayload) {
         // 仅在用户仍在查看运行 session 时才 refresh + 更新 UI；用户切换到
@@ -375,7 +420,11 @@ function useAnalysisRunner(deps: UseAnalysisRunnerDeps): UseAnalysisRunnerResult
             setElapsedSeconds(refreshed.elapsed_seconds ?? null);
           }
         } catch {
-          // refresh 失败时保留 complete 帧的乐观更新，不阻塞用户。
+          // refresh 失败时保留 complete 帧的乐观更新，不阻塞用户；
+          // 但产物列表可能不全，给出轻提示而非静默吞掉。
+          if (stillViewingRunningSession) {
+            setError("分析已完成，但同步最新会话数据失败，产物列表可能不完整；可在历史列表重新选择该会话刷新。");
+          }
         }
       }
     } catch (err) {
@@ -385,7 +434,8 @@ function useAnalysisRunner(deps: UseAnalysisRunnerDeps): UseAnalysisRunnerResult
         ? { task: nextTask, canResume: true, plan, completed }
         : null;
       if (error.name === "AbortError" && cancelRequested.current) {
-        setError("分析已取消，已完成的步骤不会继续扩展。");
+        // 用户主动停止：错误文案由 stopAnalysis 统一管理（含"取消中→已停止"
+        // 过渡），这里不再 setError 避免两处文案互相覆盖，只补充续跑入口。
         if (resumePayload) setRetryOffer({ ...resumePayload, reason: "cancelled" });
       } else if (error.name === "AbortError") {
         // idle timeout：长时间未收到事件。后台分析很可能仍在运行（单次 LLM
@@ -425,6 +475,7 @@ function useAnalysisRunner(deps: UseAnalysisRunnerDeps): UseAnalysisRunnerResult
       }
     } finally {
       if (idleTimeout != null) window.clearTimeout(idleTimeout);
+      if (slowTimer != null) window.clearTimeout(slowTimer);
       // 安全网：客户端 abort（如 idle timeout / stopAnalysis）可能未触发
       // complete/cancelled/error 事件，此处 flush 残留缓冲确保已生成的
       // 报告内容不丢失。complete 已将缓冲清空，此处为空操作，不会覆盖。

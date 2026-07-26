@@ -56,7 +56,7 @@ import useTabPersistence from "./hooks/useTabPersistence";
 import useTheme from "./hooks/useTheme";
 import useTimer from "./hooks/useTimer";
 import { useAppStore } from "./store/useAppStore";
-import { api, ApiError, describeApiError, requestHeaders } from "./utils/api";
+import { api, ApiError, describeApiError, requestHeaders, uploadWithProgress } from "./utils/api";
 import { formatDuration, wait } from "./utils/format";
 import {
   API_URL,
@@ -113,8 +113,8 @@ function App() {
     setAwaitingApproval, setPendingObjective, setStepProgress,
     // UI（previewHtml/previewLoading/previewError 及其 setter 已交由
     // useArtifactPreview / PreviewModal 消费，App 不再直接读写）
-    uploading, previewItem, currentNodeTitle,
-    setUploading, setCurrentNodeTitle,
+    uploading, uploadProgress, previewItem, currentNodeTitle,
+    setUploading, setUploadProgress, setCurrentNodeTitle,
     // 错误
     error, errorExpanded,
     setError, setErrorExpanded,
@@ -160,6 +160,8 @@ function App() {
   const fileInput = useRef<HTMLInputElement>(null);
   const taskInput = useRef<HTMLTextAreaElement>(null);
   const retryController = useRef<AbortController | null>(null);
+  // 上传取消控制器：大文件上传过程中用户可点"取消上传"中断 XHR
+  const uploadControllerRef = useRef<AbortController | null>(null);
   // 按 sessionId 保存草稿：切换历史会话时不丢失当前正在输入的任务
   const taskDraftsRef = useRef<Record<string, string>>({});
 
@@ -183,8 +185,9 @@ function App() {
   // 完整返回值整体传给 PreviewModal，App 仅直接使用开/关两个回调。
   const artifactPreview = useArtifactPreview();
   const { openArtifactPreview, closeArtifactPreview } = artifactPreview;
-  // useDownloads：单产物下载 / 批量下载 / 会话导出 ZIP。
-  const { downloadArtifact, batchDownload, exportSession } = useDownloads();
+  // useDownloads：单产物下载 / 批量下载 / 会话导出 ZIP（exportingSessionId
+  // 供 HistoryPanel 在对应条目上展示导出 loading）。
+  const { downloadArtifact, batchDownload, exportSession, exportingSessionId } = useDownloads();
 
   // 移动端侧边栏抽屉开关：桌面端 sidebar 常驻，平板/手机折叠为抽屉
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -205,8 +208,9 @@ function App() {
     const t = e.changedTouches[0];
     const dx = t.clientX - sidebarTouchX.current;
     const dy = t.clientY - sidebarTouchY.current;
-    // 向左滑动（dx 为负）超过 55px，且横向位移大于纵向位移 → 判定为关闭手势
-    if (dx < -55 && Math.abs(dx) > Math.abs(dy)) setSidebarOpen(false);
+    // 向左滑动（dx 为负）超过 70px，且横向位移明显大于纵向（1.5 倍）
+    // → 判定为关闭手势；比之前的 55px/1 倍更严，避免斜向滚动列表时误关。
+    if (dx < -70 && Math.abs(dx) > Math.abs(dy) * 1.5) setSidebarOpen(false);
     sidebarTouchX.current = null;
     sidebarTouchY.current = null;
   };
@@ -473,7 +477,9 @@ function App() {
         setSession((prev) => prev ? { ...prev, title: data.title || undefined } : prev);
       }
     } catch (err) {
-      setError(`重命名会话失败：${err instanceof Error ? err.message : "未知错误"}`);
+      // 失败时把用户输入的新名字带在提示里：编辑框已关闭，不说明哪个
+      // 名字没保存，用户得重新想一遍刚才输了什么。
+      setError(`重命名会话失败，新名称「${title}」未保存，可重试：${err instanceof Error ? err.message : "未知错误"}`);
     }
   }, [session?.id, history, setHistory]);
 
@@ -482,16 +488,18 @@ function App() {
 
   async function uploadFile(file: File | undefined | null) {
     if (!file) return;
-    // 客户端文件大小校验：服务端 max_upload_bytes 兜底，但提前检查可以
-    // 避免上传 100MB+ 才得到 422，浪费用户带宽和等待时间。Render 免费版
-    // 100MB 限制与 max_upload_bytes 默认值对齐。
-    if (file.size > MAX_UPLOAD_BYTES_CLIENT) {
-      const mb = Math.round(MAX_UPLOAD_BYTES_CLIENT / (1024 * 1024));
+    // 客户端文件大小校验：优先用服务端下发的 max_upload_bytes（/api/settings），
+    // 旧后端无此字段时回退本地默认值。提前检查可以避免上传 100MB+
+    // 才得到 422，浪费用户带宽和等待时间。
+    const maxUploadBytes = settings?.max_upload_bytes ?? MAX_UPLOAD_BYTES_CLIENT;
+    if (file.size > maxUploadBytes) {
+      const mb = Math.round(maxUploadBytes / (1024 * 1024));
       setError(`文件 ${file.name} 超过 ${mb}MB 上传上限，请拆分或精简后再上传。`);
       if (fileInput.current) fileInput.current.value = "";
       return;
     }
     setUploading(true);
+    setUploadProgress(0);
     setError("");
     // 上传新数据集时清理上一个会话的残留 UI 状态，避免预览/重试/进度泄漏到新会话。
     closeArtifactPreview();
@@ -504,8 +512,15 @@ function App() {
     setRetryOffer(null);
     const form = new FormData();
     form.append("file", file);
+    // XHR 上传：支持真实进度（upload.onprogress）与中途取消，
+    // 大文件不再只有一个无限转圈的"正在读取"。
+    const controller = new AbortController();
+    uploadControllerRef.current = controller;
     try {
-      const value = await api<Session>("/api/sessions", { method: "POST", body: form });
+      const value = await uploadWithProgress<Session>("/api/sessions", form, {
+        onProgress: setUploadProgress,
+        signal: controller.signal,
+      });
       setSession(value);
       startedAtRef.current = (value as Session & { analysis_started_at?: number | null }).analysis_started_at ?? null;
       setElapsedSeconds(value.elapsed_seconds ?? null);
@@ -513,12 +528,23 @@ function App() {
       fetchHistory();
     } catch (err) {
       const error = err as Error;
-      setError(error.message);
+      if (error.name === "AbortError") {
+        setError(`已取消上传 ${file.name}。`);
+      } else {
+        setError(error.message);
+      }
     } finally {
+      if (uploadControllerRef.current === controller) uploadControllerRef.current = null;
       setUploading(false);
+      setUploadProgress(null);
       if (fileInput.current) fileInput.current.value = "";
     }
   }
+
+  // 取消进行中的上传：中断 XHR，uploadFile 的 catch 分支给出轻提示。
+  const cancelUpload = useCallback(() => {
+    uploadControllerRef.current?.abort();
+  }, []);
 
   // EmptyWorkspace 派发的两个自定义事件：
   //  - empty-workspace:load-sample —— 用户点击"加载示例数据体验"，后端用内置样例建会话
@@ -815,7 +841,7 @@ function App() {
             <GlareHover className="sidebar-glare" borderRadius="var(--radius-md)" borderColor="transparent">
               <button className="upload-button" onClick={() => fileInput.current?.click()} disabled={uploading}>
                 {uploading ? <LoaderCircle className="spin" size={17} /> : <Upload size={17} />}
-                {uploading ? "正在读取" : "选择数据文件"}
+                {uploading ? (uploadProgress != null ? `上传中 ${uploadProgress}%` : "正在读取") : "选择数据文件"}
               </button>
             </GlareHover>
           )}
@@ -846,6 +872,7 @@ function App() {
           onToggle={() => setHistoryExpanded((value) => !value)}
           historyError={historyError}
           switchingSessionId={switchingSessionId}
+          exportingSessionId={exportingSessionId}
           onExportSession={exportSession}
           onImportSession={importSession}
           onDeleteSession={deleteSession}
@@ -1002,7 +1029,7 @@ function App() {
         )}
 
         {!session ? (
-          <EmptyWorkspace uploading={uploading} onUpload={() => fileInput.current?.click()} onFileDrop={uploadFile} />
+          <EmptyWorkspace uploading={uploading} uploadProgress={uploadProgress} onUpload={() => fileInput.current?.click()} onFileDrop={uploadFile} onCancelUpload={cancelUpload} />
         ) : (
           <>
             <section className="dataset-header">

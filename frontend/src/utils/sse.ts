@@ -52,6 +52,10 @@ async function consumeSSEStream(
   if (!reader) return;
   const decoder = new TextDecoder();
   let buffer = "";
+  // 连续解析失败计数：偶发畸形帧跳过即可，但连续多帧都解不出说明
+  // 流已损坏（如代理篡改响应），继续静默丢弃会让用户永久等待，
+  // 主动报错让上层走断线恢复流程。
+  let parseFailures = 0;
   try {
     while (true) {
       const { value, done } = await reader.read();
@@ -67,7 +71,14 @@ async function consumeSSEStream(
         if (!event || !dataText) continue;
         if (options.onEvent) options.onEvent(event);
         const data = parseSSEData(dataText);
-        if (!data) continue;
+        if (!data) {
+          parseFailures += 1;
+          if (parseFailures >= 3) {
+            throw new Error("服务端推送的数据连续无法解析，连接可能已损坏，请重试。");
+          }
+          continue;
+        }
+        parseFailures = 0;
         dispatchSSEEvent(event, data, handlers);
       }
       if (done) break;

@@ -84,4 +84,55 @@ async function api<T = unknown>(path: string, options: ApiOptions = {}): Promise
   }
 }
 
-export { api, requestHeaders, describeApiError, ApiError };
+// 带进度回调的文件上传：fetch 不支持上传进度，改用 XHR 的 upload.onprogress。
+// 行为与 api() 对齐：自动带 X-App-Token、非 2xx 抛 ApiError（复用 describeApiError）、
+// 支持 AbortSignal 取消（抛标准 AbortError，调用方可用 error.name 判断）。
+// 不设 Content-Type，由浏览器为 FormData 自动生成 multipart boundary。
+interface UploadOptions {
+  onProgress?: (percent: number) => void;
+  signal?: AbortSignal;
+}
+
+function uploadWithProgress<T = unknown>(path: string, form: FormData, options: UploadOptions = {}): Promise<T> {
+  const { onProgress, signal } = options;
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${API_URL}${path}`);
+    const headers = requestHeaders();
+    for (const [key, value] of Object.entries(headers)) xhr.setRequestHeader(key, value);
+    const onAbort = () => xhr.abort();
+    if (signal) {
+      if (signal.aborted) { reject(new DOMException("Aborted", "AbortError")); return; }
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && onProgress) {
+        onProgress(Math.round((event.loaded / event.total) * 100));
+      }
+    };
+    xhr.onload = () => {
+      if (signal) signal.removeEventListener("abort", onAbort);
+      let payload: unknown = xhr.responseText;
+      const contentType = xhr.getResponseHeader("content-type") || "";
+      if (contentType.includes("application/json")) {
+        try { payload = JSON.parse(xhr.responseText); } catch { /* 保留原始文本 */ }
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(payload as T);
+      } else {
+        reject(new ApiError(describeApiError(payload, xhr.status), xhr.status));
+      }
+    };
+    xhr.onerror = () => {
+      if (signal) signal.removeEventListener("abort", onAbort);
+      reject(new TypeError("网络错误，上传失败，请检查连接后重试。"));
+    };
+    xhr.onabort = () => {
+      if (signal) signal.removeEventListener("abort", onAbort);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    xhr.send(form);
+  });
+}
+
+export { api, requestHeaders, describeApiError, ApiError, uploadWithProgress };

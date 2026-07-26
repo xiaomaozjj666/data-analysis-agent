@@ -6,6 +6,9 @@ import type { Updater } from "./types";
 // Cmd+K 弹层 + ? 快捷键帮助弹层状态
 interface UIState {
   uploading: boolean;
+  // 上传进度百分比（0-100）；null 表示当前没有可展示的进度
+  //（未在上传，或请求体长度不可计）。
+  uploadProgress: number | null;
   previewItem: Artifact | null;
   previewHtml: string;
   previewLoading: boolean;
@@ -14,6 +17,7 @@ interface UIState {
   commandQuery: string;
   helpOpen: boolean;
   setUploading: (v: boolean) => void;
+  setUploadProgress: (v: number | null) => void;
   setPreviewItem: (v: Artifact | null) => void;
   setPreviewHtml: (v: string) => void;
   setPreviewLoading: (v: boolean) => void;
@@ -25,6 +29,7 @@ interface UIState {
 
 export const useUIStore = create<UIState>((set) => ({
   uploading: false,
+  uploadProgress: null,
   previewItem: null,
   previewHtml: "",
   previewLoading: false,
@@ -33,6 +38,7 @@ export const useUIStore = create<UIState>((set) => ({
   commandQuery: "",
   helpOpen: false,
   setUploading: (v) => set({ uploading: v }),
+  setUploadProgress: (v) => set({ uploadProgress: v }),
   setPreviewItem: (v) => set({ previewItem: v }),
   setPreviewHtml: (v) => set({ previewHtml: v }),
   setPreviewLoading: (v) => set({ previewLoading: v }),

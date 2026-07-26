@@ -164,6 +164,21 @@
   border: 1px solid var(--border-default);
 }
 .plan-approval-actions .cancel-btn:hover { background: var(--control-hover); border-color: var(--border-strong); }
+/* 还原按钮：幽灵态次操作，不抢主操作视觉权重；不参与 flex:1 均分宽度 */
+.plan-approval-actions .plan-reset-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  color: var(--fg-muted);
+  border: 1px solid transparent;
+}
+.plan-approval-actions .plan-reset-btn:hover:not(:disabled) {
+  background: var(--control-hover);
+  color: var(--fg-default);
+}
+.plan-approval-actions .plan-reset-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 /* ---------- 步骤内进度条（step_progress 事件） ---------- */
 /* 后端在执行单步时推送进度百分比和工具调用数，PlanPanel 在 current-node 下方

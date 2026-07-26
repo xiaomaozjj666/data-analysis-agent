@@ -38,7 +38,9 @@ function useAuthBootstrap(deps: UseAuthBootstrapDeps): void {
   // 让 UI 不至于永久卡在"正在连接…"，并展示连接错误。依赖 [] —— 仅挂载时
   // 执行一次；用到的 setter 均为 Zustand 稳定引用，省略与原行为一致。
   useEffect(() => {
-    api<AuthStatus>("/api/auth")
+    // 首屏探活缩短超时到 10s：默认 30s 会让后端不可用时
+    // "正在连接…"卡太久，尽早落到 catch 展示连接错误。
+    api<AuthStatus>("/api/auth", { timeoutMs: 10000 })
       .then((status) => {
         setAuthRequired(!!status.required);
         setAuthenticated(!!status.authenticated);
