@@ -56,7 +56,9 @@ _ECHARTS_FONT_FAMILY = (
 _ECHARTS_BASE_GRID = {
     "left": 64,
     "right": 32,
-    "top": 80,
+    # grid 顶部跟随 legend 下移（legend top:80 + 图例高度 + 安全边距），
+    # 保证折线/柱体主体不会被下移后的图例压住。
+    "top": 112,
     "bottom": 72,
     "containLabel": True,
 }
@@ -79,10 +81,13 @@ _ECHARTS_BASE_TOOLTIP = {
 }
 
 _ECHARTS_BASE_LEGEND = {
-    # 图例下移到 top:52，让出顶部右上角给亮/暗主题切换按钮与 toolbox，
-    # 避免按钮遮挡图例文字（或图例与 toolbox 顶部重叠）的视觉冲突。
-    "top": 52,
-    "right": 24,
+    # 图例下移到 top:80，给右上角亮/暗按钮（top:12 高 34px）和 toolbox
+    # 留出充分垂直间距；right 设为 72，让水平图例整体左移，避免图例项
+    # 从右向左排列时文本向左延伸到按钮下方，与主题按钮发生水平重叠。
+    # type:scroll 防止多系列（如 color 维度 10 级）图例换行溢出、压住绘图区。
+    "top": 80,
+    "right": 72,
+    "type": "scroll",
     "itemGap": 20,
     "itemWidth": 14,
     "itemHeight": 8,
@@ -94,12 +99,17 @@ _ECHARTS_BASE_LEGEND = {
 _ECHARTS_BASE_TITLE = {
     "left": 16,
     "top": 16,
+    # 标题右侧留出控件区（亮/暗按钮约 34px、toolbox 约 80px、安全边距），
+    # 避免主标题/副标题被右上角按钮和工具箱截断或重叠。
+    "right": 120,
     "textStyle": {"color": _ECHARTS_TEXT_COLOR, "fontSize": 18, "fontWeight": 600},
     "subtextStyle": {"color": _ECHARTS_TEXT_SECONDARY, "fontSize": 12},
 }
 
 _ECHARTS_BASE_TOOLBOX = {
-    "right": 56,
+    # right:70 给右上角亮/暗切换按钮（right:12、宽34px，左缘在距右46px处）
+    # 留出约 24px 水平间隙，避免两者视觉/投影重叠。
+    "right": 70,
     "top": 24,
     "itemSize": 16,
     "itemGap": 12,
@@ -484,11 +494,10 @@ def _echarts_bar(
 
 def _bar_tooltip_formatter(x_label: str, y_label: str, agg_suffix: str):
     """柱状图 tooltip 自定义 formatter：展示 x、各系列值、合计。"""
-    # 返回 JS 函数字符串，前端 echarts 会 eval。
-    # x_label / y_label 来自 CSV 列名，用 json.dumps 转义后拼入 JS 字符串字面量，
-    # 防止列名含 ' / " / </script> 等字符导致 JS 语法错误或 XSS 注入。
+    # 返回 _JsFunction，前端 echarts 拿到真实 JS 函数；用 json.dumps 转义 x_label
+    # 后拼入 JS 字符串字面量，防止列名含 ' / " / </script> 导致 JS 语法错误或 XSS 注入。
     x_label_js = json.dumps(x_label, ensure_ascii=False)
-    return (
+    return _JsFunction(
         "function(params){"
         f"var html='<div style=\"font-weight:600;margin-bottom:6px;\">'+{x_label_js}+'：'+params[0].axisValue+'</div>';"
         "var total=0;"
@@ -616,6 +625,13 @@ def _echarts_scatter(
         ],
     }
 
+    # 若启用 size 维度，提前计算全局 min/max 用于 symbolSize 归一化到 [6, 28]。
+    size_vals = []
+    if size and size in df.columns:
+        size_vals = pd.to_numeric(df[size], errors="coerce").dropna().tolist()
+    size_min = float(min(size_vals)) if size_vals else 0.0
+    size_max = float(max(size_vals)) if size_vals else 0.0
+
     if color:
         color_levels = list(pd.unique(df[color].dropna()))
         series = []
@@ -628,7 +644,7 @@ def _echarts_scatter(
                 "name": str(level),
                 "type": "scatter",
                 "data": data,
-                "symbolSize": _size_func(size) if size else 10,
+                "symbolSize": _size_func(size, size_min, size_max) if size else 10,
                 "itemStyle": {
                     "color": _series_color(idx),
                     "opacity": 0.78,
@@ -649,7 +665,7 @@ def _echarts_scatter(
             "name": y_label,
             "type": "scatter",
             "data": data,
-            "symbolSize": _size_func(size) if size else 10,
+            "symbolSize": _size_func(size, size_min, size_max) if size else 10,
             "itemStyle": {
                 "color": _ECHARTS_PALETTE[0],
                 "opacity": 0.78,
@@ -664,28 +680,33 @@ def _echarts_scatter(
     return base
 
 
-def _size_func(size: str | None):
-    """根据 size 列生成 symbolSize JS 函数。"""
+def _size_func(size: str | None, size_min: float = 0.0, size_max: float = 0.0):
+    """根据 size 列生成 symbolSize JS 函数，并把数值归一化到 [6, 28]。"""
     if not size:
         return 10
-    # 用函数动态计算大小，归一化到 [6, 28]
-    return (
+    # 用 _JsFunction 包装，避免 json.dumps 把函数源码加引号，
+    # 导致 ECharts 把 symbolSize 当字符串解析而点不渲染。
+    return _JsFunction(
         "function(val){"
-        "if(val[2]==null||isNaN(val[2]))return 8;"
-        "return val[2];"
+        "var v=val[2];"
+        "if(v==null||isNaN(v))return 8;"
+        f"var min={size_min},max={size_max};"
+        "if(max<=min)return 17;"
+        "return 6+(v-min)/(max-min)*22;"
         "}"
     )
 
 
 def _scatter_tooltip_formatter(x_label: str, y_label: str, size: str | None):
     # x_label / y_label / size_label 来自 CSV 列名，用 json.dumps 转义后拼入 JS
-    # 字符串字面量，防止列名含特殊字符导致 XSS 注入（与 _bar_tooltip_formatter 一致）
+    # 字符串字面量，防止列名含特殊字符导致 XSS 注入（与 _bar_tooltip_formatter 一致）。
+    # 整个函数用 _JsFunction 包装，避免序列化后被加引号变成普通字符串。
     x_label_js = json.dumps(x_label, ensure_ascii=False)
     y_label_js = json.dumps(y_label, ensure_ascii=False)
     size_label = _build_axis_label(size) if size else None
     size_label_js = json.dumps(size_label, ensure_ascii=False) if size_label else "null"
     size_line = f"html+='<span style=\"color:#6b7280;\">'+{size_label_js}+'：</span><b>'+val[2]+'</b><br/>';" if size_label else ""
-    return (
+    return _JsFunction(
         "function(params){"
         "var val=params.value;"
         f"var html='<div style=\"font-weight:600;margin-bottom:6px;\">'+params.seriesName+'</div>';"
@@ -715,9 +736,9 @@ def _echarts_pie(
     return {
         "title": {**_ECHARTS_BASE_TITLE, "text": title, "subtext": f"共 {len(data)} 类 · 合计 {_format_number(total)}"},
         "tooltip": {**_ECHARTS_BASE_TOOLTIP, "trigger": "item",
-                    "formatter": "function(p){return '<div style=\"font-weight:600;margin-bottom:4px;\">'+p.name+'</div><span style=\"color:#6b7280;\">'+p.seriesName+'：</span><b>'+p.value.toLocaleString()+'</b> ('+p.percent+'%)';}"},
+                    "formatter": _JsFunction("function(p){return '<div style=\"font-weight:600;margin-bottom:4px;\">'+p.name+'</div><span style=\"color:#6b7280;\">'+p.seriesName+'：</span><b>'+p.value.toLocaleString()+'</b> ('+p.percent+'%)';}")},
         "legend": {**_ECHARTS_BASE_LEGEND, "orient": "vertical", "right": 16, "top": "middle", "itemGap": 12},
-        "toolbox": {"right": 56, "top": 24, "feature": {"saveAsImage": {"title": "导出 PNG", "pixelRatio": 2}}},
+        "toolbox": {"right": 70, "top": 24, "feature": {"saveAsImage": {"title": "导出 PNG", "pixelRatio": 2}}},
         "color": _ECHARTS_PALETTE,
         "series": [{
             "name": _build_axis_label(value_col) if value_col else "计数",
@@ -754,7 +775,7 @@ def _echarts_histogram(
     base: dict[str, Any] = {
         "title": {**_ECHARTS_BASE_TITLE, "text": title, "subtext": f"{x_label} 分布直方图"},
         "tooltip": {**_ECHARTS_BASE_TOOLTIP, "trigger": "axis", "axisPointer": {"type": "shadow"},
-                    "formatter": "function(params){var p=params[0];return '<div style=\"font-weight:600;\">区间：'+p.axisValue+'</div><span style=\"color:#6b7280;\">频数：</span><b>'+p.value.toLocaleString()+'</b>';}"},
+                    "formatter": _JsFunction("function(params){var p=params[0];return '<div style=\"font-weight:600;\">区间：'+p.axisValue+'</div><span style=\"color:#6b7280;\">频数：</span><b>'+p.value.toLocaleString()+'</b>';}")},
         "grid": {**_ECHARTS_BASE_GRID},
         "toolbox": {**_ECHARTS_BASE_TOOLBOX},
         "color": [_ECHARTS_PALETTE[0]],
@@ -856,7 +877,7 @@ def _echarts_heatmap(
         "title": {**_ECHARTS_BASE_TITLE, "text": title,
                   "subtext": "相关性矩阵" if is_correlation else f"{_build_axis_label(x)} × {_build_axis_label(y)}"},
         "tooltip": {**_ECHARTS_BASE_TOOLTIP, "trigger": "item",
-                    "formatter": "function(p){return '<b>'+p.seriesName+'</b><br/>'+y_names[p.value[1]]+' × '+x_names[p.value[0]]+'：<b>'+p.value[2]+'</b>';}"},
+                    "formatter": _JsFunction("function(p){return '<b>'+p.seriesName+'</b><br/>'+y_names[p.value[1]]+' × '+x_names[p.value[0]]+'：<b>'+p.value[2]+'</b>';}")},
         "grid": {**_ECHARTS_BASE_GRID, "left": 100, "bottom": 100},
         "toolbox": {**_ECHARTS_BASE_TOOLBOX},
         "xAxis": [{"type": "category", "data": x_names, "splitArea": {"show": True},
@@ -872,7 +893,7 @@ def _echarts_heatmap(
         "series": [{
             "name": value_label, "type": "heatmap", "data": data,
             "label": {"show": True, "color": _ECHARTS_TEXT_COLOR, "fontSize": 11,
-                      "formatter": "function(p){return p.value[2];}"},
+                      "formatter": _JsFunction("function(p){return p.value[2];}")},
             "emphasis": {"itemStyle": {"shadowBlur": 10, "shadowColor": "rgba(0,0,0,0.3)"}},
         }],
     }
@@ -902,7 +923,7 @@ def _echarts_scatter_matrix(
         "toolbox": {**_ECHARTS_BASE_TOOLBOX},
         "parallelAxis": parallel_axes,
         "parallel": {
-            "left": 64, "right": 32, "top": 80, "bottom": 60,
+            "left": 64, "right": 32, "top": 112, "bottom": 60,
             "parallelAxisDefault": {"axisLine": {"lineStyle": {"color": _ECHARTS_GRID_COLOR}}},
         },
         "color": _ECHARTS_PALETTE,
@@ -984,8 +1005,8 @@ def _echarts_sunburst(
     return {
         "title": {**_ECHARTS_BASE_TITLE, "text": title, "subtext": "层级结构 · 点击下钻"},
         "tooltip": {**_ECHARTS_BASE_TOOLTIP, "trigger": "item",
-                    "formatter": "function(p){return '<b>'+p.name+'</b><br/>值：<b>'+(p.value||0).toLocaleString()+'</b>';}"},
-        "toolbox": {"right": 56, "top": 24, "feature": {"saveAsImage": {"title": "导出 PNG", "pixelRatio": 2}}},
+                    "formatter": _JsFunction("function(p){return '<b>'+p.name+'</b><br/>值：<b>'+(p.value||0).toLocaleString()+'</b>';}")},
+        "toolbox": {"right": 70, "top": 24, "feature": {"saveAsImage": {"title": "导出 PNG", "pixelRatio": 2}}},
         "color": _ECHARTS_PALETTE,
         "series": [series],
     }

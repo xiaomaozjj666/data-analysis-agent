@@ -206,6 +206,14 @@
   from { transform: scaleY(0); opacity: 0; }
   to { transform: scaleY(1); opacity: 1; }
 }
+/* 乐观 UI（#2）：点击历史会话后、接口返回前的过渡态——立即上浅底 + 左侧竖条，
+   让"我点到了"这一反馈瞬间可见（原来要等 fetch 完成才高亮）。竖条带脉冲区分"加载中"。 */
+.history-list li.is-pending > button { background: var(--accent-subtle); opacity: 0.9; }
+.history-list li.is-pending::before { content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 2px; border-radius: 1px; background: var(--accent-fg); animation: pending-bar-pulse 1s var(--ease-out) infinite; }
+@keyframes pending-bar-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
 .history-list li > button > svg:first-child { color: var(--accent-fg); flex: 0 0 auto; }
 .history-list li > button > span { min-width: 0; flex: 1; }
 .history-list li strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-sm); font-weight: 600; color: var(--fg-default); }
@@ -349,6 +357,8 @@
 /* prefers-reduced-motion：禁用历史面板动画 */
 @media (prefers-reduced-motion: reduce) {
   .history-list li,
+  .history-list li.is-active::before,
+  .history-list li.is-pending::before,
   .history-group,
   .history-section > .history-filter-row,
   .history-section > .history-refresh,

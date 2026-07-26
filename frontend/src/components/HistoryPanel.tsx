@@ -345,7 +345,9 @@ const HistoryItem = React.memo(function HistoryItem({
   }
 
   return (
-    <li className={active ? "is-active" : ""}>
+    // 乐观 UI（#2）：switching 为 true 时（点击后立即置位，早于接口返回）先加
+    // is-pending 高亮，用户点击即见反馈；接口返回后成为正式 is-active。
+    <li className={active ? "is-active" : switching ? "is-pending" : ""}>
       <button type="button" onClick={() => onSelect(item)} disabled={switchingAny}>
         <FileSpreadsheet size={14} />
         <span>

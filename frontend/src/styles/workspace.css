@@ -63,6 +63,17 @@
   outline: 2px solid var(--accent-fg);
   outline-offset: -2px;
 }
+/* 可点击指标微交互：hover 时数字染品牌色 + 整块轻微上浮，
+   明示"这是入口而非静态数字"；active 归位形成按压感 */
+.metric.metric-clickable {
+  transition: background var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-out);
+}
+.metric.metric-clickable strong {
+  transition: color var(--duration-fast) var(--ease-out);
+}
+.metric.metric-clickable:hover { transform: translateY(-1px); }
+.metric.metric-clickable:hover strong { color: var(--accent-fg); }
+.metric.metric-clickable:active { transform: translateY(0); }
 
 /* GitHub 式下划线标签页 */
 .tabs { height: 52px; display: flex; align-items: flex-end; gap: 24px; border-bottom: 1px solid var(--border-muted); }
@@ -71,6 +82,9 @@
 .tabs button::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; border-radius: 1px; background: transparent; transition: background var(--duration-fast) var(--ease-out); }
 .tabs button.active { color: var(--fg-default); font-weight: 600; }
 .tabs button.active::after { background: var(--accent-fg); }
+/* 非激活 tab 悬停时先给一条中性色下划线，预告"可切换"，
+   点击后再变为品牌色（GitHub 同款交互） */
+.tabs button:not(.active):hover::after { background: var(--border-strong); }
 .tabs button.active svg { color: var(--accent-fg); }
 .tabs button span { min-width: 20px; height: 18px; display: grid; place-items: center; padding: 0 6px; border-radius: var(--radius-full); background: var(--neutral-muted); color: var(--fg-muted); font-size: var(--text-xs); font-weight: 500; }
 .tabs button.active span { background: var(--accent-subtle); color: var(--accent-fg); }

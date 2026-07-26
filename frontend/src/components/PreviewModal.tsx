@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { AlertTriangle, Columns2, Download, FileImage, Maximize2, Palette, RefreshCw, X } from "lucide-react";
 import { useAppStore } from "../store/useAppStore";
 import type { UseArtifactPreviewResult } from "../hooks/useArtifactPreview";
@@ -7,13 +8,15 @@ interface PreviewModalProps {
   // useArtifactPreview 的完整返回值：模态的开关/对比/全屏/编辑/PNG 状态与回调
   preview: UseArtifactPreviewResult;
   theme: "light" | "dark";
+  // 同步 React 主题：图表 iframe 内切换亮/暗时回传，父页面据此更新顶栏主题（#1）
+  setTheme: (theme: "light" | "dark") => void;
   onDownload: (item: Artifact) => Promise<void>;
 }
 
 // 产物预览模态：提取自 App.tsx 的 preview-backdrop JSX（图表预览 / 对比 /
 // 全屏 / PNG 导出 / 内联编辑）。状态仍由 useArtifactPreview + Zustand store
 // 驱动，仅做展示层拆分，行为与原实现一致。previewItem 为空时不渲染。
-function PreviewModal({ preview, theme, onDownload }: PreviewModalProps) {
+function PreviewModal({ preview, theme, setTheme, onDownload }: PreviewModalProps) {
   const {
     session, previewItem, previewHtml, previewLoading, previewError,
     setPreviewLoading, setPreviewError,
@@ -26,6 +29,28 @@ function PreviewModal({ preview, theme, onDownload }: PreviewModalProps) {
     previewFullscreen, setPreviewFullscreen, compareMode, setCompareMode,
     compareItem, compareHtml, compareLoading, pngDownloading,
   } = preview;
+
+  // 主题联动（#1）父 → 子：React 主题变化或图表加载完成时，向所有预览 iframe
+  // postMessage 当前主题；iframe 内桥接脚本改写 data-theme，触发图表重新着色。
+  // 沙箱 iframe（allow-scripts、无 allow-same-origin）只能靠 postMessage 通信。
+  useEffect(() => {
+    const frames = document.querySelectorAll<HTMLIFrameElement>(".preview-frame iframe");
+    frames.forEach((f) => {
+      try { f.contentWindow?.postMessage({ type: "set-theme", theme }, "*"); } catch { /* noop */ }
+    });
+  }, [theme, previewHtml, compareHtml]);
+
+  // 主题联动（#1）子 → 父：图表 iframe 内点击亮/暗按钮后回传 chart-theme-changed，
+  // 这里把 React 顶栏主题同步过去；带显式 theme 值，setTheme 幂等赋值不会抖动。
+  useEffect(() => {
+    const handler = (e: MessageEvent) => {
+      if (e.data?.type === "chart-theme-changed" && (e.data.theme === "dark" || e.data.theme === "light")) {
+        setTheme(e.data.theme);
+      }
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, [setTheme]);
 
   if (!previewItem) return null;
 
@@ -134,13 +159,12 @@ function PreviewModal({ preview, theme, onDownload }: PreviewModalProps) {
                 onLoad={(e) => {
                   // 清掉 openArtifactPreview 启动的兜底超时定时器并关闭 loading。
                   onPreviewIframeLoaded();
+                  // 沙箱 iframe 无 allow-same-origin，不能直接写 contentDocument；
+                  // 改用 postMessage 让 iframe 内桥接脚本同步 data-theme（#1）。
                   try {
                     const iframe = e.target as HTMLIFrameElement;
-                    // 注意：可选链不能用于赋值左侧，这里直接访问 contentWindow
-                    // 在 sandbox 跨域时访问 contentWindow.document 会抛错，
-                    // 由外层 try/catch 捕获后 noop。
-                    iframe.contentWindow!.document.documentElement.dataset.theme = theme;
-                  } catch { /* sandbox 跨域时 noop，图表脚本回退到 prefers-color-scheme */ }
+                    iframe.contentWindow?.postMessage({ type: "set-theme", theme }, "*");
+                  } catch { /* noop，图表脚本回退到 prefers-color-scheme */ }
                 }}
                 onError={() => {
                   setPreviewLoading(false);
@@ -163,7 +187,19 @@ function PreviewModal({ preview, theme, onDownload }: PreviewModalProps) {
                 </div>
               )}
               {compareHtml && (
-                <iframe title={compareItem.name} sandbox="allow-scripts" referrerPolicy="no-referrer" srcDoc={compareHtml} />
+                <iframe
+                  title={compareItem.name}
+                  sandbox="allow-scripts"
+                  referrerPolicy="no-referrer"
+                  srcDoc={compareHtml}
+                  onLoad={(e) => {
+                    // 对比图同样通过 postMessage 跟随当前主题（#1）
+                    try {
+                      const iframe = e.target as HTMLIFrameElement;
+                      iframe.contentWindow?.postMessage({ type: "set-theme", theme }, "*");
+                    } catch { /* noop */ }
+                  }}
+                />
               )}
             </div>
           )}

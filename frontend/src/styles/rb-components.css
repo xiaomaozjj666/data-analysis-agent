@@ -3,6 +3,29 @@
    组件自带 CSS 通过组件内 import './X.css' 加载
    ============================================================ */
 
+/* ---------- 侧边栏 ReactBits 包装器 ---------- */
+/* ClickSpark 包裹"新建分析"：撑满侧栏宽度，火花层不影响布局 */
+.sidebar-spark {
+  display: flex;
+  width: 100%;
+}
+.sidebar-spark > .new-analysis {
+  flex: 1 1 auto;
+}
+/* GlareHover 包裹数据卡片/上传入口：
+   1. 撑满宽度；2. 放开 overflow，避免按钮 hover 的 translateX(2px) 与
+   box-shadow 被裁切；3. 流光层自身补圆角（原依赖父级 overflow:hidden 裁切） */
+.sidebar-glare {
+  width: 100%;
+  overflow: visible;
+}
+.sidebar-glare::before {
+  border-radius: var(--gh-br);
+}
+.sidebar-glare > button {
+  width: 100%;
+}
+
 /* 无障碍：尊重用户的动画偏好 */
 @media (prefers-reduced-motion: reduce) {
   .shiny-text {
@@ -26,5 +49,10 @@
   }
   .error-banner {
     animation: none !important;
+  }
+  /* 微交互 hover 位移在 reduced-motion 下全部取消 */
+  .metric.metric-clickable:hover,
+  .preview-actions > button:hover {
+    transform: none !important;
   }
 }
