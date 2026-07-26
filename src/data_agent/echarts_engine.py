@@ -298,7 +298,8 @@ def _interpret_impl(
     if chart_type in {"scatter", "scatter_3d"} and x and y and len(df) > 0:
         return _interpret_scatter(df, x=x, y=y, title=title_text)
     if chart_type in {"correlation_heatmap", "heatmap"} and len(df) > 0:
-        return _interpret_heatmap(df, title=title_text)
+        return _interpret_heatmap(df, title=title_text,
+                                  is_correlation=chart_type == "correlation_heatmap")
     if chart_type in {"box", "violin"} and x and y and len(df) > 0:
         return _interpret_box(df, x=x, y=y, title=title_text)
     if chart_type in {"sunburst", "treemap"} and len(df) > 0:
@@ -401,17 +402,70 @@ def _interpret_scatter(df: pd.DataFrame, *, x: str, y: str, title: str) -> str:
     )
 
 
-def _interpret_heatmap(df: pd.DataFrame, *, title: str) -> str:
-    return (
+def _interpret_heatmap(df: pd.DataFrame, *, title: str, is_correlation: bool = False) -> str:
+    generic = (
         f"「{title}」以颜色深浅表达数值大小，颜色越深数值越高。"
         f"悬浮单元格查看精确值，适用于矩阵型数据的整体模式识别。"
     )
+    if not is_correlation:
+        return generic
+    # 相关性矩阵：找出最强相关对，给出业务化提示
+    numeric = df.select_dtypes(include="number")
+    if numeric.shape[1] < 2:
+        return generic
+    corr = numeric.corr()
+    cols = list(corr.columns)
+    pairs: list[tuple[str, str, float]] = []
+    for i in range(len(cols)):
+        for j in range(i + 1, len(cols)):
+            v = float(corr.iloc[i, j])
+            if not math.isnan(v):
+                pairs.append((str(cols[i]), str(cols[j]), v))
+    if not pairs:
+        return generic
+    strongest = max(pairs, key=lambda p: abs(p[2]))
+    a, b, v = strongest
+    msg = (
+        f"「{title}」中「{_build_axis_label(a)}」与「{_build_axis_label(b)}」的相关性最强"
+        f"（r={v:.2f}，{'正' if v > 0 else '负'}相关）。"
+    )
+    neg = min(pairs, key=lambda p: p[2])
+    if neg is not strongest and neg[2] < -0.3:
+        msg += (
+            f"「{_build_axis_label(neg[0])}」与「{_build_axis_label(neg[1])}」呈明显负相关"
+            f"（r={neg[2]:.2f}）。"
+        )
+    return msg + "蓝色代表正相关、红色代表负相关，颜色越深关系越强，悬浮单元格查看精确值。"
 
 
 def _interpret_box(df: pd.DataFrame, *, x: str, y: str, title: str) -> str:
-    return (
-        f"「{title}」对比各组{_build_axis_label(y)}的分布，箱体表示中间50%数据，"
+    y_label = _build_axis_label(y)
+    generic = (
+        f"「{title}」对比各组{y_label}的分布，箱体表示中间 50% 数据，"
         f"须线延伸至1.5倍四分位距，超出须线的点为潜在异常值。悬浮查看分位数细节。"
+    )
+    # 数据驱动：对比各组中位数，统计离群点总数（与图中 scatter 系列口径一致）
+    grouped = df.assign(_v=pd.to_numeric(df[y], errors="coerce")).groupby(x)["_v"]
+    medians = grouped.median().dropna()
+    if len(medians) < 2:
+        return generic
+    top_key, low_key = medians.idxmax(), medians.idxmin()
+    outlier_count = 0
+    for _, group in grouped:
+        vals = group.dropna().astype(float)
+        if len(vals) < 4:
+            continue
+        q1, q3 = float(vals.quantile(0.25)), float(vals.quantile(0.75))
+        iqr = q3 - q1
+        outlier_count += int(((vals < q1 - 1.5 * iqr) | (vals > q3 + 1.5 * iqr)).sum())
+    outlier_text = (
+        f"共识别出 {outlier_count} 个离群点（超出 1.5 倍四分位距，图中以独立圆点标出）"
+        if outlier_count else "各组未发现明显离群点"
+    )
+    return (
+        f"「{title}」中「{top_key}」的{y_label}中位数最高（{_format_number(medians.max())}），"
+        f"「{low_key}」最低（{_format_number(medians.min())}），{outlier_text}。"
+        f"箱体为中间 50% 数据，菱形标记为均值，悬浮可查看五数概括与样本数。"
     )
 
 
@@ -705,13 +759,13 @@ def _scatter_tooltip_formatter(x_label: str, y_label: str, size: str | None):
     y_label_js = json.dumps(y_label, ensure_ascii=False)
     size_label = _build_axis_label(size) if size else None
     size_label_js = json.dumps(size_label, ensure_ascii=False) if size_label else "null"
-    size_line = f"html+='<span style=\"color:#6b7280;\">'+{size_label_js}+'：</span><b>'+val[2]+'</b><br/>';" if size_label else ""
+    size_line = f"html+='<span style=\"color:var(--tt-muted,#6b7280);\">'+{size_label_js}+'：</span><b>'+val[2]+'</b><br/>';" if size_label else ""
     return _JsFunction(
         "function(params){"
         "var val=params.value;"
         f"var html='<div style=\"font-weight:600;margin-bottom:6px;\">'+params.seriesName+'</div>';"
-        f"html+='<span style=\"color:#6b7280;\">'+{x_label_js}+'：</span><b>'+val[0]+'</b><br/>';"
-        f"html+='<span style=\"color:#6b7280;\">'+{y_label_js}+'：</span><b>'+val[1]+'</b><br/>';"
+        f"html+='<span style=\"color:var(--tt-muted,#6b7280);\">'+{x_label_js}+'：</span><b>'+val[0]+'</b><br/>';"
+        f"html+='<span style=\"color:var(--tt-muted,#6b7280);\">'+{y_label_js}+'：</span><b>'+val[1]+'</b><br/>';"
         f"{size_line}"
         "return html;"
         "}"
@@ -736,7 +790,7 @@ def _echarts_pie(
     return {
         "title": {**_ECHARTS_BASE_TITLE, "text": title, "subtext": f"共 {len(data)} 类 · 合计 {_format_number(total)}"},
         "tooltip": {**_ECHARTS_BASE_TOOLTIP, "trigger": "item",
-                    "formatter": _JsFunction("function(p){return '<div style=\"font-weight:600;margin-bottom:4px;\">'+p.name+'</div><span style=\"color:#6b7280;\">'+p.seriesName+'：</span><b>'+p.value.toLocaleString()+'</b> ('+p.percent+'%)';}")},
+                    "formatter": _JsFunction("function(p){return '<div style=\"font-weight:600;margin-bottom:4px;\">'+p.name+'</div><span style=\"color:var(--tt-muted,#6b7280);\">'+p.seriesName+'：</span><b>'+p.value.toLocaleString()+'</b> ('+p.percent+'%)';}")},
         "legend": {**_ECHARTS_BASE_LEGEND, "orient": "vertical", "right": 16, "top": "middle", "itemGap": 12},
         "toolbox": {"right": 70, "top": 24, "feature": {"saveAsImage": {"title": "导出 PNG", "pixelRatio": 2}}},
         "color": _ECHARTS_PALETTE,
@@ -775,7 +829,7 @@ def _echarts_histogram(
     base: dict[str, Any] = {
         "title": {**_ECHARTS_BASE_TITLE, "text": title, "subtext": f"{x_label} 分布直方图"},
         "tooltip": {**_ECHARTS_BASE_TOOLTIP, "trigger": "axis", "axisPointer": {"type": "shadow"},
-                    "formatter": _JsFunction("function(params){var p=params[0];return '<div style=\"font-weight:600;\">区间：'+p.axisValue+'</div><span style=\"color:#6b7280;\">频数：</span><b>'+p.value.toLocaleString()+'</b>';}")},
+                    "formatter": _JsFunction("function(params){var p=params[0];return '<div style=\"font-weight:600;\">区间：'+p.axisValue+'</div><span style=\"color:var(--tt-muted,#6b7280);\">频数：</span><b>'+p.value.toLocaleString()+'</b>';}")},
         "grid": {**_ECHARTS_BASE_GRID},
         "toolbox": {**_ECHARTS_BASE_TOOLBOX},
         "color": [_ECHARTS_PALETTE[0]],
@@ -798,65 +852,146 @@ def _echarts_histogram(
 def _echarts_box(
     df: pd.DataFrame, *, x: str, y: str | None, color: str | None, title: str, violin: bool = False,
 ) -> dict[str, Any]:
-    """箱线图 / 小提琴图：按 x 分组展示 y 分布。"""
+    """箱线图 / 小提琴图：按 x 分组展示 y 分布。
+
+    细节设计：
+    - ECharts boxplot data 只接受五数概括，离群点拆为独立 scatter 系列叠加
+    - 均值以菱形标记叠加，便于与中位数对比判断偏态
+    - tooltip 展示五数概括 + 样本数 + 均值；空组直接跳过不画假箱体
+    - 每组独立配色，类别多时旋转标签并启用滚轮缩放
+    """
     x_label = _build_axis_label(x)
     y_label = _build_axis_label(y) if y else ""
     if y is None:
         return _echarts_histogram(df, x=x, color=color, bins=30, title=title)
 
     groups = df.groupby(x, dropna=False)[y]
-    categories = [str(k) for k in groups.groups.keys()]
-    box_data = []
-    for _, group in groups:
-        vals = group.dropna().astype(float).tolist()
-        if not vals:
-            box_data.append([0, 0, 0, 0, 0])
-            continue
-        q1 = float(np.percentile(vals, 25))
-        q2 = float(np.percentile(vals, 50))
-        q3 = float(np.percentile(vals, 75))
+    categories: list[str] = []
+    box_data: list[dict[str, Any]] = []
+    outlier_points: list[list[Any]] = []
+    mean_points: list[list[Any]] = []
+    stats_meta: list[dict[str, Any]] = []
+    for key, group in groups:
+        vals = pd.to_numeric(group, errors="coerce").dropna().astype(float)
+        if vals.empty:
+            continue  # 空组跳过，避免画出 [0,0,0,0,0] 的假箱体
+        name = str(key)
+        q1 = float(vals.quantile(0.25))
+        q2 = float(vals.quantile(0.5))
+        q3 = float(vals.quantile(0.75))
         iqr = q3 - q1
-        lower = min(vals) if not vals else max(min(vals), q1 - 1.5 * iqr)
-        upper = max(vals) if not vals else min(max(vals), q3 + 1.5 * iqr)
-        outliers = [v for v in vals if v < lower or v > upper]
-        box_data.append([lower, q1, q2, q3, upper] + outliers)
+        lower = max(float(vals.min()), q1 - 1.5 * iqr)
+        upper = min(float(vals.max()), q3 + 1.5 * iqr)
+        idx = len(categories)
+        categories.append(name)
+        box_data.append({
+            "value": [round(v, 4) for v in (lower, q1, q2, q3, upper)],
+            "itemStyle": {
+                "color": _hex_to_rgba(_series_color(idx), 0.18),
+                "borderColor": _series_color(idx),
+                "borderWidth": 1.5,
+            },
+        })
+        outliers = vals[(vals < lower) | (vals > upper)]
+        if len(outliers) > 100:
+            # 离群点过多时等距抽样，避免 option 体积膨胀拖慢渲染
+            outliers = outliers.iloc[:: len(outliers) // 100 + 1]
+        outlier_points.extend([name, round(float(v), 4)] for v in outliers)
+        mean_points.append([name, round(float(vals.mean()), 4)])
+        stats_meta.append({"count": int(vals.size), "mean": round(float(vals.mean()), 2)})
 
-    return {
+    # tooltip：boxplot 的 value 可能带类目索引前缀（6 元），统一取末 5 位五数概括；
+    # 样本数/均值通过 json 内嵌进函数体，按 dataIndex 对齐查表。
+    stats_js = json.dumps(stats_meta, ensure_ascii=False)
+    tooltip_formatter = _JsFunction(
+        "function(p){"
+        "var f=function(v){return (v===null||v===undefined)?'—':Number(v).toLocaleString(undefined,{maximumFractionDigits:2});};"
+        "if(p.seriesType==='scatter'){"
+        "return '<div style=\"font-weight:600;margin-bottom:4px;\">'+p.value[0]+'</div>'"
+        "+'<span style=\"color:var(--tt-muted,#6b7280);\">'+p.seriesName+'：</span><b>'+f(p.value[1])+'</b>';}"
+        "var v=p.value;var b=v.length>5?[v[1],v[2],v[3],v[4],v[5]]:v;"
+        "var s=(" + stats_js + ")[p.dataIndex]||{};"
+        "return '<div style=\"font-weight:600;margin-bottom:4px;\">'+p.name+'</div>'"
+        "+'<span style=\"color:var(--tt-muted,#6b7280);\">上须：</span><b>'+f(b[4])+'</b><br/>'"
+        "+'<span style=\"color:var(--tt-muted,#6b7280);\">上四分位 Q3：</span><b>'+f(b[3])+'</b><br/>'"
+        "+'<span style=\"color:var(--tt-muted,#6b7280);\">中位数：</span><b>'+f(b[2])+'</b><br/>'"
+        "+'<span style=\"color:var(--tt-muted,#6b7280);\">下四分位 Q1：</span><b>'+f(b[1])+'</b><br/>'"
+        "+'<span style=\"color:var(--tt-muted,#6b7280);\">下须：</span><b>'+f(b[0])+'</b><br/>'"
+        "+'<span style=\"color:var(--tt-muted,#6b7280);\">样本数：</span><b>'+(s.count===undefined?'—':s.count.toLocaleString())+'</b><br/>'"
+        "+'<span style=\"color:var(--tt-muted,#6b7280);\">均值：</span><b>'+f(s.mean)+'</b>';"
+        "}"
+    )
+
+    series: list[dict[str, Any]] = [{
+        "name": y_label,
+        "type": "boxplot",
+        "data": box_data,
+        "boxWidth": [10, 44],
+        "emphasis": {"itemStyle": {"borderWidth": 2, "shadowBlur": 8}},
+    }]
+    if outlier_points:
+        series.append({
+            "name": "离群值",
+            "type": "scatter",
+            "data": outlier_points,
+            "symbolSize": 7,
+            "itemStyle": {"color": _hex_to_rgba(_ECHARTS_PALETTE[3], 0.55),
+                          "borderColor": _ECHARTS_PALETTE[3], "borderWidth": 1},
+            "z": 3,
+        })
+    series.append({
+        "name": "均值",
+        "type": "scatter",
+        "data": mean_points,
+        "symbol": "diamond",
+        "symbolSize": 9,
+        "itemStyle": {"color": "#ffffff", "borderColor": _ECHARTS_TEXT_COLOR, "borderWidth": 1.5},
+        "z": 4,
+    })
+
+    option: dict[str, Any] = {
         "title": {**_ECHARTS_BASE_TITLE, "text": title, "subtext": f"{x_label} 分组 × {y_label} 分布"},
-        "tooltip": {**_ECHARTS_BASE_TOOLTIP, "trigger": "item"},
+        "tooltip": {**_ECHARTS_BASE_TOOLTIP, "trigger": "item", "formatter": tooltip_formatter},
+        "legend": {**_ECHARTS_BASE_LEGEND, "data": [s["name"] for s in series]},
         "grid": {**_ECHARTS_BASE_GRID},
         "toolbox": {**_ECHARTS_BASE_TOOLBOX},
         "color": _ECHARTS_PALETTE,
-        "xAxis": [{**_ECHARTS_BASE_AXIS, "type": "category", "data": categories, "name": x_label}],
+        "xAxis": [{**_ECHARTS_BASE_AXIS, "type": "category", "data": categories, "name": x_label,
+                   "axisLabel": {**_ECHARTS_BASE_AXIS["axisLabel"],
+                                 "rotate": 30 if len(categories) > 8 else 0}}],
         "yAxis": [_echarts_value_axis(df, y, name=y_label, scale=True)],
-        "series": [{
-            "name": y_label,
-            "type": "boxplot",
-            "data": box_data,
-            "itemStyle": {"color": _hex_to_rgba(_ECHARTS_PALETTE[0], 0.18),
-                          "borderColor": _ECHARTS_PALETTE[0], "borderWidth": 1.5},
-            "emphasis": {"itemStyle": {"borderWidth": 2, "shadowBlur": 8}},
-        }],
+        "series": series,
     }
+    if len(categories) > 10:
+        option["dataZoom"] = [{"type": "inside", "xAxisIndex": 0}]
+    return option
 
 
 def _echarts_heatmap(
     df: pd.DataFrame, *, x: str, y: str | None, values: str | None, title: str,
     is_correlation: bool = False,
 ) -> dict[str, Any]:
-    """热力图 / 相关性热力图。"""
+    """热力图 / 相关性热力图。
+
+    细节设计：
+    - tooltip 内嵌行列名映射（JS 作用域里拿不到 Python 变量，必须序列化进函数体）
+    - 深色单元格标签自动切白字，缺失格显示空白而非 "null"
+    - 相关性用红—白—蓝发散色板（有正负号），普通数值用顺序蓝色渐变
+    - 单元格过多时隐藏标签防重叠；全值相同时给 visualMap 撑出非零区间
+    """
     if is_correlation:
         numeric = df.select_dtypes(include="number")
         if numeric.empty:
             return {"title": {"text": title}}
         corr = numeric.corr()
-        x_names = corr.columns.tolist()
-        y_names = corr.index.tolist()
-        data = []
-        for i, _yi in enumerate(y_names):
-            for j, _xj in enumerate(x_names):
-                data.append([j, i, round(float(corr.iloc[i, j]), 3)])
-        vmin, vmax = -1, 1
+        x_names = [_build_axis_label(str(c)) for c in corr.columns]
+        y_names = [_build_axis_label(str(i)) for i in corr.index]
+        raw: list[list[Any]] = [
+            [None if math.isnan(float(corr.iloc[i, j])) else round(float(corr.iloc[i, j]), 3)
+             for j in range(len(x_names))]
+            for i in range(len(y_names))
+        ]
+        vmin, vmax = -1.0, 1.0
         value_label = "相关系数"
     else:
         if not x or not y or not values:
@@ -864,36 +999,72 @@ def _echarts_heatmap(
         pivot = df.pivot_table(index=y, columns=x, values=values, aggfunc="mean")
         x_names = [str(c) for c in pivot.columns]
         y_names = [str(i) for i in pivot.index]
-        data = []
-        for i, _yi in enumerate(y_names):
-            for j, _xj in enumerate(x_names):
-                v = pivot.iloc[i, j]
-                data.append([j, i, _safe_value(v)])
-        vmin = float(np.nanmin([d[2] for d in data if d[2] is not None])) if data else 0
-        vmax = float(np.nanmax([d[2] for d in data if d[2] is not None])) if data else 1
+        raw = [[_safe_value(pivot.iloc[i, j]) for j in range(len(x_names))]
+               for i in range(len(y_names))]
+        valid = [v for row in raw for v in row if v is not None]
+        vmin = float(min(valid)) if valid else 0.0
+        vmax = float(max(valid)) if valid else 1.0
+        if vmax - vmin < 1e-12:
+            vmin, vmax = vmin - 0.5, vmax + 0.5
         value_label = _build_axis_label(values)
 
+    # 深色格标签切白字：发散色板看 |v|（两端都深），顺序色板看归一化位置
+    span = vmax - vmin
+    cells: list[dict[str, Any]] = []
+    for i in range(len(y_names)):
+        for j in range(len(x_names)):
+            v = raw[i][j]
+            cell: dict[str, Any] = {"value": [j, i, v]}
+            if v is not None:
+                dark = abs(v) >= 0.55 if is_correlation else (v - vmin) / span >= 0.6
+                if dark:
+                    cell["label"] = {"color": "#ffffff"}
+            cells.append(cell)
+
+    show_label = len(x_names) * len(y_names) <= 200
+    label_formatter = _JsFunction(
+        "function(p){var v=p.value[2];if(v===null||v===undefined){return '';}"
+        + ("return v.toFixed(2);}" if is_correlation
+           else "return Math.abs(v)>=10000?(v/10000).toFixed(1)+'万':Number(v.toFixed(2)).toLocaleString();}")
+    )
+    tooltip_formatter = _JsFunction(
+        "function(p){var X=" + json.dumps(x_names, ensure_ascii=False)
+        + ",Y=" + json.dumps(y_names, ensure_ascii=False) + ";"
+        "var v=p.value[2];"
+        "var t=(v===null||v===undefined)?'—':Number(v).toLocaleString(undefined,{maximumFractionDigits:3});"
+        "return '<div style=\"font-weight:600;margin-bottom:4px;\">'+Y[p.value[1]]+' × '+X[p.value[0]]+'</div>'"
+        "+'<span style=\"color:var(--tt-muted,#6b7280);\">'+" + json.dumps(value_label, ensure_ascii=False)
+        + "+'：</span><b>'+t+'</b>';}"
+    )
+
+    # 矩阵型图表跳过任何刻度都会误导阅读，类目数可控时强制逐个显示
+    axis_interval: Any = 0 if max(len(x_names), len(y_names)) <= 25 else "auto"
     return {
         "title": {**_ECHARTS_BASE_TITLE, "text": title,
                   "subtext": "相关性矩阵" if is_correlation else f"{_build_axis_label(x)} × {_build_axis_label(y)}"},
-        "tooltip": {**_ECHARTS_BASE_TOOLTIP, "trigger": "item",
-                    "formatter": _JsFunction("function(p){return '<b>'+p.seriesName+'</b><br/>'+y_names[p.value[1]]+' × '+x_names[p.value[0]]+'：<b>'+p.value[2]+'</b>';}")},
+        "tooltip": {**_ECHARTS_BASE_TOOLTIP, "trigger": "item", "formatter": tooltip_formatter},
         "grid": {**_ECHARTS_BASE_GRID, "left": 100, "bottom": 100},
         "toolbox": {**_ECHARTS_BASE_TOOLBOX},
         "xAxis": [{"type": "category", "data": x_names, "splitArea": {"show": True},
-                   "axisLabel": {"color": _ECHARTS_TEXT_SECONDARY, "rotate": 30}}],
+                   "axisTick": {"show": False},
+                   "axisLabel": {"color": _ECHARTS_TEXT_SECONDARY, "fontSize": 11,
+                                 "rotate": 30, "interval": axis_interval}}],
         "yAxis": [{"type": "category", "data": y_names, "splitArea": {"show": True},
-                   "axisLabel": {"color": _ECHARTS_TEXT_SECONDARY}}],
+                   "axisTick": {"show": False},
+                   "axisLabel": {"color": _ECHARTS_TEXT_SECONDARY, "fontSize": 11,
+                                 "interval": axis_interval}}],
         "visualMap": {
             "min": vmin, "max": vmax, "calculable": True, "orient": "horizontal",
-            "left": "center", "bottom": 16,
+            "left": "center", "bottom": 16, "precision": 2,
             "textStyle": {"color": _ECHARTS_TEXT_SECONDARY},
-            "inRange": {"color": ["#C75D63", "#f3f4f6", "#2C5F8D"]},
+            "inRange": {"color": ["#C75D63", "#f3f4f6", "#2C5F8D"] if is_correlation
+                        else ["#EDF3F9", "#8FB3D1", "#2C5F8D"]},
         },
         "series": [{
-            "name": value_label, "type": "heatmap", "data": data,
-            "label": {"show": True, "color": _ECHARTS_TEXT_COLOR, "fontSize": 11,
-                      "formatter": _JsFunction("function(p){return p.value[2];}")},
+            "name": value_label, "type": "heatmap", "data": cells,
+            "label": {"show": show_label, "color": _ECHARTS_TEXT_COLOR, "fontSize": 11,
+                      "formatter": label_formatter},
+            "itemStyle": {"borderColor": "#ffffff", "borderWidth": 1},
             "emphasis": {"itemStyle": {"shadowBlur": 10, "shadowColor": "rgba(0,0,0,0.3)"}},
         }],
     }
@@ -1077,11 +1248,48 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
         if (cur.xAxis && cur.xAxis.length) update.xAxis = cur.xAxis.map(function() { return axisUpdate(); });
         if (cur.yAxis && cur.yAxis.length) update.yAxis = cur.yAxis.map(function() { return axisUpdate(); });
         if (cur.parallelAxis && cur.parallelAxis.length) update.parallelAxis = cur.parallelAxis.map(function() { return axisUpdate(); });
-        if (cur.visualMap && cur.visualMap.length) update.visualMap = cur.visualMap.map(function() { return { textStyle: { color: labelColor } }; });
+        // visualMap：除文字色外，暗色下替换色板——浅色端（相关性中点 #f3f4f6、
+        // 顺序色低端 #EDF3F9）在暗底上刺眼；首次运行时缓存浅色原值供切回。
+        if (cur.visualMap && cur.visualMap.length) {
+          if (!window.__vmLightRange) {
+            window.__vmLightRange = cur.visualMap.map(function(v) {
+              return (v.inRange && v.inRange.color) || null;
+            });
+          }
+          update.visualMap = cur.visualMap.map(function(v, i) {
+            var light = window.__vmLightRange[i];
+            var upd = { textStyle: { color: labelColor } };
+            if (light && light.length === 3) {
+              var diverging = light[1] === '#f3f4f6';
+              upd.inRange = { color: isDark
+                ? (diverging ? ['#C0606A', '#2a3445', '#5B8DBE'] : ['#26324a', '#3A6386', '#4E8FC7'])
+                : light };
+            }
+            return upd;
+          });
+        }
+        // 热力图/箱线图系列级颜色跟随主题：单元格描边融入背景；标签基础色
+        // 切换（Python 预置的深色格白字是数据项级，优先级更高不受影响）；
+        // 均值菱形改为背景色填充 + 文字色描边，两套主题下都清晰。
+        if (cur.series && cur.series.length) {
+          update.series = cur.series.map(function(s) {
+            if (s.type === 'heatmap') {
+              return { itemStyle: { borderColor: isDark ? '#1c2433' : '#ffffff' },
+                       label: { color: isDark ? '#e6eaf0' : '#1f2937' } };
+            }
+            if (s.type === 'scatter' && s.name === '\u5747\u503c') {
+              return { itemStyle: { color: isDark ? '#1c2433' : '#ffffff',
+                                    borderColor: isDark ? '#e6eaf0' : '#1f2937' } };
+            }
+            return {};
+          });
+        }
         chart.setOption(update);
       } catch (e) { /* noop */ }
     }
     document.documentElement.style.background = isDark ? '#1c2433' : '#ffffff';
+    // tooltip 内联说明文字色：所有 formatter 用 var(--tt-muted) 引用，这里统一切换
+    document.documentElement.style.setProperty('--tt-muted', isDark ? '#9ca3af' : '#6b7280');
     document.body.style.background = isDark ? '#1c2433' : '#ffffff';
     document.body.style.color = isDark ? '#e6eaf0' : '#1f2937';
     var interp = document.querySelector('.interpretation');
@@ -1132,11 +1340,12 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
   // PNG 导出（postMessage 通道）：父页面发送 {type:"download-png"} 触发导出，
   // 这里调用 chart.getDataURL 生成 dataURL 后回传 {type:"png-data", data}。
   // 使用 postMessage 而非直接下载，可避免 iframe 需要 allow-same-origin 权限。
+  // 导出背景跟随当前主题，避免暗色图表配白底导致文字不可读。
   window.addEventListener('message', function(e) {
     if (e.data && e.data.type === 'download-png') {
       var chart = window.__echartsInstance;
       if (chart) {
-        var url = chart.getDataURL({type: 'png', pixelRatio: 2, backgroundColor: '#fff'});
+        var url = chart.getDataURL({type: 'png', pixelRatio: 2, backgroundColor: getIsDark() ? '#1c2433' : '#fff'});
         parent.postMessage({type: 'png-data', data: url}, '*');
       }
     }
