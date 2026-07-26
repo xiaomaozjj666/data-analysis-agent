@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import math
+import uuid
 from html import escape
 from typing import Any
 
@@ -78,7 +79,9 @@ _ECHARTS_BASE_TOOLTIP = {
 }
 
 _ECHARTS_BASE_LEGEND = {
-    "top": 24,
+    # 图例下移到 top:52，让出顶部右上角给亮/暗主题切换按钮与 toolbox，
+    # 避免按钮遮挡图例文字（或图例与 toolbox 顶部重叠）的视觉冲突。
+    "top": 52,
     "right": 24,
     "itemGap": 20,
     "itemWidth": 14,
@@ -96,7 +99,7 @@ _ECHARTS_BASE_TITLE = {
 }
 
 _ECHARTS_BASE_TOOLBOX = {
-    "right": 24,
+    "right": 56,
     "top": 24,
     "itemSize": 16,
     "itemGap": 12,
@@ -201,9 +204,23 @@ def _echarts_value_axis(df: pd.DataFrame, y: str | None, *, name: str, scale: bo
     return base
 
 
+class _JsFunction:
+    """标记一段字符串应被序列化为 JS 函数字面量（而非 JSON 字符串）。
+
+    ECharts 的 formatter / callback 需要真实的 JS 函数对象；但 Python 的
+    json.dumps 会把函数源码字符串序列化为带引号的 JSON 字符串，导致前端
+    把源码当普通文本显示（例如 Y 轴标签出现 "function(value){...}"）。
+    此类用 UUID 占位符隔离用户数据，序列化后再替换为无引号的函数源码。
+    """
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        self.token = f"__JS_FN_{uuid.uuid4().hex}__"
+
+
 # ECharts axisLabel formatter JS 函数：大数值自适应万/亿单位。
 # 注入到 option 的 axisLabel.formatter，前端 ECharts 会作为函数执行。
-_ECHARTS_AXIS_LABEL_FORMATTER_JS = (
+_ECHARTS_AXIS_LABEL_FORMATTER_JS = _JsFunction(
     "function(value){"
     "if(value===0||value===null||isNaN(value)){return '0';}"
     "var sign=value<0?'-':'';var abs=Math.abs(value);"
@@ -686,11 +703,13 @@ def _echarts_pie(
     """环形饼图：内嵌总数、悬浮占比、图例隐藏。"""
     value_col = values or y
     if not value_col or value_col not in df.columns:
-        # 退化为计数
+        # 退化为计数（按 x 聚合，避免重复类别产生多个同名扇区）
         counts = df[x].value_counts()
         data = [{"name": str(k), "value": int(v)} for k, v in counts.items()]
     else:
-        data = [{"name": str(r[x]), "value": _safe_value(r[value_col])} for _, r in df.iterrows()]
+        # 按 x 聚合求和，避免 x 含重复行（如 product×channel 未分组）导致同名扇区错乱。
+        grouped = df.groupby(x, dropna=False)[value_col].sum()
+        data = [{"name": str(k), "value": _safe_value(v)} for k, v in grouped.items()]
     total = sum(d["value"] or 0 for d in data)
 
     return {
@@ -698,7 +717,7 @@ def _echarts_pie(
         "tooltip": {**_ECHARTS_BASE_TOOLTIP, "trigger": "item",
                     "formatter": "function(p){return '<div style=\"font-weight:600;margin-bottom:4px;\">'+p.name+'</div><span style=\"color:#6b7280;\">'+p.seriesName+'：</span><b>'+p.value.toLocaleString()+'</b> ('+p.percent+'%)';}"},
         "legend": {**_ECHARTS_BASE_LEGEND, "orient": "vertical", "right": 16, "top": "middle", "itemGap": 12},
-        "toolbox": {"right": 24, "top": 24, "feature": {"saveAsImage": {"title": "导出 PNG", "pixelRatio": 2}}},
+        "toolbox": {"right": 56, "top": 24, "feature": {"saveAsImage": {"title": "导出 PNG", "pixelRatio": 2}}},
         "color": _ECHARTS_PALETTE,
         "series": [{
             "name": _build_axis_label(value_col) if value_col else "计数",
@@ -966,7 +985,7 @@ def _echarts_sunburst(
         "title": {**_ECHARTS_BASE_TITLE, "text": title, "subtext": "层级结构 · 点击下钻"},
         "tooltip": {**_ECHARTS_BASE_TOOLTIP, "trigger": "item",
                     "formatter": "function(p){return '<b>'+p.name+'</b><br/>值：<b>'+(p.value||0).toLocaleString()+'</b>';}"},
-        "toolbox": {"right": 24, "top": 24, "feature": {"saveAsImage": {"title": "导出 PNG", "pixelRatio": 2}}},
+        "toolbox": {"right": 56, "top": 24, "feature": {"saveAsImage": {"title": "导出 PNG", "pixelRatio": 2}}},
         "color": _ECHARTS_PALETTE,
         "series": [series],
     }
@@ -976,6 +995,9 @@ def _echarts_sunburst(
 
 #: ECharts 暗色模式自适应脚本：注入图表 HTML，监听主题变化动态切换背景和文字颜色。
 #: 通过 setOption 合并更新颜色属性，不触碰数据。浅色回退值与 _ECHARTS_*_COLOR 一致。
+#: 额外提供「亮/暗一键切换」按钮：默认跟随外层注入的 data-theme（父页面按应用主题注入），
+#: 用户点按后写入 data-theme 并优先于系统偏好；独立打开的 HTML 通过 localStorage 记忆选择
+#: （沙箱 iframe 下 localStorage 受限，已 try/catch 静默降级）。
 _ECHARTS_DARK_MODE_SCRIPT = """<script>
 (function() {
   // 运行时错误上报：图表脚本执行失败且实例未创建时，把错误消息回传
@@ -988,9 +1010,29 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
       }
     }, 300);
   });
+
+  // 切换按钮图标（随主题互换），使用 currentColor 继承按钮文字色，亮/暗皆清晰。
+  var SUN_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>';
+  var MOON_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>';
+
+  // 当前是否应为暗色：data-theme 显式优先，否则回退到系统偏好。
+  function getIsDark() {
+    var t = document.documentElement.dataset.theme;
+    if (t === 'dark') return true;
+    if (t === 'light') return false;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches;
+  }
+
+  function updateToggleUI(isDark) {
+    var btn = document.getElementById('theme-toggle');
+    if (!btn) return;
+    btn.innerHTML = isDark ? SUN_SVG : MOON_SVG;
+    btn.title = isDark ? '切换到亮色' : '切换到暗色';
+    btn.setAttribute('aria-label', isDark ? '切换到亮色' : '切换到暗色');
+  }
+
   function applyTheme() {
-    var isDark = document.documentElement.dataset.theme === 'dark' ||
-                 window.matchMedia('(prefers-color-scheme: dark)').matches;
+    var isDark = getIsDark();
     var chart = window.__echartsInstance;
     if (chart) {
       var axisColor = isDark ? '#2a3445' : '#e5e7eb';
@@ -1031,7 +1073,27 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
     if (interpTitle) {
       interpTitle.style.color = isDark ? '#9ca3af' : '#6b7280';
     }
+    // 同步切换按钮图标与提示
+    updateToggleUI(isDark);
   }
+
+  // 独立打开时记忆用户选择（沙箱 iframe 下 localStorage 受限，失败静默降级）。
+  try {
+    var saved = localStorage.getItem('echarts-theme');
+    if (saved === 'dark' || saved === 'light') document.documentElement.dataset.theme = saved;
+  } catch (_) { /* noop */ }
+
+  // 切换按钮：默认跟随外层/系统主题，点按后写入 data-theme 并优先于系统偏好。
+  var btn = document.getElementById('theme-toggle');
+  if (btn) {
+    btn.addEventListener('click', function() {
+      var next = getIsDark() ? 'light' : 'dark';
+      document.documentElement.dataset.theme = next;
+      try { localStorage.setItem('echarts-theme', next); } catch (_) { /* noop */ }
+      applyTheme();
+    });
+  }
+
   setTimeout(applyTheme, 100);
   var observer = new MutationObserver(function() { setTimeout(applyTheme, 50); });
   observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
@@ -1093,12 +1155,35 @@ _ECHARTS_HTML_TEMPLATE = """<!doctype html>
     letter-spacing: 0.5px;
   }}
   .layout {{ display: flex; flex-direction: column; height: 100%; }}
-  .chart-wrap {{ flex: 1; min-height: 0; }}
+  .chart-wrap {{ flex: 1; min-height: 0; position: relative; }}
+  /* 亮/暗主题切换按钮：悬浮于图表右上角（让出 toolbox 的 right:56 区域），
+     自身配色随主题切换，点击后写入 <html data-theme> 触发图表重绘。 */
+  .theme-toggle {{
+    position: absolute; top: 12px; right: 12px; z-index: 30;
+    width: 34px; height: 34px; border-radius: 9px;
+    border: 1px solid #e5e7eb; background: rgba(255,255,255,0.92);
+    color: #1f2937; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    transition: background .15s, border-color .15s, transform .1s;
+    -webkit-appearance: none; appearance: none; padding: 0;
+  }}
+  .theme-toggle:hover {{ transform: translateY(-1px); border-color: #cbd5e1; }}
+  .theme-toggle:active {{ transform: translateY(0); }}
+  .theme-toggle svg {{ display: block; }}
+  html[data-theme='dark'] .theme-toggle {{
+    background: rgba(28,36,51,0.92); border-color: #2a3445; color: #e6eaf0;
+  }}
 </style>
 </head>
 <body>
 <div class="layout">
-  <div class="chart-wrap"><div id="chart"></div></div>
+  <div class="chart-wrap">
+    <button id="theme-toggle" class="theme-toggle" type="button" aria-label="切换主题" title="切换到暗色">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+    </button>
+    <div id="chart"></div>
+  </div>
   {interpretation_block}
 </div>
 <script>
@@ -1118,6 +1203,48 @@ _ECHARTS_HTML_TEMPLATE = """<!doctype html>
 """
 
 
+def _serialize_option(option: dict[str, Any]) -> str:
+    """把 option 序列化为可嵌入 <script> 的 JS 对象字面量字符串。
+
+    支持 _JsFunction 标记，并自动识别 key 为 ``formatter`` 的 JS 函数字符串
+    （以 ``function(`` 开头、``}`` 结尾），在 JSON 序列化后把它们从带引号的
+    JSON 字符串还原为无引号的 JS 函数字面量，避免 ECharts 把源码当文本显示。
+    """
+    token_map: dict[str, str] = {}
+
+    def _looks_like_js_function(code: str) -> bool:
+        code = code.strip()
+        return code.startswith("function(") and code.endswith("}")
+
+    def walk(obj: Any, key: str | None = None) -> Any:
+        if isinstance(obj, _JsFunction):
+            token_map[obj.token] = obj.code
+            return obj.token
+        if isinstance(obj, str) and key == "formatter" and _looks_like_js_function(obj):
+            token = f"__JS_FN_{uuid.uuid4().hex}__"
+            token_map[token] = obj
+            return token
+        if isinstance(obj, dict):
+            return {k: walk(v, k) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [walk(v, key) for v in obj]
+        return obj
+
+    option_with_tokens = walk(option)
+    option_json = json.dumps(option_with_tokens, ensure_ascii=False, default=str)
+    option_json = option_json.replace("</script>", "<\\/script>")
+    for token, code in token_map.items():
+        option_json = option_json.replace(f'"{token}"', code)
+    return option_json
+
+
+def _json_default(obj: Any) -> Any:
+    """json.dumps 的 default：把 _JsFunction 还原为源码字符串，保持 JSON 合法。"""
+    if isinstance(obj, _JsFunction):
+        return obj.code
+    return str(obj)
+
+
 def _build_echarts_html(
     *,
     title: str,
@@ -1126,9 +1253,7 @@ def _build_echarts_html(
     interpretation: str,
 ) -> str:
     """组装 standalone HTML：ECharts option + 解读块 + 视觉规范。"""
-    # option 序列化为 JSON，</script> 转义防 XSS（与 Plotly 分支一致）
-    option_json = json.dumps(option, ensure_ascii=False, default=str)
-    option_json = option_json.replace("</script>", "<\\/script>")
+    option_json = _serialize_option(option)
 
     if interpretation:
         interp_block = (
@@ -1226,6 +1351,7 @@ def _render_echarts(
     bins: int,
     display_title: str,
     stem: str,
+    chart_type_source: str = "explicit",
 ) -> dict[str, Any]:
     """ECharts 渲染主入口：生成 option、HTML、解读文本，返回 response dict。"""
     # 生成 ECharts option
@@ -1261,13 +1387,14 @@ def _render_echarts(
 
     # ECharts option JSON：供前端动态渲染 / 调试
     json_path = workspace.artifacts_dir / f"{stem}.echarts.json"
-    _atomic_write_text(json_path, json.dumps(option, ensure_ascii=False, default=str))
+    _atomic_write_text(json_path, json.dumps(option, ensure_ascii=False, default=_json_default))
     workspace.register_artifact(json_path, "chart_data", "ECharts option JSON")
 
     return {
         "status": "ok",
         "chart_engine": "echarts",
         "chart_type": chart_type,
+        "chart_type_source": chart_type_source,
         "rows_plotted": len(df),
         "html": str(html_path),
         "echarts_json": str(json_path),
