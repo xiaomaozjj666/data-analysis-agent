@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import operator
 import re
-from html import escape
+from html import escape, unescape
 from pathlib import Path
 from typing import Any, Literal
 
@@ -681,6 +681,11 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         use scale_mode="full" only when the user explicitly wants the uncompressed raw scale.
         export_png is best-effort and needs Chrome.
         """
+        # LLM 偶发在 title 里输出 HTML 实体（如 p&lt;0.001），先还原成
+        # 纯文本；模板层渲染时会统一再做一次 escape，不会引入 XSS，
+        # 否则图表标题与产物描述会把转义残留直接展示给用户。
+        if title:
+            title = unescape(title)
         # 性能优化：只在确实需要修改数据时才 copy（聚合、布尔值本地化、
         # top_n 筛选）。对大 DataFrame（100K+ 行）避免无谓的深拷贝。
         # correlation_heatmap / scatter_matrix 等只读图表不需要 copy。

@@ -354,6 +354,60 @@ def test_echarts_api_preview_inlines_bundle(tmp_path, monkeypatch, sample_df):
     assert "src='echarts.min.js'" not in inlined
 
 
+def test_preview_inlines_echarts_gl_bundle(tmp_path, sample_df):
+    """预览内联 echarts-gl：相对路径 script 会被 CSP 拦截，bundle 存在时
+    必须替换为内联源码，否则 scatter3D 无渲染器、3D 图空白。"""
+    from data_agent.routers.artifacts import _inline_echarts_gl_bundle
+
+    ws = DataWorkspace(tmp_path / "runs", session_id="api_gl")
+    ws.save_upload("data.csv", b"x,y\n1,2\n")
+    ws._df = sample_df
+    (ws.artifacts_dir / "echarts-gl.min.js").write_text("/* mock gl */", encoding="utf-8")
+    registry = api.SessionRegistry(tmp_path / "runs", max_sessions=10, ttl_hours=24)
+    _sid, record = registry.create(ws)
+
+    html = (
+        '<html><head><script src="echarts.min.js"></script>'
+        '<script src="echarts-gl.min.js"></script></head><body></body></html>'
+    )
+    inlined = _inline_echarts_gl_bundle(record, html)
+    assert "/* mock gl */" in inlined
+    assert 'src="echarts-gl.min.js"' not in inlined
+    # 主 bundle 标签不受影响，仍由 _inline_echarts_bundle 处理
+    assert 'src="echarts.min.js"' in inlined
+
+
+def test_preview_rewrites_missing_gl_bundle_to_cdn(tmp_path, sample_df):
+    """gl bundle 缺失时降级：相对引用改写为 jsdelivr CDN 直引（CSP 已放行）。"""
+    from data_agent.routers.artifacts import _inline_echarts_gl_bundle
+    from data_agent.workspace import ECHARTS_GL_CDN_URL
+
+    ws = DataWorkspace(tmp_path / "runs", session_id="api_gl_cdn")
+    ws.save_upload("data.csv", b"x,y\n1,2\n")
+    ws._df = sample_df
+    registry = api.SessionRegistry(tmp_path / "runs", max_sessions=10, ttl_hours=24)
+    _sid, record = registry.create(ws)
+
+    html = '<script src="echarts-gl.min.js"></script>'
+    inlined = _inline_echarts_gl_bundle(record, html)
+    assert ECHARTS_GL_CDN_URL in inlined
+    assert 'src="echarts-gl.min.js"' not in inlined
+
+
+def test_create_visualization_unescapes_html_entities_in_title(workspace, sample_df):
+    """LLM 偶发在 title 里输出 HTML 实体（如 p&lt;0.001），入口处应还原
+    为纯文本，否则图表标题与产物描述会把转义残留直接展示给用户。"""
+    tools = {t.name: t for t in build_tools(workspace)}
+    result = json.loads(tools["create_visualization"].invoke({
+        "chart_type": "scatter", "x": "sales", "y": "profit",
+        "chart_engine": "echarts",
+        "title": "销售额 vs 利润（r=0.9, p&lt;0.001）",
+    }))
+    option = json.loads(Path(result["echarts_json"]).read_text(encoding="utf-8"))
+    assert option["title"]["text"] == "销售额 vs 利润（r=0.9, p<0.001）"
+    assert "&lt;" not in option["title"]["text"]
+
+
 def test_echarts_violin_falls_back_to_boxplot(workspace, sample_df):
     """小提琴图降级为箱线图 + 标注。"""
     tools = {t.name: t for t in build_tools(workspace)}
