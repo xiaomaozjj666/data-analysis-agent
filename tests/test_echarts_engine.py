@@ -117,7 +117,7 @@ def test_echarts_area_uses_gradient_fill(workspace, sample_df):
 
 
 def test_echarts_scatter_with_size_and_zoom(workspace, sample_df):
-    """散点图：支持 size 维度、双轴 dataZoom。"""
+    """散点图：支持 size 维度、双轴 dataZoom；无离群时不分裂系列。"""
     tools = {t.name: t for t in build_tools(workspace)}
     result = json.loads(tools["create_visualization"].invoke({
         "chart_type": "scatter", "x": "sales", "y": "profit", "size": "rating",
@@ -126,6 +126,49 @@ def test_echarts_scatter_with_size_and_zoom(workspace, sample_df):
     option = json.loads(Path(result["echarts_json"]).read_text(encoding="utf-8"))
     assert option["series"][0]["type"] == "scatter"
     assert any(z["type"] == "inside" for z in option["dataZoom"])
+    # 样本均在 1.5 倍 IQR 内：不应出现离群点系列（系列名走业务标签映射，只校验结构）
+    assert len(option["series"]) == 1
+    assert "离群点" not in [s["name"] for s in option["series"]]
+
+
+def test_echarts_scatter_highlights_iqr_outliers(tmp_path):
+    """散点图离群高亮：超出 1.5 倍 IQR 的点拆到独立系列 + 边界参考线。"""
+    df = pd.DataFrame({
+        "x": [float(i % 20 + 1) for i in range(40)],
+        "y": [float(50 + (i * 3) % 11) for i in range(40)],
+    })
+    df.loc[39, "y"] = 500.0  # 单点极端离群
+    ws = _make_workspace(tmp_path, df)
+    tools = {t.name: t for t in build_tools(ws)}
+    with patch.object(DataWorkspace, "ensure_echarts_bundle", return_value=_mock_bundle(tmp_path)):
+        result = json.loads(tools["create_visualization"].invoke({
+            "chart_type": "scatter", "x": "x", "y": "y", "chart_engine": "echarts",
+        }))
+    option = json.loads(Path(result["echarts_json"]).read_text(encoding="utf-8"))
+    names = [s["name"] for s in option["series"]]
+    assert names == ["y", "离群点"]
+    outlier_series = option["series"][1]
+    assert len(outlier_series["data"]) == 1
+    assert "markLine" in outlier_series  # 正常范围边界参考线
+    assert option["legend"]["data"] == ["y", "离群点"]
+    assert "IQR 检出 1 个离群点" in option["title"]["subtext"]
+
+
+def test_echarts_scatter_skips_outlier_split_when_heavy_tailed(tmp_path):
+    """离群占比超 20% 时视为重尾分布，不做高亮（避免满屏红点误导）。"""
+    # 双峰：一半在 1~10，一半在 1000+，大量点超界
+    df = pd.DataFrame({
+        "x": [float(i) for i in range(30)],
+        "y": [float(i % 10 + 1) for i in range(20)] + [1000.0 + i for i in range(10)],
+    })
+    ws = _make_workspace(tmp_path, df)
+    tools = {t.name: t for t in build_tools(ws)}
+    with patch.object(DataWorkspace, "ensure_echarts_bundle", return_value=_mock_bundle(tmp_path)):
+        result = json.loads(tools["create_visualization"].invoke({
+            "chart_type": "scatter", "x": "x", "y": "y", "chart_engine": "echarts",
+        }))
+    option = json.loads(Path(result["echarts_json"]).read_text(encoding="utf-8"))
+    assert [s["name"] for s in option["series"]] == ["y"]
 
 
 def test_echarts_pie_with_donut_style(workspace, sample_df):

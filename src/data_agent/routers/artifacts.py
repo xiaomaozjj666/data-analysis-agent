@@ -164,6 +164,27 @@ def _preview_etag(path: Path) -> str:
     return f'"{int(st.st_mtime)}:{st.st_size}"'
 
 
+@router.get("/api/sessions/{session_id}/dashboard")
+def export_dashboard(session_id: str) -> Response:
+    """导出数据画像仪表盘：KPI 指标卡 + 全部图表 + 数据质量告警，
+    单一自包含 HTML（离线可开、亮暗双主题）。实时基于当前工作区
+    数据与已生成图表组装，不落盘为产物。"""
+    from data_agent import api
+    from data_agent.dashboard import build_dashboard_html
+
+    record = api.registry.get(session_id)
+    try:
+        html_text = build_dashboard_html(record.workspace)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=404, detail="尚未加载数据集，无法生成仪表盘。") from exc
+    filename = quote("数据画像仪表盘.html")
+    return Response(
+        content=html_text,
+        media_type="text/html; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+    )
+
+
 @router.get("/api/sessions/{session_id}/artifacts/{filename}/preview")
 def preview_artifact(session_id: str, filename: str, request: Request) -> Response:
     record, path = _artifact_file(session_id, filename)

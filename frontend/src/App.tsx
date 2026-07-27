@@ -1198,6 +1198,7 @@ function App() {
                           reasoningStreaming={reasoningStreaming && running}
                           theme={theme}
                           usage={usage}
+                          sessionId={session?.id}
                         />
                       </Suspense>
                       <ConversationThread

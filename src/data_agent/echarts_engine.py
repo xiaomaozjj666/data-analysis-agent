@@ -742,11 +742,41 @@ def _echarts_scatter(
         base["legend"]["data"] = [str(item) for item in color_levels]
         base["series"] = series
     else:
-        data = _rows_data(df, [x, y] + ([size] if size and size in df.columns else []))
-        base["series"] = [{
+        data_cols = [x, y] + ([size] if size and size in df.columns else [])
+        # IQR 离群点自动高亮（仅无颜色分组时启用，避免与分组语义冲突）：
+        # x/y 任一维超出 1.5 倍四分位距即视为离群，拆独立系列暖红标出
+        # 并画正常边界参考虚线；离群占比 >20% 时视为重尾分布的整体特征，
+        # 不再逐点高亮以免满屏红点变成噪声。
+        outlier_mask = pd.Series(False, index=df.index)
+        mark_data: list[dict[str, Any]] = []
+        if y and pd.api.types.is_numeric_dtype(df[x]) and pd.api.types.is_numeric_dtype(df[y]):
+            for col, axis_key in ((x, "xAxis"), (y, "yAxis")):
+                vals = pd.to_numeric(df[col], errors="coerce")
+                q1, q3 = vals.quantile(0.25), vals.quantile(0.75)
+                iqr = float(q3 - q1)
+                if iqr <= 0:
+                    continue
+                lo, hi = float(q1 - 1.5 * iqr), float(q3 + 1.5 * iqr)
+                col_mask = (vals < lo) | (vals > hi)
+                if bool(col_mask.any()):
+                    outlier_mask |= col_mask
+                    col_label = _build_axis_label(col)
+                    if bool((vals > hi).any()):
+                        mark_data.append({axis_key: hi, "label": {
+                            "formatter": f"{col_label} 正常上界 {_format_number(hi)}"}})
+                    if bool((vals < lo).any()):
+                        mark_data.append({axis_key: lo, "label": {
+                            "formatter": f"{col_label} 正常下界 {_format_number(lo)}"}})
+        n_outliers = int(outlier_mask.sum())
+        if 0 < n_outliers <= max(1, int(len(df) * 0.2)):
+            normal_df, outlier_df = df[~outlier_mask], df[outlier_mask]
+        else:
+            normal_df, outlier_df, mark_data = df, df.iloc[0:0], []
+
+        series = [{
             "name": y_label,
             "type": "scatter",
-            "data": data,
+            "data": _rows_data(normal_df, data_cols),
             "large": True, "largeThreshold": 4000,
             "symbolSize": _size_func(size, size_min, size_max) if size else 10,
             "itemStyle": {
@@ -759,6 +789,32 @@ def _echarts_scatter(
             },
             "emphasis": {"scale": 1.4, "itemStyle": {"opacity": 1, "shadowBlur": 10}},
         }]
+        if len(outlier_df):
+            series.append({
+                "name": "离群点",
+                "type": "scatter",
+                "data": _rows_data(outlier_df, data_cols),
+                "symbolSize": _size_func(size, size_min, size_max) if size else 13,
+                "itemStyle": {
+                    "color": _ECHARTS_PALETTE[3],
+                    "opacity": 0.92,
+                    "borderWidth": 1.2,
+                    "borderColor": "#fff",
+                    "shadowBlur": 6,
+                    "shadowColor": _hex_to_rgba(_ECHARTS_PALETTE[3], 0.35),
+                },
+                "emphasis": {"scale": 1.5, "itemStyle": {"opacity": 1, "shadowBlur": 12}},
+                # 参考虚线挂在离群系列上：点击图例隐藏离群点时边界线同步隐藏
+                "markLine": {"silent": True, "symbol": "none",
+                             "lineStyle": {"type": "dashed", "color": "#6b7280", "width": 1},
+                             "label": {"color": "#6b7280", "fontSize": 11, "position": "insideEndTop"},
+                             "data": mark_data},
+            })
+            base["legend"]["data"] = [y_label, "离群点"]
+            base["title"]["subtext"] = (
+                f"{x_label} × {y_label} · IQR 检出 {n_outliers} 个离群点（红色标出）"
+            )
+        base["series"] = series
 
     return base
 
@@ -1508,8 +1564,10 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
 
   function applyTheme() {
     var isDark = getIsDark();
-    var chart = window.__echartsInstance;
-    if (chart) {
+    // 支持多实例（仪表盘导出页注入 __echartsInstances 数组）；
+    // 单图页回退 __echartsInstance，行为与重构前完全一致。
+    var __charts = window.__echartsInstances || (window.__echartsInstance ? [window.__echartsInstance] : []);
+    for (var __ci = 0; __ci < __charts.length; __ci++) { var chart = __charts[__ci];
       // 暗色值与前端 tokens.css 一致（border/fg/canvas 令牌），亮色值与 Python 常量一致
       var axisColor = isDark ? '#2e2f33' : '#e4e6ea';
       var splitColor = isDark ? '#2e2f33' : '#eef0f3';
@@ -1569,13 +1627,13 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
         // 顺序色低端 #EDF3F9）在暗底上刺眼；首次运行时缓存浅色原值供切回。
         // 发散色板（>3 段）中点换暗底色，两端降饱和抬亮度。
         if (cur.visualMap && cur.visualMap.length) {
-          if (!window.__vmLightRange) {
-            window.__vmLightRange = cur.visualMap.map(function(v) {
+          if (!chart.__vmLightRange) {
+            chart.__vmLightRange = cur.visualMap.map(function(v) {
               return (v.inRange && v.inRange.color) || null;
             });
           }
           update.visualMap = cur.visualMap.map(function(v, i) {
-            var light = window.__vmLightRange[i];
+            var light = chart.__vmLightRange[i];
             var upd = { textStyle: { color: labelColor } };
             if (light && light.length) {
               var diverging = light.length > 3;
@@ -1642,11 +1700,11 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
         chart.setOption(update);
       } catch (e) { /* noop */ }
     }
-    document.documentElement.style.background = isDark ? '#1a1b1e' : '#ffffff';
+    document.documentElement.style.background = isDark ? (window.__pageBgDark || '#1a1b1e') : (window.__pageBgLight || '#ffffff');
     // tooltip 内联说明文字/分隔线：formatter 用 var(--tt-muted)/var(--tt-border) 引用，这里统一切换
     document.documentElement.style.setProperty('--tt-muted', isDark ? '#9aa0a6' : '#6b7280');
     document.documentElement.style.setProperty('--tt-border', isDark ? '#2e2f33' : '#e4e6ea');
-    document.body.style.background = isDark ? '#1a1b1e' : '#ffffff';
+    document.body.style.background = isDark ? (window.__pageBgDark || '#1a1b1e') : (window.__pageBgLight || '#ffffff');
     document.body.style.color = isDark ? '#e8eaed' : '#1a1d29';
     var interp = document.querySelector('.interpretation');
     if (interp) {
@@ -1689,8 +1747,8 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
   window.addEventListener('resize', function() {
     clearTimeout(_resizeTimer);
     _resizeTimer = setTimeout(function() {
-      var chart = window.__echartsInstance;
-      if (chart) chart.resize();
+      var cs = window.__echartsInstances || (window.__echartsInstance ? [window.__echartsInstance] : []);
+      for (var i = 0; i < cs.length; i++) cs[i].resize();
     }, 150);
   });
   // PNG 导出（postMessage 通道）：父页面发送 {type:"download-png"} 触发导出，
