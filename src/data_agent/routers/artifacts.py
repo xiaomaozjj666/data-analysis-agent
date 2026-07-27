@@ -28,6 +28,8 @@ from data_agent.registry import ChartEditRequest, SessionRecord, _artifact_file
 from data_agent.tools import _PLOTLY_DARK_MODE_SCRIPT
 from data_agent.workspace import (
     ECHARTS_BUNDLE_NAME,
+    ECHARTS_GL_BUNDLE_NAME,
+    ECHARTS_GL_CDN_URL,
     PLOTLY_BUNDLE_NAME,
     _atomic_write_text,
 )
@@ -44,6 +46,14 @@ _PLOTLY_TAG_PATTERN = re.compile(
 # 用于把预览/下载 HTML 内联成自包含文档。
 _ECHARTS_TAG_PATTERN = re.compile(
     r"<script\s+src=['\"](?:echarts\.min\.js|https?://[^'\"]*echarts[^'\"]*\.js)['\"]\s*></script>",
+    flags=re.IGNORECASE,
+)
+
+# echarts-gl 扩展 bundle（3D 散点等 gl 系列图表依赖）的 script 标签。
+# 预览 CSP 的 script-src 只放行 'unsafe-inline' 与 jsdelivr，相对路径的
+# <script src="echarts-gl.min.js"> 会被直接拦截导致 3D 图空白，必须内联。
+_ECHARTS_GL_TAG_PATTERN = re.compile(
+    r"<script\s+src=['\"](?:echarts-gl\.min\.js|https?://[^'\"]*echarts-gl[^'\"]*\.js)['\"]\s*></script>",
     flags=re.IGNORECASE,
 )
 
@@ -91,10 +101,34 @@ def _inline_echarts_bundle(record: SessionRecord, html_text: str) -> str:
         lambda _match: f"<script>{echarts_js}</script>", html_text, count=1
     )
 
+
+def _inline_echarts_gl_bundle(record: SessionRecord, html_text: str) -> str:
+    """内联 echarts-gl 扩展 bundle（scatter3D 等 gl 系列图表依赖）。
+
+    预览 iframe 的 CSP 不含 'self'，相对路径 script 会被拦截、scatter3D
+    没有渲染器，3D 图直接空白。本地 bundle 存在时替换为内联源码；
+    bundle 缺失（当时下载失败）时把相对引用改写为 jsdelivr CDN 直引
+    （CSP 白名单已放行），保证在线场景仍可渲染。
+    """
+    if not _ECHARTS_GL_TAG_PATTERN.search(html_text):
+        return html_text
+    bundle_path = record.workspace.artifacts_dir / ECHARTS_GL_BUNDLE_NAME
+    gl_js = _read_bundle_cached(bundle_path) if bundle_path.is_file() else None
+    if gl_js is not None:
+        return _ECHARTS_GL_TAG_PATTERN.sub(
+            lambda _match: f"<script>{gl_js}</script>", html_text, count=1
+        )
+    return _ECHARTS_GL_TAG_PATTERN.sub(
+        lambda _match: f'<script src="{ECHARTS_GL_CDN_URL}"></script>', html_text, count=1
+    )
+
+
 _PREVIEW_CSP = (
     "default-src 'none'; "
     # ECharts 离线 fallback 时需引用 jsdelivr CDN，加入白名单。
-    "script-src 'unsafe-inline' https://cdn.jsdelivr.net; "
+    # 'unsafe-eval'：echarts-gl（claygl 内核）用 new Function 求值渲染目标
+    # 尺寸表达式，缺它时 3D 图初始化直接报 Invalid expression 空白。
+    "script-src 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; "
     "style-src 'unsafe-inline'; "
     "img-src data: blob:; "
     "font-src data:; "
@@ -197,6 +231,9 @@ def preview_artifact(session_id: str, filename: str, request: Request) -> Respon
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304, headers={"ETag": etag})
     html_text = _inline_plotly_bundle(record, _read_utf8_robust(path))
+    # gl 扩展先内联：其标签更具体，先处理可避免主 bundle 正则的 CDN
+    # 分支（https?://...echarts....js）误吞 echarts-gl 的 CDN 引用。
+    html_text = _inline_echarts_gl_bundle(record, html_text)
     html_text = _inline_echarts_bundle(record, html_text)
     html_text = _harden_preview_document(html_text)
     return Response(
@@ -216,6 +253,7 @@ def download_artifact(session_id: str, filename: str) -> Response:
     if path.suffix.lower() == ".html":
         # Downloads must remain self-contained so they open offline.
         html_text = _inline_plotly_bundle(record, _read_utf8_robust(path))
+        html_text = _inline_echarts_gl_bundle(record, html_text)
         html_text = _inline_echarts_bundle(record, html_text)
         return Response(
             content=html_text,
