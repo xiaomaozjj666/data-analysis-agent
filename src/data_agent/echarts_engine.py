@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import uuid
 from html import escape
 from typing import Any
@@ -355,7 +356,14 @@ def _interpret_trend(
             f"前者约为后者的{ratio:.1f}倍。点击图例可隐藏系列聚焦对比，框选区域可放大查看。"
         )
 
-    # 无分组：找最高最低、识别拐点
+    # 无分组：找最高最低、识别拐点；时间类目标签与轴一致（去 00:00:00 后缀）
+    _time_labels = _format_time_categories(df[x])
+    _label_of = (dict(zip((str(v) for v in df[x].tolist()), _time_labels, strict=False))
+                 if _time_labels else {})
+
+    def _fmt_x(v: Any) -> Any:
+        return _label_of.get(str(v), v)
+
     if chart_type == "bar":
         sorted_df = df.sort_values(y, ascending=False)
         top_row = sorted_df.iloc[0]
@@ -363,8 +371,8 @@ def _interpret_trend(
         mean_val = float(df[y].mean())
         diff_pct = (float(top_row[y]) - float(low_row[y])) / max(abs(float(low_row[y])), 1e-9) * 100
         return (
-            f"「{title}」中{x_label}「{top_row[x]}」的{agg_label}{y_label}最高"
-            f"（{_format_number(top_row[y])}），「{low_row[x]}」最低"
+            f"「{title}」中{x_label}「{_fmt_x(top_row[x])}」的{agg_label}{y_label}最高"
+            f"（{_format_number(top_row[y])}），「{_fmt_x(low_row[x])}」最低"
             f"（{_format_number(low_row[y])}），两者相差{diff_pct:.0f}%，"
             f"整体均值约{_format_number(mean_val)}。鼠标悬浮查看每项明细。"
         )
@@ -378,7 +386,7 @@ def _interpret_trend(
             before = series.iloc[max_diff_idx - 1]
             after = series.iloc[max_diff_idx]
             direction = "上升" if after > before else "下降"
-            peak_x = df.iloc[max_diff_idx][x]
+            peak_x = _fmt_x(df.iloc[max_diff_idx][x])
             return (
                 f"「{title}」在{x_label}「{peak_x}」处出现明显拐点（{direction}"
                 f"{_format_number(abs(after - before))}），峰值"
@@ -501,6 +509,50 @@ def _interpret_hierarchy(df: pd.DataFrame, *, title: str) -> str:
 
 # === 11 种图表的 ECharts option 生成器 ===
 
+#: 日期/日期时间字符串类目的识别模式（YYYY-MM[-DD[ HH:MM[:SS]]]，分隔符支持 - 或 /）。
+_TIME_LABEL_PATTERN = re.compile(
+    r"^\d{4}[-/]\d{1,2}([-/]\d{1,2})?([ T]\d{2}:\d{2}(:\d{2})?)?$"
+)
+
+
+def _format_time_categories(values: pd.Series) -> list[str] | None:
+    """x 为时间列时按数据粒度智能格式化类目标签，非时间列返回 None。
+
+    对齐主流时间轴做法（ECharts time 轴 / Tableau 日期轴）：标签只保留
+    有效粒度——全为月初的月度数据显示 "YYYY-MM"，整日数据显示
+    "YYYY-MM-DD"，带时间才显示到时分，避免 str(Timestamp) 产生的
+    "2026-01-01 00:00:00" 冗余后缀占满轴线。
+
+    仅改变展示标签，不影响多系列对齐用的原始键（reindex 仍用 str(v)）。
+    """
+    if pd.api.types.is_datetime64_any_dtype(values):
+        ts = pd.Series(values).reset_index(drop=True)
+    elif pd.api.types.is_object_dtype(values) or pd.api.types.is_string_dtype(values):
+        # pandas 3.0 起纯字符串列默认为 str dtype（非 object），两种都要识别
+        sample = [str(v) for v in values.dropna().head(20).tolist()]
+        if not sample or not all(_TIME_LABEL_PATTERN.match(v) for v in sample):
+            return None
+        ts = pd.to_datetime(values, errors="coerce").reset_index(drop=True)
+        # 抽样通过但全量解析失败（混入非日期值）时保持原样，不强行格式化
+        if bool((ts.isna() & pd.Series(values).reset_index(drop=True).notna()).any()):
+            return None
+    else:
+        return None
+    valid = ts.dropna()
+    if valid.empty:
+        return None
+    midnight = bool((valid.dt.normalize() == valid).all())
+    if midnight and bool((valid.dt.day == 1).all()):
+        fmt = "%Y-%m"
+    elif midnight:
+        fmt = "%Y-%m-%d"
+    elif bool((valid.dt.second == 0).all()):
+        fmt = "%Y-%m-%d %H:%M"
+    else:
+        fmt = "%Y-%m-%d %H:%M:%S"
+    return ["" if pd.isna(v) else v.strftime(fmt) for v in ts]
+
+
 def _echarts_bar(
     df: pd.DataFrame, *, x: str, y: str | None, color: str | None,
     aggregation: str, title: str,
@@ -510,7 +562,9 @@ def _echarts_bar(
     y_label = _build_axis_label(y) if y else "计数"
     agg_suffix = {"mean": "（平均）", "median": "（中位）", "sum": "（合计）",
                   "count": "（计数）", "min": "（最小）", "max": "（最大）"}.get(aggregation, "")
-    categories = [str(v) for v in df[x].tolist()]
+    # raw_keys 保持历史行为供多系列 reindex 对齐；categories 仅作轴标签展示。
+    raw_keys = [str(v) for v in df[x].tolist()]
+    categories = _format_time_categories(df[x]) or raw_keys
 
     base: dict[str, Any] = {
         "title": {**_ECHARTS_BASE_TITLE, "text": title, "subtext": f"{x_label} × {y_label}{agg_suffix}"},
@@ -520,7 +574,8 @@ def _echarts_bar(
         "toolbox": {**_ECHARTS_BASE_TOOLBOX},
         "color": _ECHARTS_PALETTE,
         "xAxis": [{**_ECHARTS_BASE_AXIS, "type": "category", "data": categories, "name": x_label,
-                   "axisLabel": {**_ECHARTS_BASE_AXIS["axisLabel"], "rotate": 30 if len(categories) > 8 else 0}}],
+                   "axisLabel": {**_ECHARTS_BASE_AXIS["axisLabel"], "hideOverlap": True,
+                                 "rotate": 30 if len(categories) > 8 else 0}}],
         "yAxis": [_echarts_value_axis(df, y, name=f"{y_label}{agg_suffix}", scale=False)],
     }
 
@@ -530,7 +585,7 @@ def _echarts_bar(
         series = []
         for idx, level in enumerate(color_levels):
             sub = df[df[color] == level]
-            data = [_safe_value(v) for v in sub.set_index(x).reindex(categories)[y].tolist()] if y else []
+            data = [_safe_value(v) for v in sub.set_index(x).reindex(raw_keys)[y].tolist()] if y else []
             series.append({
                 "name": str(level),
                 "type": "bar",
@@ -601,7 +656,10 @@ def _echarts_line(
     y_label = _build_axis_label(y) if y else "计数"
     agg_suffix = {"mean": "（平均）", "median": "（中位）", "sum": "（合计）",
                   "count": "（计数）"}.get(aggregation, "")
-    categories = [str(v) for v in df[x].tolist()]
+    # raw_keys 保持历史行为供多系列 reindex 对齐；categories 仅作轴标签展示，
+    # 时间列按粒度智能格式化（月度→YYYY-MM，整日→YYYY-MM-DD）。
+    raw_keys = [str(v) for v in df[x].tolist()]
+    categories = _format_time_categories(df[x]) or raw_keys
     chart_type = "line"
 
     # 堆叠面积图（area + color 多系列）：Y 轴范围必须按各类目堆叠总和计算，
@@ -619,7 +677,9 @@ def _echarts_line(
         "grid": {**_ECHARTS_BASE_GRID},
         "toolbox": {**_ECHARTS_BASE_TOOLBOX},
         "color": _ECHARTS_PALETTE,
-        "xAxis": [{**_ECHARTS_BASE_AXIS, "type": "category", "boundaryGap": False, "data": categories, "name": x_label}],
+        "xAxis": [{**_ECHARTS_BASE_AXIS, "type": "category", "boundaryGap": False, "data": categories, "name": x_label,
+                   # hideOverlap：密集时间标签自动抽疏，避免重叠成墨团（ECharts v5 主流做法）
+                   "axisLabel": {**_ECHARTS_BASE_AXIS["axisLabel"], "hideOverlap": True}}],
         # 堆叠时 scale=False 从 0 起；非堆叠 scale=True 让 Y 轴自适应非零起点
         "yAxis": [_echarts_value_axis(df, y, name=f"{y_label}{agg_suffix}",
                                        scale=not stacked, values=axis_values)],
@@ -636,7 +696,7 @@ def _echarts_line(
         color_levels = list(pd.unique(df[color].dropna()))
         series = []
         for idx, level in enumerate(color_levels):
-            sub = df[df[color] == level].set_index(x).reindex(categories)
+            sub = df[df[color] == level].set_index(x).reindex(raw_keys)
             data = [_safe_value(v) for v in sub[y].tolist()] if y else []
             s: dict[str, Any] = {
                 "name": str(level),
@@ -647,6 +707,9 @@ def _echarts_line(
                 "symbol": "circle",
                 "symbolSize": 7,
                 "showSymbol": len(categories) <= 30,
+                # LTTB 降采样：点数远超像素宽度时保留趋势形状降低绘制开销，
+                # 小数据量下无副作用（ECharts 大数据量优化的主流方案）。
+                "sampling": "lttb",
                 "lineStyle": {"width": 2.5, "color": _series_color(idx)},
                 "itemStyle": {"color": _series_color(idx), "borderWidth": 2, "borderColor": "#fff"},
                 "emphasis": {"focus": "series", "blurScope": "coordinateSystem"},
@@ -672,11 +735,35 @@ def _echarts_line(
                 "smoothMonotone": "x",
                 "symbol": "circle",
                 "symbolSize": 8,
-                "showSymbol": True,
+                "showSymbol": len(categories) <= 60,
+                "sampling": "lttb",
                 "lineStyle": {"width": 3, "color": _ECHARTS_PALETTE[0]},
                 "itemStyle": {"color": _ECHARTS_PALETTE[0], "borderWidth": 2, "borderColor": "#fff"},
                 "emphasis": {"focus": "series"},
             }
+            # 峰谷标记 + 均值参考线（ECharts 官方折线示例标配）：单系列才加，
+            # 多系列叠加会成视觉噪声；不足 5 个有效点时极值/均值无解读价值。
+            if sum(1 for v in data if v is not None) >= 5:
+                _mark_value_js = _JsFunction(
+                    "function(p){var v=p.value;if(v==null)return '';"
+                    "return Math.abs(v)>=10000?(v/10000).toFixed(1)+'\u4e07':v;}"
+                )
+                s["markPoint"] = {
+                    "symbol": "pin", "symbolSize": 42,
+                    "label": {"color": "#fff", "fontSize": 10, "formatter": _mark_value_js},
+                    "itemStyle": {"color": _ECHARTS_PALETTE[0], "opacity": 0.88},
+                    "data": [{"type": "max", "name": "峰值"}, {"type": "min", "name": "谷值"}],
+                }
+                s["markLine"] = {
+                    "silent": True, "symbol": "none",
+                    "lineStyle": {"type": "dashed", "color": "#6b7280", "width": 1},
+                    "label": {"color": "#6b7280", "fontSize": 11, "position": "insideEndTop",
+                              "formatter": _JsFunction(
+                                  "function(p){var v=p.value;"
+                                  "return '\u5747\u503c '+(Math.abs(v)>=10000?(v/10000).toFixed(2)+'\u4e07':Math.round(v*100)/100);}"
+                              )},
+                    "data": [{"type": "average", "name": "均值"}],
+                }
             if area:
                 s["areaStyle"] = {"color": _build_linear_gradient(_ECHARTS_PALETTE[0])}
             base["series"] = [s]

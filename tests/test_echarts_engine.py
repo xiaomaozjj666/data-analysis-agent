@@ -518,3 +518,90 @@ def test_explicit_chart_type_overrides_auto(workspace, sample_df):
     assert result["chart_type_source"] == "explicit"
     assert result["chart_type"] == "bar"
 
+
+# === 时间类目标签格式化 + 折线主流交互（峰谷标记/均值线/降采样）测试 ===
+from data_agent.echarts_engine import _echarts_line, _format_time_categories  # noqa: E402
+
+
+def test_format_time_categories_monthly_datetime():
+    """月度 datetime 列：只保留 YYYY-MM，去掉 00:00:00 冗余后缀。"""
+    values = pd.Series(pd.date_range("2026-01-01", periods=4, freq="MS"))
+    assert _format_time_categories(values) == ["2026-01", "2026-02", "2026-03", "2026-04"]
+
+
+def test_format_time_categories_daily_datetime():
+    """整日数据：显示到日，不带时分秒。"""
+    values = pd.Series(pd.to_datetime(["2026-01-05", "2026-01-06", "2026-01-07"]))
+    assert _format_time_categories(values) == ["2026-01-05", "2026-01-06", "2026-01-07"]
+
+
+def test_format_time_categories_string_with_midnight_suffix():
+    """字符串类目 "2026-01-01 00:00:00"（groupby 后 str(Timestamp) 的产物）应还原为 YYYY-MM。"""
+    values = pd.Series(["2026-01-01 00:00:00", "2026-02-01 00:00:00", "2026-03-01 00:00:00"])
+    assert _format_time_categories(values) == ["2026-01", "2026-02", "2026-03"]
+
+
+def test_format_time_categories_keeps_minutes_when_intraday():
+    """带时间的日内数据：保留到分钟（秒全 0 时不显示秒）。"""
+    values = pd.Series(pd.to_datetime(["2026-01-01 08:30", "2026-01-01 09:45"]))
+    assert _format_time_categories(values) == ["2026-01-01 08:30", "2026-01-01 09:45"]
+
+
+def test_format_time_categories_non_time_returns_none():
+    """非时间列（普通类目 / 数值）不做格式化。"""
+    assert _format_time_categories(pd.Series(["华东", "华南", "华北"])) is None
+    assert _format_time_categories(pd.Series([1, 2, 3])) is None
+
+
+def test_format_time_categories_mixed_values_returns_none():
+    """抽样（前 20 个）通过但全量解析失败（末尾混入非日期值）：整体放弃格式化。"""
+    values = pd.Series([f"2026-01-{d:02d}" for d in range(1, 21)] + ["未知"])
+    assert _format_time_categories(values) is None
+
+
+def test_echarts_line_time_axis_and_marks():
+    """单系列折线：时间轴标签格式化 + hideOverlap + LTTB 降采样 + 峰谷/均值标记。"""
+    df = pd.DataFrame({
+        "date": [f"2026-{m:02d}-01 00:00:00" for m in range(1, 7)],
+        "sales": [100, 200, 150, 180, 90, 110],
+    })
+    option = _echarts_line(df, x="date", y="sales", color=None,
+                           aggregation="sum", title="月度趋势")
+    assert option["xAxis"][0]["data"] == [f"2026-{m:02d}" for m in range(1, 7)]
+    assert option["xAxis"][0]["axisLabel"]["hideOverlap"] is True
+    s = option["series"][0]
+    assert s["sampling"] == "lttb"
+    assert s["showSymbol"] is True  # 6 个点 <= 60
+    mark_types = {m["type"] for m in s["markPoint"]["data"]}
+    assert mark_types == {"max", "min"}
+    assert s["markLine"]["data"][0]["type"] == "average"
+
+
+def test_echarts_line_multi_series_no_marks_and_aligned():
+    """多系列折线：不加峰谷/均值标记（避免噪声），且 reindex 对齐不受标签格式化影响。"""
+    df = pd.DataFrame({
+        "date": ["2026-01-01", "2026-01-01", "2026-02-01", "2026-02-01"],
+        "channel": ["线上", "门店", "线上", "门店"],
+        "sales": [100, 80, 120, 90],
+    })
+    option = _echarts_line(df, x="date", y="sales", color="channel",
+                           aggregation="sum", title="渠道趋势")
+    assert len(option["series"]) == 2
+    for s in option["series"]:
+        assert "markPoint" not in s
+        assert "markLine" not in s
+        assert s["sampling"] == "lttb"
+    # 各系列数据长度与类目一致（reindex 用原始键成功对齐）
+    assert all(len(s["data"]) == 4 for s in option["series"])
+
+
+def test_echarts_line_few_points_no_marks():
+    """不足 5 个有效点：不加峰谷/均值标记（无解读价值）。"""
+    df = pd.DataFrame({"date": ["2026-01-01", "2026-02-01", "2026-03-01"],
+                       "sales": [100, 200, 150]})
+    option = _echarts_line(df, x="date", y="sales", color=None,
+                           aggregation="sum", title="短序列")
+    s = option["series"][0]
+    assert "markPoint" not in s
+    assert "markLine" not in s
+
