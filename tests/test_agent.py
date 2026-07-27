@@ -170,6 +170,7 @@ def test_native_deepseek_agent_binds_analysis_tools_without_network(workspace):
         "statistical_analysis",
         "create_visualization",
         "export_data",
+        "run_python_code",
     }
 
 
@@ -509,3 +510,34 @@ def test_create_visualization_escapes_script_tag_in_html(tmp_path):
     # 用户数据中的 </script> 必须全部被转义，不能出现在原始计数里。
     raw_close_count = html_content.count("</script>")
     assert raw_close_count == 2, f"应有 Plotly + 暗色适配共 2 个 </script>，实际 {raw_close_count}"
+
+
+def test_truncate_tool_message_caps_oversized_output():
+    """超长工具输出进消息历史前必须截断并附引导文案，短输出原样放行。"""
+    from data_agent.prompts import _TOOL_MESSAGE_MAX_CHARS, _truncate_tool_message
+
+    short = ToolMessage(content="ok", tool_call_id="t1")
+    assert _truncate_tool_message(short).content == "ok"
+
+    huge = ToolMessage(content="x" * (_TOOL_MESSAGE_MAX_CHARS + 5_000), tool_call_id="t2")
+    truncated = _truncate_tool_message(huge)
+    assert len(truncated.content) < _TOOL_MESSAGE_MAX_CHARS + 200
+    assert "已截断" in truncated.content
+    # 非字符串 content（多模态块）不做处理
+    blocks = ToolMessage(content=[{"type": "text", "text": "x" * 20_000}], tool_call_id="t3")
+    assert _truncate_tool_message(blocks).content == blocks.content
+
+
+def test_history_messages_are_trimmed():
+    """注入 LLM 的历史消息每条截断到上限，避免长报告重复吃 token。"""
+    from data_agent.registry import _HISTORY_MESSAGE_MAX_CHARS, _trim_history_content
+
+    short = "简短回答"
+    assert _trim_history_content(short) == short
+
+    long_report = "结论速览：销售额同比增长 23%。" + "详" * _HISTORY_MESSAGE_MAX_CHARS
+    trimmed = _trim_history_content(long_report)
+    assert len(trimmed) <= _HISTORY_MESSAGE_MAX_CHARS + 20
+    assert trimmed.startswith("结论速览")
+    assert "已截断" in trimmed
+

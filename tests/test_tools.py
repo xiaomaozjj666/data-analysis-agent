@@ -388,3 +388,105 @@ def test_visualization_high_cardinality_requires_top_n(tmp_path):
     )
     assert Path(ok_result["html"]).exists()
 
+# ---------------------------------------------------------------------------
+# run_python_code 沙箱工具
+# ---------------------------------------------------------------------------
+
+
+def test_run_python_code_longtail_computation(workspace):
+    """长尾计算：分组求和 + 环比，result 为 Series 时返回截断预览。"""
+    result = json.loads(
+        tool_map(workspace)["run_python_code"].invoke(
+            {
+                "code": (
+                    'grouped = df.groupby("region")["profit"].sum()\n'
+                    'print("groups:", len(grouped))\n'
+                    "result = grouped"
+                )
+            }
+        )
+    )
+    assert result["status"] == "ok"
+    assert result["result"]["type"] == "series"
+    assert result["result"]["values"]["East"] == 46.0
+    assert "groups: 2" in result["stdout"]
+
+
+def test_run_python_code_dataframe_result_truncated(workspace):
+    """DataFrame result 截断到上限行数并标注原始规模。"""
+    result = json.loads(
+        tool_map(workspace)["run_python_code"].invoke(
+            {"code": "result = pd.concat([df] * 20, ignore_index=True)"}
+        )
+    )
+    assert result["result"]["type"] == "dataframe"
+    assert result["result"]["rows"] == 120
+    assert len(result["result"]["records"]) == 50
+    assert result["result"]["truncated"] is True
+
+
+def test_run_python_code_df_is_copy(workspace):
+    """代码里改 df 不影响工作区主数据（沙箱只读契约）。"""
+    before = len(workspace.dataframe)
+    result = json.loads(
+        tool_map(workspace)["run_python_code"].invoke(
+            {"code": "df.drop(df.index, inplace=True)\nresult = len(df)"}
+        )
+    )
+    assert result["result"] == 0
+    assert len(workspace.dataframe) == before
+
+
+def test_run_python_code_blocks_dangerous_code(workspace):
+    """安全边界：白名单外 import、dunder 逃逸、危险内建、动态执行全部拒绝。"""
+    tool = tool_map(workspace)["run_python_code"]
+    for code, keyword in (
+        ("import os\nresult = os.getcwd()", "禁止导入"),
+        ("from subprocess import run\nresult = 1", "禁止导入"),
+        ("result = ().__class__.__mro__", "下划线开头"),
+        ("result = df._mgr", "下划线开头"),
+        ("result = open('x.txt')", "禁止使用"),
+        ("result = eval('1+1')", "禁止使用"),
+        ("result = getattr(df, 'to_csv')", "禁止使用"),
+        ("result = __import__('os')", "禁止使用"),
+    ):
+        try:
+            tool.invoke({"code": code})
+        except Exception as exc:
+            assert keyword in str(exc), f"unexpected message for {code!r}: {exc}"
+        else:
+            raise AssertionError(f"expected sandbox to reject: {code!r}")
+
+
+def test_run_python_code_allows_whitelisted_import(workspace):
+    result = json.loads(
+        tool_map(workspace)["run_python_code"].invoke(
+            {"code": "import math\nresult = math.sqrt(16)"}
+        )
+    )
+    assert result["result"] == 4.0
+
+
+def test_run_python_code_runtime_error_surfaces(workspace):
+    """运行期异常（如列不存在）原样回传，交给错误中间件生成引导文案。"""
+    try:
+        tool_map(workspace)["run_python_code"].invoke({"code": "result = df['不存在的列']"})
+    except Exception as exc:
+        assert "不存在的列" in str(exc)
+    else:
+        raise AssertionError("expected runtime KeyError to surface")
+
+
+def test_run_python_code_timeout(workspace, monkeypatch):
+    """死循环触发超时熔断，错误消息含引导文案。"""
+    from data_agent.tools import _sandbox
+
+    monkeypatch.setattr(_sandbox, "_SANDBOX_TIMEOUT_SECONDS", 0.5)
+    try:
+        tool_map(workspace)["run_python_code"].invoke(
+            {"code": "x = 0\nwhile True:\n    x += 1"}
+        )
+    except Exception as exc:
+        assert "熔断" in str(exc)
+    else:
+        raise AssertionError("expected timeout to trip")
