@@ -9,10 +9,12 @@ import {
   FileCode,
   FileSpreadsheet,
   FileText,
+  LayoutDashboard,
   LoaderCircle,
   Printer,
 } from "lucide-react";
-import { REMARK_PLUGINS } from "../constants";
+import { API_URL, REMARK_PLUGINS } from "../constants";
+import { describeApiError, requestHeaders } from "../utils/api";
 import { markdownComponents, ReasoningBlock, UsageChip } from "./ReportParts";
 import ShinyText from "./rb/ShinyText";
 import GradientText from "./rb/GradientText";
@@ -27,6 +29,8 @@ interface ReportViewProps {
   reasoningStreaming?: boolean;
   theme?: "light" | "dark";
   usage?: TokenUsage | null;
+  // 当前会话 id：用于向后端请求数据画像仪表盘导出（无会话时隐藏菜单项）
+  sessionId?: string | null;
 }
 
 // 从 React 子节点提取纯文本：用于给标题生成稳定的 id
@@ -284,6 +288,7 @@ const ReportView = React.memo(function ReportView({
   reasoningStreaming,
   theme,
   usage,
+  sessionId,
 }: ReportViewProps) {
   // copyState: "idle" | "copied" | "failed"。之前只有 copied boolean，
   // 复制失败时静默吞掉错误，用户切到其他应用粘贴才发现是旧内容。
@@ -291,6 +296,9 @@ const ReportView = React.memo(function ReportView({
   const [expanded, setExpanded] = useState(false);
   // 导出下拉菜单展开状态 + 容器 ref（用于点击外部收起）
   const [exportOpen, setExportOpen] = useState(false);
+  // 仪表盘导出需后端实时组装 HTML（含质量剖析），可能耗时数秒，
+  // 用 loading 态防重复点击并给用户反馈。
+  const [dashboardBusy, setDashboardBusy] = useState(false);
   const exportWrapRef = useRef<HTMLDivElement>(null);
   const reportBodyRef = useRef<HTMLDivElement>(null);
   // useDeferredValue: 流式追加时 ReactMarkdown 重解析整个 AST 会卡顿，
@@ -463,6 +471,39 @@ const ReportView = React.memo(function ReportView({
     setExportOpen(false);
   }, [result, buildReportHtml]);
 
+  // 导出数据画像仪表盘：后端实时组装 KPI + 质量告警 + 全部图表的自包含 HTML，
+  // 走鉴权 fetch → blob → 临时 <a> 下载（与 useDownloads 同模式）。
+  const exportDashboard = useCallback(async () => {
+    if (!sessionId || dashboardBusy) return;
+    setDashboardBusy(true);
+    try {
+      const response = await fetch(`${API_URL}/api/sessions/${sessionId}/dashboard`, {
+        headers: requestHeaders(),
+      });
+      if (!response.ok) {
+        const contentType = response.headers.get("content-type") || "";
+        const payload: unknown = contentType.includes("application/json")
+          ? await response.json().catch(() => ({}))
+          : await response.text().catch(() => "");
+        throw new Error(describeApiError(payload, response.status));
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `数据画像仪表盘_${new Date().toISOString().slice(0, 10)}.html`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setExportOpen(false);
+    } catch (err) {
+      window.alert(`导出仪表盘失败：${err instanceof Error ? err.message : "未知错误"}`);
+    } finally {
+      setDashboardBusy(false);
+    }
+  }, [sessionId, dashboardBusy]);
+
   // 打印 / PDF：新窗口写入自包含 HTML，触发 window.print()，由浏览器另存 PDF
   const printReport = useCallback(() => {
     if (!result?.response) return;
@@ -544,6 +585,22 @@ const ReportView = React.memo(function ReportView({
                 <button type="button" role="menuitem" className="export-item" onClick={printReport}>
                   <Printer size={13} />打印 / PDF
                 </button>
+                {sessionId && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="export-item"
+                    onClick={exportDashboard}
+                    disabled={dashboardBusy}
+                  >
+                    {dashboardBusy ? (
+                      <LoaderCircle size={13} className="spin" />
+                    ) : (
+                      <LayoutDashboard size={13} />
+                    )}
+                    {dashboardBusy ? "生成仪表盘中…" : "数据画像仪表盘 (.html)"}
+                  </button>
+                )}
               </div>
             )}
           </div>
