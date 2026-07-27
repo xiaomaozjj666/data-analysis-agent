@@ -761,12 +761,17 @@ def _echarts_scatter(
                 if bool(col_mask.any()):
                     outlier_mask |= col_mask
                     col_label = _build_axis_label(col)
+                    # 标签位置按方向差异化：y 轴上界标线上方、下界标线下方，
+                    # x 轴（竖线）标线底端；避免量程被极端值拉大后
+                    # 两条边界线贴近时标签文字互相重叠。
                     if bool((vals > hi).any()):
                         mark_data.append({axis_key: hi, "label": {
-                            "formatter": f"{col_label} 正常上界 {_format_number(hi)}"}})
+                            "formatter": f"{col_label} 正常上界 {_format_number(hi)}",
+                            "position": "insideEndTop" if axis_key == "yAxis" else "insideStartTop"}})
                     if bool((vals < lo).any()):
                         mark_data.append({axis_key: lo, "label": {
-                            "formatter": f"{col_label} 正常下界 {_format_number(lo)}"}})
+                            "formatter": f"{col_label} 正常下界 {_format_number(lo)}",
+                            "position": "insideEndBottom" if axis_key == "yAxis" else "insideStartBottom"}})
         n_outliers = int(outlier_mask.sum())
         if 0 < n_outliers <= max(1, int(len(df) * 0.2)):
             normal_df, outlier_df = df[~outlier_mask], df[outlier_mask]
