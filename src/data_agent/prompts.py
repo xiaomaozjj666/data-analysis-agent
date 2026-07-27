@@ -38,6 +38,11 @@ _FINALIZE_PER_STEP_MIN_CHARS = 800
 #: 格式修复重试时展示给 LLM 的错误文本最大字符数。
 _FORMAT_ERROR_DISPLAY_MAX_CHARS = 3_000
 
+#: 单条工具输出注入 ReAct 消息历史的最大字符数。trace 展示层已截 4000，
+#: 但消息历史里的 ToolMessage 原文才是 token 大头：一次 groupby 500 行的
+#: JSON 可达数十 KB，且会在同一步的每轮 LLM 调用中重复发送。
+_TOOL_MESSAGE_MAX_CHARS = 12_000
+
 # ---------------------------------------------------------------------------
 # 国际化提示词：PROMPTS 按 language 索引，zh 为默认回退。
 # 模板使用 {name} 占位符，由调用方通过 str.format() 填充。
@@ -68,6 +73,7 @@ PROMPTS: dict[str, dict[str, Any]] = {
 8. 不展示隐藏的内部推理，只简要说明已执行的动作和可验证结果。
 9. 当前只完成计划中指定的步骤，不要擅自重复已经完成的工作。
 10. transform_data 只生成派生视图，不会改变主数据；不得把筛选视图当作最终清洗数据导出。
+10a. run_python_code 是兜底工具：仅当预定义工具无法表达所需计算（如环比/滚动窗口、多级透视、自定义指标的组合筛选）时才使用。代码中的 df 是主数据的副本，修改它不影响主数据；把最终结果赋值给 result 变量并保持输出精简。禁止用它绕过清洗护栏或重复预定义工具已有的能力。
 
 分析深度要求：
 11. 统计分析时优先选择最能揭示数据特征的指标：分布形态（偏度/峰度）、离散程度、分位数而非仅仅均值。
@@ -170,6 +176,7 @@ Working standards:
 8. Do not reveal hidden internal reasoning; briefly state only the actions performed and the verifiable results.
 9. Complete only the steps specified in the current plan; do not repeat work that is already done.
 10. transform_data only produces derived views and never alters the main data; do not export a filtered view as the final cleaned data.
+10a. run_python_code is the fallback tool: use it only when the predefined tools cannot express the required computation (e.g., period-over-period change, rolling windows, multi-level pivots, combined custom-metric filtering). Inside the code, df is a COPY of the main data, so modifying it never affects the main dataset; assign the final output to a variable named result and keep it concise. Never use it to bypass the cleaning guards or to duplicate what the predefined tools already provide.
 
 Analysis depth requirements:
 11. When running statistical analysis, prefer the metrics that best reveal the data's characteristics: distribution shape (skewness/kurtosis), dispersion, and quantiles rather than just the mean.
@@ -468,10 +475,31 @@ def _query_allows_format_repair(query: str) -> bool:
     return not _any_pattern_match(_FORMAT_REPAIR_BLOCKERS, query)
 
 
+def _truncate_tool_message(message: Any) -> Any:
+    """把超长的工具输出截断到 _TOOL_MESSAGE_MAX_CHARS 再进入消息历史。
+
+    ReAct 循环内每轮 LLM 调用都会重发本步已累积的全部 ToolMessage，
+    单条超大输出（如高基数 groupby 的 JSON）会让 token 成本和延迟随
+    轮次翻倍。截断后附上引导文案，让模型下一轮用更精确的参数缩小
+    结果集，而不是盲目重试。非 ToolMessage（如 Command）或非字符串
+    content 原样放行。
+    """
+    if isinstance(message, ToolMessage) and isinstance(message.content, str):
+        content = message.content
+        if len(content) > _TOOL_MESSAGE_MAX_CHARS:
+            message.content = (
+                content[:_TOOL_MESSAGE_MAX_CHARS]
+                + f"\n…（工具输出过长，已截断至 {_TOOL_MESSAGE_MAX_CHARS} 字符，"
+                f"原文共 {len(content)} 字符。如需完整数据，请用更精确的参数"
+                "（如 columns/top_n/limit）缩小结果范围后重试。）"
+            )
+    return message
+
+
 @wrap_tool_call
 def _handle_tool_error(request: Any, handler: Any) -> ToolMessage:
     try:
-        return handler(request)
+        return _truncate_tool_message(handler(request))
     except Exception as exc:
         detail = f"{type(exc).__name__}: {exc}"
         error_code = "format_error" if _is_recoverable_format_error(detail) else "tool_error"

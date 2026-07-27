@@ -749,13 +749,26 @@ def _result_payload(session_id: str, result: AnalysisResult) -> dict[str, Any]:
     return to_jsonable(payload)
 
 
+#: 历史消息注入 LLM 上下文时每条内容的最大字符数。assistant 回复是
+#: 完整分析报告（结论速览在最前），截断保留头部即可保住核心结论；
+#: 避免 8 条长报告在每步 ReAct 调用中重复吃掉上万 token。
+_HISTORY_MESSAGE_MAX_CHARS = 2_000
+
+
+def _trim_history_content(content: str) -> str:
+    if len(content) <= _HISTORY_MESSAGE_MAX_CHARS:
+        return content
+    return content[:_HISTORY_MESSAGE_MAX_CHARS] + "\n…（历史消息过长，已截断）"
+
+
 def _history(record: SessionRecord) -> list[HumanMessage | AIMessage]:
     messages: list[HumanMessage | AIMessage] = []
     for item in record.chat[-8:]:
+        content = _trim_history_content(item["content"])
         if item["role"] == "user":
-            messages.append(HumanMessage(content=item["content"]))
+            messages.append(HumanMessage(content=content))
         else:
-            messages.append(AIMessage(content=item["content"]))
+            messages.append(AIMessage(content=content))
     return messages
 
 

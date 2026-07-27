@@ -9,6 +9,7 @@
 - statistical_analysis: 描述统计、相关、分组、假设检验、回归
 - create_visualization: Plotly 交互式图表生成
 - export_data: 数据导出
+- run_python_code: 受限沙箱执行长尾 pandas 计算（实现在 ``_sandbox``）
 
 设计原则：
 - 所有工具通过闭包绑定同一个 DataWorkspace 实例，确保状态一致性。
@@ -46,6 +47,7 @@ from ._cleaning import (
     _trim_string_columns,
 )
 from ._helpers import _human_column_label, _nice_ticks, _plotly_axis_tickformat
+from ._sandbox import build_run_python_code
 from .charts import (
     _BOOLEAN_VALUE_LABELS,
     _HAS_RECORDS_COLUMN,
@@ -252,7 +254,7 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         workspace: 当前分析会话的数据工作区。
 
     Returns:
-        7 个 BaseTool 实例的列表。
+        8 个 BaseTool 实例的列表。
     """
 
     @tool
@@ -1060,4 +1062,5 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         statistical_analysis,
         create_visualization,
         export_data,
+        build_run_python_code(workspace),
     ]
