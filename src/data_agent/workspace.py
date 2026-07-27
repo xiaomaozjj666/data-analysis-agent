@@ -10,6 +10,9 @@
 线程安全：
     DataWorkspace 不是线程安全的。API 层通过 SessionRecord.run_lock
     保证同一会话同一时刻只有一个分析线程在操作 workspace。
+    例外：同一分析线程内 ToolNode 会并行执行同一轮的多个工具调用，
+    图表序号分配因此必须原子化（见 ``allocate_chart_index``），否则并行
+    生成的同类型图表会算出相同文件名互相覆盖。
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ import logging
 import os
 import re
 import shutil
+import threading
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -155,6 +159,11 @@ class DataWorkspace:
         # 用 OrderedDict 实现 LRU：命中时 move_to_end，超容量时 popitem(last=False)。
         self._profile_cache: OrderedDict[int, dict[str, Any]] = OrderedDict()
         self._df_version = 0  # 每次 setter 递增，避免 id() 复用导致过期缓存
+        # 图表序号分配：ToolNode 并行执行同一轮多个 create_visualization 时，
+        # 先读 count_artifacts 再拼文件名会竞态出重号（同类型图相互覆盖）。
+        # 用锁 + 进程内高水位保证序号单调递增；磁盘扫描兼顾重启后延续。
+        self._chart_index_lock = threading.Lock()
+        self._chart_index_high_water = 0
 
     @property
     def dataframe(self) -> pd.DataFrame:
@@ -185,6 +194,33 @@ class DataWorkspace:
         if kind is None:
             return len(self._artifacts)
         return sum(1 for item in self._artifacts if item.kind == kind)
+
+    def allocate_chart_index(self) -> int:
+        """线程安全地分配全局递增的图表序号（从 1 开始）。
+
+        序号取“进程内已分配的最大值”与“artifacts 目录内现存 HTML 文件尾号
+        最大值”两者之大者 + 1：
+        - 锁保证同一轮并行的多个 create_visualization 不会拿到相同序号
+          （重号会让同类型图表算出相同文件名，后写的覆盖先写的）；
+        - 磁盘扫描保证服务重启/会话恢复后序号从已有图表之后延续，
+          不会回头覆盖历史文件；
+        - 高水位保证即使某张图分配后尚未落盘（渲染中），下一次分配
+          也不会重用它的序号。
+        """
+        with self._chart_index_lock:
+            highest = self._chart_index_high_water
+            try:
+                children = list(self.artifacts_dir.iterdir())
+            except FileNotFoundError:
+                children = []
+            for path in children:
+                if path.suffix.lower() != ".html":
+                    continue
+                match = re.search(r"_(\d+)$", path.stem)
+                if match:
+                    highest = max(highest, int(match.group(1)))
+            self._chart_index_high_water = highest + 1
+            return self._chart_index_high_water
 
     def register_artifact(self, path: str | Path, kind: str, description: str) -> Artifact:
         resolved = Path(path).resolve()

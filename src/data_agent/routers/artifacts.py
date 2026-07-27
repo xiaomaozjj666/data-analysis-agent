@@ -241,12 +241,16 @@ def get_chart_thumbnail(session_id: str, filename: str) -> FileResponse:
     stem = Path(filename).name
     if stem.endswith(".html"):
         stem = stem[: -len(".html")]
-    # 先查是否已有缓存的缩略图
+    # 先查是否已有缓存的缩略图。命中的前提：缩略图不早于图表数据文件——
+    # 图表被同名重新生成后（.plotly.json mtime 更新）旧缩略图必须失效
+    # 重渲染，否则卡片上一直显示覆盖前的旧图。
     thumb_path = workspace.artifacts_dir / f"{stem}_thumb.png"
-    if thumb_path.is_file():
+    json_path = workspace.artifacts_dir / f"{stem}.plotly.json"
+    if thumb_path.is_file() and (
+        not json_path.is_file() or thumb_path.stat().st_mtime >= json_path.stat().st_mtime
+    ):
         return FileResponse(thumb_path, media_type="image/png")
     # 从 .plotly.json 重新生成
-    json_path = workspace.artifacts_dir / f"{stem}.plotly.json"
     if not json_path.is_file():
         raise HTTPException(status_code=404, detail="图表数据文件不存在。")
     try:

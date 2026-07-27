@@ -140,3 +140,38 @@ def test_profile_keeps_deep_memory_for_small_tables(workspace):
     df = workspace.dataframe
     deep_mb = round(float(df.memory_usage(deep=True).sum() / 1024**2), 3)
     assert profile["memory_mb"] == deep_mb
+
+
+# ---------------------------------------------------------------------------
+# allocate_chart_index：图表序号原子分配
+# ---------------------------------------------------------------------------
+
+
+def test_allocate_chart_index_is_unique_under_concurrency(workspace):
+    """回归：ToolNode 并行执行同一轮多个 create_visualization 时，
+    旧实现先读 count_artifacts 再拼文件名会竞态出重号，同类型图表
+    算出相同文件名后写覆盖先写，导致会话历史里图表丢失。
+    新实现加锁分配，并发拿到的序号必须互不相同且连续递增。"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        indices = list(pool.map(lambda _: workspace.allocate_chart_index(), range(32)))
+
+    assert len(set(indices)) == 32, f"序号出现重号：{sorted(indices)}"
+    assert sorted(indices) == list(range(1, 33))
+
+
+def test_allocate_chart_index_resumes_after_restart(tmp_path):
+    """重启/会话恢复后序号从磁盘已有图表尾号之后延续，
+    不会回头覆盖历史文件；非 HTML 文件不干扰分配。"""
+    workspace = DataWorkspace(tmp_path / "runs", session_id="chart_seq")
+    (workspace.artifacts_dir / "折线图_3.html").write_text("<html></html>", encoding="utf-8")
+    (workspace.artifacts_dir / "三维散点_7.html").write_text("<html></html>", encoding="utf-8")
+    (workspace.artifacts_dir / "折线图_9.plotly.json").write_text("{}", encoding="utf-8")
+    (workspace.artifacts_dir / "cleaned_data.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+
+    # 新建实例（模拟重启后恢复）：磁盘 HTML 最大尾号 7 → 下一个序号 8。
+    restored = DataWorkspace(tmp_path / "runs", session_id="chart_seq")
+    assert restored.allocate_chart_index() == 8
+    # 高水位生效：即使序号 8 的图尚未落盘，下一次分配也不重用。
+    assert restored.allocate_chart_index() == 9
