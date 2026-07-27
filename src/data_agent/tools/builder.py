@@ -788,8 +788,10 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         # 文件名用"类型_序号"格式（如 柱状图_01），不再把 LLM 给的整段标题
         # 塞进文件名——以前会出现"客户评分按产品分布_ANOVA_p_0_0012_η²_..."
         # 这种看不懂的乱码文件名。display_title 才是 UI 上展示的人话标题。
-        existing_chart_count = workspace.count_artifacts("visualization")
-        stem = _chart_filename_stem(chart_type, existing_chart_count)
+        # 序号由 workspace 加锁原子分配：ToolNode 会并行执行同一轮的多个
+        # create_visualization，若先读 count_artifacts 再拼名会竞态出重号，
+        # 同类型图表算出相同文件名后写覆盖先写，导致会话历史里图表丢失。
+        stem = _chart_filename_stem(chart_type, workspace.allocate_chart_index())
         display_title = _humanize_chart_title(title, chart_type)
         # === 双引擎分派（先于 Plotly fig 构建）：echarts 请求直接走独立渲染分支，
         # 避免白跑一次 Plotly 构建（scatter_3d 缺 z 时还会被 Plotly 校验误拦）===

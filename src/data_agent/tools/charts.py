@@ -789,16 +789,16 @@ def _humanize_chart_title(title: str | None, chart_type: str) -> str:
     return cleaned
 
 
-def _chart_filename_stem(chart_type: str, existing_count: int) -> str:
+def _chart_filename_stem(chart_type: str, index: int) -> str:
     """Build a short, stable filename stem like ``柱状图_1``.
 
-    ``existing_count`` is the number of charts already registered in this
-    workspace so each new chart of the same type gets a unique incrementing
-    suffix instead of a uuid hash. 用自然数字 1/2/3 而非 01/02/03：前者
-    读起来更像人话（"柱状图 1"），与 Observable / Plot 等业界惯例一致。
+    ``index`` 由 ``workspace.allocate_chart_index()`` 原子分配（全局递增，
+    跨图表类型共用一套序号），保证同一轮并行生成的多张图不会重号。
+    用自然数字 1/2/3 而非 01/02/03：前者读起来更像人话（"柱状图 1"），
+    与 Observable / Plot 等业界惯例一致。
     """
     label = _CHART_TYPE_LABELS_ZH.get(chart_type, chart_type or "图表")
-    return f"{label}_{existing_count + 1}"
+    return f"{label}_{index}"
 
 
 # === Plotly 分支白话解读（与 ECharts _auto_interpret 语义对齐）===

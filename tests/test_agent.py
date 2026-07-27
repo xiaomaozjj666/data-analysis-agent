@@ -380,16 +380,17 @@ def test_chart_filename_stem_and_humanized_title_strip_technical_noise():
         _humanize_chart_title,
     )
 
-    # 文件名 stem：相同类型递增序号，未知类型回退到 chart_type 本身。
-    # 序号用自然数字 1/2/3 而非 01/02/03，更接近 Observable / Plot 的命名惯例。
-    assert _chart_filename_stem("bar", 0) == "柱状图_1"
-    assert _chart_filename_stem("bar", 1) == "柱状图_2"
-    assert _chart_filename_stem("line", 3) == "折线图_4"
-    assert _chart_filename_stem("unknown_type", 0) == "unknown_type_1"
+    # 文件名 stem：序号由 allocate_chart_index 原子分配后直接拼接，
+    # 未知类型回退到 chart_type 本身。序号用自然数字 1/2/3 而非
+    # 01/02/03，更接近 Observable / Plot 的命名惯例。
+    assert _chart_filename_stem("bar", 1) == "柱状图_1"
+    assert _chart_filename_stem("bar", 2) == "柱状图_2"
+    assert _chart_filename_stem("line", 4) == "折线图_4"
+    assert _chart_filename_stem("unknown_type", 1) == "unknown_type_1"
 
     # 已知类型都在标签字典里，避免 LLM 用了新名字时文件名变得难看。
     for chart_type, label in _CHART_TYPE_LABELS_ZH.items():
-        assert _chart_filename_stem(chart_type, 0) == f"{label}_1"
+        assert _chart_filename_stem(chart_type, 1) == f"{label}_1"
 
     # title 清理：去掉 ANOVA / p 值 / η² / _n_N / 极端离群值 等标记。
     noisy = "客户评分按产品分布_ANOVA_p_0_0012_η²_0_546"
