@@ -130,7 +130,10 @@ def _aggregate_for_chart(
     if not color:
         return result, y, coverage
 
-    x_levels = list(pd.unique(df[x].dropna()))
+    # x 层级顺序必须取自 groupby 聚合结果（已按 x 排序，时间列即时间顺序），
+    # 若用原始行的出现顺序，下方 from_product reindex 会把月份轴打乱成
+    # 01→02→04→06→05→03 这种乱序，趋势图完全不可读。
+    x_levels = list(pd.unique(result[x].dropna()))
     color_levels = list(pd.unique(df[color].dropna()))
     if not x_levels or not color_levels:
         return result, y, coverage

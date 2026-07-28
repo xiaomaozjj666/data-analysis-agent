@@ -523,7 +523,7 @@ def _format_time_categories(values: pd.Series) -> list[str] | None:
     "YYYY-MM-DD"，带时间才显示到时分，避免 str(Timestamp) 产生的
     "2026-01-01 00:00:00" 冗余后缀占满轴线。
 
-    仅改变展示标签，不影响多系列对齐用的原始键（reindex 仍用 str(v)）。
+    仅改变展示标签，不影响多系列对齐（reindex 用原始 x 值）。
     """
     if pd.api.types.is_datetime64_any_dtype(values):
         ts = pd.Series(values).reset_index(drop=True)
@@ -562,9 +562,12 @@ def _echarts_bar(
     y_label = _build_axis_label(y) if y else "计数"
     agg_suffix = {"mean": "（平均）", "median": "（中位）", "sum": "（合计）",
                   "count": "（计数）", "min": "（最小）", "max": "（最大）"}.get(aggregation, "")
-    # raw_keys 保持历史行为供多系列 reindex 对齐；categories 仅作轴标签展示。
-    raw_keys = [str(v) for v in df[x].tolist()]
-    categories = _format_time_categories(df[x]) or raw_keys
+    # raw_keys 仅作非时间列的轴标签兜底；categories 仅作轴标签展示。
+    # color 分组时聚合结果是 x×color 长表，x 每个层级重复 N 次，必须去重
+    # （保持首现顺序），否则类目轴每月出现 N 次、系列值也被复制 N 遍。
+    axis_values_x = list(pd.unique(df[x])) if color else df[x].tolist()
+    raw_keys = [str(v) for v in axis_values_x]
+    categories = _format_time_categories(pd.Series(axis_values_x)) or raw_keys
 
     base: dict[str, Any] = {
         "title": {**_ECHARTS_BASE_TITLE, "text": title, "subtext": f"{x_label} × {y_label}{agg_suffix}"},
@@ -585,7 +588,8 @@ def _echarts_bar(
         series = []
         for idx, level in enumerate(color_levels):
             sub = df[df[color] == level]
-            data = [_safe_value(v) for v in sub.set_index(x).reindex(raw_keys)[y].tolist()] if y else []
+            # 用原始 x 值（非 str）reindex：datetime 轴用字符串键会对不上索引全部变 NaN
+            data = [_safe_value(v) for v in sub.set_index(x).reindex(axis_values_x)[y].tolist()] if y else []
             series.append({
                 "name": str(level),
                 "type": "bar",
@@ -656,10 +660,13 @@ def _echarts_line(
     y_label = _build_axis_label(y) if y else "计数"
     agg_suffix = {"mean": "（平均）", "median": "（中位）", "sum": "（合计）",
                   "count": "（计数）"}.get(aggregation, "")
-    # raw_keys 保持历史行为供多系列 reindex 对齐；categories 仅作轴标签展示，
+    # raw_keys 仅作非时间列的轴标签兜底；categories 仅作轴标签展示，
     # 时间列按粒度智能格式化（月度→YYYY-MM，整日→YYYY-MM-DD）。
-    raw_keys = [str(v) for v in df[x].tolist()]
-    categories = _format_time_categories(df[x]) or raw_keys
+    # color 分组时聚合结果是 x×color 长表，x 每个层级重复 N 次，必须去重
+    # （保持首现顺序），否则类目轴每月出现 N 次、趋势线变成阶梯平台。
+    axis_values_x = list(pd.unique(df[x])) if color else df[x].tolist()
+    raw_keys = [str(v) for v in axis_values_x]
+    categories = _format_time_categories(pd.Series(axis_values_x)) or raw_keys
     chart_type = "line"
 
     # 堆叠面积图（area + color 多系列）：Y 轴范围必须按各类目堆叠总和计算，
@@ -696,7 +703,8 @@ def _echarts_line(
         color_levels = list(pd.unique(df[color].dropna()))
         series = []
         for idx, level in enumerate(color_levels):
-            sub = df[df[color] == level].set_index(x).reindex(raw_keys)
+            # 用原始 x 值（非 str）reindex：datetime 轴用字符串键会对不上索引全部变 NaN
+            sub = df[df[color] == level].set_index(x).reindex(axis_values_x)
             data = [_safe_value(v) for v in sub[y].tolist()] if y else []
             s: dict[str, Any] = {
                 "name": str(level),
