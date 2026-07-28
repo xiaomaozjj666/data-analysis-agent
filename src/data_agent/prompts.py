@@ -69,6 +69,7 @@ PROMPTS: dict[str, dict[str, Any]] = {
    - 类别数超过 20 的列做饼图/柱状图时必须传 top_n（建议 10-20）聚焦头部，或改用直方图/热力图；
    - 选列前先看数据概况中每列的唯一值数（unique）：接近行数的是标识符，等于 1 的是常量，都不适合作图；
    - 工具会拒绝无意义的图表配置并返回修正建议，收到这类错误时按建议换列或传参重试，不要反复尝试同一无效配置。
+6b. 散点图优先出 3D：当除 x、y 两个数值列外，还存在第三个有业务意义的数值列（非 ID/常量列）时，优先显式传 chart_type="scatter_3d" 并用 z 指定第三轴（如销售额×利润×数量），比 2D 散点多揭示一个维度的关系；若确实找不到有意义的第三个数值列，再退回普通 2D 散点。
 7. 只能引用工具实际返回的数字和文件，不得编造结果。
 8. 不展示隐藏的内部推理，只简要说明已执行的动作和可验证结果。
 9. 当前只完成计划中指定的步骤，不要擅自重复已经完成的工作。
@@ -86,7 +87,7 @@ PROMPTS: dict[str, dict[str, Any]] = {
 步骤设计原则：
 - 检查步骤要具体指出需要关注的字段和质量问题
 - 统计步骤要明确方法（如相关、回归、分组对比、分布检验）
-- 图表步骤要指定图表类型和展示维度，每张图必须回答一个具体分析问题；禁止对 ID/编号列、常量列作图，高基数类别列需聚焦头部 top_n
+- 图表步骤要指定图表类型和展示维度，每张图必须回答一个具体分析问题；禁止对 ID/编号列、常量列作图，高基数类别列需聚焦头部 top_n；两数值列的关系图在存在第三个有业务意义的数值列时优先用三维散点（scatter_3d）
 - 避免重复步骤，每步应有独立价值
 
 用户目标：{query}
@@ -172,6 +173,7 @@ Working standards:
    - When a categorical column has more than 20 categories, pass top_n (10-20 recommended) to focus on the head, or switch to a histogram/heatmap;
    - Before picking columns, check each column's unique count in the data overview: near-row-count means identifier, 1 means constant — neither is chartable;
    - The tool rejects meaningless chart configurations and returns correction advice; when you receive such an error, switch columns or parameters as advised instead of retrying the same invalid configuration.
+6b. Prefer 3D for scatter plots: whenever a third business-meaningful numeric column (not an ID or constant column) exists beyond the x and y numeric pair, explicitly pass chart_type="scatter_3d" with z set to that third axis (e.g., sales × profit × quantity) to reveal one more dimension of the relationship; fall back to a plain 2D scatter only when no meaningful third numeric column is available.
 7. Only cite numbers and files actually returned by the tools; never fabricate results.
 8. Do not reveal hidden internal reasoning; briefly state only the actions performed and the verifiable results.
 9. Complete only the steps specified in the current plan; do not repeat work that is already done.
@@ -188,7 +190,7 @@ Analysis depth requirements:
 Step design principles:
 - Inspection steps should specifically call out the fields and quality issues to focus on
 - Statistical steps should specify the method (e.g., correlation, regression, grouped comparison, distribution test)
-- Charting steps should specify the chart type and dimensions to display; every chart must answer a concrete analytical question — never chart identifier or constant columns, and focus high-cardinality categories with top_n
+- Charting steps should specify the chart type and dimensions to display; every chart must answer a concrete analytical question — never chart identifier or constant columns, and focus high-cardinality categories with top_n; for relationships between two numeric columns, prefer a 3D scatter (scatter_3d) when a third business-meaningful numeric column exists
 - Avoid duplicate steps; each step should have independent value
 
 User objective: {query}
