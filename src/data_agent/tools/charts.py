@@ -830,7 +830,8 @@ def _plotly_auto_interpret(
         if chart_type == "pie" and x and len(df) > 0:
             return _plotly_interpret_pie(df, x=x, title=title_text)
         if chart_type in {"scatter", "scatter_3d"} and x and y and len(df) > 0:
-            return _plotly_interpret_scatter(df, x=x, y=y, title=title_text)
+            return _plotly_interpret_scatter(df, x=x, y=y, title=title_text,
+                                             is_3d=chart_type == "scatter_3d")
         if chart_type in {"correlation_heatmap", "heatmap"} and len(df) > 0:
             return _plotly_interpret_heatmap(title=title_text)
         if chart_type in {"box", "violin"} and x and y and len(df) > 0:
@@ -920,17 +921,22 @@ def _plotly_interpret_pie(df: pd.DataFrame, *, x: str, title: str) -> str:
     )
 
 
-def _plotly_interpret_scatter(df: pd.DataFrame, *, x: str, y: str, title: str) -> str:
+def _plotly_interpret_scatter(df: pd.DataFrame, *, x: str, y: str, title: str,
+                              is_3d: bool = False) -> str:
     if not pd.api.types.is_numeric_dtype(df[x]) or not pd.api.types.is_numeric_dtype(df[y]):
         return f"「{title}」展示{_hl(x)}与{_hl(y)}的分布关系，悬浮查看每个点明细。"
     corr = float(df[[x, y]].corr().iloc[0, 1])
+    # 与 ECharts 分支一致：3D 图无框选，交互提示区分维度
+    hint = ("拖拽旋转视角、滚轮缩放可从不同角度观察分布。" if is_3d
+            else "滚轮缩放可查看密集区域，框选可隔离离群点。")
     if _math.isnan(corr):
-        return f"「{title}」展示两变量分布，悬浮查看每个点明细，框选可放大区域。"
+        return (f"「{title}」展示两变量分布，悬浮查看每个点明细，"
+                + ("拖拽旋转视角可从不同角度观察。" if is_3d else "框选可放大区域。"))
     direction = "正向" if corr > 0 else "反向"
     strength = "强" if abs(corr) > 0.7 else "中等" if abs(corr) > 0.4 else "弱"
     return (
         f"「{title}」呈现{direction}{strength}相关（r={corr:.2f}），"
-        f"共{len(df)}个点。滚轮缩放可查看密集区域，框选可隔离离群点。"
+        f"共{len(df)}个点。{hint}"
     )
 
 
