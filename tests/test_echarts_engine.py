@@ -102,6 +102,57 @@ def test_echarts_line_with_color_and_datazoom(workspace, sample_df):
     assert len(option["series"]) == 2  # 2 个渠道
 
 
+def test_echarts_grouped_line_dedupes_and_sorts_time_axis(tmp_path):
+    """回归：color 分组聚合后类目轴必须去重且按时间排序。
+
+    历史 bug：x_levels 取原始行出现顺序导致月份轴乱序（01→02→04→06→05→03），
+    且类目轴直接取 x×color 长表导致每月重复 N 次、趋势线变阶梯平台。
+    """
+    # 月份故意乱序出现，复现原始数据行序 ≠ 时间序的场景
+    months = ["2026-01", "2026-02", "2026-04", "2026-06", "2026-05", "2026-03"]
+    df = pd.DataFrame({
+        "month": [m for m in months for _ in range(2)],
+        "region": ["华东", "华南"] * 6,
+        "sales": list(range(100, 112)),
+    })
+    ws = _make_workspace(tmp_path, df)
+    with patch.object(DataWorkspace, "ensure_echarts_bundle", return_value=_mock_bundle(tmp_path)):
+        tools = {t.name: t for t in build_tools(ws)}
+        result = json.loads(tools["create_visualization"].invoke({
+            "chart_type": "line", "x": "month", "y": "sales", "color": "region",
+            "aggregation": "sum", "chart_engine": "echarts",
+        }))
+    option = json.loads(Path(result["echarts_json"]).read_text(encoding="utf-8"))
+    axis = option["xAxis"][0]["data"]
+    # 类目轴：去重后 6 个月份、严格时间升序
+    assert axis == ["2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06"]
+    # 每个系列值与类目一一对应，无重复复制
+    for series in option["series"]:
+        assert len(series["data"]) == 6
+
+
+def test_echarts_grouped_bar_datetime_axis_aligns_values(tmp_path):
+    """回归：datetime x 轴 + color 分组时 reindex 用原始值，系列值不能全 NaN。"""
+    df = pd.DataFrame({
+        "month": pd.to_datetime(["2026-02-01", "2026-01-01"] * 2),
+        "region": ["华东", "华东", "华南", "华南"],
+        "sales": [10, 20, 30, 40],
+    })
+    ws = _make_workspace(tmp_path, df)
+    with patch.object(DataWorkspace, "ensure_echarts_bundle", return_value=_mock_bundle(tmp_path)):
+        tools = {t.name: t for t in build_tools(ws)}
+        result = json.loads(tools["create_visualization"].invoke({
+            "chart_type": "bar", "x": "month", "y": "sales", "color": "region",
+            "aggregation": "sum", "chart_engine": "echarts",
+        }))
+    option = json.loads(Path(result["echarts_json"]).read_text(encoding="utf-8"))
+    assert option["xAxis"][0]["data"] == ["2026-01", "2026-02"]
+    # 时间升序对齐后：华东=[20,10]、华南=[40,30]，不允许出现 None
+    values = {s["name"]: s["data"] for s in option["series"]}
+    assert values["华东"] == [20, 10]
+    assert values["华南"] == [40, 30]
+
+
 def test_echarts_area_uses_gradient_fill(workspace, sample_df):
     """面积图：使用渐变填充、堆叠。"""
     tools = {t.name: t for t in build_tools(workspace)}
@@ -645,8 +696,11 @@ def test_echarts_line_multi_series_no_marks_and_aligned():
         assert "markPoint" not in s
         assert "markLine" not in s
         assert s["sampling"] == "lttb"
-    # 各系列数据长度与类目一致（reindex 用原始键成功对齐）
-    assert all(len(s["data"]) == 4 for s in option["series"])
+    # 类目轴去重后与各系列一一对应（reindex 用原始 x 值对齐）
+    assert option["xAxis"][0]["data"] == ["2026-01", "2026-02"]
+    values = {s["name"]: s["data"] for s in option["series"]}
+    assert values["线上"] == [100, 120]
+    assert values["门店"] == [80, 90]
 
 
 def test_echarts_line_few_points_no_marks():
