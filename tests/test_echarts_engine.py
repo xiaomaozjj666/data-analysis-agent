@@ -481,6 +481,8 @@ def test_echarts_scatter_3d_uses_gl(workspace, sample_df):
     option = json.loads(Path(result["echarts_json"]).read_text(encoding="utf-8"))
     assert option["series"][0]["type"] == "scatter3D"
     assert "grid3D" in option and "zAxis3D" in option
+    # 旋转完全由用户拖拽控制，不开自动旋转（用户明确要求）
+    assert option["grid3D"]["viewControl"]["autoRotate"] is False
     # HTML 里需引入 echarts-gl bundle（本地下载或 CDN 直引）
     html = Path(result["html"]).read_text(encoding="utf-8")
     assert "echarts-gl" in html

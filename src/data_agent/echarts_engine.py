@@ -1324,10 +1324,11 @@ def _echarts_scatter3d(
         "toolbox": {**_ECHARTS_BASE_TOOLBOX},
         "color": _ECHARTS_PALETTE,
         "grid3D": {
-            "boxWidth": 100, "boxDepth": 100, "boxHeight": 80,
-            "viewControl": {"projection": "perspective", "autoRotate": True,
-                            "autoRotateSpeed": 6, "autoRotateAfterStill": 6,
-                            "rotateSensitivity": 1.6, "distance": 230},
+            # 盒体加大 + 视距拉近，让立体场景填满画布（默认 230 时四周留白过多）；
+            # 不开自动旋转，旋转完全由用户拖拽控制。
+            "boxWidth": 130, "boxDepth": 130, "boxHeight": 100,
+            "viewControl": {"projection": "perspective", "autoRotate": False,
+                            "rotateSensitivity": 1.6, "distance": 210},
             "light": {"main": {"intensity": 1.1, "shadow": False}, "ambient": {"intensity": 0.5}},
         },
         "xAxis3D": axis3d(x_label),
