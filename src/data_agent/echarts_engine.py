@@ -320,7 +320,8 @@ def _interpret_impl(
     if chart_type == "pie" and x and len(df) > 0:
         return _interpret_pie(df, x=x, title=title_text)
     if chart_type in {"scatter", "scatter_3d"} and x and y and len(df) > 0:
-        return _interpret_scatter(df, x=x, y=y, title=title_text)
+        return _interpret_scatter(df, x=x, y=y, title=title_text,
+                                  is_3d=chart_type == "scatter_3d")
     if chart_type in {"correlation_heatmap", "heatmap"} and len(df) > 0:
         return _interpret_heatmap(df, title=title_text,
                                   is_correlation=chart_type == "correlation_heatmap")
@@ -419,17 +420,22 @@ def _interpret_pie(df: pd.DataFrame, *, x: str, title: str) -> str:
     )
 
 
-def _interpret_scatter(df: pd.DataFrame, *, x: str, y: str, title: str) -> str:
+def _interpret_scatter(df: pd.DataFrame, *, x: str, y: str, title: str,
+                       is_3d: bool = False) -> str:
     if not pd.api.types.is_numeric_dtype(df[x]) or not pd.api.types.is_numeric_dtype(df[y]):
         return f"「{title}」展示{_build_axis_label(x)}与{_build_axis_label(y)}的分布关系，悬浮查看每个点明细。"
     corr = float(df[[x, y]].corr().iloc[0, 1])
+    # 3D 图无框选功能，交互提示必须区分，避免误导用户找不到操作
+    hint = ("拖拽旋转视角、滚轮缩放可从不同角度观察分布。" if is_3d
+            else "滚轮缩放可查看密集区域，框选可隔离离群点。")
     if math.isnan(corr):
-        return f"「{title}」展示两变量分布，悬浮查看每个点明细，框选可放大区域。"
+        return (f"「{title}」展示两变量分布，悬浮查看每个点明细，"
+                + ("拖拽旋转视角可从不同角度观察。" if is_3d else "框选可放大区域。"))
     direction = "正向" if corr > 0 else "反向"
     strength = "强" if abs(corr) > 0.7 else "中等" if abs(corr) > 0.4 else "弱"
     return (
         f"「{title}」呈现{direction}{strength}相关（r={corr:.2f}），"
-        f"共{len(df)}个点。滚轮缩放可查看密集区域，框选可隔离离群点。"
+        f"共{len(df)}个点。{hint}"
     )
 
 
@@ -1279,15 +1285,17 @@ def _echarts_scatter3d(
     # tooltip：三轴 + 可选 size 维度，列名 json.dumps 转义防注入（与 2D 散点一致）
     has_size = bool(size) and size in df.columns
     labels_js = [json.dumps(lbl, ensure_ascii=False) for lbl in (x_label, y_label, z_label)]
+    # 与 2D 图一致：tooltip 数值带千分位、最多保留 2 位小数，避免裸值长尾巴
     lines = "".join(
-        f"html+='<span style=\"color:var(--tt-muted,#6b7280);\">'+{lbl}+'：</span><b>'+val[{idx}]+'</b><br/>';"
+        f"html+='<span style=\"color:var(--tt-muted,#6b7280);\">'+{lbl}+'：</span><b>'+fmt(val[{idx}])+'</b><br/>';"
         for idx, lbl in enumerate(labels_js)
     )
     if has_size:
         size_label_js = json.dumps(_build_axis_label(size), ensure_ascii=False)
-        lines += f"html+='<span style=\"color:var(--tt-muted,#6b7280);\">'+{size_label_js}+'：</span><b>'+val[3]+'</b><br/>';"
+        lines += f"html+='<span style=\"color:var(--tt-muted,#6b7280);\">'+{size_label_js}+'：</span><b>'+fmt(val[3])+'</b><br/>';"
     tooltip_fmt = _JsFunction(
         "function(params){var val=params.value;"
+        "var fmt=function(v){return (v===null||v===undefined||isNaN(v))?'—':Number(v).toLocaleString(undefined,{maximumFractionDigits:2});};"
         "var html='<div style=\"font-weight:600;margin-bottom:6px;\">'+params.seriesName+'</div>';"
         + lines + "return html;}"
     )
@@ -1321,14 +1329,20 @@ def _echarts_scatter3d(
         "title": {**_ECHARTS_BASE_TITLE, "text": title,
                   "subtext": f"{x_label} × {y_label} × {z_label}（拖拽旋转 · 滚轮缩放）"},
         "tooltip": {**_ECHARTS_BASE_TOOLTIP, "trigger": "item", "formatter": tooltip_fmt},
-        "toolbox": {**_ECHARTS_BASE_TOOLBOX},
+        # 3D 场景下 dataZoom 框选/还原/重置只对直角坐标系生效，保留会变成
+        # 点了没反应的死按钮，故工具栏仅保留 PNG 导出。
+        "toolbox": {**{k: v for k, v in _ECHARTS_BASE_TOOLBOX.items() if k != "feature"},
+                    "feature": {"saveAsImage": {"title": "导出 PNG", "pixelRatio": 2,
+                                                "backgroundColor": _ECHARTS_BG_COLOR}}},
         "color": _ECHARTS_PALETTE,
         "grid3D": {
             # 盒体加大 + 视距拉近，让立体场景填满画布（默认 230 时四周留白过多）；
             # 不开自动旋转，旋转完全由用户拖拽控制。
             "boxWidth": 130, "boxDepth": 130, "boxHeight": 100,
+            # 限制滚轮缩放范围：防止缩到看不见或推进盒体内部迷失视角
             "viewControl": {"projection": "perspective", "autoRotate": False,
-                            "rotateSensitivity": 1.6, "distance": 210},
+                            "rotateSensitivity": 1.6, "distance": 210,
+                            "minDistance": 100, "maxDistance": 420},
             "light": {"main": {"intensity": 1.1, "shadow": False}, "ambient": {"intensity": 0.5}},
         },
         "xAxis3D": axis3d(x_label),

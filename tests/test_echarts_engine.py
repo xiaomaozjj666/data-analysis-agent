@@ -483,6 +483,15 @@ def test_echarts_scatter_3d_uses_gl(workspace, sample_df):
     assert "grid3D" in option and "zAxis3D" in option
     # 旋转完全由用户拖拽控制，不开自动旋转（用户明确要求）
     assert option["grid3D"]["viewControl"]["autoRotate"] is False
+    # 缩放距离有边界，防止缩到看不见或推进盒体内部
+    vc = option["grid3D"]["viewControl"]
+    assert 0 < vc["minDistance"] < vc["distance"] < vc["maxDistance"]
+    # 3D 不支持 dataZoom 框选，工具栏不应出现死按钮
+    assert "dataZoom" not in option["toolbox"]["feature"]
+    assert "saveAsImage" in option["toolbox"]["feature"]
+    # 解读文案的交互提示须匹配 3D（无框选，只有拖拽旋转）
+    assert "拖拽旋转" in result["interpretation"]
+    assert "框选" not in result["interpretation"]
     # HTML 里需引入 echarts-gl bundle（本地下载或 CDN 直引）
     html = Path(result["html"]).read_text(encoding="utf-8")
     assert "echarts-gl" in html
