@@ -10,12 +10,12 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@vitejs/plugin-react": "6.0.3",
-    "lucide-react": "1.25.0",
-    "motion": "12.42.2",
+    "@vitejs/plugin-react": "6.0.4",
+    "lucide-react": "1.27.0",
+    "motion": "12.43.0",
     "prismjs": "1.30.0",
-    "react": "19.2.7",
-    "react-dom": "19.2.7",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
     "react-markdown": "10.1.0",
     "react-syntax-highlighter": "16.1.1",
     "react-window": "2.3.0",
@@ -30,7 +30,7 @@
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
     "@types/react-syntax-highlighter": "15.5.13",
-    "jsdom": "29.1.1",
+    "jsdom": "30.0.1",
     "vitest": "4.1.10"
   }
 }
