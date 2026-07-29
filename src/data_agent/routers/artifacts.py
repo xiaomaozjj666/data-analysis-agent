@@ -404,7 +404,13 @@ def edit_chart(session_id: str, filename: str, request: ChartEditRequest) -> dic
             # plotly bundle 不可用（极少见）时回退到内联 plotlyjs 的完整 HTML。
             fig.write_html(html_path, include_plotlyjs=True, full_html=True)
         # 同步更新 .plotly.json，保证后续编辑基于最新数据。
-        fig.write_json(json_path)
+        # 使用原子写入（写 .tmp 再 replace），防止进程被杀时留下损坏的 JSON。
+        import json as _json
+        import os as _os
+        tmp_path = json_path.with_suffix(".tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            _json.dump(fig.to_dict(), f, ensure_ascii=False, default=str)
+        _os.replace(tmp_path, json_path)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"图表重新生成失败：{exc}") from exc
     return {"status": "ok", "message": "图表已更新。"}

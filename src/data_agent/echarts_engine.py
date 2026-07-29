@@ -1315,8 +1315,14 @@ def _echarts_scatter3d(
         return _rows_data(sub, [x, y, z] + ([size] if has_size else []))
 
     levels = list(pd.unique(df[color].dropna())) if color and color in df.columns else []
-    groups = ([(str(lv), df[df[color] == lv], _series_color(idx)) for idx, lv in enumerate(levels)]
-              if levels else [("样本", df, _ECHARTS_PALETTE[0])])
+    # 3D 散点降采样：echarts-gl 的 scatter3D 在万点以上明显卡顿，
+    # 5 万点几乎不可用。均匀抽样到 _SCATTER3D_MAX_POINTS 行，
+    # 保留分布特征同时保证交互流畅。与 2D 散点的 large 模式、SPLOM
+    # 的 400 行抽样形成一致的降采样策略。
+    _SCATTER3D_MAX_POINTS = 3000
+    sampled_df = df.sample(n=min(len(df), _SCATTER3D_MAX_POINTS), random_state=42) if len(df) > _SCATTER3D_MAX_POINTS else df
+    groups = ([(str(lv), sampled_df[sampled_df[color] == lv], _series_color(idx)) for idx, lv in enumerate(levels)]
+              if levels else [("样本", sampled_df, _ECHARTS_PALETTE[0])])
     series = [{
         "name": gname, "type": "scatter3D",
         "data": row_data(sub),

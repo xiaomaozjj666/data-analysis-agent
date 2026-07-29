@@ -291,16 +291,25 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
                 )
                 record.last_result = result
                 record.set_finished("completed")
-                api.registry.persist(session_id, record)
+                try:
+                    api.registry.persist(session_id, record)
+                except Exception:
+                    logger.exception("Failed to persist completed state for session %s", session_id)
                 _safe_emit(loop, queue, ("complete", _result_payload(session_id, result)))
         except AnalysisCancelled:
             record.set_finished("cancelled")
-            api.registry.persist(session_id, record)
+            try:
+                api.registry.persist(session_id, record)
+            except Exception:
+                logger.exception("Failed to persist cancelled state for session %s", session_id)
             _safe_emit(loop, queue, ("cancelled", {"message": "分析已取消。"}))
         except Exception as exc:
             logger.exception("Analysis worker failed for session %s", session_id)
             record.set_finished("failed")
-            api.registry.persist(session_id, record)
+            try:
+                api.registry.persist(session_id, record)
+            except Exception:
+                logger.exception("Failed to persist failed state for session %s", session_id)
             _safe_emit(loop, queue, ("error", _error_payload(exc)))
         finally:
             record.current_task = ""
@@ -440,7 +449,10 @@ async def chat_stream(session_id: str, request: AnalyzeRequest) -> StreamingResp
                     {"role": "assistant", "content": response_text},
                 ]
             )
-            api.registry.persist(session_id, record)
+            try:
+                api.registry.persist(session_id, record)
+            except Exception:
+                logger.exception("Failed to persist chat state for session %s", session_id)
             _safe_emit(
                 loop,
                 queue,
@@ -455,7 +467,10 @@ async def chat_stream(session_id: str, request: AnalyzeRequest) -> StreamingResp
                 ),
             )
         except AnalysisCancelled:
-            api.registry.persist(session_id, record)
+            try:
+                api.registry.persist(session_id, record)
+            except Exception:
+                logger.exception("Failed to persist cancelled chat state for session %s", session_id)
             _safe_emit(loop, queue, ("cancelled", {"message": "追问已取消。"}))
         except Exception as exc:
             logger.exception("Chat worker failed for session %s", session_id)

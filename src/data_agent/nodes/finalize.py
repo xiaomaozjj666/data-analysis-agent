@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 from data_agent.callbacks import (
@@ -15,6 +16,8 @@ from data_agent.prompts import _FINALIZE_EVIDENCE_BUDGET, _FINALIZE_PER_STEP_MIN
 
 if TYPE_CHECKING:
     from data_agent.agent import DataAnalysisAgent
+
+logger = logging.getLogger(__name__)
 
 
 def finalize(agent: DataAnalysisAgent, state: WorkflowState) -> dict[str, Any]:
@@ -68,6 +71,7 @@ def finalize(agent: DataAnalysisAgent, state: WorkflowState) -> dict[str, Any]:
         )
         response = _message_text(final_message)
     except Exception:
+        logger.exception("Finalize LLM summarize failed, falling back to evidence summary")
         response = ""
         reasoning_buffer = []
         usage_acc = None

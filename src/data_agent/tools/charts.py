@@ -28,7 +28,7 @@ _MAX_REINDEX_COMBINATIONS = 2_500
 #: 图表标题清理后的最大字符数，避免前端溢出。
 _CHART_TITLE_MAX_CHARS = 30
 
-_BOOLEAN_VALUE_LABELS = {False: "未退货", True: "已退货"}
+_BOOLEAN_VALUE_LABELS = {False: "否", True: "是"}
 _SAMPLE_COUNT_COLUMN = "__sample_count__"
 _HAS_RECORDS_COLUMN = "__has_records__"
 #: 预计算的 hover 文本列，避免无记录 bar 在 hover 中显示 nan。

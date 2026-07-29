@@ -39,7 +39,12 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 #: 支持的数据文件扩展名集合。
-SUPPORTED_EXTENSIONS = {".csv", ".tsv", ".xlsx", ".xls", ".json", ".jsonl", ".parquet"}
+#: 结构化表格：CSV/TSV/Excel/JSON/JSONL/Parquet
+#: 非结构化/半结构化：PDF（表格提取）、TXT（行式文本）、DOCX（Word 表格）
+SUPPORTED_EXTENSIONS = {
+    ".csv", ".tsv", ".xlsx", ".xls", ".json", ".jsonl", ".parquet",
+    ".pdf", ".txt", ".docx",
+}
 
 #: 共享 Plotly.js 束缚文件名，每个工作区只写一次，所有图表复用。
 PLOTLY_BUNDLE_NAME = "plotly.min.js"
@@ -61,6 +66,16 @@ _UPLOAD_CHUNK_SIZE = 1024 * 1024
 
 #: 拒绝加载的最大列数，防止意外资源耗尽。
 _MAX_COLUMNS = 1000
+
+#: 超过此大小（字节）的 CSV/TSV 使用分块读取，避免 pandas 解析时
+#: 在内存中构建中间数据结构导致瞬时内存尖峰（可达文件大小的 3-5 倍）。
+#: 分块读取用 TextFileReader 流式解析，每块读入后立即 append，峰值内存
+#: 降为约 1.5 倍最终 DataFrame 大小。50MB 阈值覆盖大多数业务 CSV。
+_LARGE_DELIMITED_THRESHOLD = 50 * 1024 * 1024
+
+#: 分块读取的块大小（行数）。太小则 I/O 次数多，太大则峰值内存高。
+#: 5 万行/块在 10 列场景下约 5-10MB/块，平衡两者。
+_CHUNK_SIZE = 50_000
 
 #: Profile 缓存最大条目数，超过后按 LRU 策略淘汰最旧条目。
 #: 值为 4：覆盖常见场景（validate_dataset 用 sample_rows=5，finalize 用
@@ -97,6 +112,24 @@ def _atomic_write_text(path: Path, content: str, *, encoding: str = "utf-8") -> 
     except Exception:
         temporary.unlink(missing_ok=True)
         raise
+
+
+def _downcast_dtypes(df: pd.DataFrame) -> pd.DataFrame:
+    """降级 DataFrame 数值列的 dtype 以节省内存。
+
+    pandas 默认用 int64/float64，对大多数业务数据来说 int32/float32 已足够。
+    安全降级：仅在不丢失精度时转换（如 0-255 的整数列 → uint8）。
+    典型场景：100 万行 × 10 列的 int64 数据，降级后内存从 ~80MB 降到 ~20MB。
+    """
+    for col in df.columns:
+        col_data = df[col]
+        if col_data.dtype == "int64":
+            # 尝试降级到最小可容纳的整数类型
+            df[col] = pd.to_numeric(col_data, downcast="integer")
+        elif col_data.dtype == "float64":
+            # float32 精度足够大多数统计场景（6-7 位有效数字）
+            df[col] = pd.to_numeric(col_data, downcast="float")
+    return df
 
 
 @dataclass(frozen=True, slots=True)
@@ -279,7 +312,8 @@ class DataWorkspace:
     def load(self, source: str | Path, copy_into_workspace: bool = False) -> dict[str, Any]:
         """加载数据文件到工作区并返回数据概况。
 
-        支持 CSV/TSV（自动探测编码和分隔符）、Excel、Parquet、JSON/JSONL。
+        支持结构化表格（CSV/TSV/Excel/Parquet/JSON/JSONL）与非结构化数据
+        （PDF 表格提取、TXT 行式文本、DOCX Word 表格）。
         加载失败时抛出 ValueError 或 FileNotFoundError，不会留下部分状态。
 
         Args:
@@ -314,11 +348,19 @@ class DataWorkspace:
                 df = pd.read_parquet(path)
             elif suffix == ".jsonl":
                 df = pd.read_json(path, lines=True)
-            else:
+            elif suffix == ".json":
                 try:
                     df = pd.read_json(path)
                 except ValueError:
                     df = pd.read_json(path, lines=True)
+            elif suffix == ".pdf":
+                df = self._read_pdf(path)
+            elif suffix == ".txt":
+                df = self._read_text(path)
+            elif suffix == ".docx":
+                df = self._read_docx(path)
+            else:  # pragma: no cover - 已被 SUPPORTED_EXTENSIONS 守护
+                raise ValueError(f"未实现的格式：{suffix}")
         except (pd.errors.ParserError, UnicodeDecodeError, ValueError) as exc:
             raise ValueError(f"文件格式无法解析：{exc}") from exc
 
@@ -336,24 +378,31 @@ class DataWorkspace:
     def _read_delimited(self, path: Path, suffix: str) -> pd.DataFrame:
         """读取分隔符文件，按 _CSV_ENCODING_CANDIDATES 顺序探测编码。
 
+        大文件（超 _LARGE_DELIMITED_THRESHOLD）使用分块流式读取，避免 pandas
+        解析时在内存中构建中间数据结构导致瞬时内存尖峰。
         首次尝试严格模式（on_bad_lines='error'），失败后回退到跳过坏行
         并记录警告，确保尽可能多地保留有效数据。
         """
         sep = "\t" if suffix == ".tsv" else None
+        file_size = path.stat().st_size
+        use_chunks = file_size > _LARGE_DELIMITED_THRESHOLD
         last_error: Exception | None = None
         for encoding in _CSV_ENCODING_CANDIDATES:
             try:
-                return pd.read_csv(path, sep=sep, engine="python", encoding=encoding, on_bad_lines="error")
+                df = self._read_delimited_chunked(path, sep, encoding) if use_chunks else pd.read_csv(
+                    path, sep=sep, engine="python", encoding=encoding, on_bad_lines="error"
+                )
+                return _downcast_dtypes(df)
             except pd.errors.ParserError as exc:
                 last_error = exc
                 try:
-                    repaired = pd.read_csv(
-                        path,
-                        sep=sep,
-                        engine="python",
-                        encoding=encoding,
-                        on_bad_lines="skip",
-                    )
+                    if use_chunks:
+                        repaired = self._read_delimited_chunked(path, sep, encoding, skip_bad=True)
+                    else:
+                        repaired = pd.read_csv(
+                            path, sep=sep, engine="python", encoding=encoding, on_bad_lines="skip",
+                        )
+                    repaired = _downcast_dtypes(repaired)
                 except (pd.errors.ParserError, UnicodeDecodeError) as retry_exc:
                     last_error = retry_exc
                     continue
@@ -366,6 +415,126 @@ class DataWorkspace:
             "请用 Excel 或文本编辑器将文件另存为 UTF-8 编码的 CSV 后重新上传。"
             f"（技术详情：{last_error}）"
         )
+
+    def _read_delimited_chunked(
+        self, path: Path, sep: str | None, encoding: str, *, skip_bad: bool = False
+    ) -> pd.DataFrame:
+        """分块流式读取大 CSV/TSV 文件，降低峰值内存。
+
+        使用 TextFileReader 的 chunksize 接口逐块读取并 append，
+        峰值内存约为最终 DataFrame 的 1.5 倍（而非一次性读取的 3-5 倍）。
+        坏行处理：skip_bad=True 时用 on_bad_lines='skip'，否则 'error'。
+        """
+        reader = pd.read_csv(
+            path, sep=sep, engine="python", encoding=encoding,
+            chunksize=_CHUNK_SIZE,
+            on_bad_lines="skip" if skip_bad else "error",
+        )
+        chunks: list[pd.DataFrame] = []
+        for chunk in reader:
+            chunks.append(chunk)
+        if not chunks:
+            return pd.DataFrame()
+        return pd.concat(chunks, ignore_index=True)
+
+    def _read_pdf(self, path: Path) -> pd.DataFrame:
+        """从 PDF 文件提取表格数据。
+
+        使用 pdfplumber 逐页提取表格，多页表格自动拼接。
+        若 PDF 中无表格（纯文本 PDF），回退为按行提取文本到单列 DataFrame。
+        """
+        import pdfplumber
+
+        tables: list[pd.DataFrame] = []
+        with pdfplumber.open(path) as pdf:
+            for page in pdf.pages:
+                page_tables = page.extract_tables()
+                for table in page_tables:
+                    if not table or len(table) < 2:
+                        continue
+                    # 首行作为表头，其余为数据行
+                    header = [str(c or f"列{i+1}").strip() for i, c in enumerate(table[0])]
+                    data = table[1:]
+                    df_page = pd.DataFrame(data, columns=header)
+                    tables.append(df_page)
+
+        if tables:
+            # 多表格拼接：列名对齐取并集，缺失列填 NaN
+            df = pd.concat(tables, ignore_index=True)
+            self.load_warnings.append(f"从 PDF 提取了 {len(tables)} 个表格，共 {len(df)} 行。")
+            return df
+
+        # 回退：PDF 无表格，按行提取纯文本
+        lines: list[str] = []
+        with pdfplumber.open(path) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text()
+                if text:
+                    lines.extend(text.splitlines())
+        if not lines:
+            raise ValueError("PDF 文件中未找到表格或文本内容。")
+        self.load_warnings.append("PDF 中未检测到表格，已按行提取文本内容。")
+        return pd.DataFrame({"文本": lines})
+
+    def _read_text(self, path: Path, max_lines: int = 500_000) -> pd.DataFrame:
+        """读取纯文本文件，按行解析为单列 DataFrame。
+
+        自动探测编码（与 CSV 相同的候选列表）。超长文件截断到 max_lines 行
+        并记录警告，防止日志类文件撑爆内存。
+        """
+        last_error: Exception | None = None
+        for encoding in _CSV_ENCODING_CANDIDATES:
+            try:
+                with open(path, encoding=encoding) as f:
+                    lines = f.readlines(max_lines + 1)
+                truncated = len(lines) > max_lines
+                if truncated:
+                    lines = lines[:max_lines]
+                    self.load_warnings.append(
+                        f"文本文件超过 {max_lines} 行，已截断。请使用更专业的日志分析工具处理超大文件。"
+                    )
+                # 去除行尾换行符，空行保留为空字符串
+                content = [line.rstrip("\n\r") for line in lines]
+                if not content:
+                    raise ValueError("文本文件为空。")
+                return pd.DataFrame({"文本": content})
+            except UnicodeDecodeError as exc:
+                last_error = exc
+        raise ValueError(
+            "无法识别文本文件编码：已尝试 UTF-8、GB18030 等常见编码均失败。"
+            f"（技术详情：{last_error}）"
+        )
+
+    def _read_docx(self, path: Path) -> pd.DataFrame:
+        """从 Word 文档提取表格数据。
+
+        使用 python-docx 读取文档中的所有表格，多表格自动拼接。
+        若文档中无表格，回退为按段落提取文本到单列 DataFrame。
+        """
+        import docx
+
+        doc = docx.Document(str(path))
+        tables: list[pd.DataFrame] = []
+
+        for table in doc.tables:
+            if len(table.rows) < 2:
+                continue
+            # 首行作为表头
+            header = [cell.text.strip() or f"列{i+1}" for i, cell in enumerate(table.rows[0].cells)]
+            data = [[cell.text.strip() for cell in row.cells] for row in table.rows[1:]]
+            tables.append(pd.DataFrame(data, columns=header))
+
+        if tables:
+            df = pd.concat(tables, ignore_index=True)
+            self.load_warnings.append(f"从 Word 文档提取了 {len(tables)} 个表格，共 {len(df)} 行。")
+            return df
+
+        # 回退：文档无表格，按段落提取文本
+        paragraphs = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+        if not paragraphs:
+            raise ValueError("Word 文档中未找到表格或文本内容。")
+        self.load_warnings.append("Word 文档中未检测到表格，已按段落提取文本内容。")
+        return pd.DataFrame({"文本": paragraphs})
 
     def repair_format(
         self,

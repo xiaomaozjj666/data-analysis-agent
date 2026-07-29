@@ -175,6 +175,10 @@ class SessionRegistry:
         storage: SessionStorage | None = None,
     ) -> None:
         self._items: dict[str, SessionRecord] = {}
+        # 正在删除的 session_id 集合：delete() 在锁内标记后，锁外执行 rmtree。
+        # 期间若 get() 尝试 _restore_locked，会被这个集合拦住，防止恢复出
+        # 指向即将被删除目录的 record（H9 竞态修复）。
+        self._deleting: set[str] = set()
         self._lock = threading.RLock()
         self.runs_dir = runs_dir.resolve()
         self.max_sessions = max_sessions
@@ -281,6 +285,10 @@ class SessionRegistry:
         self._sync_storage(session_id, record.workspace.root)
 
     def _restore_locked(self, session_id: str) -> SessionRecord | None:
+        # 若 session 正在删除中（delete 已 pop 但 rmtree 尚未完成），
+        # 拒绝恢复，防止返回指向已删目录的 record（H9 竞态修复）。
+        if session_id in self._deleting:
+            return None
         if not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", session_id):
             return None
         root = (self.runs_dir / session_id).resolve()
@@ -504,6 +512,9 @@ class SessionRegistry:
             if record is not None and record.run_lock.locked():
                 raise HTTPException(status_code=409, detail="会话正在运行，请先取消分析再删除。")
             self._items.pop(session_id, None)
+            # 标记为删除中：锁外 rmtree 期间，get() 的 _restore_locked
+            # 会检查此集合并拒绝恢复，防止竞态产生悬空 record（H9 修复）。
+            self._deleting.add(session_id)
         # 锁外清理目录（shutil.rmtree 是 I/O 密集，不持锁）
         try:
             shutil.rmtree(root, ignore_errors=True)
@@ -514,6 +525,9 @@ class SessionRegistry:
             self.storage.delete_session(session_id)
         except Exception:
             logger.exception("Session storage delete failed for %s", session_id)
+        finally:
+            with self._lock:
+                self._deleting.discard(session_id)
 
     def rename(self, session_id: str, title: str) -> str:
         """重命名会话：更新 title 字段并持久化到 session.json + 远端归档。
@@ -544,6 +558,15 @@ class SessionRegistry:
 # 通过 ``api.registry`` / ``api.analysis_slots`` 等访问以兼容测试 monkeypatch。
 # ---------------------------------------------------------------------------
 bootstrap_settings = AgentSettings.from_env(provider="deepseek")
+# 启动时校验关键资源限制：max_concurrent_analyses <= 0 会导致
+# BoundedSemaphore(0) 让所有 acquire() 永久阻塞，服务启动正常但无法
+# 执行任何分析。不调用完整的 validate_for_model（需要 api_key），
+# 仅校验不影响 LLM 连接但会导致服务假死的资源参数。
+if bootstrap_settings.max_concurrent_analyses <= 0:
+    raise ValueError(
+        "DATA_AGENT_MAX_CONCURRENT_ANALYSES 必须大于 0，"
+        f"当前值 {bootstrap_settings.max_concurrent_analyses} 会导致服务无法执行分析。"
+    )
 session_storage = build_session_storage()
 registry = SessionRegistry(
     bootstrap_settings.runs_dir,

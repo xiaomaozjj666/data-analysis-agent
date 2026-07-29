@@ -368,8 +368,11 @@ function useArtifactPreview(): UseArtifactPreviewResult {
         body: JSON.stringify({ title: chartEditTitle || undefined, color: chartEditColor || undefined }),
       });
       if (!response.ok) throw new Error("图表编辑失败");
-      // 清除预览缓存：下次打开会重新拉取更新后的 HTML
-      previewCacheRef.current.clear();
+      // 仅清除被编辑图表的缓存条目，保留其他图表的缓存（LRU 设计）。
+      // 之前用 clear() 会清空全部缓存，导致其他已缓存图表需重新 fetch ~3.5MB。
+      if (previewItem.preview_url) {
+        previewCacheRef.current.delete(previewItem.preview_url);
+      }
       setPreviewHtml("");
       setChartEditOpen(false);
       // 重新打开预览，加载更新后的图表

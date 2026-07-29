@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import TYPE_CHECKING, Any
 
 from data_agent.models import ReplanDecision
@@ -11,6 +12,8 @@ from data_agent.prompts import _REPLAN_PAYLOAD_MAX_CHARS
 
 if TYPE_CHECKING:
     from data_agent.agent import DataAnalysisAgent
+
+logger = logging.getLogger(__name__)
 
 
 def replan(agent: DataAnalysisAgent, state: WorkflowState) -> dict[str, Any]:
@@ -66,6 +69,7 @@ def replan(agent: DataAnalysisAgent, state: WorkflowState) -> dict[str, Any]:
                 next_steps = original_remaining
         reason = decision.rationale
     except Exception:
+        logger.exception("Replan LLM decision failed, keeping original remaining steps")
         next_steps = original_remaining
         reason = "保留原计划中的后续步骤。"
     return {

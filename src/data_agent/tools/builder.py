@@ -86,14 +86,16 @@ _GROUPBY_MAX_ROWS = 500
 _TRANSFORM_LIMIT_MAX = 1_000_000
 
 _CHART_COLORS = [
-    "#245C55",
+    "#2C5F8D",
     "#D97745",
-    "#4F6BED",
+    "#4F9D7C",
     "#C75D63",
     "#7A6FB0",
     "#D2A63C",
     "#4B8FA8",
     "#8A9A5B",
+    "#B07B9E",
+    "#5E7A8C",
 ]
 
 #: Plotly 暗色模式自适应脚本：注入图表 HTML，监听主题变化动态切换背景和文字颜色。
@@ -111,9 +113,14 @@ _PLOTLY_DARK_MODE_SCRIPT = """<script>
       }
     }, 300);
   });
+  function getIsDark() {
+    var t = document.documentElement.dataset.theme;
+    if (t === 'dark') return true;
+    if (t === 'light') return false;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches;
+  }
   function applyTheme() {
-    var isDark = document.documentElement.dataset.theme === 'dark' ||
-                 window.matchMedia('(prefers-color-scheme: dark)').matches;
+    var isDark = getIsDark();
     var plotEl = document.querySelector('.plotly-graph-div');
     if (!plotEl) return;
     var update = {
@@ -184,8 +191,8 @@ def _apply_plotly_nice_ticks(
     """
     try:
         axis_ranges = scale_details.get("axis_ranges", {}) or {}
-        # Y 轴（数值型图表都有）
-        if y and chart_type in {"bar", "line", "area", "scatter", "histogram", "box", "violin"}:
+        # Y 轴（数值型图表都有，scatter_3d 的 y 轴也需要 nice ticks）
+        if y and chart_type in {"bar", "line", "area", "scatter", "scatter_3d", "histogram", "box", "violin"}:
             y_range = axis_ranges.get("y")
             if y_range:
                 vmin, vmax = float(y_range[0]), float(y_range[1])
@@ -219,6 +226,26 @@ def _apply_plotly_nice_ticks(
                     dtick=step,
                     tick0=nice_min,
                     tickformat=_plotly_axis_tickformat((nice_min, nice_max)),
+                )
+        # Z 轴（仅 scatter_3d）
+        if chart_type == "scatter_3d":
+            z_range = axis_ranges.get("z")
+            if z_range:
+                vmin, vmax = float(z_range[0]), float(z_range[1])
+            else:
+                values = _collect_trace_values(fig, "z")
+                if not values:
+                    return
+                vmin, vmax = float(min(values)), float(max(values))
+            nice_min, nice_max, step = _nice_ticks(vmin, vmax, n=5)
+            if step > 0:
+                fig.update_scenes(
+                    zaxis=dict(
+                        tickmode="linear",
+                        dtick=step,
+                        tick0=nice_min,
+                        tickformat=_plotly_axis_tickformat((nice_min, nice_max)),
+                    )
                 )
     except Exception:
         # nice ticks 是 best-effort，不能影响图表生成
@@ -811,9 +838,12 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                 chart_type_source="auto" if was_auto else "explicit",
             ))
         # === Plotly 原有渲染逻辑（默认分支，保持不变）===
+        # Plotly title 支持 HTML 子集，需 escape 防止 LLM 输出注入 <b>/<i> 等标签
+        # 改变样式。与 ECharts 分支的 escape(title) 保持一致。
+        from html import escape as _html_escape
         common = {
             "data_frame": df,
-            "title": title,
+            "title": _html_escape(display_title),
             "template": "plotly_white",
             "labels": labels,
             "color_discrete_sequence": _CHART_COLORS,
@@ -876,7 +906,17 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             numeric = _numeric_columns(df, dimensions)
             if len(numeric) > _SCATTER_MATRIX_MAX_DIMENSIONS:
                 raise ValueError(f"scatter_matrix 最多支持 {_SCATTER_MATRIX_MAX_DIMENSIONS} 个维度，请缩小 dimensions。")
-            fig = px.scatter_matrix(**common, dimensions=numeric, color=color)
+            # SPLOM 降采样：N 维 × M 行产生 N² 个子图，每个 trace 含全量 M 行。
+            # 8 维 10 万行 = 64 个 trace × 10 万点 = 640 万点负载，浏览器会卡死。
+            # 与 ECharts SPLOM 的 400 行抽样保持一致，超过则均匀抽样。
+            _SPLOM_MAX_ROWS = 1000
+            spom_df = df
+            if len(df) > _SPLOM_MAX_ROWS:
+                spom_df = df.sample(n=_SPLOM_MAX_ROWS, random_state=42)
+                spom_common = {**common, "data_frame": spom_df}
+            else:
+                spom_common = common
+            fig = px.scatter_matrix(**spom_common, dimensions=numeric, color=color)
             fig.update_traces(diagonal_visible=False)
         elif chart_type == "sunburst":
             if not path_columns:

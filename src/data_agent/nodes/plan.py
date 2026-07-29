@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import TYPE_CHECKING, Any
 
 from data_agent.models import AnalysisPlan
@@ -11,6 +12,8 @@ from data_agent.prompts import _PLAN_PROFILE_MAX_CHARS, _apply_query_constraints
 
 if TYPE_CHECKING:
     from data_agent.agent import DataAnalysisAgent
+
+logger = logging.getLogger(__name__)
 
 
 def plan_analysis(agent: DataAnalysisAgent, state: WorkflowState) -> dict[str, Any]:
@@ -38,6 +41,7 @@ def plan_analysis(agent: DataAnalysisAgent, state: WorkflowState) -> dict[str, A
         if not isinstance(plan, AnalysisPlan):
             plan = AnalysisPlan.model_validate(plan)
     except Exception:
+        logger.exception("Plan LLM structured output failed, falling back to default plan")
         plan = _fallback_plan(state["query"], agent.prompts)
     plan = _apply_query_constraints(state["query"], plan)
     steps = [step.model_dump() for step in plan.steps[: agent.settings.max_plan_steps]]

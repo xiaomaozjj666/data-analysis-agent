@@ -136,8 +136,9 @@ def export_session(session_id: str) -> StreamingResponse:
     workspace_state.parquet 等）打包成 ZIP 流式返回。前端下载后可在
     其他实例通过 /api/sessions/import 导入恢复完整会话状态。
 
-    安全：仅打包会话根目录内的文件，不跟随符号链接；rglob("*") 遍历
-    后通过 path.is_file() 过滤掉目录，避免 ZipFile 写入空目录条目。
+    安全：仅打包会话根目录内的文件，不跟随符号链接（防止通过 symlink
+    泄漏宿主任意文件）；rglob("*") 遍历后通过 path.is_file() 且
+    not path.is_symlink() 过滤，避免 ZipFile 写入空目录条目和链接目标。
     """
     import zipfile
 
@@ -148,7 +149,9 @@ def export_session(session_id: str) -> StreamingResponse:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
         for path in sorted(root.rglob("*")):
-            if path.is_file():
+            # 跳过符号链接：rglob 默认跟随 symlink，若工作区被植入
+            # 指向 /etc/passwd 的链接，导出的 ZIP 会泄漏宿主文件。
+            if path.is_file() and not path.is_symlink():
                 bundle.write(path, path.relative_to(root))
     buffer.seek(0)
     return StreamingResponse(
@@ -168,6 +171,9 @@ async def import_session(file: Annotated[UploadFile, File()]) -> dict[str, Any]:
     安全：
     - 路径遍历防护：解压前遍历归档成员，校验每个解压目标必须位于
       会话根目录内，防止 ``../`` 等恶意路径逃逸。
+    - Zip bomb 防护：限制上传大小（复用 max_upload_bytes）、解压后
+      累计大小上限（1GB）、成员数量上限（10000），防止高压缩比 ZIP
+      或海量小文件导致 OOM 或磁盘耗尽。
     - 无效 ZIP 返回 400；解压后 manifest 读取失败返回 400 并清理目录。
     - 生成新的 session_id，避免与已有会话冲突。
     """
@@ -180,14 +186,26 @@ async def import_session(file: Annotated[UploadFile, File()]) -> dict[str, Any]:
     root = api.bootstrap_settings.runs_dir / session_id
     root.mkdir(parents=True, exist_ok=True)
     content = await file.read()
+    # Zip bomb 防护：限制上传大小、解压总大小、成员数量
+    _MAX_IMPORT_BYTES = api.bootstrap_settings.max_upload_bytes
+    _MAX_UNCOMPRESSED_BYTES = 1024 * 1024 * 1024  # 1GB
+    _MAX_ZIP_MEMBERS = 10_000
+    if len(content) > _MAX_IMPORT_BYTES:
+        raise HTTPException(status_code=413, detail=f"归档过大（上限 {_MAX_IMPORT_BYTES // 1024 // 1024}MB）。")
     try:
         with zipfile.ZipFile(io.BytesIO(content)) as bundle:
-            # 路径遍历防护：先校验所有成员再解压，避免半解压后才发现
-            # 恶意路径。target.resolve() 后检查 root 是否在其父链上。
-            for member in bundle.infolist():
+            members = bundle.infolist()
+            if len(members) > _MAX_ZIP_MEMBERS:
+                raise HTTPException(status_code=400, detail=f"归档成员过多（上限 {_MAX_ZIP_MEMBERS} 个）。")
+            # 路径遍历防护 + 累计大小校验：先校验所有成员再解压
+            total_size = 0
+            for member in members:
                 target = (root / member.filename).resolve()
                 if target != root and root not in target.parents:
                     raise HTTPException(status_code=400, detail="归档包含不安全路径。")
+                total_size += member.file_size
+                if total_size > _MAX_UNCOMPRESSED_BYTES:
+                    raise HTTPException(status_code=400, detail="归档解压后过大（上限 1GB）。")
             bundle.extractall(root)
     except zipfile.BadZipFile as exc:
         shutil.rmtree(root, ignore_errors=True)
