@@ -338,9 +338,12 @@ function useArtifactPreview(): UseArtifactPreviewResult {
     if (!iframe?.contentWindow) return;
     setPngDownloading(true);
     const handler = (e: MessageEvent) => {
-      if (e.data?.type === "png-data" && e.data.data) {
+      // 校验消息来源：必须来自预览 iframe，且 data 必须是 PNG base64
+      if (e.source !== iframe.contentWindow) return;
+      if (e.data?.type === "png-data" && typeof e.data.data === "string"
+          && e.data.data.startsWith("data:image/png;base64,")) {
         const a = document.createElement("a");
-        a.href = e.data.data as string;
+        a.href = e.data.data;
         a.download = `${previewItem?.name?.replace(/\.html$/, "") || "chart"}.png`;
         a.click();
         window.removeEventListener("message", handler);

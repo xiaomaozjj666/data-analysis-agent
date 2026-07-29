@@ -85,7 +85,9 @@ function markdownToHtml(md: string): string {
       return `\u0000C${codes.length - 1}\u0000`;
     });
     s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, label: string, url: string) => {
-      links.push(`<a href="${url}">${label}</a>`);
+      // 仅放行安全协议，防止 javascript:/data:text/html 等 XSS 向量
+      const safeUrl = /^(https?:|mailto:|#|\/)/i.test(url) ? url : "#";
+      links.push(`<a href="${safeUrl}">${label}</a>`);
       return `\u0000L${links.length - 1}\u0000`;
     });
     s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");

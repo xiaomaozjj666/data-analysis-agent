@@ -15,7 +15,9 @@ re-export 以兼容测试（如 ``test_echarts_engine.test_echarts_api_preview_i
 from __future__ import annotations
 
 import json
+import os
 import re
+import threading
 from email.utils import formatdate
 from pathlib import Path
 from typing import Any
@@ -60,6 +62,7 @@ _ECHARTS_GL_TAG_PATTERN = re.compile(
 
 _BUNDLE_TEXT_CACHE: dict[tuple[str, int], str] = {}
 _BUNDLE_CACHE_MAX = 6
+_BUNDLE_CACHE_LOCK = threading.Lock()
 
 
 def _read_bundle_cached(path: Path) -> str | None:
@@ -71,16 +74,18 @@ def _read_bundle_cached(path: Path) -> str | None:
         key = (path.name, path.stat().st_size)
     except OSError:
         return None
-    cached = _BUNDLE_TEXT_CACHE.get(key)
+    with _BUNDLE_CACHE_LOCK:
+        cached = _BUNDLE_TEXT_CACHE.get(key)
     if cached is not None:
         return cached
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
         return None
-    if len(_BUNDLE_TEXT_CACHE) >= _BUNDLE_CACHE_MAX:
-        _BUNDLE_TEXT_CACHE.pop(next(iter(_BUNDLE_TEXT_CACHE)))
-    _BUNDLE_TEXT_CACHE[key] = text
+    with _BUNDLE_CACHE_LOCK:
+        if len(_BUNDLE_TEXT_CACHE) >= _BUNDLE_CACHE_MAX:
+            _BUNDLE_TEXT_CACHE.pop(next(iter(_BUNDLE_TEXT_CACHE)), None)
+        _BUNDLE_TEXT_CACHE[key] = text
     return text
 
 
@@ -255,6 +260,7 @@ def download_artifact(session_id: str, filename: str) -> Response:
         html_text = _inline_plotly_bundle(record, _read_utf8_robust(path))
         html_text = _inline_echarts_gl_bundle(record, html_text)
         html_text = _inline_echarts_bundle(record, html_text)
+        html_text = _harden_preview_document(html_text)
         return Response(
             content=html_text,
             media_type="text/html",
@@ -298,7 +304,10 @@ def get_chart_thumbnail(session_id: str, filename: str) -> FileResponse:
         fig = go.Figure(fig_dict)
         # 缩略图尺寸 400x250，去掉 margin 节省空间
         fig.update_layout(margin=dict(l=20, r=20, t=30, b=20), showlegend=False)
-        fig.write_image(str(thumb_path), width=400, height=250, scale=1)
+        # 原子写：先写 .tmp 再 os.replace，防止并发缩略图请求交错写入损坏 PNG
+        tmp_thumb = thumb_path.with_suffix(thumb_path.suffix + ".tmp")
+        fig.write_image(str(tmp_thumb), width=400, height=250, scale=1)
+        os.replace(str(tmp_thumb), str(thumb_path))
         return FileResponse(thumb_path, media_type="image/png")
     except ImportError:
         raise HTTPException(status_code=503, detail="服务器未安装图片渲染依赖（kaleido）。") from None
@@ -329,88 +338,95 @@ def edit_chart(session_id: str, filename: str, request: ChartEditRequest) -> dic
     from data_agent import api
 
     record = api.registry.get(session_id)
-    workspace = record.workspace
-    # 取基名防止路径遍历，并去掉可能的 .html 后缀得到原始 stem。
-    stem = Path(filename).name
-    if stem.endswith(".html"):
-        stem = stem[: -len(".html")]
-    json_path = workspace.artifacts_dir / f"{stem}.plotly.json"
-    html_path = workspace.artifacts_dir / f"{stem}.html"
-    if not json_path.is_file():
-        raise HTTPException(status_code=404, detail="图表数据文件不存在，无法编辑。")
+    # 编辑图表需要独占访问：与 worker 并发读写同一 .plotly.json/HTML
+    # 会导致读到半写状态的文件。尝试获取 run_lock，失败时返回 409。
+    if not record.run_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="当前会话有分析正在运行，请稍后再编辑图表。")
     try:
-        fig_dict = json.loads(json_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise HTTPException(status_code=500, detail=f"图表数据读取失败：{exc}") from exc
+        workspace = record.workspace
+        # 取基名防止路径遍历，并去掉可能的 .html 后缀得到原始 stem。
+        stem = Path(filename).name
+        if stem.endswith(".html"):
+            stem = stem[: -len(".html")]
+        json_path = workspace.artifacts_dir / f"{stem}.plotly.json"
+        html_path = workspace.artifacts_dir / f"{stem}.html"
+        if not json_path.is_file():
+            raise HTTPException(status_code=404, detail="图表数据文件不存在，无法编辑。")
+        try:
+            fig_dict = json.loads(json_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=500, detail=f"图表数据读取失败：{exc}") from exc
 
-    # 应用修改：title 写入 layout.title.text（保持 Plotly 标准结构）；
-    # color 应用到所有 trace 的 marker.color，无 marker 的 trace 自动创建。
-    if request.title is not None:
-        fig_dict.setdefault("layout", {})["title"] = {"text": request.title}
-    if request.color is not None:
-        for trace in fig_dict.get("data", []):
-            if "marker" in trace and isinstance(trace["marker"], dict):
-                trace["marker"]["color"] = request.color
+        # 应用修改：title 写入 layout.title.text（保持 Plotly 标准结构）；
+        # color 应用到所有 trace 的 marker.color，无 marker 的 trace 自动创建。
+        if request.title is not None:
+            fig_dict.setdefault("layout", {})["title"] = {"text": request.title}
+        if request.color is not None:
+            for trace in fig_dict.get("data", []):
+                if "marker" in trace and isinstance(trace["marker"], dict):
+                    trace["marker"]["color"] = request.color
+                else:
+                    trace["marker"] = {"color": request.color}
+
+        # 重新生成 HTML：与 tools.py 保持一致的模板和转义逻辑，
+        # 确保编辑后的图表预览/下载体验与原始生成一致。
+        try:
+            fig = go.Figure(fig_dict)
+            shared_plotly = workspace.ensure_plotly_bundle()
+            relative_script = (
+                shared_plotly.relative_to(workspace.artifacts_dir).as_posix()
+                if shared_plotly
+                else None
+            )
+            display_title = (
+                (fig_dict.get("layout", {}) or {}).get("title", {}).get("text", "")
+                or stem
+            )
+            if relative_script:
+                html_template = (
+                    "<!doctype html><html><head><meta charset='utf-8'>"
+                    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                    "<title>{title}</title><script src='{script}'></script>"
+                    "<style>html,body{{width:100%;height:100%;margin:0;background:#fbfaf5;overflow:hidden}}"
+                    ".plotly-graph-div{{width:100% !important;height:100% !important;min-height:560px}}</style>"
+                    "</head><body>{div}{dark_script}</body></html>"
+                )
+                div = fig.to_html(
+                    full_html=False,
+                    include_plotlyjs=False,
+                    default_width="100%",
+                    default_height="100%",
+                    config={
+                        "responsive": True,
+                        "displaylogo": False,
+                        "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+                    },
+                )
+                # XSS 防护：与 tools.py 一致，转义 </script> 避免 Plotly
+                # 序列化数据中的 </script> 提前关闭 script 块导致注入。
+                div = div.replace("</script>", "<\\/script>")
+                _atomic_write_text(
+                    html_path,
+                    html_template.format(
+                        title=escape(display_title),
+                        script=relative_script,
+                        div=div,
+                        dark_script=_PLOTLY_DARK_MODE_SCRIPT,
+                    ),
+                )
             else:
-                trace["marker"] = {"color": request.color}
-
-    # 重新生成 HTML：与 tools.py 保持一致的模板和转义逻辑，
-    # 确保编辑后的图表预览/下载体验与原始生成一致。
-    try:
-        fig = go.Figure(fig_dict)
-        shared_plotly = workspace.ensure_plotly_bundle()
-        relative_script = (
-            shared_plotly.relative_to(workspace.artifacts_dir).as_posix()
-            if shared_plotly
-            else None
-        )
-        display_title = (
-            (fig_dict.get("layout", {}) or {}).get("title", {}).get("text", "")
-            or stem
-        )
-        if relative_script:
-            html_template = (
-                "<!doctype html><html><head><meta charset='utf-8'>"
-                "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-                "<title>{title}</title><script src='{script}'></script>"
-                "<style>html,body{{width:100%;height:100%;margin:0;background:#fbfaf5;overflow:hidden}}"
-                ".plotly-graph-div{{width:100% !important;height:100% !important;min-height:560px}}</style>"
-                "</head><body>{div}{dark_script}</body></html>"
-            )
-            div = fig.to_html(
-                full_html=False,
-                include_plotlyjs=False,
-                default_width="100%",
-                default_height="100%",
-                config={
-                    "responsive": True,
-                    "displaylogo": False,
-                    "modeBarButtonsToRemove": ["lasso2d", "select2d"],
-                },
-            )
-            # XSS 防护：与 tools.py 一致，转义 </script> 避免 Plotly
-            # 序列化数据中的 </script> 提前关闭 script 块导致注入。
-            div = div.replace("</script>", "<\\/script>")
-            _atomic_write_text(
-                html_path,
-                html_template.format(
-                    title=escape(display_title),
-                    script=relative_script,
-                    div=div,
-                    dark_script=_PLOTLY_DARK_MODE_SCRIPT,
-                ),
-            )
-        else:
-            # plotly bundle 不可用（极少见）时回退到内联 plotlyjs 的完整 HTML。
-            fig.write_html(html_path, include_plotlyjs=True, full_html=True)
-        # 同步更新 .plotly.json，保证后续编辑基于最新数据。
-        # 使用原子写入（写 .tmp 再 replace），防止进程被杀时留下损坏的 JSON。
-        import json as _json
-        import os as _os
-        tmp_path = json_path.with_suffix(".tmp")
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            _json.dump(fig.to_dict(), f, ensure_ascii=False, default=str)
-        _os.replace(tmp_path, json_path)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"图表重新生成失败：{exc}") from exc
-    return {"status": "ok", "message": "图表已更新。"}
+                # plotly bundle 不可用（极少见）时回退到内联 plotlyjs 的完整 HTML。
+                fig.write_html(html_path, include_plotlyjs=True, full_html=True)
+            # 同步更新 .plotly.json，保证后续编辑基于最新数据。
+            # 使用原子写入（写 .tmp 再 replace），防止进程被杀时留下损坏的 JSON。
+            import json as _json
+            import os as _os
+            tmp_path = json_path.with_suffix(".tmp")
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                _json.dump(fig.to_dict(), f, ensure_ascii=False, default=str)
+            _os.replace(tmp_path, json_path)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"图表重新生成失败：{exc}") from exc
+        return {"status": "ok", "message": "图表已更新。"}
+    finally:
+        record.run_lock.release()
