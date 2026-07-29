@@ -690,15 +690,21 @@ class DataWorkspace:
         # 大表降级：单元格数超阈值时用 deep=False 估算内存，避免逐对象遍历
         # 阻塞上传接口；unique/duplicated 保持全量（图表语义防护依赖精确计数）。
         deep_memory = len(df) * max(len(df.columns), 1) <= _PROFILE_DEEP_MEMORY_MAX_CELLS
+        # PDF/DOCX 表格提取可能产生重复列名，df[column] 在重复列名时返回
+        # DataFrame 而非 Series。用 iloc 按位置遍历 missing/unique/dtypes，
+        # 完全规避重复列名导致的索引歧义。
+        missing_values = list(missing)
+        unique_values = list(unique)
+        dtype_values = list(df.dtypes)
         column_info = [
             {
                 "name": str(column),
-                "dtype": str(df[column].dtype),
-                "missing": int(missing[column]),
-                "missing_pct": round(float(missing[column] / max(len(df), 1) * 100), 2),
-                "unique": int(unique[column]),
+                "dtype": str(dtype_values[i]),
+                "missing": int(missing_values[i]),
+                "missing_pct": round(float(missing_values[i] / max(len(df), 1) * 100), 2),
+                "unique": int(unique_values[i]),
             }
-            for column in df.columns
+            for i, column in enumerate(df.columns)
         ]
         result = to_jsonable(
             {
