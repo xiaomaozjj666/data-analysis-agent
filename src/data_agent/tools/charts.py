@@ -504,8 +504,11 @@ _COLOR_MAX_CATEGORIES = 30
 #: 类别轴（bar/box/violin/heatmap）无 top_n 时允许的最大类别数。
 _CATEGORY_AXIS_MAX = 60
 
-#: x 轴承担“类别轴”角色的图型，需要完整的 ID/基数校验。
-_CATEGORY_X_CHART_TYPES = {"bar", "pie", "box", "violin", "histogram", "heatmap", "sunburst", "treemap"}
+#: x 轴承担"类别轴"角色的图型，需要完整的 ID/基数校验。
+#: histogram 不在此列——它的 x 是连续数值轴（非类别轴），整数类型的连续
+#: 值（如年龄、分数、人数）天然近唯一，对它做 strict ID 检查会误拦合法分布图。
+#: 常量列检查（_nunique <= 1）仍然独立生效，不会放过无信息列。
+_CATEGORY_X_CHART_TYPES = {"bar", "pie", "box", "violin", "heatmap", "sunburst", "treemap"}
 
 
 def _name_looks_like_id(column: str) -> bool:

@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import plotly.io as pio
+import pytest
 
 from data_agent.tools import build_tools
 from data_agent.workspace import PLOTLY_BUNDLE_NAME, DataWorkspace
@@ -387,6 +388,185 @@ def test_visualization_high_cardinality_requires_top_n(tmp_path):
         )
     )
     assert Path(ok_result["html"]).exists()
+
+
+# ---------------------------------------------------------------------------
+# 自动选图：chart_type="auto" 应根据数据列类型与格式自动推断最合适的图型。
+# 覆盖 _infer_chart_type 的全部 14 条决策分支，并验证图表实际生成无报错、
+# HTML 文件包含 Plotly 初始化标记（防止"点开空白"回归）。
+# ---------------------------------------------------------------------------
+
+_AUTO_CHART_SCENARIOS = [
+    # (名称, 数据字典, 额外 invoke 参数, 期望 chart_type)
+    # 1. 时间序列（x 为日期 + y 数值）→ line
+    (
+        "time_series_line",
+        {
+            "date": pd.date_range("2025-01-01", periods=20, freq="D").astype(str),
+            "sales": [100 + i * 5 for i in range(20)],
+        },
+        {"x": "date", "y": "sales"},
+        "line",
+    ),
+    # 2. 时间序列（x 为日期，无 y）→ bar（计数）
+    (
+        "time_series_bar",
+        {
+            "date": pd.date_range("2025-01-01", periods=6, freq="ME").astype(str),
+            "event": ["a", "b", "a", "c", "b", "a"],
+        },
+        {"x": "date"},
+        "bar",
+    ),
+    # 3. 两数值关系 → scatter
+    (
+        "two_numeric_scatter",
+        {
+            "height": [160, 170, 175, 180, 165, 172, 168, 185, 190, 155],
+            "weight": [55, 65, 70, 80, 58, 68, 62, 85, 90, 50],
+        },
+        {"x": "height", "y": "weight"},
+        "scatter",
+    ),
+    # 4. 单数值分布（无 x，y 数值）→ histogram
+    (
+        "single_numeric_hist",
+        {"score": [60, 70, 75, 80, 85, 90, 65, 72, 88, 95, 78, 82]},
+        {"y": "score"},
+        "histogram",
+    ),
+    # 5. 连续数值分布（x 数值，无 y，唯一值 > 12）→ histogram
+    (
+        "continuous_x_hist",
+        {"value": list(range(100))},
+        {"x": "value"},
+        "histogram",
+    ),
+    # 6. 连续数值分布（x 数值，无 y，唯一值 ≤ 12）→ bar
+    (
+        "low_unique_numeric_bar",
+        {"level": [1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 1, 2, 3, 4, 5]},
+        {"x": "level"},
+        "bar",
+    ),
+    # 7. 分类 + 数值（无 color，类别 ≤ 8）→ pie
+    (
+        "category_numeric_pie",
+        {
+            "product": ["A", "B", "C", "D"] * 5,
+            "revenue": [100, 200, 150, 80] * 5,
+        },
+        {"x": "product", "y": "revenue"},
+        "pie",
+    ),
+    # 8. 分类 + 数值（有 color）→ bar
+    (
+        "category_with_color_bar",
+        {
+            "region": ["East", "West", "East", "West", "East", "West"] * 3,
+            "channel": ["online", "store", "online", "store", "online", "store"] * 3,
+            "sales": [100, 200, 150, 180, 120, 210] * 3,
+        },
+        {"x": "region", "y": "sales", "color": "channel", "aggregation": "sum"},
+        "bar",
+    ),
+    # 9. 分类 + 数值（无 color，类别 > 8）→ bar
+    (
+        "high_card_category_bar",
+        {
+            "city": [f"city_{i:02d}" for i in range(12)] * 4,
+            "population": list(range(12)) * 4,
+        },
+        {"x": "city", "y": "population", "aggregation": "sum"},
+        "bar",
+    ),
+    # 10. 分类计数（x 分类，无 y）→ bar
+    (
+        "category_count_bar",
+        {
+            "fruit": ["apple", "banana", "apple", "cherry", "banana", "apple"] * 3,
+        },
+        {"x": "fruit"},
+        "bar",
+    ),
+    # 11. 无 x/y 但数值列 ≥ 3 → correlation_heatmap
+    (
+        "multi_numeric_heatmap",
+        {
+            "a": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            "b": [2, 4, 6, 8, 10, 12, 14, 16, 18, 20],
+            "c": [10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
+        },
+        {},
+        "correlation_heatmap",
+    ),
+    # 12. 多维数值（dimensions ≥ 3，无 x/y）→ scatter_matrix
+    (
+        "scatter_matrix_3d",
+        {
+            "x1": list(range(20)),
+            "x2": list(range(0, 40, 2)),
+            "x3": list(range(0, 60, 3)),
+        },
+        {"dimensions": ["x1", "x2", "x3"]},
+        "scatter_matrix",
+    ),
+    # 13. 层级结构（path_columns）→ sunburst
+    (
+        "hierarchy_sunburst",
+        {
+            "region": ["North", "North", "South", "South"] * 3,
+            "city": ["A", "B", "C", "D"] * 3,
+            "sales": [100, 200, 150, 80] * 3,
+        },
+        {"path_columns": ["region", "city"], "values": "sales"},
+        "sunburst",
+    ),
+    # 14. 三维（z + x + y）→ scatter_3d
+    (
+        "three_d_scatter",
+        {
+            "x": list(range(15)),
+            "y": list(range(0, 30, 2)),
+            "z": list(range(0, 45, 3)),
+        },
+        {"x": "x", "y": "y", "z": "z"},
+        "scatter_3d",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "name,data,kwargs,expected",
+    _AUTO_CHART_SCENARIOS,
+    ids=[s[0] for s in _AUTO_CHART_SCENARIOS],
+)
+def test_auto_chart_type_infers_correct_type(tmp_path, name, data, kwargs, expected):
+    """chart_type='auto' 应根据数据列类型自动选择合适的图型并成功生成 HTML。"""
+    # 直接设置 dataframe，避免 CSV 序列化导致的单列数据列名损坏
+    # （pandas to_csv/read_csv 在单列 + index=False 时偶发把列名首字符吞入 index）。
+    workspace = DataWorkspace(tmp_path / "runs", session_id=name)
+    workspace.dataframe = pd.DataFrame(data)
+
+    result = json.loads(
+        tool_map(workspace)["create_visualization"].invoke(
+            {"chart_type": "auto", "title": name, **kwargs}
+        )
+    )
+    assert result["chart_type"] == expected, (
+        f"自动选图：场景「{name}」期望 {expected}，实际 {result['chart_type']}"
+    )
+    assert result["chart_type_source"] == "auto"
+
+    html = Path(result["html"])
+    assert html.exists(), f"HTML 文件未生成：{html}"
+    assert html.stat().st_size > 5_000, f"HTML 文件过小，可能渲染失败：{html.stat().st_size}"
+    html_text = html.read_text(encoding="utf-8")
+    # 验证 HTML 包含 Plotly 初始化标记，防止"点开空白"回归
+    assert "plotly.min.js" in html_text or "Plotly.newPlot" in html_text, (
+        f"HTML 缺少 Plotly 初始化标记，预览将空白：{html}"
+    )
+
 
 # ---------------------------------------------------------------------------
 # run_python_code 沙箱工具
