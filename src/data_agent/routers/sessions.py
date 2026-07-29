@@ -185,34 +185,57 @@ async def import_session(file: Annotated[UploadFile, File()]) -> dict[str, Any]:
     session_id = f"api_{uuid4().hex[:12]}"
     root = api.bootstrap_settings.runs_dir / session_id
     root.mkdir(parents=True, exist_ok=True)
-    content = await file.read()
     # Zip bomb 防护：限制上传大小、解压总大小、成员数量
     _MAX_IMPORT_BYTES = api.bootstrap_settings.max_upload_bytes
     _MAX_UNCOMPRESSED_BYTES = 1024 * 1024 * 1024  # 1GB
     _MAX_ZIP_MEMBERS = 10_000
-    if len(content) > _MAX_IMPORT_BYTES:
-        raise HTTPException(status_code=413, detail=f"归档过大（上限 {_MAX_IMPORT_BYTES // 1024 // 1024}MB）。")
+    # 流式写入磁盘，避免大文件全量读入内存导致 OOM
+    # （与 create_session 的 save_upload_stream 保持一致）
+    tmp_zip = root / "_import.zip"
     try:
-        with zipfile.ZipFile(io.BytesIO(content)) as bundle:
-            members = bundle.infolist()
-            if len(members) > _MAX_ZIP_MEMBERS:
-                raise HTTPException(status_code=400, detail=f"归档成员过多（上限 {_MAX_ZIP_MEMBERS} 个）。")
-            # 路径遍历防护 + 累计大小校验：先校验所有成员再解压
-            total_size = 0
-            for member in members:
-                target = (root / member.filename).resolve()
-                if target != root and root not in target.parents:
-                    raise HTTPException(status_code=400, detail="归档包含不安全路径。")
-                total_size += member.file_size
-                if total_size > _MAX_UNCOMPRESSED_BYTES:
-                    raise HTTPException(status_code=400, detail="归档解压后过大（上限 1GB）。")
-            bundle.extractall(root)
-    except zipfile.BadZipFile as exc:
-        shutil.rmtree(root, ignore_errors=True)
-        raise HTTPException(status_code=400, detail="无效的 ZIP 文件。") from exc
-    except HTTPException:
-        shutil.rmtree(root, ignore_errors=True)
-        raise
+        total_uploaded = 0
+        with tmp_zip.open("wb") as target:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total_uploaded += len(chunk)
+                if total_uploaded > _MAX_IMPORT_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"归档过大（上限 {_MAX_IMPORT_BYTES // 1024 // 1024}MB）。",
+                    )
+                target.write(chunk)
+        try:
+            with zipfile.ZipFile(tmp_zip) as bundle:
+                members = bundle.infolist()
+                if len(members) > _MAX_ZIP_MEMBERS:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"归档成员过多（上限 {_MAX_ZIP_MEMBERS} 个）。",
+                    )
+                # 路径遍历防护 + 累计大小校验：先校验所有成员再解压
+                total_size = 0
+                for member in members:
+                    member_target = (root / member.filename).resolve()
+                    if member_target != root and root not in member_target.parents:
+                        raise HTTPException(
+                            status_code=400, detail="归档包含不安全路径。"
+                        )
+                    total_size += member.file_size
+                    if total_size > _MAX_UNCOMPRESSED_BYTES:
+                        raise HTTPException(
+                            status_code=400, detail="归档解压后过大（上限 1GB）。"
+                        )
+                bundle.extractall(root)
+        except zipfile.BadZipFile as exc:
+            shutil.rmtree(root, ignore_errors=True)
+            raise HTTPException(status_code=400, detail="无效的 ZIP 文件。") from exc
+        except HTTPException:
+            shutil.rmtree(root, ignore_errors=True)
+            raise
+    finally:
+        tmp_zip.unlink(missing_ok=True)
     record = api.registry.restore_from_directory(session_id)
     if record is None:
         # manifest 损坏或缺少 input 文件：清理临时目录并返回 400。

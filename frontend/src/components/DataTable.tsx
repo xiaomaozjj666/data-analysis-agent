@@ -72,9 +72,27 @@ const DataTable = React.memo(function DataTable({ rows }: DataTableProps) {
   }, [filtered, sortKeys]);
 
   // 搜索或数据切换时回到顶部，避免停留在已不存在的偏移上。
+  // 同步重置 DOM 滚动位置，否则浏览器保持原 scrollTop 导致虚拟窗口错位。
   useEffect(() => {
     setScrollTop(0);
+    if (wrapRef.current) wrapRef.current.scrollTop = 0;
   }, [search, rows]);
+
+  // 数据切换时清空搜索条件，避免旧关键词残留过滤新数据。
+  useEffect(() => {
+    setSearch("");
+  }, [rows]);
+
+  // 列结构变化时清理无效的排序键和列宽，避免旧列名残留导致排序 no-op
+  // 或 tableLayout 切到 fixed 但新列无宽度配置导致列过窄。
+  useEffect(() => {
+    setSortKeys((prev) => prev.filter((k) => columns.includes(k.col)));
+    setColWidths((prev) => {
+      const next: Record<string, number> = {};
+      for (const c of columns) if (c in prev) next[c] = prev[c];
+      return next;
+    });
+  }, [columns]);
 
   const total = sorted.length;
 

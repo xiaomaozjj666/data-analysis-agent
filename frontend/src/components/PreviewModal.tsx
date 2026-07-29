@@ -75,6 +75,8 @@ function PreviewModal({ preview, theme, setTheme, onDownload }: PreviewModalProp
   // 这里把 React 顶栏主题同步过去；带显式 theme 值，setTheme 幂等赋值不会抖动。
   useEffect(() => {
     const handler = (e: MessageEvent) => {
+      // 仅接受来自 sandboxed iframe 的消息（origin 为 "null"）或同源消息
+      if (e.origin !== "null" && e.origin !== window.location.origin) return;
       if (e.data?.type === "chart-theme-changed" && (e.data.theme === "dark" || e.data.theme === "light")) {
         setTheme(e.data.theme);
       }

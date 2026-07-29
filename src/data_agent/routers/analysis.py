@@ -345,53 +345,70 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
         return not worker.is_alive()
 
     async def generate():
-        yield _sse("started", {"task": request.task})
-        worker.start()
+        worker_started = False
         try:
-            while True:
-                try:
-                    item = await asyncio.wait_for(queue.get(), timeout=15)
-                except asyncio.TimeoutError:
-                    yield _sse("heartbeat", {"status": record.analysis_status})
-                    continue
-                if item is None:
-                    break
-                event, data = item
-                yield _sse(event, data)
-        except asyncio.CancelledError:
-            record.cancel_event.set()
-            # CAS 式转换：只在当前仍是 running 时才写 cancelling 过渡态。
-            # 若 worker 已先于本块写入 completed/cancelled/failed 终态，不能覆盖。
-            # 之前的实现无条件赋值 cancelling，会把已完成的会话回退到 cancelling，
-            # 而 worker 已退出不会推进到 cancelled，会话永久卡死。
-            with record._status_lock:
-                already_terminal = record._analysis_status not in {"running", "cancelling"}
+            yield _sse("started", {"task": request.task})
+            worker.start()
+            worker_started = True
+            try:
+                while True:
+                    try:
+                        item = await asyncio.wait_for(queue.get(), timeout=15)
+                    except asyncio.TimeoutError:
+                        yield _sse("heartbeat", {"status": record.analysis_status})
+                        continue
+                    if item is None:
+                        break
+                    event, data = item
+                    yield _sse(event, data)
+            except asyncio.CancelledError:
+                record.cancel_event.set()
+                # CAS 式转换：只在当前仍是 running 时才写 cancelling 过渡态。
+                # 若 worker 已先于本块写入 completed/cancelled/failed 终态，不能覆盖。
+                with record._status_lock:
+                    already_terminal = record._analysis_status not in {"running", "cancelling"}
+                    if not already_terminal:
+                        record._analysis_status = "cancelling"
                 if not already_terminal:
-                    record._analysis_status = "cancelling"
-            if not already_terminal:
-                api.registry.persist(session_id, record)
-            # 给 worker 最多 5 秒优雅退出时间。单次 LLM 调用可能 60+ 秒，
-            # 5 秒内未退出属正常——worker 是 daemon 线程，会通过自己的 finally
-            # 释放 slot/lock 并 persist 终态，无需本协程继续等待。
-            # 用 asyncio.sleep 轮询而非 worker.join，避免阻塞事件循环导致
-            # 其他请求（历史上传、取消、健康检查）被冻结 5 秒。
-            exited = await _await_worker_exit(timeout=5.0)
-            if not exited:
-                logger.warning(
-                    "Analysis worker for session %s did not exit within 5s of cancel; "
-                    "slot will be released when the current LLM call returns.",
-                    session_id,
-                )
-            raise
+                    api.registry.persist(session_id, record)
+                exited = await _await_worker_exit(timeout=5.0)
+                if not exited:
+                    logger.warning(
+                        "Analysis worker for session %s did not exit within 5s of cancel; "
+                        "slot will be released when the current LLM call returns.",
+                        session_id,
+                    )
+                raise
+            finally:
+                if worker.is_alive():
+                    logger.debug(
+                        "Worker still running at stream teardown for session %s; "
+                        "daemon thread will release resources via its own finally.",
+                        session_id,
+                    )
         finally:
-            # 正常完成路径下 worker 已通过 finally put None 退出，无需 join。
-            # CancelledError 路径已在 except 内等待 5s，这里不再重复等待。
-            if worker.is_alive():
-                logger.debug(
-                    "Worker still running at stream teardown for session %s; "
-                    "daemon thread will release resources via its own finally.",
-                    session_id,
-                )
+            # 兜底：客户端在首帧 started 后断开时（GeneratorExit 在 yield 处抛出），
+            # worker.start() 尚未执行，worker 的 finally 不会释放 run_lock 和
+            # analysis_slots。此处手动释放，避免锁永久泄漏导致会话不可用
+            # （max_concurrent_analyses=2 时泄漏 2 次即全服务瘫痪）。
+            if not worker_started:
+                with record._status_lock:
+                    if record._analysis_status == "running":
+                        record._analysis_status = "failed"
+                try:
+                    api.analysis_slots.release()
+                except ValueError:
+                    pass
+                try:
+                    record.run_lock.release()
+                except RuntimeError:
+                    pass
+                try:
+                    api.registry.persist(session_id, record)
+                except Exception:
+                    logger.exception(
+                        "Failed to persist abort state for session %s", session_id
+                    )
 
     return StreamingResponse(
         generate(),
@@ -484,29 +501,40 @@ async def chat_stream(session_id: str, request: AnalyzeRequest) -> StreamingResp
     worker = threading.Thread(target=_run_chat, name=f"chat-{session_id}", daemon=True)
 
     async def generate():
-        yield _sse("started", {"task": request.task})
-        worker.start()
+        worker_started = False
         try:
-            while True:
-                try:
-                    item = await asyncio.wait_for(queue.get(), timeout=15)
-                except asyncio.TimeoutError:
-                    yield _sse("heartbeat", {"status": record.analysis_status})
-                    continue
-                if item is None:
-                    break
-                event, data = item
-                yield _sse(event, data)
-        except asyncio.CancelledError:
-            record.cancel_event.set()
-            raise
+            yield _sse("started", {"task": request.task})
+            worker.start()
+            worker_started = True
+            try:
+                while True:
+                    try:
+                        item = await asyncio.wait_for(queue.get(), timeout=15)
+                    except asyncio.TimeoutError:
+                        yield _sse("heartbeat", {"status": record.analysis_status})
+                        continue
+                    if item is None:
+                        break
+                    event, data = item
+                    yield _sse(event, data)
+            except asyncio.CancelledError:
+                record.cancel_event.set()
+                raise
+            finally:
+                if worker.is_alive():
+                    logger.debug(
+                        "Chat worker still running at stream teardown for session %s; "
+                        "daemon thread will release run_lock via its own finally.",
+                        session_id,
+                    )
         finally:
-            if worker.is_alive():
-                logger.debug(
-                    "Chat worker still running at stream teardown for session %s; "
-                    "daemon thread will release run_lock via its own finally.",
-                    session_id,
-                )
+            # 兜底：客户端在首帧 started 后断开时，worker 未启动，
+            # run_lock 不会被 worker 的 finally 释放。手动释放避免会话永久不可用。
+            if not worker_started:
+                try:
+                    record.run_lock.release()
+                except RuntimeError:
+                    pass
 
     return StreamingResponse(
         generate(),

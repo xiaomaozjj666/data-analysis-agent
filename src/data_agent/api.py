@@ -118,7 +118,10 @@ if frontend_dist.is_dir():
     def frontend_app(full_path: str) -> Response:
         if full_path.startswith(("api/", "docs", "redoc", "openapi.json")):
             raise HTTPException(status_code=404, detail="Not found")
-        requested = (frontend_dist / full_path).resolve()
+        raw_path = frontend_dist / full_path
+        if raw_path.is_symlink():
+            raise HTTPException(status_code=404, detail="Not found")
+        requested = raw_path.resolve()
         if frontend_dist.resolve() in requested.parents and requested.is_file():
             # 带内容的静态资源（JS/CSS/图片）文件名含 hash，可长期缓存
             return FileResponse(requested, headers={"Cache-Control": "public, max-age=31536000, immutable"})

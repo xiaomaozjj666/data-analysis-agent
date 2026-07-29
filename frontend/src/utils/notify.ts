@@ -6,6 +6,8 @@ function notifyAnalysisDone(title: string, body: string): void {
     if ("Notification" in window && Notification.permission === "granted") {
       try { new Notification(title, { body, icon: "/favicon.ico" }); } catch { /* noop */ }
     }
+    // 清理上一次未停止的 interval，防止多次调用导致旧 interval 泄漏
+    if (_titleFlashTimer) { window.clearInterval(_titleFlashTimer); _titleFlashTimer = null; }
     _originalTitle = _originalTitle || document.title;
     let toggle = false;
     const flash = () => {
