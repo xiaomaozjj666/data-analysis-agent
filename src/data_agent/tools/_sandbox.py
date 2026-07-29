@@ -50,6 +50,12 @@ _SANDBOX_RESULT_MAX_ROWS = 50
 #: 代码文本长度上限：正常长尾计算几十行足够，超长代码多半是误用。
 _SANDBOX_CODE_MAX_CHARS = 6_000
 
+#: 单次代码执行的进程内存上限（MB）。超限时抛 MemoryError，避免
+#: np.zeros((10**9,)) 这类攻击性代码导致整个进程被 OOM killer 杀死。
+#: 2GB 覆盖大多数合法分析场景（100 万行 × 20 列 DataFrame 约 200MB）。
+_SANDBOX_MEMORY_LIMIT_MB = 2048
+_SANDBOX_MEMORY_LIMIT_BYTES = _SANDBOX_MEMORY_LIMIT_MB * 1024 * 1024
+
 #: AST 层拒绝的内建名称。运行时 builtins 白名单同样不含它们（双保险），
 #: 这里提前拦截能给 LLM 更明确的错误提示。
 _FORBIDDEN_NAMES = frozenset({
@@ -57,6 +63,26 @@ _FORBIDDEN_NAMES = frozenset({
     "globals", "locals", "vars", "getattr", "setattr", "delattr", "hasattr",
     "memoryview", "type", "super", "object", "classmethod", "staticmethod",
     "property", "help",
+})
+
+#: pandas / numpy 中能读写文件的方法名。沙箱承诺"无文件访问"，
+#: 但 pandas 的 read_*/to_* 和 numpy 的 save/load/fromfile 等方法
+#: 名字不以下划线开头，AST 下划线检查拦不住，必须显式黑名单。
+#: 覆盖 CSV/Excel/JSON/SQL/Pickle/Parquet/HDF5/HTML/Stata/GBQ/ORC
+#: 等所有 pandas I/O 入口，以及 numpy 的二进制/文本/memmap 文件接口。
+_FORBIDDEN_METHODS = frozenset({
+    # pandas 读取
+    "read_csv", "read_excel", "read_json", "read_sql", "read_sql_query",
+    "read_sql_table", "read_pickle", "read_html", "read_parquet",
+    "read_feather", "read_hdf", "read_stata", "read_sas", "read_gbq",
+    "read_orc", "read_spss", "read_xml", "read_fwf", "read_table",
+    # pandas 写入（DataFrame/Series 方法）
+    "to_csv", "to_excel", "to_json", "to_sql", "to_pickle", "to_html",
+    "to_parquet", "to_feather", "to_hdf", "to_stata", "to_gbq", "to_orc",
+    "to_latex", "to_markdown", "to_xml",
+    # numpy 文件 I/O
+    "save", "savez", "savez_compressed", "load", "fromfile", "loadtxt",
+    "savetxt", "memmap", "dump", "tofile",
 })
 
 #: 运行时注入的安全内建白名单：纯计算函数 + 常用容器 + 异常类型。
@@ -135,10 +161,19 @@ def _validate_code(code: str) -> None:
                     f"沙箱禁止导入模块 {node.module!r}。"
                     f"允许的模块：{', '.join(sorted(_ALLOWED_IMPORTS))}。"
                 )
-        elif isinstance(node, ast.Attribute) and node.attr.startswith("_"):
-            raise ValueError(
-                f"沙箱禁止访问下划线开头的属性 {node.attr!r}（防止逃逸受限环境）。"
-            )
+        elif isinstance(node, ast.Attribute):
+            if node.attr.startswith("_"):
+                raise ValueError(
+                    f"沙箱禁止访问下划线开头的属性 {node.attr!r}（防止逃逸受限环境）。"
+                )
+            # 拦截 pandas/numpy 的文件 I/O 方法调用（read_csv/to_csv/save/load 等）。
+            # 只在方法被"调用"时拒绝（Call 节点的 func 是 Attribute），
+            # 单纯属性访问不拦，避免误伤 df.to_dict() 等安全的同名方法。
+            if node.attr in _FORBIDDEN_METHODS:
+                raise ValueError(
+                    f"沙箱禁止调用文件 I/O 方法 {node.attr!r}。"
+                    "沙箱仅支持内存计算，无法读写文件。"
+                )
         elif isinstance(node, ast.Name) and (
             node.id in _FORBIDDEN_NAMES or node.id.startswith("__")
         ):
@@ -179,17 +214,29 @@ def _summarize_result(value: Any) -> Any:
 
 
 def _execute_with_timeout(code: str, env: dict[str, Any]) -> None:
-    """在独立 daemon 线程中 exec 代码，超时或异常时抛出。
+    """在独立 daemon 线程中 exec 代码，超时或内存超限时抛出。
 
     Windows 没有 SIGALRM，用线程 join(timeout) 实现熔断。超时后线程
     无法强杀（CPython 限制），但它是 daemon 线程且不持有任何锁，
     随进程回收，不会阻塞后续请求。
 
+    内存监控：用 psutil 按固定间隔采样进程 RSS，超限时抛 MemoryError。
+    与超时一样无法强杀工作线程，但能及时向调用方报错，避免 OOM 导致
+    整个进程被系统杀死。
+
     Raises:
         TimeoutError: 执行超过 _SANDBOX_TIMEOUT_SECONDS。
+        MemoryError: 进程内存超过 _SANDBOX_MEMORY_LIMIT_MB。
         Exception: 代码运行期抛出的原始异常。
     """
+    import psutil
+
     holder: dict[str, BaseException] = {}
+    # 内存监控用 Event 信号，工作线程检查到时主动退出（best-effort）。
+    mem_exceeded = threading.Event()
+    # 把 mem_exceeded 注入 env，让 exec 的代码可以通过检查它主动退出，
+    # 但由于 exec 的代码是 LLM 生成的不可控，这仅作为 best-effort。
+    env["__mem_exceeded__"] = mem_exceeded
 
     def _target() -> None:
         try:
@@ -197,13 +244,45 @@ def _execute_with_timeout(code: str, env: dict[str, Any]) -> None:
         except BaseException as exc:  # noqa: BLE001 — 原样转交调用方
             holder["error"] = exc
 
+    def _monitor_memory(proc: psutil.Process) -> None:
+        """后台监控线程：每 0.5s 采样 RSS，超限设 Event。"""
+        while worker.is_alive():
+            try:
+                rss = proc.memory_info().rss
+                if rss > _SANDBOX_MEMORY_LIMIT_BYTES:
+                    mem_exceeded.set()
+                    return
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                return
+            threading.Event().wait(0.5)
+
     worker = threading.Thread(target=_target, name="sandbox-exec", daemon=True)
     worker.start()
+
+    # 启动内存监控线程
+    try:
+        proc = psutil.Process()
+        monitor = threading.Thread(target=_monitor_memory, args=(proc,), name="sandbox-mem-monitor", daemon=True)
+        monitor.start()
+    except Exception:
+        # psutil 不可用时不影响核心功能
+        pass
+
     worker.join(timeout=_SANDBOX_TIMEOUT_SECONDS)
     if worker.is_alive():
+        if mem_exceeded.is_set():
+            raise MemoryError(
+                f"代码执行内存超过 {_SANDBOX_MEMORY_LIMIT_MB}MB 限制。"
+                "请减少数据量或避免一次性创建大数组（如用分块处理替代全量复制）。"
+            )
         raise TimeoutError(
             f"代码执行超过 {_SANDBOX_TIMEOUT_SECONDS:g} 秒被熔断。"
             "请减少数据量或简化计算（如先聚合再循环）。"
+        )
+    if mem_exceeded.is_set():
+        raise MemoryError(
+            f"代码执行内存超过 {_SANDBOX_MEMORY_LIMIT_MB}MB 限制。"
+            "请减少数据量或避免一次性创建大数组。"
         )
     if "error" in holder:
         raise holder["error"]

@@ -2,9 +2,9 @@
 .data-view, .artifact-view { padding-top: 28px; }
 .section-title { min-height: 44px; display: flex; align-items: flex-start; justify-content: space-between; }
 .section-title > small { color: var(--fg-muted); font-size: var(--text-xs); }
-.table-wrap { max-width: 100%; margin-top: 18px; overflow: auto; background: var(--canvas-default); border: 1px solid var(--border-default); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); }
+.table-wrap { max-width: 100%; margin-top: 18px; overflow: auto; max-height: 560px; background: var(--canvas-default); border: 1px solid var(--border-default); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); }
 table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); white-space: nowrap; }
-th, td { max-width: 260px; height: 40px; padding: 8px 14px; overflow: hidden; text-overflow: ellipsis; border-right: 1px solid var(--border-muted); border-bottom: 1px solid var(--border-muted); text-align: left; }
+th, td { max-width: 260px; height: 36px; padding: 8px 14px; overflow: hidden; text-overflow: ellipsis; border-right: 1px solid var(--border-muted); border-bottom: 1px solid var(--border-muted); text-align: left; box-sizing: border-box; }
 th:last-child, td:last-child { border-right: 0; }
 tbody tr:last-child td { border-bottom: 0; }
 th { position: sticky; top: 0; z-index: 2; background: var(--canvas-subtle); color: var(--fg-muted); font-size: var(--text-xs); font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; }

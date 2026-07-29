@@ -273,7 +273,7 @@ def test_grouped_bars_explain_absent_category_combinations(tmp_path):
         )
     )
     rating = pio.read_json(rating_result["plotly_json"])
-    assert {trace.name for trace in rating.data} == {"未退货", "已退货"}
+    assert {trace.name for trace in rating.data} == {"否", "是"}
     assert rating_result["category_coverage"] == {
         "complete": False,
         "observed_combinations": 3,

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Search } from "lucide-react";
 
 type Row = Record<string, unknown>;
@@ -10,28 +10,28 @@ interface DataTableProps {
   rows?: Row[] | null;
 }
 
-// 增量加载：首屏 100 行，滚动到底部自动追加 100 行；
-// 上限 5000 行避免 DOM 膨胀，超出部分引导用户搜索或导出。
-const INITIAL_VISIBLE = 100;
-const INCREMENT = 100;
-const MAX_VISIBLE = 5000;
+// 虚拟滚动参数：
+// - ROW_HEIGHT: 每行固定高度（px），用于计算可视区域可容纳的行数和撑起总高度
+// - OVERSCAN: 可视区域上下额外渲染的缓冲行数，避免快速滚动时出现白屏
+// - HEADER_HEIGHT: 表头高度，滚动容器顶部偏移基准
+const ROW_HEIGHT = 36;
+const OVERSCAN = 8;
+const HEADER_HEIGHT = 40;
 
 // React.memo：rows 仅在 session 切换时变化，但 App 每次输入 task 或
-// 刷新历史都会重渲染。memo 让 DataTable 跳过这些场景，避免重新生成
-// 几百个 <td>。
+// 刷新历史都会重渲染。memo 让 DataTable 跳过这些场景，避免重新生成 DOM。
 const DataTable = React.memo(function DataTable({ rows }: DataTableProps) {
   const [search, setSearch] = useState("");
   // 多列排序：数组按优先级从高到低。普通点击重置为单列，Shift+点击追加次级键。
   const [sortKeys, setSortKeys] = useState<SortKey[]>([]);
-  const [visible, setVisible] = useState(INITIAL_VISIBLE);
-  const [loadingMore, setLoadingMore] = useState(false);
+  // 虚拟滚动状态：scrollTop 驱动渲染窗口计算
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(600);
   // 列宽（内存态，会话内保留）：Record<列名, 宽度px>。
   const [colWidths, setColWidths] = useState<Record<string, number>>({});
   const columns = useMemo(() => Object.keys(rows?.[0] || {}), [rows]);
 
   // 列类型推断：取第一个非空值判断 number / date / text。
-  // date 检测附加 /[-/:]/ 前置过滤，避免 "2023" 这类纯数字字符串被
-  // Date.parse 误判为合法日期（V8 会把 "2023" 当作年份解析）。
   const colTypes = useMemo<Record<string, ColType>>(() => {
     const types: Record<string, ColType> = {};
     for (const col of columns) {
@@ -43,7 +43,7 @@ const DataTable = React.memo(function DataTable({ rows }: DataTableProps) {
     return types;
   }, [rows, columns]);
 
-  // 客户端搜索过滤：在 preview 范围内按任意列包含关键词匹配。
+  // 客户端搜索过滤：在全量数据范围内按任意列包含关键词匹配。
   const filtered = useMemo<Row[]>(() => {
     if (!rows?.length) return [];
     if (!search.trim()) return rows;
@@ -71,57 +71,65 @@ const DataTable = React.memo(function DataTable({ rows }: DataTableProps) {
     });
   }, [filtered, sortKeys]);
 
-  // 搜索或数据切换时回到首屏 100 行，避免停留在已不存在的偏移上。
+  // 搜索或数据切换时回到顶部，避免停留在已不存在的偏移上。
   useEffect(() => {
-    setVisible(INITIAL_VISIBLE);
+    setScrollTop(0);
   }, [search, rows]);
 
   const total = sorted.length;
-  const cappedTotal = Math.min(total, MAX_VISIBLE);
-  const hasMore = visible < cappedTotal;
-  const reachedCap = total > MAX_VISIBLE && visible >= MAX_VISIBLE;
+
+  // 虚拟滚动核心：根据 scrollTop 和 viewportHeight 计算当前应渲染的行范围。
+  // 只渲染 [startIndex, endIndex) 区间内的行 + OVERSCAN 缓冲，
+  // 无论数据有多少行，DOM 中始终只有几十个 <tr>，保证流畅滚动。
+  const { startIndex, endIndex, totalHeight, offsetY } = useMemo(() => {
+    const startIndex = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
+    const visibleCount = Math.ceil(viewportHeight / ROW_HEIGHT) + OVERSCAN * 2;
+    const endIndex = Math.min(total, startIndex + visibleCount);
+    return {
+      startIndex,
+      endIndex,
+      totalHeight: total * ROW_HEIGHT,
+      offsetY: startIndex * ROW_HEIGHT,
+    };
+  }, [scrollTop, viewportHeight, total]);
+
   const visibleRows = useMemo(
-    () => sorted.slice(0, Math.min(visible, cappedTotal)),
-    [sorted, visible, cappedTotal]
+    () => sorted.slice(startIndex, endIndex),
+    [sorted, startIndex, endIndex]
   );
 
   const wrapRef = useRef<HTMLDivElement>(null);
-  const sentinelRef = useRef<HTMLTableRowElement>(null);
-  const loadingMoreRef = useRef(false);
 
-  // 滚动接近底部时增量加载：sentinel 行进入视口即追加 INCREMENT 行。
+  // 监听滚动容器尺寸变化，更新 viewportHeight 用于虚拟窗口计算。
   useEffect(() => {
     const wrap = wrapRef.current;
-    const sentinel = sentinelRef.current;
-    if (!wrap || !sentinel || !hasMore) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (!entries[0].isIntersecting || loadingMoreRef.current) return;
-        loadingMoreRef.current = true;
-        setLoadingMore(true);
-        // 同步切片很快，延迟一帧展示"加载中…"反馈。
-        window.setTimeout(() => {
-          setVisible((v) => Math.min(v + INCREMENT, cappedTotal));
-          setLoadingMore(false);
-          loadingMoreRef.current = false;
-        }, 60);
-      },
-      { root: wrap, rootMargin: "0px 0px 240px 0px" }
-    );
-    observer.observe(sentinel);
+    if (!wrap) return;
+    const updateHeight = () => setViewportHeight(wrap.clientHeight - HEADER_HEIGHT);
+    updateHeight();
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(wrap);
     return () => observer.disconnect();
-  }, [hasMore, cappedTotal]);
+  }, []);
+
+  // 滚动事件：用 rAF 节流避免频繁 setState 导致卡顿。
+  const rafRef = useRef<number>(0);
+  const onScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(() => {
+      setScrollTop(e.currentTarget.scrollTop);
+    });
+  }, []);
+
+  useEffect(() => () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); }, []);
 
   const handleHeaderClick = (col: string, shift: boolean) => {
     setSortKeys((prev) => {
       if (!shift) {
-        // 普通点击：重置为单列排序；同列则切换方向。
         if (prev.length === 1 && prev[0].col === col) {
           return [{ col, dir: prev[0].dir === "asc" ? "desc" : "asc" }];
         }
         return [{ col, dir: "asc" }];
       }
-      // Shift+点击：追加次级排序键；已存在则切换方向。
       const existing = prev.find((k) => k.col === col);
       if (existing) {
         return prev.map((k) => (k.col === col ? { ...k, dir: k.dir === "asc" ? "desc" : "asc" } : k));
@@ -130,7 +138,7 @@ const DataTable = React.memo(function DataTable({ rows }: DataTableProps) {
     });
   };
 
-  // 列宽拖拽：pointerdown 记录起点，pointermove 直接改 th 宽度（避免整表重渲染），
+  // 列宽拖拽：pointerdown 记录起点，pointermove 直接改 th 宽度，
   // pointerup 提交到 state。最小宽度 60px。
   const dragRef = useRef<{ col: string; startX: number; startWidth: number; th: HTMLTableCellElement } | null>(null);
 
@@ -160,7 +168,6 @@ const DataTable = React.memo(function DataTable({ rows }: DataTableProps) {
     }
   };
 
-  // 列类型 → 列头小标签（# 数值 / A 文本 / 📅 日期）
   const typeLabel = (t: ColType | undefined) => (t === "number" ? "#" : t === "date" ? "📅" : "A");
 
   if (!rows?.length) return <div className="empty-row">没有可预览的数据</div>;
@@ -180,97 +187,107 @@ const DataTable = React.memo(function DataTable({ rows }: DataTableProps) {
           aria-label="过滤数据预览行"
         />
         <span className="data-table-count">
-          共 {total} 行
+          共 {total.toLocaleString()} 行
         </span>
       </div>
-      <div className="table-wrap" ref={wrapRef}>
-        <table className="data-table" style={hasCustomWidths ? { tableLayout: "fixed" } : undefined}>
-          <thead>
-            <tr>
-              <th className="row-number">#</th>
-              {columns.map((column) => {
-                const sortIndex = sortKeys.findIndex((k) => k.col === column);
-                const sortKey = sortIndex >= 0 ? sortKeys[sortIndex] : null;
-                return (
-                  <th
-                    key={column}
-                    style={colWidths[column] ? { width: colWidths[column] } : undefined}
-                    className={sortKey ? `is-sorted is-${sortKey.dir}` : ""}
-                    onClick={(e) => handleHeaderClick(column, e.shiftKey)}
-                    title="点击切换升序 / 降序 · Shift+点击追加排序键"
-                  >
-                    {column}
-                    <span className="data-table-type-badge">{typeLabel(colTypes[column])}</span>
-                    {sortKey && (
-                      <>
-                        <span className="data-table-sort-badge">{sortIndex + 1}</span>
-                        <span className="data-table-arrow">{sortKey.dir === "asc" ? "▲" : "▼"}</span>
-                      </>
-                    )}
-                    <span
-                      className="col-resize-handle"
-                      role="separator"
-                      aria-orientation="vertical"
-                      aria-label={`调整 ${column} 列宽`}
-                      onPointerDown={(e) => onHandlePointerDown(e, column)}
-                      onPointerMove={onHandlePointerMove}
-                      onPointerUp={onHandlePointerUp}
-                      onClick={(e) => e.stopPropagation()}
-                    />
-                  </th>
-                );
-              })}
-            </tr>
-          </thead>
-          <tbody>
-            {total === 0 ? (
-              <tr><td className="row-number">—</td><td colSpan={columns.length} style={{ textAlign: "center", color: "var(--fg-muted)" }}>没有匹配的行</td></tr>
-            ) : (
-              <>
-                {visibleRows.map((row, index) => (
-                  <tr key={index}>
-                    <td className="row-number">{index + 1}</td>
-                    {columns.map((column) => {
-                      // 空值高亮：null / undefined / 空字符串 / NaN 统一显示为 "—"，
-                      // 并加 cell-empty 类用斜体灰色弱化，便于扫读缺失值分布。
-                      const cellValue = row[column];
-                      const isEmpty = cellValue == null || cellValue === "" || (typeof cellValue === "number" && isNaN(cellValue));
-                      return (
-                        <td key={column} className={isEmpty ? "cell-empty" : ""}>
-                          {isEmpty ? "—" : String(cellValue)}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                ))}
-                {loadingMore && (
-                  <tr className="data-table-loading-row">
-                    <td className="row-number">—</td>
-                    <td colSpan={columns.length}>加载中…</td>
-                  </tr>
-                )}
-                {/* sentinel 常驻（只要还有更多），保证 IntersectionObserver 始终观察同一节点，
-                    避免加载窗口内卸载导致观察失效、增量加载停滞。 */}
-                {hasMore && (
-                  <tr ref={sentinelRef} className="data-table-sentinel" aria-hidden="true">
-                    <td className="row-number" />
-                    <td colSpan={columns.length} />
-                  </tr>
-                )}
-              </>
-            )}
-          </tbody>
-          <tfoot>
-            <tr className="data-table-footer-row">
-              <td className="row-number" />
-              <td colSpan={columns.length} className="data-table-footer">
-                {reachedCap
-                  ? `已显示前 ${MAX_VISIBLE} 行，使用搜索或导出查看完整数据`
-                  : `显示 ${Math.min(visible, cappedTotal)} / ${total} 行`}
-              </td>
-            </tr>
-          </tfoot>
-        </table>
+      <div className="table-wrap" ref={wrapRef} onScroll={onScroll}>
+        {/* 虚拟滚动布局：外层 div 撑起总高度（total * ROW_HEIGHT），
+            内层 tbody 用 translateY 偏移到当前渲染窗口的起始位置。
+            table 本身不滚动，只有外层 wrap 滚动，确保表头 sticky 正常工作。 */}
+        <div style={{ height: totalHeight, position: "relative" }}>
+          <table
+            className="data-table"
+            style={{
+              tableLayout: hasCustomWidths ? "fixed" : "auto",
+              position: "absolute",
+              top: 0,
+              left: 0,
+              width: "100%",
+            }}
+          >
+            <thead>
+              <tr>
+                <th className="row-number" style={{ position: "sticky", top: 0, zIndex: 2 }}>#</th>
+                {columns.map((column) => {
+                  const sortIndex = sortKeys.findIndex((k) => k.col === column);
+                  const sortKey = sortIndex >= 0 ? sortKeys[sortIndex] : null;
+                  return (
+                    <th
+                      key={column}
+                      style={{
+                        width: colWidths[column] || undefined,
+                        position: "sticky",
+                        top: 0,
+                        zIndex: 2,
+                      }}
+                      className={sortKey ? `is-sorted is-${sortKey.dir}` : ""}
+                      onClick={(e) => handleHeaderClick(column, e.shiftKey)}
+                      title="点击切换升序 / 降序 · Shift+点击追加排序键"
+                    >
+                      {column}
+                      <span className="data-table-type-badge">{typeLabel(colTypes[column])}</span>
+                      {sortKey && (
+                        <>
+                          <span className="data-table-sort-badge">{sortIndex + 1}</span>
+                          <span className="data-table-arrow">{sortKey.dir === "asc" ? "▲" : "▼"}</span>
+                        </>
+                      )}
+                      <span
+                        className="col-resize-handle"
+                        role="separator"
+                        aria-orientation="vertical"
+                        aria-label={`调整 ${column} 列宽`}
+                        onPointerDown={(e) => onHandlePointerDown(e, column)}
+                        onPointerMove={onHandlePointerMove}
+                        onPointerUp={onHandlePointerUp}
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    </th>
+                  );
+                })}
+              </tr>
+            </thead>
+            <tbody>
+              {total === 0 ? (
+                <tr><td className="row-number">—</td><td colSpan={columns.length} style={{ textAlign: "center", color: "var(--fg-muted)" }}>没有匹配的行</td></tr>
+              ) : (
+                <>
+                  {/* 顶部占位：用空行撑起未渲染区域的高度 */}
+                  {offsetY > 0 && (
+                    <tr style={{ height: offsetY }} aria-hidden="true">
+                      <td colSpan={columns.length + 1} style={{ padding: 0, border: "none" }} />
+                    </tr>
+                  )}
+                  {visibleRows.map((row, i) => {
+                    const rowIndex = startIndex + i;
+                    return (
+                      <tr key={rowIndex} style={{ height: ROW_HEIGHT }}>
+                        <td className="row-number">{rowIndex + 1}</td>
+                        {columns.map((column) => {
+                          const cellValue = row[column];
+                          const isEmpty = cellValue == null || cellValue === "" || (typeof cellValue === "number" && isNaN(cellValue));
+                          return (
+                            <td key={column} className={isEmpty ? "cell-empty" : ""}>
+                              {isEmpty ? "—" : String(cellValue)}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
+                </>
+              )}
+            </tbody>
+            <tfoot>
+              <tr className="data-table-footer-row">
+                <td className="row-number" />
+                <td colSpan={columns.length} className="data-table-footer">
+                  {`显示 ${startIndex + 1}-${Math.min(endIndex, total)} / ${total.toLocaleString()} 行`}
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
       </div>
     </div>
   );
