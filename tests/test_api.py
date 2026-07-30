@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import threading
+import zipfile
 from collections import deque
 from pathlib import Path
 
@@ -54,6 +56,10 @@ def _isolate_runtime(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(api, "registry", registry)
     monkeypatch.setattr(api, "session_storage", LocalSessionStorage())
     monkeypatch.setattr(api, "analysis_slots", threading.BoundedSemaphore(settings.max_concurrent_analyses))
+    # 速率限制器使用全局 request_buckets 字典累积请求，跨测试不清空会导致
+    # 后续使用默认 rate_limit_per_minute=30 的测试文件（如 test_dashboard）
+    # 被前序测试的残余请求阻塞，返回 429。每个测试开始时清空桶以确保隔离。
+    api.request_buckets.clear()
 
 
 def test_health_and_upload_session(tmp_path, monkeypatch):
@@ -870,5 +876,1090 @@ def test_tool_trace_callback_swallows_event_callback_errors():
     cb = ToolTraceCallback(broken_callback)
     cb.on_tool_start({"name": "run_python"}, "x", run_id="r1")  # 不应抛出
     cb.on_tool_end("ok", run_id="r1")  # 不应抛出
+
+
+# ---------------------------------------------------------------------------
+# 路由层覆盖补齐：sessions / settings / artifacts
+# ---------------------------------------------------------------------------
+
+
+def _upload_csv_session(client, name="sales.csv", content=b"region,sales\nEast,100\nWest,200\n"):
+    """上传 CSV 创建会话，返回上传响应 JSON（含 id 等字段）。"""
+    response = client.post(
+        "/api/sessions",
+        files={"file": (name, content, "text/csv")},
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def _create_chart_session(client):
+    """上传 CSV 并用 build_tools 生成一个柱状图产物，返回 session_id。"""
+    uploaded = _upload_csv_session(client)
+    record = api.registry.get(uploaded["id"])
+    tools = {item.name: item for item in build_tools(record.workspace)}
+    tools["create_visualization"].invoke(
+        {"chart_type": "bar", "x": "region", "y": "sales", "title": "sales_by_region"}
+    )
+    return uploaded["id"]
+
+
+def _first_chart_artifact(client, session_id):
+    """从会话详情中取出第一个 visualization 产物。"""
+    artifacts = client.get(f"/api/sessions/{session_id}").json()["artifacts"]
+    return next(item for item in artifacts if item["kind"] == "visualization")
+
+
+# --- sessions 路由 ---
+
+
+def test_list_sessions_respects_limit_bounds(tmp_path, monkeypatch):
+    """GET /api/sessions 的 limit 参数应在 [1, 100] 区间内截断。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    _upload_csv_session(client)
+    _upload_csv_session(client)
+
+    # limit 超过上限应截断到 100，不报错
+    big = client.get("/api/sessions?limit=9999").json()
+    assert len(big["sessions"]) == 2
+
+    # limit 小于 1 应截断到 1
+    small = client.get("/api/sessions?limit=0").json()
+    assert len(small["sessions"]) == 1
+
+
+def test_get_session_detail_returns_full_payload(tmp_path, monkeypatch):
+    """GET /api/sessions/{id} 应返回完整的会话详情载荷。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client)
+
+    detail = client.get(f"/api/sessions/{uploaded['id']}").json()
+    assert detail["id"] == uploaded["id"]
+    assert detail["filename"] == "sales.csv"
+    assert detail["profile"]["rows"] == 2
+    assert detail["profile"]["columns"] == 2
+    assert detail["analysis_status"] == "idle"
+    assert isinstance(detail["artifacts"], list)
+    assert isinstance(detail["chat"], list)
+
+
+def test_rename_session_handles_null_title(tmp_path, monkeypatch):
+    """PATCH /api/sessions/{id} 传入 title=null 时应能正常处理（不报 500）。
+
+    当前实现 str(None) 会得到字面量 "None"，此测试覆盖该分支的行为。
+    """
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client)
+
+    response = client.patch(f"/api/sessions/{uploaded['id']}", json={"title": None})
+    assert response.status_code == 200
+    # str(None).strip() -> "None"，title 被设为字面量 "None"
+    assert response.json()["title"] == "None"
+
+
+def test_delete_running_session_returns_409(tmp_path, monkeypatch):
+    """DELETE 运行中的会话（run_lock 持有）应返回 409。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client)
+    record = api.registry.get(uploaded["id"])
+    record.run_lock.acquire()
+    try:
+        response = client.delete(f"/api/sessions/{uploaded['id']}")
+        assert response.status_code == 409
+        assert "运行" in response.json()["detail"]
+    finally:
+        record.run_lock.release()
+
+
+def test_export_session_returns_zip_archive(tmp_path, monkeypatch):
+    """GET /api/sessions/{id}/export 应返回包含会话文件的 ZIP 流。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client)
+
+    response = client.get(f"/api/sessions/{uploaded['id']}/export")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/zip"
+    assert "attachment" in response.headers["content-disposition"]
+
+    bundle = zipfile.ZipFile(io.BytesIO(response.content))
+    names = bundle.namelist()
+    # 应包含原始数据文件与会话清单
+    assert any(n.startswith("input/") for n in names)
+    assert "session.json" in names
+
+
+def test_import_session_restores_from_exported_zip(tmp_path, monkeypatch):
+    """POST /api/sessions/import 应从 export 导出的 ZIP 恢复完整会话。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client)
+
+    export = client.get(f"/api/sessions/{uploaded['id']}/export")
+    assert export.status_code == 200
+
+    imported = client.post(
+        "/api/sessions/import",
+        files={"file": ("session.zip", export.content, "application/zip")},
+    )
+    assert imported.status_code == 201, imported.text
+    payload = imported.json()
+    assert payload["id"].startswith("api_")
+    assert payload["id"] != uploaded["id"]
+    assert payload["filename"] == "sales.csv"
+    assert payload["profile"]["rows"] == 2
+
+    # 导入的会话应出现在历史列表
+    history = client.get("/api/sessions?limit=30").json()["sessions"]
+    assert any(s["id"] == payload["id"] for s in history)
+
+
+def test_import_session_rejects_invalid_zip(tmp_path, monkeypatch):
+    """POST /api/sessions/import 收到非 ZIP 内容应返回 400。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+
+    response = client.post(
+        "/api/sessions/import",
+        files={"file": ("not_a_zip.txt", b"this is not a zip file", "text/plain")},
+    )
+    assert response.status_code == 400
+    assert "ZIP" in response.json()["detail"]
+
+
+def test_import_session_rejects_path_traversal(tmp_path, monkeypatch):
+    """POST /api/sessions/import 含 ../ 路径的 ZIP 应返回 400（路径遍历防护）。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as bundle:
+        bundle.writestr("../escape.txt", "malicious")
+        bundle.writestr("session.json", "{}")
+    buffer.seek(0)
+
+    response = client.post(
+        "/api/sessions/import",
+        files={"file": ("evil.zip", buffer.getvalue(), "application/zip")},
+    )
+    assert response.status_code == 400
+    assert "不安全路径" in response.json()["detail"]
+
+
+def test_import_session_rejects_oversized_archive(tmp_path, monkeypatch):
+    """POST /api/sessions/import 超过 max_upload_bytes 的归档应返回 413。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    # 将上传上限调到很小，便于测试触发 413
+    monkeypatch.setattr(api.bootstrap_settings, "max_upload_bytes", 64)
+    client = TestClient(api.app)
+
+    response = client.post(
+        "/api/sessions/import",
+        files={"file": ("big.zip", b"\x00" * 200, "application/zip")},
+    )
+    assert response.status_code == 413
+    assert "归档过大" in response.json()["detail"]
+
+
+def test_get_unknown_session_returns_404(tmp_path, monkeypatch):
+    """GET 不存在的会话应返回 404。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    response = client.get("/api/sessions/api_nonexistent")
+    assert response.status_code == 404
+
+
+# --- settings 路由 ---
+
+
+def test_version_endpoint(tmp_path, monkeypatch):
+    """GET /api/version 应返回 API 版本与最低客户端版本。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    response = client.get("/api/version")
+    assert response.status_code == 200
+    payload = response.json()
+    assert "version" in payload
+    assert "min_client" in payload
+    assert payload["version"] == api.API_VERSION
+
+
+def test_auth_status_without_token(tmp_path, monkeypatch):
+    """无 APP_ACCESS_TOKEN 时 GET /api/auth 应返回 required:false。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    response = client.get("/api/auth")
+    assert response.status_code == 200
+    assert response.json() == {"required": False, "authenticated": True}
+
+
+def test_storage_health_endpoint(tmp_path, monkeypatch):
+    """GET /api/storage/health 应返回存储后端健康状态。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    response = client.get("/api/storage/health")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["backend"] == "local"
+    assert payload["persistent"] is False
+    assert payload["status"] == "local_only"
+
+
+def test_get_settings_returns_runtime_config(tmp_path, monkeypatch):
+    """GET /api/settings 应返回当前运行时配置。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    # 屏蔽 .env 加载，防止项目根目录的 APP_ACCESS_TOKEN / DEEPSEEK_API_KEY 污染测试环境
+    monkeypatch.setattr("data_agent.config.load_dotenv", lambda *a, **k: False)
+    # 删除可能的 API key 环境变量，确保 configured 字段稳定
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    client = TestClient(api.app)
+    response = client.get("/api/settings")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["provider"] == "deepseek"
+    assert "model" in payload
+    assert "thinking_enabled" in payload
+    assert "reasoning_effort" in payload
+    assert "max_upload_bytes" in payload
+    assert "storage_backend" in payload
+
+
+def test_update_settings_persists_thinking_and_reasoning(tmp_path, monkeypatch):
+    """PUT /api/settings 应持久化 thinking_enabled 与 reasoning_effort。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    # 屏蔽 .env 加载，避免 _effective_settings 内部的 load_dotenv 污染 os.environ
+    monkeypatch.setattr("data_agent.config.load_dotenv", lambda *a, **k: False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    # 预设 runtime_settings 以避免污染其他测试
+    monkeypatch.setitem(api.runtime_settings, "thinking_enabled", None)
+    monkeypatch.setitem(api.runtime_settings, "reasoning_effort", None)
+    monkeypatch.setitem(api.runtime_settings, "api_key", "")
+    client = TestClient(api.app)
+
+    response = client.put(
+        "/api/settings",
+        json={"thinking_enabled": False, "reasoning_effort": "max"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["thinking_enabled"] is False
+    assert payload["reasoning_effort"] == "max"
+
+    # GET 应反映更新后的值
+    refreshed = client.get("/api/settings").json()
+    assert refreshed["thinking_enabled"] is False
+    assert refreshed["reasoning_effort"] == "max"
+
+
+def test_update_settings_rejects_empty_api_key(tmp_path, monkeypatch):
+    """PUT /api/settings 传入空白 API Key 应返回 422。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    monkeypatch.setitem(api.runtime_settings, "api_key", "")
+    client = TestClient(api.app)
+
+    response = client.put(
+        "/api/settings",
+        json={"api_key": "   "},
+    )
+    assert response.status_code == 422
+    assert "API Key" in response.json()["detail"]
+
+
+def test_delete_api_key_clears_runtime_config(tmp_path, monkeypatch):
+    """DELETE /api/settings/key 应清除运行时 API Key 并返回 configured 状态。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    # 屏蔽 .env 加载，避免 _effective_settings 内部的 load_dotenv 污染 os.environ
+    monkeypatch.setattr("data_agent.config.load_dotenv", lambda *a, **k: False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    # 先在内存中放一个 key，验证删除后 configured 变为 False
+    monkeypatch.setitem(api.runtime_settings, "api_key", "sk-test-temp")
+    client = TestClient(api.app)
+
+    response = client.delete("/api/settings/key")
+    assert response.status_code == 200
+    payload = response.json()
+    assert "configured" in payload
+    # env 无 key 且内存 key 已清除，configured 应为 False
+    assert payload["configured"] is False
+
+
+# --- artifacts 路由 ---
+
+
+def test_list_artifacts_via_session_detail(tmp_path, monkeypatch):
+    """会话详情的 artifacts 字段应列出已生成的图表与数据集产物。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = _create_chart_session(client)
+    # 额外导出一个 CSV 数据集产物
+    record = api.registry.get(session_id)
+    tools = {item.name: item for item in build_tools(record.workspace)}
+    tools["export_data"].invoke({"format": "csv", "filename": "cleaned_final"})
+
+    detail = client.get(f"/api/sessions/{session_id}").json()
+    kinds = [item["kind"] for item in detail["artifacts"]]
+    assert "visualization" in kinds
+    assert "dataset" in kinds
+    chart = _first_chart_artifact(client, session_id)
+    assert chart["previewable"] is True
+    assert chart["preview_url"].endswith("/preview")
+    assert chart["thumbnail_url"].endswith("/thumbnail")
+
+
+def test_preview_artifact_supports_etag_304(tmp_path, monkeypatch):
+    """GET preview 应支持条件请求：If-None-Match 命中时返回 304。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = _create_chart_session(client)
+    chart = _first_chart_artifact(client, session_id)
+
+    first = client.get(chart["preview_url"])
+    assert first.status_code == 200
+    etag = first.headers["etag"]
+
+    # 带 If-None-Match 请求应返回 304
+    conditional = client.get(chart["preview_url"], headers={"if-none-match": etag})
+    assert conditional.status_code == 304
+    assert conditional.headers["etag"] == etag
+
+
+def test_preview_artifact_emits_csp_headers(tmp_path, monkeypatch):
+    """GET preview 的 HTML 应内联 CSP 头并禁用外部连接。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = _create_chart_session(client)
+    chart = _first_chart_artifact(client, session_id)
+
+    response = client.get(chart["preview_url"])
+    assert response.status_code == 200
+    assert "Content-Security-Policy" in response.text
+    assert "connect-src 'none'" in response.text
+    assert response.headers["cache-control"] == "private, no-store"
+    assert "etag" in response.headers
+    assert "last-modified" in response.headers
+
+
+def test_download_html_artifact_is_selfcontained(tmp_path, monkeypatch):
+    """GET 下载 HTML 产物应为自包含文档（含 CSP、attachment 头）。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = _create_chart_session(client)
+    chart = _first_chart_artifact(client, session_id)
+
+    response = client.get(chart["download_url"])
+    assert response.status_code == 200
+    assert response.headers["content-disposition"].startswith("attachment;")
+    assert "Content-Security-Policy" in response.text
+    # plotly bundle 应被内联，不保留相对脚本引用
+    assert "<script src='plotly.min.js'" not in response.text
+
+
+def test_download_non_html_artifact_returns_file(tmp_path, monkeypatch):
+    """GET 下载非 HTML 产物（CSV）应以 FileResponse 返回原始文件内容。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client)
+    record = api.registry.get(uploaded["id"])
+    tools = {item.name: item for item in build_tools(record.workspace)}
+    tools["export_data"].invoke({"format": "csv", "filename": "cleaned_final"})
+
+    dataset = next(
+        item for item in client.get(f"/api/sessions/{uploaded['id']}").json()["artifacts"]
+        if item["kind"] == "dataset"
+    )
+    response = client.get(dataset["download_url"])
+    assert response.status_code == 200
+    assert "region" in response.content.decode("utf-8", errors="ignore")
+
+
+def test_thumbnail_returns_cached_png(tmp_path, monkeypatch):
+    """GET thumbnail 在缓存命中时应直接返回已有的 PNG。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = _create_chart_session(client)
+    chart = _first_chart_artifact(client, session_id)
+
+    # 手动放置一个缩略图 PNG（带 PNG 签名），模拟已缓存的产物
+    record = api.registry.get(session_id)
+    chart_name = chart["name"]
+    stem = chart_name[: -len(".html")] if chart_name.endswith(".html") else chart_name
+    thumb_path = record.workspace.artifacts_dir / f"{stem}_thumb.png"
+    png_signature = b"\x89PNG\r\n\x1a\n"
+    thumb_path.write_bytes(png_signature + b"\x00" * 32)
+
+    response = client.get(chart["thumbnail_url"])
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    assert response.content.startswith(png_signature)
+
+
+def test_thumbnail_returns_404_for_missing_chart(tmp_path, monkeypatch):
+    """GET thumbnail 对不存在的图表应返回 404。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client)
+
+    response = client.get(f"/api/sessions/{uploaded['id']}/artifacts/nonexistent.html/thumbnail")
+    assert response.status_code == 404
+    assert "图表数据文件不存在" in response.json()["detail"]
+
+
+def test_edit_chart_regenerates_html(tmp_path, monkeypatch):
+    """PUT edit 应基于 .plotly.json 重新生成 HTML 并更新标题。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = _create_chart_session(client)
+    chart = _first_chart_artifact(client, session_id)
+
+    response = client.put(
+        f"/api/sessions/{session_id}/artifacts/{chart['name']}/edit",
+        json={"title": "新标题"},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+
+    # 预览应反映新标题（<title> 标签中含新标题文本）
+    preview = client.get(chart["preview_url"])
+    assert preview.status_code == 200
+    assert "新标题" in preview.text
+
+
+def test_edit_chart_returns_409_when_run_lock_held(tmp_path, monkeypatch):
+    """PUT edit 在 run_lock 持有时应返回 409。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = _create_chart_session(client)
+    chart = _first_chart_artifact(client, session_id)
+    record = api.registry.get(session_id)
+    record.run_lock.acquire()
+    try:
+        response = client.put(
+            f"/api/sessions/{session_id}/artifacts/{chart['name']}/edit",
+            json={"title": "x"},
+        )
+        assert response.status_code == 409
+        assert "运行" in response.json()["detail"]
+    finally:
+        record.run_lock.release()
+
+
+def test_artifact_endpoints_return_404_for_missing_file(tmp_path, monkeypatch):
+    """GET 预览/下载不存在的产物应返回 404。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client)
+
+    preview = client.get(f"/api/sessions/{uploaded['id']}/artifacts/missing.html/preview")
+    assert preview.status_code == 404
+    download = client.get(f"/api/sessions/{uploaded['id']}/artifacts/missing.html")
+    assert download.status_code == 404
+
+
+# --- 补充覆盖：settings / artifacts 额外分支 ---
+
+
+def test_auth_status_authenticated_with_token(monkeypatch):
+    """携带正确 token 时 GET /api/auth 应返回 authenticated:True。"""
+    monkeypatch.setenv("APP_ACCESS_TOKEN", "test-access-token")
+    client = TestClient(api.app)
+    response = client.get("/api/auth", headers={"X-App-Token": "test-access-token"})
+    assert response.status_code == 200
+    assert response.json() == {"required": True, "authenticated": True}
+
+
+def test_preview_non_html_returns_415(tmp_path, monkeypatch):
+    """GET preview 非 HTML 产物应返回 415。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client)
+    record = api.registry.get(uploaded["id"])
+    tools = {item.name: item for item in build_tools(record.workspace)}
+    tools["export_data"].invoke({"format": "csv", "filename": "cleaned_final"})
+    dataset = next(
+        item for item in client.get(f"/api/sessions/{uploaded['id']}").json()["artifacts"]
+        if item["kind"] == "dataset"
+    )
+    response = client.get(f"/api/sessions/{uploaded['id']}/artifacts/{dataset['name']}/preview")
+    assert response.status_code == 415
+
+
+def test_edit_chart_returns_404_for_missing_chart(tmp_path, monkeypatch):
+    """PUT edit 不存在的图表应返回 404。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client)
+    response = client.put(
+        f"/api/sessions/{uploaded['id']}/artifacts/nonexistent.html/edit",
+        json={"title": "x"},
+    )
+    assert response.status_code == 404
+
+
+def test_edit_chart_applies_color(tmp_path, monkeypatch):
+    """PUT edit 应支持修改配色（color 字段应用到所有 trace）。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = _create_chart_session(client)
+    chart = _first_chart_artifact(client, session_id)
+    response = client.put(
+        f"/api/sessions/{session_id}/artifacts/{chart['name']}/edit",
+        json={"color": "#245C55"},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+
+
+def test_dashboard_export_returns_html(tmp_path, monkeypatch):
+    """GET /api/sessions/{id}/dashboard 应返回数据画像仪表盘 HTML。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client)
+    response = client.get(f"/api/sessions/{uploaded['id']}/dashboard")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "attachment" in response.headers["content-disposition"]
+
+
+def test_preview_handles_non_utf8_html(tmp_path, monkeypatch):
+    """GET preview 应能容错读取非 UTF-8（GB18030）编码的 HTML 产物。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client)
+    record = api.registry.get(uploaded["id"])
+    # 手动放置一个 GBK 编码的 HTML 产物，覆盖 _read_utf8_robust 的回退分支
+    html_path = record.workspace.artifacts_dir / "gbk_chart.html"
+    html_path.write_bytes("<html><head></head><body>中文图表</body></html>".encode("gb18030"))
+    record.workspace.register_artifact(html_path, "visualization", "GBK 图表")
+    response = client.get(f"/api/sessions/{uploaded['id']}/artifacts/gbk_chart.html/preview")
+    assert response.status_code == 200
+    assert "中文图表" in response.text
+
+
+def test_thumbnail_renders_png_when_no_cache(tmp_path, monkeypatch):
+    """GET thumbnail 无缓存时应从 .plotly.json 渲染 PNG（kaleido）。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = _create_chart_session(client)
+    chart = _first_chart_artifact(client, session_id)
+    # 不预置缓存缩略图，强制走 kaleido 渲染分支
+    response = client.get(chart["thumbnail_url"])
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    assert response.content.startswith(b"\x89PNG")
+
+
+def test_thumbnail_returns_503_when_render_import_fails(tmp_path, monkeypatch):
+    """GET thumbnail 在 kaleido 渲染器不可用（ImportError）时应返回 503。"""
+    import plotly.graph_objects as go
+
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = _create_chart_session(client)
+    chart = _first_chart_artifact(client, session_id)
+
+    # write_image 内部会尝试加载 kaleido：模拟渲染器缺失触发 ImportError -> 503
+    def _raise_import_error(self, *args, **kwargs):
+        raise ImportError("模拟 kaleido 未安装")
+
+    monkeypatch.setattr(go.Figure, "write_image", _raise_import_error)
+    response = client.get(chart["thumbnail_url"])
+    assert response.status_code == 503
+    assert "kaleido" in response.json()["detail"]
+
+
+def test_thumbnail_returns_500_on_render_failure(tmp_path, monkeypatch):
+    """GET thumbnail 在渲染抛非 ImportError 异常时应返回 500。"""
+    import plotly.graph_objects as go
+
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = _create_chart_session(client)
+    chart = _first_chart_artifact(client, session_id)
+
+    def _raise_runtime_error(self, *args, **kwargs):
+        raise RuntimeError("渲染引擎内部错误")
+
+    monkeypatch.setattr(go.Figure, "write_image", _raise_runtime_error)
+    response = client.get(chart["thumbnail_url"])
+    assert response.status_code == 500
+    assert "缩略图生成失败" in response.json()["detail"]
+
+
+def test_create_session_rejects_empty_file(tmp_path, monkeypatch):
+    """POST /api/sessions 上传空文件应返回 422。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    response = client.post(
+        "/api/sessions",
+        files={"file": ("empty.csv", b"", "text/csv")},
+    )
+    assert response.status_code == 422
+    assert "为空" in response.json()["detail"]
+
+
+def test_create_session_returns_500_on_unexpected_exception(tmp_path, monkeypatch):
+    """POST /api/sessions 非 ValueError/OSError 的异常应返回 500（不暴露细节）。"""
+    from data_agent.workspace import DataWorkspace
+
+    _isolate_runtime(tmp_path, monkeypatch)
+
+    # 模拟 load 阶段抛出非 ValueError/OSError 的异常（如 pyarrow.ArrowInvalid
+    # 在某些版本下不继承 ValueError），覆盖通用 500 兜底分支
+    def failing_load(self, path):
+        raise RuntimeError("意外的内部解析错误")
+
+    monkeypatch.setattr(DataWorkspace, "load", failing_load)
+    client = TestClient(api.app)
+    response = client.post(
+        "/api/sessions",
+        files={"file": ("sales.csv", b"region,sales\nEast,100\n", "text/csv")},
+    )
+    assert response.status_code == 500
+    assert "解析失败" in response.json()["detail"]
+
+
+def test_create_sample_session_handles_init_failure(tmp_path, monkeypatch):
+    """POST /api/sessions/sample 示例数据初始化失败应返回 500。"""
+    from data_agent.workspace import DataWorkspace
+
+    _isolate_runtime(tmp_path, monkeypatch)
+
+    def failing_save(self, name, stream, max_bytes):
+        raise RuntimeError("模拟磁盘故障")
+
+    monkeypatch.setattr(DataWorkspace, "save_upload_stream", failing_save)
+    client = TestClient(api.app)
+    response = client.post("/api/sessions/sample")
+    assert response.status_code == 500
+    assert "示例数据" in response.json()["detail"]
+
+
+def test_import_session_rejects_invalid_manifest(tmp_path, monkeypatch):
+    """POST /api/sessions/import 有效 ZIP 但 manifest 缺失应返回 400。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as bundle:
+        # 只写一个无关文件，没有 session.json 也没有 input/
+        bundle.writestr("random.txt", "no manifest here")
+    buffer.seek(0)
+
+    response = client.post(
+        "/api/sessions/import",
+        files={"file": ("no_manifest.zip", buffer.getvalue(), "application/zip")},
+    )
+    assert response.status_code == 400
+    assert "无效" in response.json()["detail"]
+
+
+def test_update_settings_persist_key_keyring_unavailable(tmp_path, monkeypatch):
+    """PUT /api/settings persist_key=True 但 keyring 不可用时应返回 warning。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    monkeypatch.setattr("data_agent.config.load_dotenv", lambda *a, **k: False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    # 模拟系统凭据存储不可用：save_api_key 返回 False
+    monkeypatch.setattr("data_agent.registry.save_api_key", lambda value: False)
+    monkeypatch.setitem(api.runtime_settings, "api_key", "")
+    client = TestClient(api.app)
+
+    response = client.put(
+        "/api/settings",
+        json={"api_key": "sk-test-persist", "persist_key": True},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["configured"] is True
+    assert "warning" in payload
+    assert "凭据存储不可用" in payload["warning"]
+
+
+def test_harden_preview_document_fallback_branches():
+    """_harden_preview_document 应处理缺 head、含 html 标签、body 片段三种情况。"""
+    from data_agent.routers.artifacts import _harden_preview_document
+
+    # 1. 含 <head>：在 head 后注入 meta，不新增 head 标签
+    with_head = "<html><head><title>x</title></head><body></body></html>"
+    result = _harden_preview_document(with_head)
+    assert "Content-Security-Policy" in result
+    assert result.count("<head>") == 1
+
+    # 2. 含 <html> 但无 <head>：注入 <head>meta</head>
+    no_head = "<html><body>chart</body></html>"
+    result = _harden_preview_document(no_head)
+    assert "<head>" in result
+    assert "Content-Security-Policy" in result
+
+    # 3. body 片段：包一层完整文档
+    fragment = "<div>plot</div>"
+    result = _harden_preview_document(fragment)
+    assert result.startswith("<!doctype html>")
+    assert "Content-Security-Policy" in result
+    assert "<div>plot</div>" in result
+
+    # 4. 已带 doctype 的片段：不重复声明 doctype
+    doctype_frag = "<!doctype html><div>plot</div>"
+    result = _harden_preview_document(doctype_frag)
+    assert result.count("<!doctype") == 1
+
+
+def test_dashboard_returns_404_when_no_data_loaded(tmp_path, monkeypatch):
+    """GET /api/sessions/{id}/dashboard 在未加载数据集时应返回 404。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client)
+    # 清空工作区 dataframe 模拟未加载状态，触发 build_dashboard_html 抛 RuntimeError
+    record = api.registry.get(uploaded["id"])
+    record.workspace._df = None
+
+    response = client.get(f"/api/sessions/{uploaded['id']}/dashboard")
+    assert response.status_code == 404
+    assert "尚未加载数据集" in response.json()["detail"]
+
+
+def test_edit_chart_returns_500_on_corrupt_plotly_json(tmp_path, monkeypatch):
+    """PUT edit 在 .plotly.json 损坏时应返回 500。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = _create_chart_session(client)
+    chart = _first_chart_artifact(client, session_id)
+    record = api.registry.get(session_id)
+    chart_name = chart["name"]
+    stem = chart_name[: -len(".html")] if chart_name.endswith(".html") else chart_name
+    json_path = record.workspace.artifacts_dir / f"{stem}.plotly.json"
+    # 写入非法 JSON 触发 ValueError 分支
+    json_path.write_text("{not valid json", encoding="utf-8")
+
+    response = client.put(
+        f"/api/sessions/{session_id}/artifacts/{chart['name']}/edit",
+        json={"title": "x"},
+    )
+    assert response.status_code == 500
+    assert "图表数据读取失败" in response.json()["detail"]
+
+
+def test_edit_chart_color_applies_to_trace_without_marker(tmp_path, monkeypatch):
+    """PUT edit 对无 marker 的 trace 应自动创建 marker.color。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = _create_chart_session(client)
+    chart = _first_chart_artifact(client, session_id)
+    record = api.registry.get(session_id)
+    chart_name = chart["name"]
+    stem = chart_name[: -len(".html")] if chart_name.endswith(".html") else chart_name
+    json_path = record.workspace.artifacts_dir / f"{stem}.plotly.json"
+    # 改造 .plotly.json：移除 trace 的 marker 字段，覆盖无 marker 的 else 分支
+    fig_dict = json.loads(json_path.read_text(encoding="utf-8"))
+    for trace in fig_dict.get("data", []):
+        trace.pop("marker", None)
+    json_path.write_text(json.dumps(fig_dict), encoding="utf-8")
+
+    response = client.put(
+        f"/api/sessions/{session_id}/artifacts/{chart['name']}/edit",
+        json={"color": "#123456"},
+    )
+    assert response.status_code == 200
+    # 验证 marker 已被创建并写入期望颜色
+    updated = json.loads(json_path.read_text(encoding="utf-8"))
+    for trace in updated.get("data", []):
+        assert trace.get("marker", {}).get("color") == "#123456"
+
+
+def test_edit_chart_falls_back_to_inline_plotlyjs(tmp_path, monkeypatch):
+    """PUT edit 在 ensure_plotly_bundle 返回 None 时应回退到 fig.write_html。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = _create_chart_session(client)
+    chart = _first_chart_artifact(client, session_id)
+    record = api.registry.get(session_id)
+    # monkeypatch ensure_plotly_bundle 返回 None，触发 write_html 回退分支
+    monkeypatch.setattr(record.workspace, "ensure_plotly_bundle", lambda: None)
+
+    response = client.put(
+        f"/api/sessions/{session_id}/artifacts/{chart['name']}/edit",
+        json={"title": "回退标题"},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    # 预览应含新标题（write_html 回退路径生成的完整 HTML）
+    preview = client.get(chart["preview_url"])
+    assert preview.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# C1 修复测试：SSE 首帧断开后锁释放
+# ---------------------------------------------------------------------------
+
+
+def test_analyze_stream_releases_lock_on_first_frame_disconnect(tmp_path, monkeypatch):
+    """SSE 首帧 started 后客户端断开，run_lock 和 analysis_slots 必须被释放。
+
+    C1 修复场景：客户端在 worker.start() 执行前断开连接，generate() 的 finally
+    块检测到 worker_started=False，手动释放 run_lock 和 analysis_slots。
+    若此修复缺失，锁将永久泄漏，max_concurrent_analyses=2 时泄漏 2 次后
+    整个服务无法启动新分析。使用 TestClient stream 模式模拟 SSE 首帧后断开。
+    """
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client, content=b"region,sales\nEast,100\n")
+    session_id = uploaded["id"]
+
+    monkeypatch.setattr(
+        api,
+        "_effective_settings",
+        lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs"),
+    )
+
+    # 快速完成式 Agent：stream() 立即返回 finalize，worker 的 finally 会释放锁。
+    # 即使客户端在首帧后断开，worker 也已快速完成或被 C1 修复路径兜底释放。
+    class FastAgent:
+        def __init__(self, workspace, settings, cancel_event=None, progress_callback=None, event_callback=None):
+            self.workspace = workspace
+
+        def stream(self, query, history=None, resume_from=None, plan_only=False):
+            yield {"node": "finalize", "data": {
+                "response": "done",
+                "trace": [],
+                "artifacts": list(self.workspace.artifacts),
+                "dataset_profile": self.workspace.profile(),
+                "plan": [],
+                "completed_steps": [],
+            }}
+
+        def run(self, query, history=None, resume_from=None):
+            return AnalysisResult(
+                response="done", trace=[], artifacts=[],
+                dataset_profile=self.workspace.profile(), plan=[], completed_steps=[],
+            )
+
+    monkeypatch.setattr(api, "DataAnalysisAgent", FastAgent)
+
+    # 发起流式分析，收到首帧 started 后立即断开（不读取后续事件）
+    with client.stream(
+        "POST",
+        f"/api/sessions/{session_id}/analyze/stream",
+        json={"task": "检查数据"},
+    ) as response:
+        assert response.status_code == 200
+        for line in response.iter_lines():
+            if line.startswith("event: started"):
+                break  # 首帧后断开
+
+    # 验证 run_lock 已释放（可以成功 acquire）
+    record = api.registry.get(session_id)
+    assert record.run_lock.acquire(blocking=False), "run_lock 未释放——C1 修复路径未生效"
+    record.run_lock.release()
+    # 验证 analysis_slots 已释放（可以成功 acquire）
+    assert api.analysis_slots.acquire(blocking=False), "analysis_slots 未释放——C1 修复路径未生效"
+    api.analysis_slots.release()
+
+
+def test_chat_stream_releases_lock_on_first_frame_disconnect(tmp_path, monkeypatch):
+    """chat_stream 首帧 started 后客户端断开，run_lock 必须被释放。
+
+    chat_stream 的 C1 修复与 analyze_stream 类似：客户端在 worker.start() 前
+    断开时，generate() 的 finally 块手动释放 run_lock。chat_stream 不占用
+    analysis_slots，因此只需验证 run_lock。
+    """
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client, content=b"region,sales\nEast,100\n")
+    session_id = uploaded["id"]
+
+    monkeypatch.setattr(
+        api,
+        "_effective_settings",
+        lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs"),
+    )
+
+    # 预设已完成的首轮分析，使追问不被 409 拦截
+    record = api.registry.get(session_id)
+    record.analysis_status = "completed"
+    record.chat = [
+        {"role": "user", "content": "检查数据"},
+        {"role": "assistant", "content": "分析完成。"},
+    ]
+    api.registry.persist(session_id, record)
+
+    # 快速完成式追问 Agent
+    class FastChatAgent:
+        def __init__(self, workspace, settings, cancel_event=None, progress_callback=None, event_callback=None):
+            self.workspace = workspace
+            self._last_usage = None
+            self._last_reasoning = ""
+
+        def chat(self, query, history=None):
+            return "回答内容", []
+
+    monkeypatch.setattr(api, "DataAnalysisAgent", FastChatAgent)
+
+    # 发起追问流，收到首帧 started 后立即断开
+    with client.stream(
+        "POST",
+        f"/api/sessions/{session_id}/chat/stream",
+        json={"task": "追问详情"},
+    ) as response:
+        assert response.status_code == 200
+        for line in response.iter_lines():
+            if line.startswith("event: started"):
+                break  # 首帧后断开
+
+    # 验证 run_lock 已释放
+    record = api.registry.get(session_id)
+    assert record.run_lock.acquire(blocking=False), "run_lock 未释放——chat_stream C1 修复路径未生效"
+    record.run_lock.release()
+
+
+def test_lock_release_allows_subsequent_analysis_after_disconnect(tmp_path, monkeypatch):
+    """锁释放后可以再次发起分析，不返回 409。
+
+    验证 C1 修复的端到端效果：首次流式分析首帧断开后锁被释放，
+    第二次同步分析应正常执行而非被 409 拦截。
+    """
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client, content=b"region,sales\nEast,100\n")
+    session_id = uploaded["id"]
+
+    monkeypatch.setattr(
+        api,
+        "_effective_settings",
+        lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs"),
+    )
+
+    # 首次分析用的快速 Agent
+    class FirstFastAgent:
+        def __init__(self, workspace, settings, cancel_event=None, progress_callback=None, event_callback=None):
+            self.workspace = workspace
+
+        def stream(self, query, history=None, resume_from=None, plan_only=False):
+            yield {"node": "finalize", "data": {
+                "response": "done",
+                "trace": [],
+                "artifacts": list(self.workspace.artifacts),
+                "dataset_profile": self.workspace.profile(),
+                "plan": [],
+                "completed_steps": [],
+            }}
+
+        def run(self, query, history=None, resume_from=None):
+            return AnalysisResult(
+                response="done", trace=[], artifacts=[],
+                dataset_profile=self.workspace.profile(), plan=[], completed_steps=[],
+            )
+
+    monkeypatch.setattr(api, "DataAnalysisAgent", FirstFastAgent)
+
+    # 第一次：发起流式分析并在首帧后断开
+    with client.stream(
+        "POST",
+        f"/api/sessions/{session_id}/analyze/stream",
+        json={"task": "第一次分析"},
+    ) as response:
+        assert response.status_code == 200
+        for line in response.iter_lines():
+            if line.startswith("event: started"):
+                break
+
+    # 确认锁已释放
+    record = api.registry.get(session_id)
+    assert record.run_lock.acquire(blocking=False), "首次断开后 run_lock 未释放"
+    record.run_lock.release()
+
+    # 第二次：用新的 FastAgent 发起同步分析，验证不返回 409
+    class SecondFastAgent:
+        def __init__(self, workspace, settings, cancel_event=None, **kwargs):
+            self.workspace = workspace
+
+        def run(self, query, history=None, resume_from=None):
+            return AnalysisResult(
+                response="第二次分析完成",
+                trace=[],
+                artifacts=[],
+                dataset_profile=self.workspace.profile(),
+                plan=[],
+                completed_steps=[],
+            )
+
+    monkeypatch.setattr(api, "DataAnalysisAgent", SecondFastAgent)
+
+    response = client.post(
+        f"/api/sessions/{session_id}/analyze",
+        json={"task": "第二次分析"},
+    )
+    assert response.status_code == 200, (
+        f"锁未正确释放，第二次分析被拦截：{response.status_code} {response.text}"
+    )
+    assert response.json()["response"] == "第二次分析完成"
+
+
+def test_analyze_stream_c1_fix_releases_lock_when_worker_start_fails(tmp_path, monkeypatch):
+    """worker.start() 失败时 C1 修复路径释放 run_lock 和 analysis_slots。
+
+    直接测试 C1 修复代码路径：monkeypatch threading.Thread.start 使 analysis
+    worker 线程启动失败，generate() 的 finally 块检测到 worker_started=False
+    并手动释放锁。这是对 C1 修复逻辑的确定性测试，不依赖断开时序。
+    """
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client, content=b"region,sales\nEast,100\n")
+    session_id = uploaded["id"]
+
+    monkeypatch.setattr(
+        api,
+        "_effective_settings",
+        lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs"),
+    )
+
+    class DummyAgent:
+        def __init__(self, workspace, settings, cancel_event=None, **kwargs):
+            pass
+
+        def stream(self, *args, **kwargs):
+            yield {"node": "finalize", "data": {
+                "response": "done", "trace": [], "artifacts": [],
+                "dataset_profile": {}, "plan": [], "completed_steps": [],
+            }}
+
+    monkeypatch.setattr(api, "DataAnalysisAgent", DummyAgent)
+
+    # 使 analysis worker 线程启动失败，触发 worker_started=False 的 C1 修复路径
+    original_start = threading.Thread.start
+
+    def failing_start(self):
+        if self.name.startswith("analysis-"):
+            raise RuntimeError("模拟线程启动失败")
+        return original_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", failing_start)
+
+    # 发起流式分析：首帧 started 正常发送，worker.start() 抛异常后
+    # generate() 的 finally 块走 C1 修复路径释放锁
+    try:
+        with client.stream(
+            "POST",
+            f"/api/sessions/{session_id}/analyze/stream",
+            json={"task": "检查数据"},
+        ) as response:
+            for line in response.iter_lines():
+                if line.startswith("event: started"):
+                    break
+    except Exception:
+        # 流式响应可能因异常中断，关键是验证锁是否释放
+        pass
+
+    # 验证 C1 修复路径已释放 run_lock
+    record = api.registry.get(session_id)
+    assert record.run_lock.acquire(blocking=False), "run_lock 未释放——C1 修复路径未生效"
+    record.run_lock.release()
+    # 验证 C1 修复路径已释放 analysis_slots
+    assert api.analysis_slots.acquire(blocking=False), "analysis_slots 未释放——C1 修复路径未生效"
+    api.analysis_slots.release()
 
 

@@ -304,8 +304,10 @@ def get_chart_thumbnail(session_id: str, filename: str) -> FileResponse:
         fig = go.Figure(fig_dict)
         # 缩略图尺寸 400x250，去掉 margin 节省空间
         fig.update_layout(margin=dict(l=20, r=20, t=30, b=20), showlegend=False)
-        # 原子写：先写 .tmp 再 os.replace，防止并发缩略图请求交错写入损坏 PNG
-        tmp_thumb = thumb_path.with_suffix(thumb_path.suffix + ".tmp")
+        # 原子写：先写临时文件再 os.replace，防止并发缩略图请求交错写入损坏 PNG。
+        # 临时文件名必须保留 .png 后缀：plotly/kaleido 从扩展名推断输出格式，
+        # 用 .tmp 结尾会触发 "Invalid format 'tmp'" 导致缩略图渲染失败。
+        tmp_thumb = thumb_path.with_name(thumb_path.name + ".tmp.png")
         fig.write_image(str(tmp_thumb), width=400, height=250, scale=1)
         os.replace(str(tmp_thumb), str(thumb_path))
         return FileResponse(thumb_path, media_type="image/png")
