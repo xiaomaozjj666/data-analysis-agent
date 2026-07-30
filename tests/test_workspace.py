@@ -175,3 +175,686 @@ def test_allocate_chart_index_resumes_after_restart(tmp_path):
     assert restored.allocate_chart_index() == 8
     # 高水位生效：即使序号 8 的图尚未落盘，下一次分配也不重用。
     assert restored.allocate_chart_index() == 9
+
+
+# ---------------------------------------------------------------------------
+# save_upload_stream：流式上传
+# ---------------------------------------------------------------------------
+
+
+def test_save_upload_stream_rejects_oversized_file(tmp_path):
+    """超过 max_bytes 时立即报错并清理已写入的部分文件。"""
+    workspace = DataWorkspace(tmp_path / "runs", session_id="stream_oversize")
+    import io
+
+    # 构造一个超过 1MB 限制的流
+    payload = b"x" * (1024 * 1024 + 100)
+    stream = io.BytesIO(payload)
+    with pytest.raises(ValueError, match="不能超过"):
+        workspace.save_upload_stream("big.csv", stream, max_bytes=1024 * 1024)
+    # 部分文件必须被清理
+    assert not (workspace.input_dir / "big.csv").exists()
+
+
+def test_save_upload_stream_writes_normal_file(tmp_path):
+    """正常流式上传应写入完整文件到 input 目录。"""
+    workspace = DataWorkspace(tmp_path / "runs", session_id="stream_normal")
+    import io
+
+    content = b"region,sales\nEast,100\nWest,200\n"
+    stream = io.BytesIO(content)
+    path = workspace.save_upload_stream("sales.csv", stream, max_bytes=10 * 1024 * 1024)
+    assert path.exists()
+    assert path.read_bytes() == content
+
+
+def test_save_upload_stream_rejects_unsupported_extension(tmp_path):
+    """不支持的文件类型应立即报 ValueError。"""
+    workspace = DataWorkspace(tmp_path / "runs", session_id="stream_bad_ext")
+    import io
+
+    with pytest.raises(ValueError, match="不支持"):
+        workspace.save_upload_stream(
+            "script.py", io.BytesIO(b"print(1)"), max_bytes=1024
+        )
+
+
+# ---------------------------------------------------------------------------
+# _read_delimited_chunked：大文件分块读取
+# ---------------------------------------------------------------------------
+
+
+def test_read_delimited_chunked_handles_large_csv(tmp_path, monkeypatch):
+    """超过 _LARGE_DELIMITED_THRESHOLD 的 CSV 走分块读取路径，结果与一次性读取一致。"""
+    import data_agent.workspace as workspace_module
+
+    # 把阈值调到 0 强制走分块路径
+    monkeypatch.setattr(workspace_module, "_LARGE_DELIMITED_THRESHOLD", 0)
+
+    df = pd.DataFrame(
+        {"id": range(200), "name": [f"row_{i}" for i in range(200)], "value": [i * 1.5 for i in range(200)]}
+    )
+    source = tmp_path / "large.csv"
+    df.to_csv(source, index=False)
+
+    workspace = DataWorkspace(tmp_path / "runs", session_id="chunked")
+    profile = workspace.load(source)
+
+    assert profile["rows"] == 200
+    assert profile["columns"] == 3
+    assert workspace.dataframe["id"].tolist() == list(range(200))
+
+
+def test_read_delimited_chunked_handles_bad_lines(tmp_path, monkeypatch):
+    """分块读取模式下遇到坏行应回退 skip_bad=True 跳过并记录警告。"""
+    import data_agent.workspace as workspace_module
+
+    monkeypatch.setattr(workspace_module, "_LARGE_DELIMITED_THRESHOLD", 0)
+
+    # 第二行多一列，触发 ParserError 后回退 skip
+    source = tmp_path / "bad_large.csv"
+    source.write_text("a,b\n1,2\n3,4,5\n6,7\n", encoding="utf-8")
+
+    workspace = DataWorkspace(tmp_path / "runs", session_id="chunked_bad")
+    profile = workspace.load(source)
+
+    # 跳过坏行后保留 2 行有效数据
+    assert profile["rows"] == 2
+    assert profile["load_warnings"]
+
+
+# ---------------------------------------------------------------------------
+# _read_text：纯文本文件读取
+# ---------------------------------------------------------------------------
+
+
+def test_read_text_loads_lines_into_single_column(tmp_path):
+    """TXT 文件按行解析为单列 DataFrame，保留空行。"""
+    source = tmp_path / "notes.txt"
+    source.write_text("第一行\n第二行\n\n第四行", encoding="utf-8")
+    workspace = DataWorkspace(tmp_path / "runs", session_id="txt_normal")
+    profile = workspace.load(source)
+
+    assert profile["rows"] == 4
+    assert profile["columns"] == 1
+    texts = workspace.dataframe.iloc[:, 0].tolist()
+    assert texts == ["第一行", "第二行", "", "第四行"]
+
+
+def test_read_text_detects_gb18030_encoding(tmp_path):
+    """GB18030 编码的文本文件应被正确探测并读取。"""
+    source = tmp_path / "gb.txt"
+    source.write_text("华东区\n华南区\n", encoding="gb18030")
+    workspace = DataWorkspace(tmp_path / "runs", session_id="txt_gb")
+    profile = workspace.load(source)
+
+    assert profile["rows"] == 2
+    assert workspace.dataframe.iloc[:, 0].tolist() == ["华东区", "华南区"]
+
+
+def test_read_text_raises_on_empty_file(tmp_path):
+    """空文本文件应报 ValueError。"""
+    source = tmp_path / "empty.txt"
+    source.write_text("", encoding="utf-8")
+    workspace = DataWorkspace(tmp_path / "runs", session_id="txt_empty")
+    with pytest.raises(ValueError, match="为空|无法解析|无法识别"):
+        workspace.load(source)
+
+
+# ---------------------------------------------------------------------------
+# _read_pdf：PDF 表格提取（通过 mock pdfplumber）
+# ---------------------------------------------------------------------------
+
+
+def test_read_pdf_extracts_tables(tmp_path, monkeypatch):
+    """PDF 含表格时用 pdfplumber 提取，首行做表头，多表格自动拼接。"""
+    source = tmp_path / "data.pdf"
+    source.write_bytes(b"%PDF-1.4 dummy")
+
+    # 构造 mock pdfplumber，模拟两页各一个表格
+    mock_page1 = type("Page", (), {"extract_tables": lambda self: [[["name", "score"], ["Alice", "90"]]]})()
+    mock_page2 = type("Page", (), {"extract_tables": lambda self: [[["name", "score"], ["Bob", "85"]]]})()
+    mock_pdf = type("PDF", (), {"pages": [mock_page1, mock_page2]})()
+
+    import sys
+    import types
+
+    mock_module = types.ModuleType("pdfplumber")
+    mock_module.open = lambda path: type(
+        "Ctx", (), {"__enter__": lambda s: mock_pdf, "__exit__": lambda *a: None}
+    )()
+    monkeypatch.setitem(sys.modules, "pdfplumber", mock_module)
+
+    workspace = DataWorkspace(tmp_path / "runs", session_id="pdf_tables")
+    profile = workspace.load(source)
+
+    assert profile["rows"] == 2
+    assert workspace.dataframe["name"].tolist() == ["Alice", "Bob"]
+    assert workspace.dataframe["score"].tolist() == ["90", "85"]
+    assert any("PDF" in w for w in workspace.load_warnings)
+
+
+def test_read_pdf_falls_back_to_text_when_no_tables(tmp_path, monkeypatch):
+    """PDF 无表格时回退为按行提取文本到单列 DataFrame。"""
+    source = tmp_path / "text_only.pdf"
+    source.write_bytes(b"%PDF-1.4 dummy")
+
+    mock_page = type("Page", (), {
+        "extract_tables": lambda self: [],
+        "extract_text": lambda self: "第一段\n第二段",
+    })()
+    mock_pdf = type("PDF", (), {"pages": [mock_page]})()
+
+    import sys
+    import types
+
+    mock_module = types.ModuleType("pdfplumber")
+    mock_module.open = lambda path: type(
+        "Ctx", (), {"__enter__": lambda s: mock_pdf, "__exit__": lambda *a: None}
+    )()
+    monkeypatch.setitem(sys.modules, "pdfplumber", mock_module)
+
+    workspace = DataWorkspace(tmp_path / "runs", session_id="pdf_text")
+    profile = workspace.load(source)
+
+    assert profile["rows"] == 2
+    assert workspace.dataframe.iloc[:, 0].tolist() == ["第一段", "第二段"]
+
+
+def test_read_pdf_raises_on_empty_content(tmp_path, monkeypatch):
+    """PDF 无表格也无文本时应报 ValueError。"""
+    source = tmp_path / "empty.pdf"
+    source.write_bytes(b"%PDF-1.4 dummy")
+
+    mock_page = type("Page", (), {
+        "extract_tables": lambda self: [],
+        "extract_text": lambda self: None,
+    })()
+    mock_pdf = type("PDF", (), {"pages": [mock_page]})()
+
+    import sys
+    import types
+
+    mock_module = types.ModuleType("pdfplumber")
+    mock_module.open = lambda path: type(
+        "Ctx", (), {"__enter__": lambda s: mock_pdf, "__exit__": lambda *a: None}
+    )()
+    monkeypatch.setitem(sys.modules, "pdfplumber", mock_module)
+
+    workspace = DataWorkspace(tmp_path / "runs", session_id="pdf_empty")
+    with pytest.raises(ValueError, match="未找到"):
+        workspace.load(source)
+
+
+# ---------------------------------------------------------------------------
+# _read_docx：Word 文档表格提取（使用真实 python-docx 生成文件）
+# ---------------------------------------------------------------------------
+
+
+def test_read_docx_extracts_tables(tmp_path):
+    """DOCX 含表格时提取首行做表头，数据行拼接为 DataFrame。"""
+    import docx
+
+    source = tmp_path / "table.docx"
+    doc = docx.Document()
+    # 添加一个 2×3 表格
+    table = doc.add_table(rows=3, cols=2)
+    table.rows[0].cells[0].text = "region"
+    table.rows[0].cells[1].text = "sales"
+    table.rows[1].cells[0].text = "East"
+    table.rows[1].cells[1].text = "100"
+    table.rows[2].cells[0].text = "West"
+    table.rows[2].cells[1].text = "200"
+    doc.save(str(source))
+
+    workspace = DataWorkspace(tmp_path / "runs", session_id="docx_table")
+    profile = workspace.load(source)
+
+    assert profile["rows"] == 2
+    assert workspace.dataframe["region"].tolist() == ["East", "West"]
+    assert workspace.dataframe["sales"].tolist() == ["100", "200"]
+    assert any("Word" in w for w in workspace.load_warnings)
+
+
+def test_read_docx_falls_back_to_paragraphs(tmp_path):
+    """DOCX 无表格时回退为按段落提取文本到单列 DataFrame。"""
+    import docx
+
+    source = tmp_path / "paragraphs.docx"
+    doc = docx.Document()
+    doc.add_paragraph("第一段内容")
+    doc.add_paragraph("第二段内容")
+    doc.save(str(source))
+
+    workspace = DataWorkspace(tmp_path / "runs", session_id="docx_para")
+    profile = workspace.load(source)
+
+    assert profile["rows"] == 2
+    assert workspace.dataframe.iloc[:, 0].tolist() == ["第一段内容", "第二段内容"]
+
+
+def test_read_docx_raises_on_empty_document(tmp_path):
+    """空 Word 文档（无表格无段落文本）应报 ValueError。"""
+    import docx
+
+    source = tmp_path / "empty.docx"
+    doc = docx.Document()
+    doc.save(str(source))
+
+    workspace = DataWorkspace(tmp_path / "runs", session_id="docx_empty")
+    with pytest.raises(ValueError, match="未找到"):
+        workspace.load(source)
+
+
+# ---------------------------------------------------------------------------
+# save_dataframe：导出格式
+# ---------------------------------------------------------------------------
+
+
+def test_save_dataframe_rejects_unsupported_format(workspace):
+    """不支持的导出格式应报 ValueError。"""
+    with pytest.raises(ValueError, match="仅支持"):
+        workspace.save_dataframe("result.json")
+
+
+def test_save_dataframe_registers_artifact_with_description(workspace):
+    """save_dataframe 注册产物时携带描述，可通过 count_artifacts 查询。"""
+    before = workspace.count_artifacts("dataset")
+    workspace.save_dataframe("export_with_desc.csv", description="导出的清洗结果")
+    assert workspace.count_artifacts("dataset") == before + 1
+    # artifacts 列表中最后一项的 description 应为传入值
+    assert workspace.artifacts[-1]["description"] == "导出的清洗结果"
+
+
+# ---------------------------------------------------------------------------
+# save_checkpoint / restore_checkpoint：重启后恢复活动 DataFrame
+# ---------------------------------------------------------------------------
+
+
+def test_save_and_restore_checkpoint_round_trip(tmp_path):
+    """save_checkpoint 写 parquet，restore_checkpoint 读回，数据一致。"""
+    workspace = DataWorkspace(tmp_path / "runs", session_id="ckpt")
+    source = tmp_path / "data.csv"
+    pd.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]}).to_csv(source, index=False)
+    workspace.load(source)
+
+    # 修改数据后保存 checkpoint
+    workspace.dataframe = pd.DataFrame({"a": [10, 20], "b": ["p", "q"]})
+    ckpt_path = workspace.save_checkpoint()
+    assert ckpt_path.exists()
+
+    # 新实例（模拟重启）从 checkpoint 恢复
+    restored = DataWorkspace(tmp_path / "runs", session_id="ckpt")
+    assert restored.restore_checkpoint() is True
+    assert restored.dataframe["a"].tolist() == [10, 20]
+    assert restored.dataframe["b"].tolist() == ["p", "q"]
+
+
+def test_restore_checkpoint_returns_false_when_no_state(tmp_path):
+    """无 checkpoint 文件时 restore_checkpoint 返回 False。"""
+    workspace = DataWorkspace(tmp_path / "runs", session_id="no_ckpt")
+    assert workspace.restore_checkpoint() is False
+
+
+# ---------------------------------------------------------------------------
+# restore_artifacts：从目录重新注册产物文件
+# ---------------------------------------------------------------------------
+
+
+def test_restore_artifacts_reregisters_existing_files(tmp_path):
+    """artifacts 目录中已存在的文件应被重新注册到 _artifacts。"""
+    workspace = DataWorkspace(tmp_path / "runs", session_id="restore_art")
+    # 在 artifacts 目录中放置文件
+    chart_path = workspace.artifacts_dir / "bar_1.html"
+    chart_path.write_text("<html>chart</html>", encoding="utf-8")
+    data_path = workspace.artifacts_dir / "cleaned.csv"
+    data_path.write_text("a,b\n1,2\n", encoding="utf-8")
+
+    workspace.restore_artifacts()
+
+    names = [a["name"] for a in workspace.artifacts]
+    assert "bar_1.html" in names
+    assert "cleaned.csv" in names
+    # HTML 文件应归类为 visualization
+    chart_art = next(a for a in workspace.artifacts if a["name"] == "bar_1.html")
+    assert chart_art["kind"] == "visualization"
+    # CSV 文件应归类为 dataset
+    data_art = next(a for a in workspace.artifacts if a["name"] == "cleaned.csv")
+    assert data_art["kind"] == "dataset"
+
+
+def test_restore_artifacts_skips_bundle_files(tmp_path):
+    """plotly.min.js 和 echarts.min.js 是共享 bundle，不应注册为产物。"""
+    workspace = DataWorkspace(tmp_path / "runs", session_id="restore_skip_bundle")
+    (workspace.artifacts_dir / "plotly.min.js").write_text("// plotly", encoding="utf-8")
+    (workspace.artifacts_dir / "echarts.min.js").write_text("// echarts", encoding="utf-8")
+    (workspace.artifacts_dir / "chart_1.html").write_text("<html></html>", encoding="utf-8")
+
+    workspace.restore_artifacts()
+
+    names = [a["name"] for a in workspace.artifacts]
+    assert "plotly.min.js" not in names
+    assert "echarts.min.js" not in names
+    assert "chart_1.html" in names
+
+
+def test_restore_artifacts_uses_metadata_when_provided(tmp_path):
+    """传入 metadata 时应使用其中的 kind/description 而非按扩展名推断。"""
+    workspace = DataWorkspace(tmp_path / "runs", session_id="restore_meta")
+    (workspace.artifacts_dir / "custom.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+
+    metadata = [{"name": "custom.csv", "kind": "chart_data", "description": "自定义描述"}]
+    workspace.restore_artifacts(metadata=metadata)
+
+    art = workspace.artifacts[0]
+    assert art["kind"] == "chart_data"
+    assert art["description"] == "自定义描述"
+
+
+# ---------------------------------------------------------------------------
+# snapshot_state / restore_state：步骤级回滚
+# ---------------------------------------------------------------------------
+
+
+def test_snapshot_and_restore_state_rolls_back_mutations(workspace):
+    """snapshot 后的数据变更和文件新增，在 restore_state 后应回滚。"""
+    # 快照当前状态
+    snapshot = workspace.snapshot_state()
+    original_rows = len(workspace.dataframe)
+
+    # 添加一个产物文件并修改 DataFrame
+    workspace.save_dataframe("temp_export.csv")
+    assert (workspace.artifacts_dir / "temp_export.csv").exists()
+    assert workspace.count_artifacts() >= 1
+
+    # 回滚
+    workspace.restore_state(snapshot)
+    assert len(workspace.dataframe) == original_rows
+    # 新增的文件应被删除
+    assert not (workspace.artifacts_dir / "temp_export.csv").exists()
+    # artifacts 列表应不包含被回滚的产物
+    assert all(a["name"] != "temp_export.csv" for a in workspace.artifacts)
+
+
+# ---------------------------------------------------------------------------
+# cleanup：清理工作区目录
+# ---------------------------------------------------------------------------
+
+
+def test_cleanup_removes_workspace_directory(tmp_path):
+    """cleanup 应删除整个工作区目录。"""
+    workspace = DataWorkspace(tmp_path / "runs", session_id="cleanup_test")
+    assert workspace.root.exists()
+    # 写入一些文件
+    (workspace.artifacts_dir / "chart.html").write_text("<html></html>", encoding="utf-8")
+    workspace.cleanup()
+    assert not workspace.root.exists()
+
+
+def test_cleanup_is_idempotent(tmp_path):
+    """cleanup 在目录已不存在时不应报错。"""
+    workspace = DataWorkspace(tmp_path / "runs", session_id="cleanup_idem")
+    workspace.cleanup()
+    # 再次调用不应抛出
+    workspace.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# register_artifact：产物注册校验
+# ---------------------------------------------------------------------------
+
+
+def test_register_artifact_rejects_file_outside_artifacts_dir(workspace, tmp_path):
+    """不在 artifacts 目录内的文件不应被注册。"""
+    outside = tmp_path / "outside.csv"
+    outside.write_text("a,b\n1,2\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="artifacts 目录"):
+        workspace.register_artifact(outside, "dataset", "外部文件")
+
+
+# ---------------------------------------------------------------------------
+# allocate_chart_index：FileNotFoundError 分支
+# ---------------------------------------------------------------------------
+
+
+def test_allocate_chart_index_handles_missing_artifacts_dir(tmp_path):
+    """artifacts 目录被外部删除后，allocate_chart_index 不应崩溃。"""
+    workspace = DataWorkspace(tmp_path / "runs", session_id="missing_dir")
+    import shutil
+
+    shutil.rmtree(workspace.artifacts_dir)
+    # 目录不存在时应走 FileNotFoundError 分支，返回 1
+    assert workspace.allocate_chart_index() == 1
+
+
+# ---------------------------------------------------------------------------
+# ensure_plotly_bundle：Plotly.js bundle 写入
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_plotly_bundle_writes_file(tmp_path):
+    """首次调用写入 plotly.min.js，再次调用复用已有文件。"""
+    workspace = DataWorkspace(tmp_path / "runs", session_id="plotly_bundle")
+    bundle = workspace.ensure_plotly_bundle()
+    assert bundle is not None
+    assert bundle.exists()
+    assert bundle.name == "plotly.min.js"
+    assert bundle.stat().st_size > 0
+
+    # 第二次调用应复用已有文件（不重新写入）
+    first_mtime = bundle.stat().st_mtime
+    bundle2 = workspace.ensure_plotly_bundle()
+    assert bundle2 == bundle
+    # 文件未被重写
+    assert bundle2.stat().st_mtime == first_mtime
+
+
+def test_ensure_plotly_bundle_returns_none_on_import_failure(tmp_path, monkeypatch):
+    """plotly 不可导入时返回 None，不阻塞调用方。"""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "plotly" or name.startswith("plotly."):
+            raise ImportError("plotly not available")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    workspace = DataWorkspace(tmp_path / "runs", session_id="plotly_none")
+    assert workspace.ensure_plotly_bundle() is None
+
+
+# ---------------------------------------------------------------------------
+# ensure_echarts_bundle：ECharts.js bundle 下载
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_echarts_bundle_downloads_from_cdn(tmp_path, monkeypatch):
+    """首次调用从 CDN 下载 echarts.min.js，后续复用。"""
+    import urllib.request
+
+    # mock urllib.request.urlopen 返回假内容
+    fake_content = b"// echarts minified " + b"x" * 2048
+
+    class FakeResponse:
+        def __init__(self, content):
+            self._content = content
+
+        def read(self):
+            return self._content
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    def fake_urlopen(url, timeout=None):
+        return FakeResponse(fake_content)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    workspace = DataWorkspace(tmp_path / "runs", session_id="echarts_bundle")
+    bundle = workspace.ensure_echarts_bundle()
+    assert bundle is not None
+    assert bundle.exists()
+    assert bundle.read_bytes() == fake_content
+
+    # 第二次调用应复用已有文件（不重新下载）
+    bundle2 = workspace.ensure_echarts_bundle()
+    assert bundle2 == bundle
+
+
+def test_ensure_echarts_bundle_returns_none_on_download_failure(tmp_path, monkeypatch):
+    """CDN 下载失败时返回 None，调用方走 fallback。"""
+    import urllib.request
+
+    def fake_urlopen(url, timeout=None):
+        raise ConnectionError("network unavailable")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    workspace = DataWorkspace(tmp_path / "runs", session_id="echarts_fail")
+    assert workspace.ensure_echarts_bundle() is None
+
+
+def test_ensure_echarts_bundle_rejects_too_small_response(tmp_path, monkeypatch):
+    """下载内容小于 1024 字节时视为无效，返回 None。"""
+    import urllib.request
+
+    class FakeResponse:
+        def __init__(self, content):
+            self._content = content
+
+        def read(self):
+            return self._content
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda url, timeout=None: FakeResponse(b"too small"),
+    )
+
+    workspace = DataWorkspace(tmp_path / "runs", session_id="echarts_small")
+    assert workspace.ensure_echarts_bundle() is None
+
+
+def test_ensure_echarts_gl_bundle_downloads_from_cdn(tmp_path, monkeypatch):
+    """echarts-gl 扩展 bundle 按需下载，失败返回 None。"""
+    import urllib.request
+
+    fake_content = b"// echarts-gl minified " + b"x" * 2048
+
+    class FakeResponse:
+        def __init__(self, content):
+            self._content = content
+
+        def read(self):
+            return self._content
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda url, timeout=None: FakeResponse(fake_content),
+    )
+
+    workspace = DataWorkspace(tmp_path / "runs", session_id="echarts_gl")
+    bundle = workspace.ensure_echarts_gl_bundle()
+    assert bundle is not None
+    assert bundle.exists()
+    assert bundle.read_bytes() == fake_content
+
+
+def test_ensure_echarts_gl_bundle_returns_none_on_failure(tmp_path, monkeypatch):
+    """echarts-gl 下载失败时返回 None。"""
+    import urllib.request
+
+    def fake_urlopen(url, timeout=None):
+        raise ConnectionError("fail")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    workspace = DataWorkspace(tmp_path / "runs", session_id="echarts_gl_fail")
+    assert workspace.ensure_echarts_gl_bundle() is None
+
+
+# ---------------------------------------------------------------------------
+# restore_from_directory：通过 SessionRegistry 从磁盘目录恢复会话
+# ---------------------------------------------------------------------------
+
+
+def test_restore_from_directory_recovers_persisted_session(tmp_path):
+    """SessionRegistry.restore_from_directory 应从磁盘目录恢复完整会话。"""
+    from data_agent.registry import SessionRegistry
+    from data_agent.storage import LocalSessionStorage
+
+    runs_dir = tmp_path / "runs"
+    # 先创建并持久化一个会话
+    workspace = DataWorkspace(runs_dir, session_id="restore_dir_test")
+    source = workspace.save_upload("sales.csv", b"region,sales\nEast,100\nWest,200\n")
+    workspace.load(source)
+    workspace.save_dataframe("result.csv")
+
+    registry = SessionRegistry(runs_dir, max_sessions=10, ttl_hours=24, storage=LocalSessionStorage())
+    session_id, record = registry.create(workspace)
+    record.chat = [{"role": "user", "content": "检查数据"}]
+    record.analysis_status = "completed"
+    registry.persist(session_id, record)
+
+    # 从内存中移除，模拟服务重启
+    registry._items.clear()
+
+    # 用 restore_from_directory 恢复
+    restored = registry.restore_from_directory(session_id)
+    assert restored is not None
+    assert restored.workspace.dataframe.shape == (2, 2)
+    assert restored.workspace.dataframe["region"].tolist() == ["East", "West"]
+    assert restored.chat == [{"role": "user", "content": "检查数据"}]
+    assert restored.analysis_status == "completed"
+    # 产物文件应被重新注册
+    assert restored.workspace.count_artifacts("dataset") >= 1
+
+
+def test_restore_from_directory_returns_none_for_invalid_session(tmp_path):
+    """目录无效或不存在时 restore_from_directory 返回 None。"""
+    from data_agent.registry import SessionRegistry
+    from data_agent.storage import LocalSessionStorage
+
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    registry = SessionRegistry(runs_dir, max_sessions=10, ttl_hours=24, storage=LocalSessionStorage())
+
+    # 不存在的 session_id
+    assert registry.restore_from_directory("nonexistent_session") is None
+
+
+def test_restore_from_directory_returns_existing_when_already_in_memory(tmp_path):
+    """session 已在内存中时 restore_from_directory 直接返回已有 record。"""
+    from data_agent.registry import SessionRegistry
+    from data_agent.storage import LocalSessionStorage
+
+    runs_dir = tmp_path / "runs"
+    workspace = DataWorkspace(runs_dir, session_id="already_loaded")
+    source = workspace.save_upload("data.csv", b"a,b\n1,2\n")
+    workspace.load(source)
+
+    registry = SessionRegistry(runs_dir, max_sessions=10, ttl_hours=24, storage=LocalSessionStorage())
+    session_id, record = registry.create(workspace)
+
+    # 已在内存中，应直接返回同一 record
+    restored = registry.restore_from_directory(session_id)
+    assert restored is record

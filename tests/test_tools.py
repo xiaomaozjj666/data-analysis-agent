@@ -10,6 +10,21 @@ import plotly.io as pio
 import pytest
 
 from data_agent.tools import build_tools
+from data_agent.tools._cleaning import (
+    _apply_missing_strategy,
+    _handle_outliers,
+    _normalize_column_names,
+    _parse_numeric_columns,
+    _trim_string_columns,
+)
+from data_agent.tools._helpers import (
+    _compact_number,
+    _human_column_label,
+    _nice_axis_formatter,
+    _nice_num,
+    _nice_ticks,
+    _plotly_axis_tickformat,
+)
 from data_agent.workspace import PLOTLY_BUNDLE_NAME, DataWorkspace
 
 
@@ -670,3 +685,328 @@ def test_run_python_code_timeout(workspace, monkeypatch):
         assert "熔断" in str(exc)
     else:
         raise AssertionError("expected timeout to trip")
+
+
+# ---------------------------------------------------------------------------
+# _cleaning.py 清洗辅助函数测试
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeColumnNames:
+    """列名规范化：特殊字符→下划线、重复列名加序号、中文保留。"""
+
+    def test_already_clean_no_change(self):
+        df = pd.DataFrame({"a": [1], "b": [2]})
+        result, cols, dt, changed = _normalize_column_names(df, None, None)
+        assert changed is False
+        assert list(result.columns) == ["a", "b"]
+
+    def test_special_chars_normalized(self):
+        df = pd.DataFrame({"First Name": [1], "Last-Name": [2], "Age!": [3]})
+        result, cols, dt, changed = _normalize_column_names(df, ["First Name"], None)
+        assert changed is True
+        assert list(result.columns) == ["first_name", "last_name", "age"]
+        assert cols == ["first_name"]
+
+    def test_duplicate_names_get_suffix(self):
+        df = pd.DataFrame([[1, 2, 3]], columns=["col", "col", "col"])
+        result, _, _, changed = _normalize_column_names(df, None, None)
+        assert changed is True
+        assert list(result.columns) == ["col", "col_2", "col_3"]
+
+    def test_chinese_columns_preserved(self):
+        df = pd.DataFrame({"姓名": [1], "年龄": [2]})
+        result, _, _, changed = _normalize_column_names(df, ["姓名"], ["年龄"])
+        assert changed is False  # 中文列名不需要规范化
+        assert list(result.columns) == ["姓名", "年龄"]
+
+    def test_empty_column_name_fallback(self):
+        df = pd.DataFrame({"": [1], " ": [2]})
+        result, _, _, changed = _normalize_column_names(df, None, None)
+        assert changed is True
+        assert "column" in result.columns
+
+
+class TestTrimStringColumns:
+    """文本列修剪：去除首尾空格，非字符串值保持不变。"""
+
+    def test_trims_whitespace(self):
+        df = pd.DataFrame({"name": ["  Alice  ", " Bob ", ""]})
+        count = _trim_string_columns(df)
+        assert count == 1
+        assert df["name"].tolist() == ["Alice", "Bob", ""]
+
+    def test_non_string_values_unchanged(self):
+        # None 在数值列中被 pandas 转为 NaN（float），此处只验证非字符串列
+        # 不被 trim 操作改动，值集合等价即可。
+        df = pd.DataFrame({"val": [1, 2, None], "name": [" A ", "B", " C "]})
+        count = _trim_string_columns(df)
+        assert count == 1
+        assert df["val"].isna().sum() == 1
+        assert df["val"].dropna().tolist() == [1.0, 2.0]
+        assert df["name"].tolist() == ["A", "B", "C"]
+
+    def test_no_string_columns(self):
+        df = pd.DataFrame({"a": [1, 2], "b": [3.0, 4.0]})
+        assert _trim_string_columns(df) == 0
+
+
+class TestParseNumericColumns:
+    """数值列解析：按阈值判断是否将文本列转为数值列。"""
+
+    def test_high_numeric_ratio_converts(self):
+        df = pd.DataFrame({"val": ["1", "2", "3", "4", "5"]})
+        converted = _parse_numeric_columns(df, threshold=0.8)
+        assert converted == ["val"]
+        assert df["val"].dtype in ["int64", "float64"]
+
+    def test_low_numeric_ratio_not_converted(self):
+        df = pd.DataFrame({"val": ["1", "2", "abc", "def", "ghi"]})
+        converted = _parse_numeric_columns(df, threshold=0.8)
+        assert converted == []
+        # pandas 2.x 可能把字符串列推断为 StringDtype 而非 object，二者都表示
+        # 未被转为数值列，这里用 kind 判断避免版本差异。
+        assert df["val"].dtype.kind in ("O", "S", "U")
+
+    def test_empty_column_skipped(self):
+        df = pd.DataFrame({"val": [None, None, None]})
+        converted = _parse_numeric_columns(df)
+        assert converted == []
+
+
+class TestApplyMissingStrategy:
+    """缺失值策略：drop/ffill/bfill/mean/median/mode。"""
+
+    def test_drop_strategy(self):
+        df = pd.DataFrame({"a": [1, None, 3, 4, 5]})
+        _apply_missing_strategy(df, ["a"], "drop")
+        assert len(df) == 4
+        assert df["a"].isna().sum() == 0
+
+    def test_drop_high_ratio_raises(self):
+        df = pd.DataFrame({"a": [1, None, None, None, None]})
+        with pytest.raises(ValueError, match="拒绝高比例删行"):
+            _apply_missing_strategy(df, ["a"], "drop")
+
+    def test_forward_fill(self):
+        df = pd.DataFrame({"a": [1.0, None, 3.0, None, 5.0]})
+        _apply_missing_strategy(df, ["a"], "forward_fill")
+        assert df["a"].tolist() == [1.0, 1.0, 3.0, 3.0, 5.0]
+
+    def test_backward_fill(self):
+        # bfill 无法填充尾部 NaN（其后无值可回填），只验证前 4 行被正确填充。
+        df = pd.DataFrame({"a": [None, 2.0, None, 4.0, None]})
+        _apply_missing_strategy(df, ["a"], "backward_fill")
+        assert df["a"].iloc[:4].tolist() == [2.0, 2.0, 4.0, 4.0]
+        assert df["a"].iloc[4] is pd.NA or (isinstance(df["a"].iloc[4], float) and np.isnan(df["a"].iloc[4]))
+
+    def test_mean_fill(self):
+        df = pd.DataFrame({"a": [10.0, 20.0, None, 30.0]})
+        _apply_missing_strategy(df, ["a"], "mean")
+        assert df["a"].isna().sum() == 0
+        assert abs(df["a"].iloc[2] - 20.0) < 0.01
+
+    def test_median_fill(self):
+        # median of [10, 20, 30] = 20.0（偶数个时取中间两数均值，此处 3 个取中位 20）
+        df = pd.DataFrame({"a": [10.0, 20.0, None, 30.0]})
+        _apply_missing_strategy(df, ["a"], "median")
+        assert df["a"].isna().sum() == 0
+        assert df["a"].iloc[2] == 20.0
+
+    def test_mode_fill(self):
+        df = pd.DataFrame({"cat": ["A", "B", "A", None, "A"]})
+        _apply_missing_strategy(df, ["cat"], "mode")
+        assert df["cat"].isna().sum() == 0
+        assert df["cat"].iloc[3] == "A"
+
+    def test_mean_on_non_numeric_raises(self):
+        df = pd.DataFrame({"cat": ["A", "B", None]})
+        with pytest.raises(ValueError, match="不是数值列"):
+            _apply_missing_strategy(df, ["cat"], "mean")
+
+    def test_no_missing_no_change(self):
+        df = pd.DataFrame({"a": [1.0, 2.0, 3.0]})
+        _apply_missing_strategy(df, ["a"], "mean")
+        assert df["a"].tolist() == [1.0, 2.0, 3.0]
+
+
+class TestHandleOutliers:
+    """离群值检测与处理：IQR/zscore，cap/remove 两种动作。"""
+
+    def test_iqr_cap(self):
+        df = pd.DataFrame({"a": [1, 2, 3, 4, 100]})
+        count, bounds = _handle_outliers(df, ["a"], "iqr", "cap")
+        assert count == 1
+        assert "a" in bounds
+        assert df["a"].max() < 100
+
+    def test_iqr_remove(self):
+        df = pd.DataFrame({"a": [1, 2, 3, 4, 5, 100]})
+        count, _ = _handle_outliers(df, ["a"], "iqr", "remove")
+        assert count >= 1
+        assert 100 not in df["a"].values
+
+    def test_iqr_remove_high_ratio_raises(self):
+        # 9 个值，Q1(index2)=5, Q3(index6)=5, IQR=0。
+        # 离群值 1/100/200 占 3/9=33.3% > 30% 阈值，remove 时应被拒绝。
+        df = pd.DataFrame({"a": [1, 5, 5, 5, 5, 5, 5, 100, 200]})
+        with pytest.raises(ValueError, match="拒绝一次删除过多"):
+            _handle_outliers(df, ["a"], "iqr", "remove")
+
+    def test_zscore_cap(self):
+        # 10 个 1 + 1 个 100：mean≈10, std≈28.5, z(100)≈3.16 > 3 → 离群。
+        df = pd.DataFrame({"a": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 100]})
+        count, bounds = _handle_outliers(df, ["a"], "zscore", "cap")
+        assert count == 1
+        assert "a" in bounds
+
+    def test_zscore_zero_std_skipped(self):
+        df = pd.DataFrame({"a": [5, 5, 5, 5, 5]})
+        count, bounds = _handle_outliers(df, ["a"], "zscore", "cap")
+        assert count == 0
+        assert "a" not in bounds
+
+    def test_no_numeric_columns(self):
+        # _numeric_columns 在无数值列时抛 ValueError，_handle_outliers 透传该异常。
+        df = pd.DataFrame({"cat": ["A", "B", "C"]})
+        with pytest.raises(ValueError, match="没有可用于该操作的数值列"):
+            _handle_outliers(df, ["cat"], "iqr", "cap")
+
+
+# ---------------------------------------------------------------------------
+# _helpers.py 辅助函数测试
+# ---------------------------------------------------------------------------
+
+
+class TestHumanColumnLabel:
+    """列名可读化：业务映射优先，回退下划线转空格。"""
+
+    def test_known_business_label(self):
+        assert _human_column_label("sales") == "销售额"
+        assert _human_column_label("revenue") == "收入"
+        assert _human_column_label("order_date") == "订单日期"
+
+    def test_fallback_underscore_to_space(self):
+        assert _human_column_label("first_name") == "first name"
+        assert _human_column_label("user_id") == "user id"
+
+    def test_empty_or_none(self):
+        assert _human_column_label(None) == ""
+        assert _human_column_label("") == ""
+
+
+class TestCompactNumber:
+    """紧凑数值格式化：M/K/千分位。"""
+
+    def test_millions(self):
+        assert _compact_number(1_500_000) == "1.50M"
+
+    def test_thousands(self):
+        assert _compact_number(35_600) == "35.6K"
+
+    def test_tens(self):
+        assert _compact_number(42) == "42"
+
+    def test_small_number(self):
+        result = _compact_number(3.14)
+        assert "3.14" in result
+
+
+class TestNiceNum:
+    """nice number 算法：对齐到 1/2/5/10 的倍数。"""
+
+    @pytest.mark.parametrize("x,round_,expected", [
+        (0, True, 0.0),
+        (0, False, 0.0),
+        # round_=True 用 <= 判断：1.3<=1.5→1.0, 3.5<=7.0→5.0, 8.0>7.0→10.0
+        (1.3, True, 1.0),
+        (3.5, True, 5.0),
+        (8.0, True, 10.0),
+        # round_=False 用 < 判断：1.3<1.5→1.0, 3.5<7.0→5.0, 8.0>=7.0→10.0
+        (1.3, False, 1.0),
+        (3.5, False, 5.0),
+        (8.0, False, 10.0),
+        # 负数：取绝对值计算 nice_fraction 后乘以符号
+        (-7.0, True, -5.0),   # 7.0<=7.0→5.0
+        (-7.0, False, -10.0), # 7.0>=7.0→10.0
+        # 26: exp=1, fraction=2.6, 2.6<=3.0→2.0, result=2.0*10=20.0
+        (26, True, 20.0),
+        (26, False, 20.0),
+    ])
+    def test_nice_num_values(self, x, round_, expected):
+        assert _nice_num(x, round_) == expected
+
+
+class TestNiceTicks:
+    """nice ticks：生成圆数刻度范围与步长。"""
+
+    def test_normal_range(self):
+        vmin, vmax, step = _nice_ticks(0, 100, 5)
+        assert step > 0
+        assert vmin <= 0
+        assert vmax >= 100
+
+    def test_vmin_equals_vmax(self):
+        vmin, vmax, step = _nice_ticks(50, 50)
+        assert vmin < 50 < vmax
+        assert step > 0
+
+    def test_vmin_equals_vmax_zero(self):
+        vmin, vmax, step = _nice_ticks(0, 0)
+        assert vmin < 0 < vmax
+        assert step > 0
+
+    def test_swapped_min_max(self):
+        vmin1, vmax1, step1 = _nice_ticks(10, 90)
+        vmin2, vmax2, step2 = _nice_ticks(90, 10)
+        assert vmin1 == vmin2
+        assert vmax1 == vmax2
+
+    def test_negative_range(self):
+        vmin, vmax, step = _nice_ticks(-50, 50)
+        assert vmin <= -50
+        assert vmax >= 50
+        assert step > 0
+
+    def test_small_range(self):
+        vmin, vmax, step = _nice_ticks(0.1, 0.9)
+        assert step > 0
+        assert vmin <= 0.1
+
+
+class TestNiceAxisFormatter:
+    """大数值自适应单位格式化：亿/万/千分位/小数/科学计数。"""
+
+    @pytest.mark.parametrize("value,expected_contains", [
+        (0, "0"),
+        (150_000_000, "1.5亿"),
+        (35_000, "3.5万"),
+        (5_000, "5,000"),
+        (500, "500"),
+        (25.5, "25.5"),
+        (3.14, "3.14"),
+        (0.05, "0.05"),
+        (0.005, "0.005"),
+        (0.0001, "e-"),
+        (-1_000_000, "-100万"),
+        (-500, "-500"),
+    ])
+    def test_format_values(self, value, expected_contains):
+        result = _nice_axis_formatter(value)
+        assert expected_contains in result
+
+
+class TestPlotlyAxisTickformat:
+    """Plotly tickformat 生成：根据数值范围选择合适格式。"""
+
+    @pytest.mark.parametrize("value_range,expected", [
+        ((0, 0), ",.0f"),
+        ((0, 5000), ",.0f"),
+        ((0, 50), ",.1f"),
+        ((0, 5), ".2f"),
+        ((0, 0.05), ".3f"),
+        ((0, 0.005), ".4f"),
+        ((0, 0.0001), ".2e"),
+    ])
+    def test_tickformat_values(self, value_range, expected):
+        assert _plotly_axis_tickformat(value_range) == expected
