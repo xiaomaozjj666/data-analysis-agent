@@ -28,6 +28,7 @@ from fastapi.responses import FileResponse, Response
 
 from data_agent.registry import ChartEditRequest, SessionRecord, _artifact_file
 from data_agent.tools import _PLOTLY_DARK_MODE_SCRIPT
+from data_agent.tools.builder import _render_plotly_html
 from data_agent.workspace import (
     ECHARTS_BUNDLE_NAME,
     ECHARTS_GL_BUNDLE_NAME,
@@ -385,14 +386,6 @@ def edit_chart(session_id: str, filename: str, request: ChartEditRequest) -> dic
                 or stem
             )
             if relative_script:
-                html_template = (
-                    "<!doctype html><html><head><meta charset='utf-8'>"
-                    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-                    "<title>{title}</title><script src='{script}'></script>"
-                    "<style>html,body{{width:100%;height:100%;margin:0;background:#fbfaf5;overflow:hidden}}"
-                    ".plotly-graph-div{{width:100% !important;height:100% !important;min-height:560px}}</style>"
-                    "</head><body>{div}{dark_script}</body></html>"
-                )
                 div = fig.to_html(
                     full_html=False,
                     include_plotlyjs=False,
@@ -409,11 +402,12 @@ def edit_chart(session_id: str, filename: str, request: ChartEditRequest) -> dic
                 div = div.replace("</script>", "<\\/script>")
                 _atomic_write_text(
                     html_path,
-                    html_template.format(
+                    _render_plotly_html(
                         title=escape(display_title),
-                        script=relative_script,
+                        script_src=relative_script,
                         div=div,
                         dark_script=_PLOTLY_DARK_MODE_SCRIPT,
+                        full_page=False,
                     ),
                 )
             else:

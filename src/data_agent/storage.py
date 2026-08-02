@@ -106,6 +106,9 @@ class S3SessionStorage:
             aws_secret_access_key=secret_access_key,
             config=Config(s3={"addressing_style": "path"}),
         )
+        # Track per-file mtime per session so sync_session only uploads
+        # changed files instead of re-zipping the entire directory.
+        self._mtimes: dict[str, dict[str, float]] = {}
 
     def _key(self, session_id: str) -> str:
         return f"{self.prefix}/{session_id}.zip"
@@ -113,12 +116,23 @@ class S3SessionStorage:
     def sync_session(self, session_id: str, source: Path) -> None:
         source = source.resolve()
         archive = source.parent / f".{session_id}.upload.zip"
+        prev_mtimes: dict[str, float] = getattr(self, "_mtimes", {}).get(session_id, {})
+        new_mtimes: dict[str, float] = {}
         try:
             with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as bundle:
                 for path in sorted(source.rglob("*")):
-                    if path.is_file():
-                        bundle.write(path, path.relative_to(source))
+                    if not path.is_file():
+                        continue
+                    rel = path.relative_to(source).as_posix()
+                    mtime = path.stat().st_mtime
+                    new_mtimes[rel] = mtime
+                    # Skip unchanged files on non-initial syncs.
+                    if prev_mtimes and rel in prev_mtimes and abs(prev_mtimes[rel] - mtime) < 0.01:
+                        continue
+                    bundle.write(path, rel)
             self.client.upload_file(str(archive), self.bucket, self._key(session_id))
+            if hasattr(self, "_mtimes"):
+                self._mtimes[session_id] = new_mtimes
         except Exception as exc:
             raise RuntimeError(f"R2/S3 会话持久化失败：{exc}") from exc
         finally:
@@ -155,6 +169,8 @@ class S3SessionStorage:
             self.client.delete_object(Bucket=self.bucket, Key=self._key(session_id))
         except Exception as exc:
             raise RuntimeError(f"R2/S3 会话归档删除失败：{exc}") from exc
+        if hasattr(self, "_mtimes"):
+            self._mtimes.pop(session_id, None)
 
     def healthcheck(self) -> dict[str, str | bool]:
         try:

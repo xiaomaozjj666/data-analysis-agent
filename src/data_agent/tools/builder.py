@@ -271,6 +271,48 @@ def _collect_trace_values(fig: px.Figure, axis: str) -> list[float]:
     return values
 
 
+def _render_plotly_html(
+    *,
+    title: str,
+    script_src: str,
+    div: str,
+    interpretation_block: str = "",
+    dark_script: str = "",
+    full_page: bool = True,
+) -> str:
+    """Shared Plotly HTML template used by chart creation and editing paths.
+
+    Both ``create_visualization`` (builder.py) and ``edit_chart`` (artifacts.py)
+    use this helper to produce consistent HTML documents, avoiding duplicated
+    template strings and CSS blocks.
+    """
+    style = (
+        "html,body{width:100%;height:100%;margin:0;background:#fbfaf5;overflow:hidden;"
+        "font-family:'IBM Plex Sans','Noto Sans SC',sans-serif}"
+        ".plotly-graph-div{width:100% !important;height:100% !important;min-height:440px}"
+        ".layout{display:flex;flex-direction:column;height:100%}"
+        ".chart-wrap{flex:1;min-height:0}"
+        ".plotly-interpretation{border-top:1px solid #e5e7eb;padding:14px 24px;background:#f9fafb;"
+        "font-size:13px;line-height:1.75;color:#374151;max-height:160px;overflow-y:auto}"
+        ".plotly-interpretation-title{font-size:12px;color:#6b7280;font-weight:600;"
+        "margin-bottom:6px;letter-spacing:0.5px}"
+    )
+    if full_page:
+        body = (
+            f"<div class='layout'><div class='chart-wrap'>{div}</div>"
+            f"{interpretation_block}</div>{dark_script}"
+        )
+    else:
+        body = f"{div}{dark_script}"
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<title>{title}</title><script src='{script_src}'></script>"
+        f"<style>{style}</style>"
+        f"</head><body>{body}</body></html>"
+    )
+
+
 def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
     """创建绑定到指定工作区的工具集，供 ReAct Agent 使用。
 
@@ -1017,22 +1059,7 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                 f'{escape(interpretation)}'
                 '</div>'
             )
-        html_template = (
-            "<!doctype html><html><head><meta charset='utf-8'>"
-            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-            "<title>{title}</title><script src='{script}'></script>"
-            "<style>html,body{{width:100%;height:100%;margin:0;background:#fbfaf5;overflow:hidden;font-family:'IBM Plex Sans','Noto Sans SC',sans-serif}}"
-            ".plotly-graph-div{{width:100% !important;height:100% !important;min-height:440px}}"
-            ".layout{{display:flex;flex-direction:column;height:100%}}"
-            ".chart-wrap{{flex:1;min-height:0}}"
-            ".plotly-interpretation{{border-top:1px solid #e5e7eb;padding:14px 24px;background:#f9fafb;font-size:13px;line-height:1.75;color:#374151;max-height:160px;overflow-y:auto}}"
-            ".plotly-interpretation-title{{font-size:12px;color:#6b7280;font-weight:600;margin-bottom:6px;letter-spacing:0.5px}}"
-            "</style>"
-            "</head><body><div class='layout'><div class='chart-wrap'>{div}</div>{interpretation}</div>{dark_script}</body></html>"
-            if relative_script
-            else None
-        )
-        if html_template is not None:
+        if relative_script is not None:
             div = fig.to_html(
                 full_html=False,
                 include_plotlyjs=False,
@@ -1054,11 +1081,11 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             # 加载到损坏页面。tmp + os.replace 对同目录文件是原子的。
             _atomic_write_text(
                 html_path,
-                html_template.format(
+                _render_plotly_html(
                     title=escape(display_title),
-                    script=relative_script,
+                    script_src=relative_script,
                     div=div,
-                    interpretation=interpretation_block,
+                    interpretation_block=interpretation_block,
                     dark_script=_PLOTLY_DARK_MODE_SCRIPT,
                 ),
             )

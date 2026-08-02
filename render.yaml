@@ -15,7 +15,9 @@ services:
       - key: DATA_AGENT_STATIC_DIR
         value: frontend/dist
       - key: DATA_AGENT_CORS_ORIGINS
-        value: "*"
+        value: "https://your-frontend-domain.onrender.com"
+      - key: APP_ACCESS_TOKEN
+        sync: false
       - key: OPENAI_API_KEY
         sync: false
       - key: DATA_AGENT_STORAGE_BACKEND

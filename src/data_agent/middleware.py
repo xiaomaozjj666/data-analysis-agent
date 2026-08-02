@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import hmac
+import logging
 import os
 import threading
 import time
@@ -20,6 +21,8 @@ from fastapi import HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
+
+logger = logging.getLogger(__name__)
 
 
 def _check_access(request: Request) -> None:
@@ -125,6 +128,15 @@ def _check_rate_limit(request: Request) -> None:
 def setup_middleware(app) -> None:  # type: ignore[no-untyped-def]
     """Attach CORS、GZip、安全头与速率限制中间件到 ``app``。"""
     from data_agent import api
+
+    # Warn on empty access token in non-local deployments (Render, Docker, etc.).
+    # Local dev (uvicorn with no APP_ACCESS_TOKEN) is intentionally unauthenticated.
+    if not os.getenv("APP_ACCESS_TOKEN", "").strip():
+        if os.getenv("RENDER") or os.getenv("DATA_AGENT_STORAGE_BACKEND") == "s3":
+            logger.warning(
+                "APP_ACCESS_TOKEN is empty in a production-like environment. "
+                "Set APP_ACCESS_TOKEN to enable API authentication."
+            )
 
     allowed_origins = [
         item.strip()

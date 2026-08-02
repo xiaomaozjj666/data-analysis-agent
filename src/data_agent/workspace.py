@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import csv as _csv
 import logging
 import os
 import re
@@ -191,6 +192,12 @@ class DataWorkspace:
         # 的 duplicated().sum() 和 nunique() 开销显著）。数据变更时自动失效。
         # 用 OrderedDict 实现 LRU：命中时 move_to_end，超容量时 popitem(last=False)。
         self._profile_cache: OrderedDict[int, dict[str, Any]] = OrderedDict()
+        # 全量统计缓存：nunique()、duplicated().sum()、memory_usage() 等昂贵
+        # 全表扫描独立于 sample_rows，单独缓存一份供不同 sample_rows 的
+        # profile() 调用复用，避免 upload（sample_rows=5）和 GET session
+        # （sample_rows=8）各扫一遍全表。
+        self._cached_full_stats: dict[str, Any] | None = None
+        self._cached_full_stats_version: int = -1
         self._df_version = 0  # 每次 setter 递增，避免 id() 复用导致过期缓存
         # 图表序号分配：ToolNode 并行执行同一轮多个 create_visualization 时，
         # 先读 count_artifacts 再拼文件名会竞态出重号（同类型图相互覆盖）。
@@ -212,6 +219,7 @@ class DataWorkspace:
         self._df_version += 1
         # 数据变更时清除 profile 缓存，确保下次 profile() 反映最新数据。
         self._profile_cache.clear()
+        self._cached_full_stats = None
 
     @property
     def artifacts(self) -> list[dict[str, str]]:
@@ -231,28 +239,26 @@ class DataWorkspace:
     def allocate_chart_index(self) -> int:
         """线程安全地分配全局递增的图表序号（从 1 开始）。
 
-        序号取“进程内已分配的最大值”与“artifacts 目录内现存 HTML 文件尾号
-        最大值”两者之大者 + 1：
-        - 锁保证同一轮并行的多个 create_visualization 不会拿到相同序号
-          （重号会让同类型图表算出相同文件名，后写的覆盖先写的）；
-        - 磁盘扫描保证服务重启/会话恢复后序号从已有图表之后延续，
-          不会回头覆盖历史文件；
-        - 高水位保证即使某张图分配后尚未落盘（渲染中），下一次分配
-          也不会重用它的序号。
+        首次调用时会扫描 artifacts 目录中现有 HTML 文件的尾号以校准
+        高水位（支持服务重启后序号延续），后续分配仅在进程内递增计数器，
+        不再重复扫描目录——即 O(1) 而非 O(n)。
         """
         with self._chart_index_lock:
-            highest = self._chart_index_high_water
-            try:
-                children = list(self.artifacts_dir.iterdir())
-            except FileNotFoundError:
-                children = []
-            for path in children:
-                if path.suffix.lower() != ".html":
-                    continue
-                match = re.search(r"_(\d+)$", path.stem)
-                if match:
-                    highest = max(highest, int(match.group(1)))
-            self._chart_index_high_water = highest + 1
+            if self._chart_index_high_water == 0:
+                # First allocation after init or restore: seed from disk.
+                highest = 0
+                try:
+                    children = list(self.artifacts_dir.iterdir())
+                except FileNotFoundError:
+                    children = []
+                for path in children:
+                    if path.suffix.lower() != ".html":
+                        continue
+                    match = re.search(r"_(\d+)$", path.stem)
+                    if match:
+                        highest = max(highest, int(match.group(1)))
+                self._chart_index_high_water = highest
+            self._chart_index_high_water += 1
             return self._chart_index_high_water
 
     def register_artifact(self, path: str | Path, kind: str, description: str) -> Artifact:
@@ -375,67 +381,94 @@ class DataWorkspace:
         self.source_path = path
         return self.profile(sample_rows=5)
 
-    def _read_delimited(self, path: Path, suffix: str) -> pd.DataFrame:
-        """读取分隔符文件，按 _CSV_ENCODING_CANDIDATES 顺序探测编码。
+    @staticmethod
+    def _sniff_encoding(path: Path) -> str:
+        """Read the first 8 KB to determine the file encoding.
 
-        大文件（超 _LARGE_DELIMITED_THRESHOLD）使用分块流式读取，避免 pandas
-        解析时在内存中构建中间数据结构导致瞬时内存尖峰。
-        首次尝试严格模式（on_bad_lines='error'），失败后回退到跳过坏行
-        并记录警告，确保尽可能多地保留有效数据。
+        Returns the first encoding from ``_CSV_ENCODING_CANDIDATES`` that
+        successfully decodes the sample, or ``'utf-8'`` as a fallback.
         """
-        sep = "\t" if suffix == ".tsv" else None
+        with open(path, "rb") as fh:
+            raw = fh.read(8192)
+        for enc in _CSV_ENCODING_CANDIDATES:
+            try:
+                raw.decode(enc)
+                return enc
+            except UnicodeDecodeError:
+                continue
+        return "utf-8"
+
+    @staticmethod
+    def _sniff_delimiter(path: Path, encoding: str) -> str:
+        """Sniff CSV delimiter from the first 8 KB of text.
+
+        Uses ``csv.Sniffer`` to detect the separator. Falls back to ``','``
+        when sniffing fails (single-column CSV, empty files, etc.).
+        """
+        with open(path, encoding=encoding) as fh:
+            sample = fh.read(8192)
+        try:
+            dialect = _csv.Sniffer().sniff(sample, delimiters=",\t|;")
+            return dialect.delimiter
+        except _csv.Error:
+            return ","
+
+    def _read_delimited(self, path: Path, suffix: str) -> pd.DataFrame:
+        """读取分隔符文件，嗅探编码和分隔符后一次解析。
+
+        - 从文件前 8 KB 嗅探编码，避免按 3 种候选编码各读一遍文件。
+        - CSV 文件（suffix 不是 .tsv）从首 8 KB 嗅探分隔符，直接用 C 引擎
+          （速度约为 Python 引擎的 3-5 倍）解析，避免 sep=None 的 auto-detect
+          走 Python 引擎。
+        - 大文件（超 ``_LARGE_DELIMITED_THRESHOLD``）使用分块流式读取。
+        - 首次尝试严格模式（on_bad_lines='error'），失败后回退到跳过坏行
+          并记录警告。
+        """
+        encoding = self._sniff_encoding(path)
+        if suffix == ".tsv":
+            sep: str = "\t"
+        else:
+            sep = self._sniff_delimiter(path, encoding)
         file_size = path.stat().st_size
         use_chunks = file_size > _LARGE_DELIMITED_THRESHOLD
-        last_error: Exception | None = None
-        for encoding in _CSV_ENCODING_CANDIDATES:
+        kwargs: dict[str, Any] = {"encoding": encoding, "on_bad_lines": "error"}
+        # Use C engine with explicit sep — it is 3-5× faster than the Python
+        # engine used by sep=None auto-detection.
+        if not use_chunks:
+            kwargs["engine"] = "c"
+            kwargs["sep"] = sep
+        try:
+            if use_chunks:
+                reader_kwargs = {**kwargs, "chunksize": _CHUNK_SIZE}
+                chunks: list[pd.DataFrame] = []
+                for chunk in pd.read_csv(path, sep=sep, engine="python", **reader_kwargs):  # type: ignore[arg-type]
+                    chunks.append(chunk)
+                df: pd.DataFrame = pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame()
+            else:
+                df = pd.read_csv(path, **kwargs)  # type: ignore[arg-type]
+            return _downcast_dtypes(df)
+        except pd.errors.ParserError:
             try:
-                df = self._read_delimited_chunked(path, sep, encoding) if use_chunks else pd.read_csv(
-                    path, sep=sep, engine="python", encoding=encoding, on_bad_lines="error"
-                )
-                return _downcast_dtypes(df)
-            except pd.errors.ParserError as exc:
-                last_error = exc
-                try:
-                    if use_chunks:
-                        repaired = self._read_delimited_chunked(path, sep, encoding, skip_bad=True)
-                    else:
-                        repaired = pd.read_csv(
-                            path, sep=sep, engine="python", encoding=encoding, on_bad_lines="skip",
-                        )
-                    repaired = _downcast_dtypes(repaired)
-                except (pd.errors.ParserError, UnicodeDecodeError) as retry_exc:
-                    last_error = retry_exc
-                    continue
-                self.load_warnings.append("文件包含格式异常行，已跳过无法解析的记录。")
-                return repaired
-            except UnicodeDecodeError as exc:
-                last_error = exc
-        raise ValueError(
-            "无法识别文件编码：已尝试 UTF-8、GB18030 等常见编码均失败。"
-            "请用 Excel 或文本编辑器将文件另存为 UTF-8 编码的 CSV 后重新上传。"
-            f"（技术详情：{last_error}）"
-        )
-
-    def _read_delimited_chunked(
-        self, path: Path, sep: str | None, encoding: str, *, skip_bad: bool = False
-    ) -> pd.DataFrame:
-        """分块流式读取大 CSV/TSV 文件，降低峰值内存。
-
-        使用 TextFileReader 的 chunksize 接口逐块读取并 append，
-        峰值内存约为最终 DataFrame 的 1.5 倍（而非一次性读取的 3-5 倍）。
-        坏行处理：skip_bad=True 时用 on_bad_lines='skip'，否则 'error'。
-        """
-        reader = pd.read_csv(
-            path, sep=sep, engine="python", encoding=encoding,
-            chunksize=_CHUNK_SIZE,
-            on_bad_lines="skip" if skip_bad else "error",
-        )
-        chunks: list[pd.DataFrame] = []
-        for chunk in reader:
-            chunks.append(chunk)
-        if not chunks:
-            return pd.DataFrame()
-        return pd.concat(chunks, ignore_index=True)
+                if use_chunks:
+                    reader_kwargs["on_bad_lines"] = "skip"
+                    chunks = []
+                    for chunk in pd.read_csv(path, sep=sep, engine="python", **reader_kwargs):  # type: ignore[arg-type]
+                        chunks.append(chunk)
+                    repaired = pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame()
+                else:
+                    kwargs["on_bad_lines"] = "skip"
+                    kwargs["engine"] = "c"
+                    repaired = pd.read_csv(path, **kwargs)  # type: ignore[arg-type]
+                repaired = _downcast_dtypes(repaired)
+            except pd.errors.ParserError:
+                raise ValueError("文件格式无法解析，请检查数据格式。")
+            self.load_warnings.append("文件包含格式异常行，已跳过无法解析的记录。")
+            return repaired
+        except UnicodeDecodeError:
+            raise ValueError(
+                "无法识别文件编码：已尝试 UTF-8、GB18030 等常见编码均失败。"
+                "请用 Excel 或文本编辑器将文件另存为 UTF-8 编码的 CSV 后重新上传。"
+            )
 
     def _read_pdf(self, path: Path) -> pd.DataFrame:
         """从 PDF 文件提取表格数据。
@@ -660,13 +693,56 @@ class DataWorkspace:
             "output": str(output) if output else None,
         }
 
+    def _compute_full_stats(self) -> dict[str, Any]:
+        """Compute expensive full-table stats once and cache across sample_rows.
+
+        ``nunique()`` and ``duplicated().sum()`` both do full-table scans.
+        When ``profile(sample_rows=5)`` and ``profile(sample_rows=8)`` are
+        called in succession (upload + session GET), caching these avoids
+        scanning the table twice.
+        """
+        if self._cached_full_stats is not None and self._cached_full_stats_version == self._df_version:
+            return self._cached_full_stats
+        df = self.dataframe
+        missing = df.isna().sum()
+        unique = df.nunique(dropna=True)
+        deep_memory = len(df) * max(len(df.columns), 1) <= _PROFILE_DEEP_MEMORY_MAX_CELLS
+        missing_values = list(missing)
+        unique_values = list(unique)
+        dtype_values = list(df.dtypes)
+        column_info = [
+            {
+                "name": str(column),
+                "dtype": str(dtype_values[i]),
+                "missing": int(missing_values[i]),
+                "missing_pct": round(float(missing_values[i] / max(len(df), 1) * 100), 2),
+                "unique": int(unique_values[i]),
+            }
+            for i, column in enumerate(df.columns)
+        ]
+        stats = {
+            "source": str(self.source_path) if self.source_path else None,
+            "rows": len(df),
+            "columns": len(df.columns),
+            "duplicate_rows": int(df.duplicated().sum()),
+            "memory_mb": round(float(df.memory_usage(deep=deep_memory).sum() / 1024**2), 3),
+            "load_warnings": list(self.load_warnings),
+            "column_info": column_info,
+        }
+        self._cached_full_stats = stats
+        self._cached_full_stats_version = self._df_version
+        return stats
+
     def profile(self, sample_rows: int = 5) -> dict[str, Any]:
         """计算并返回数据集概况，包含 LRU 缓存避免重复计算。
 
-        缓存策略：以 (id(df), sample_rows) 为键，同一 DataFrame 对象且
+        缓存策略：以 (df_version, sample_rows) 为键，同一 DataFrame 对象且
         sample_rows 相同时直接返回缓存。dataframe setter 会自动清除缓存。
         最多保留 _PROFILE_CACHE_MAX_ENTRIES 个条目，超过后按 LRU 策略
         淘汰最久未使用的条目（而非全清重建），提升缓存命中率。
+
+        昂贵全表扫描（nunique、duplicated、memory_usage）通过
+        ``_compute_full_stats`` 单独缓存，不同 sample_rows 的调用复用同一份。
 
         Args:
             sample_rows: 返回的样例行数（1-20）。
@@ -684,40 +760,13 @@ class DataWorkspace:
             # LRU：命中时移到末尾，标记为最近使用。
             self._profile_cache.move_to_end(cache_key)
             return cached
-        df = self.dataframe
-        missing = df.isna().sum()
-        unique = df.nunique(dropna=True)
-        # 大表降级：单元格数超阈值时用 deep=False 估算内存，避免逐对象遍历
-        # 阻塞上传接口；unique/duplicated 保持全量（图表语义防护依赖精确计数）。
-        deep_memory = len(df) * max(len(df.columns), 1) <= _PROFILE_DEEP_MEMORY_MAX_CELLS
-        # PDF/DOCX 表格提取可能产生重复列名，df[column] 在重复列名时返回
-        # DataFrame 而非 Series。用 iloc 按位置遍历 missing/unique/dtypes，
-        # 完全规避重复列名导致的索引歧义。
-        missing_values = list(missing)
-        unique_values = list(unique)
-        dtype_values = list(df.dtypes)
-        column_info = [
-            {
-                "name": str(column),
-                "dtype": str(dtype_values[i]),
-                "missing": int(missing_values[i]),
-                "missing_pct": round(float(missing_values[i] / max(len(df), 1) * 100), 2),
-                "unique": int(unique_values[i]),
-            }
-            for i, column in enumerate(df.columns)
-        ]
-        result = to_jsonable(
-            {
-                "source": str(self.source_path) if self.source_path else None,
-                "rows": len(df),
-                "columns": len(df.columns),
-                "duplicate_rows": int(df.duplicated().sum()),
-                "memory_mb": round(float(df.memory_usage(deep=deep_memory).sum() / 1024**2), 3),
-                "load_warnings": list(self.load_warnings),
-                "column_info": column_info,
-                "sample": df.head(sample_rows),
-            }
-        )
+        # Reuse expensive full-table stats (nunique, duplicated, memory)
+        # across different sample_rows calls.
+        stats = self._compute_full_stats()
+        result = to_jsonable({
+            **stats,
+            "sample": self.dataframe.head(sample_rows),
+        })
         # LRU 淘汰：超容量时移除最旧条目（OrderedDict 首项），而非全清。
         # 全清会导致相邻两次不同 sample_rows 的调用互相淘汰，命中率归零。
         while len(self._profile_cache) >= _PROFILE_CACHE_MAX_ENTRIES:
@@ -813,8 +862,14 @@ class DataWorkspace:
         except Exception:
             return None
 
-    def snapshot_state(self) -> tuple[pd.DataFrame, set[Path]]:
-        """Capture the active data and artifact files before one agent step."""
+    def snapshot_state(self) -> tuple[pd.DataFrame, set[Path], int]:
+        """Capture the active data and artifact files before one agent step.
+
+        Returns the DataFrame (with copy-on-write-safe shallow copy), the set
+        of existing artifact paths, and the current ``_df_version``.
+        ``restore_state`` uses the version to short-circuit restoration when
+        no DataFrame mutation occurred through the setter.
+        """
         try:
             files = {
                 path.resolve()
@@ -822,15 +877,17 @@ class DataWorkspace:
                 if path.is_file()
             }
         except FileNotFoundError:
-            # The artifacts dir may have been removed by a concurrent prune
-            # between the run_lock check and this call; treat as empty.
             files = set()
-        return self.dataframe.copy(deep=True), files
+        # pandas >= 2.3 (enabled by default in 3.0) uses copy-on-write:
+        # any modification to the live DataFrame triggers a CoW copy within
+        # the modified column, so the shallow-copy reference remains intact.
+        return self.dataframe.copy(deep=False), files, self._df_version
 
-    def restore_state(self, snapshot: tuple[pd.DataFrame, set[Path]]) -> None:
+    def restore_state(self, snapshot: tuple[pd.DataFrame, set[Path], int]) -> None:
         """Rollback data mutations and files created by a failed agent step."""
-        dataframe, existing_files = snapshot
-        self.dataframe = dataframe
+        dataframe, existing_files, snapshot_version = snapshot
+        if self._df_version != snapshot_version:
+            self.dataframe = dataframe
         try:
             children = list(self.artifacts_dir.iterdir())
         except FileNotFoundError:
