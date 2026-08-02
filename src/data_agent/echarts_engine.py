@@ -23,6 +23,7 @@ import pandas as pd
 
 from data_agent.tools._helpers import _human_column_label as _build_axis_label
 from data_agent.tools._helpers import _nice_ticks
+from data_agent.tools.builder import _CHART_COLORS
 from data_agent.workspace import (
     ECHARTS_CDN_URL,
     ECHARTS_GL_CDN_URL,
@@ -31,19 +32,8 @@ from data_agent.workspace import (
 )
 
 # === 全局视觉 token（学术级商务色板，对标 Nature/Lancet 期刊配图）===
-# 主色板：低饱和度、高辨识度、色盲友好，适配正式报告。
-_ECHARTS_PALETTE = [
-    "#2C5F8D",  # 沉稳蓝（主色）
-    "#D97745",  # 暖橙
-    "#4F9D7C",  # 静谧绿
-    "#C75D63",  # 砖红
-    "#7A6FB0",  # 紫罗兰
-    "#D2A63C",  # 芥末黄
-    "#4B8FA8",  # 青蓝
-    "#8A9A5B",  # 橄榄
-    "#B07B9E",  # 玫紫
-    "#5E7A8C",  # 灰蓝
-]
+# 主色板：与 builder._CHART_COLORS 共享，保证双引擎视觉一致。
+_ECHARTS_PALETTE = _CHART_COLORS
 
 # 文本/网格/背景色：与前端 tokens.css 亮色令牌一致（fg-default/border-default），
 # 图表嵌在前端 iframe 里时不产生色差

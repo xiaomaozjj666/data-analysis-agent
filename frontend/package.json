@@ -10,27 +10,25 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@vitejs/plugin-react": "6.0.4",
-    "lucide-react": "1.27.0",
+    "lucide-react": "1.28.0",
     "motion": "12.43.0",
-    "prismjs": "1.30.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "react-markdown": "10.1.0",
     "react-syntax-highlighter": "16.1.1",
-    "react-window": "2.3.0",
     "remark-gfm": "4.0.1",
-    "typescript": "7.0.2",
-    "vite": "8.1.5",
     "zustand": "5.0.14"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "7.0.0",
     "@testing-library/react": "16.3.2",
-    "@types/react": "19.2.17",
-    "@types/react-dom": "19.2.3",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
     "@types/react-syntax-highlighter": "15.5.13",
+    "@vitejs/plugin-react": "6.0.5",
     "jsdom": "30.0.1",
+    "typescript": "7.0.2",
+    "vite": "8.2.0",
     "vitest": "4.1.10"
   }
 }
