@@ -1,9 +1,4 @@
-"""Plan-and-Execute + ReAct 双范式数据分析工作流引擎。
-
-本模块实现基于 LangGraph StateGraph 的五节点有向无环工作流：
-    validate_dataset → plan_analysis → execute_step ⇄ replan → finalize
-
-核心设计决策：
+"""DataAgent — Plan-and-Execute + ReAct hybrid.
 - 规划器（Planner）使用 LLM structured output 生成 AnalysisPlan，失败时回退到
   内置的 _fallback_plan，确保任何情况下都有可执行步骤。
 - 执行器（Executor）是一个 ReAct Agent，每步独立运行并带有 snapshot/rollback
