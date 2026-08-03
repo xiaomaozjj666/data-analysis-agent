@@ -19,3 +19,4 @@ frontend/node_modules/
 # Production assets are served by FastAPI and must be included in deployments.
 !frontend/dist/
 !frontend/dist/**
+
