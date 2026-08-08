@@ -1093,7 +1093,9 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             fig.write_html(html_path, include_plotlyjs=True, full_html=True)
         workspace.register_artifact(html_path, "visualization", display_title)
         json_path = workspace.artifacts_dir / f"{stem}.plotly.json"
-        fig.write_json(json_path)
+        # plotly write_json 不带 encoding 时在 Windows 上按 locale(cp936/GBK) 写文件，
+        # 必须显式 UTF-8，否则后续 UTF-8 读取会 UnicodeDecodeError。
+        json_path.write_text(fig.to_json(), encoding="utf-8")
         workspace.register_artifact(json_path, "chart_data", "Plotly figure JSON")
 
         response: dict[str, Any] = {
