@@ -20,3 +20,6 @@ frontend/node_modules/
 !frontend/dist/
 !frontend/dist/**
 
+
+# AI 工具工作目录（不入库）
+.workbuddy/
