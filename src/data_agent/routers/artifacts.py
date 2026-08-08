@@ -301,7 +301,7 @@ def get_chart_thumbnail(session_id: str, filename: str) -> FileResponse:
     try:
         import plotly.graph_objects as go
 
-        fig_dict = json.loads(json_path.read_text(encoding="utf-8"))
+        fig_dict = json.loads(_read_utf8_robust(json_path))
         fig = go.Figure(fig_dict)
         # 缩略图尺寸 400x250，去掉 margin 节省空间
         fig.update_layout(margin=dict(l=20, r=20, t=30, b=20), showlegend=False)
@@ -356,7 +356,7 @@ def edit_chart(session_id: str, filename: str, request: ChartEditRequest) -> dic
         if not json_path.is_file():
             raise HTTPException(status_code=404, detail="图表数据文件不存在，无法编辑。")
         try:
-            fig_dict = json.loads(json_path.read_text(encoding="utf-8"))
+            fig_dict = json.loads(_read_utf8_robust(json_path))
         except (OSError, ValueError) as exc:
             raise HTTPException(status_code=500, detail=f"图表数据读取失败：{exc}") from exc
 

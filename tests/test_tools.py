@@ -221,7 +221,7 @@ def test_visualizations_keep_extreme_values_but_default_to_readable_scale(tmp_pa
             }
         )
     )
-    bar = pio.read_json(bar_result["plotly_json"])
+    bar = pio.from_json(Path(bar_result["plotly_json"]).read_text(encoding="utf-8"))
     assert bar_result["scale_mode"] == "robust"
     assert bar_result["extreme_points"] == 1
     assert bar.layout.yaxis.range[1] < 10_000
@@ -249,7 +249,7 @@ def test_visualizations_keep_extreme_values_but_default_to_readable_scale(tmp_pa
             }
         )
     )
-    scatter = pio.read_json(scatter_result["plotly_json"])
+    scatter = pio.from_json(Path(scatter_result["plotly_json"]).read_text(encoding="utf-8"))
     assert scatter_result["scale_mode"] == "robust"
     assert scatter.layout.xaxis.range[1] < 20
     assert scatter.layout.yaxis.range[1] < 10_000
@@ -288,7 +288,7 @@ def test_grouped_bars_explain_absent_category_combinations(tmp_path):
             }
         )
     )
-    rating = pio.read_json(rating_result["plotly_json"])
+    rating = pio.from_json(Path(rating_result["plotly_json"]).read_text(encoding="utf-8"))
     assert {trace.name for trace in rating.data} == {"否", "是"}
     assert rating_result["category_coverage"] == {
         "complete": False,
@@ -326,7 +326,7 @@ def test_grouped_bars_explain_absent_category_combinations(tmp_path):
             }
         )
     )
-    channel = pio.read_json(channel_result["plotly_json"])
+    channel = pio.from_json(Path(channel_result["plotly_json"]).read_text(encoding="utf-8"))
     assert channel_result["category_coverage"]["observed_combinations"] == 3
     assert channel_result["category_coverage"]["total_combinations"] == 6
     assert channel_result["category_coverage"]["missing_count"] == 3
