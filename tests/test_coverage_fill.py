@@ -9,18 +9,13 @@ import asyncio
 import json
 import threading
 from pathlib import Path
-from typing import Any
-from unittest.mock import patch
 
 import pandas as pd
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
-from pydantic import PrivateAttr
 
 from data_agent.config import AgentSettings
 from data_agent.workspace import DataWorkspace
-
 
 # ---------------------------------------------------------------------------
 # nodes/_utils.py：_message_text 分支覆盖
@@ -393,8 +388,6 @@ def test_cli_analyze_runs_end_to_end(tmp_path, monkeypatch):
     # patch create_chat_model 返回 fake model，避免真实 LLM 调用
     from data_agent import agent as agent_module
     from tests.test_agent import ToolCallingFakeModel
-
-    original_create = agent_module.create_chat_model
 
     def fake_create_chat_model(settings):
         return ToolCallingFakeModel()
