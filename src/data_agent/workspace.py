@@ -461,14 +461,14 @@ class DataWorkspace:
                     repaired = pd.read_csv(path, **kwargs)  # type: ignore[arg-type]
                 repaired = _downcast_dtypes(repaired)
             except pd.errors.ParserError:
-                raise ValueError("文件格式无法解析，请检查数据格式。")
+                raise ValueError("文件格式无法解析，请检查数据格式。") from None
             self.load_warnings.append("文件包含格式异常行，已跳过无法解析的记录。")
             return repaired
         except UnicodeDecodeError:
             raise ValueError(
                 "无法识别文件编码：已尝试 UTF-8、GB18030 等常见编码均失败。"
                 "请用 Excel 或文本编辑器将文件另存为 UTF-8 编码的 CSV 后重新上传。"
-            )
+            ) from None
 
     def _read_pdf(self, path: Path) -> pd.DataFrame:
         """从 PDF 文件提取表格数据。
