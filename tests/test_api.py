@@ -35,6 +35,9 @@ def _isolate_runtime(tmp_path: Path, monkeypatch) -> None:
     # have injected APP_ACCESS_TOKEN from a local .env file. Remove it so
     # tests that don't explicitly set the token run against an unguarded API.
     monkeypatch.delenv("APP_ACCESS_TOKEN", raising=False)
+    # _effective_settings() re-reads env at runtime; provide a dummy key so
+    # tests behave the same with or without a local .env (CI has none).
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
     settings = AgentSettings(
