@@ -1,162 +1,130 @@
-# 数据分析 Agent
+# Data Analysis Agent
 
-一个前后端分离的全流程数据分析工作台。后端使用 LangChain、LangGraph、ReAct 与 Plan-and-Execute，前端使用 React；本地通过独立 HTTP/SSE 接口通信，生产构建可部署到 LangSmith Deployment。
+一个基于 LLM 的全流程数据分析工作台：上传数据集，即可自动完成数据检查、清洗、统计分析、可视化与报告生成。适合需要快速从表格数据中获得可靠洞察的分析师、运营与数据工作者。
 
-## 架构
+后端采用 LangChain + LangGraph 的 Plan-and-Execute + ReAct 混合架构，前端为独立 React 应用，本地通过 HTTP/SSE 通信。可一键本地运行，也可部署到 LangSmith / Render / Docker。
 
-```mermaid
-flowchart LR
-    UI[React 前端] -->|HTTP / SSE| API[FastAPI 接口]
-    API --> G[LangGraph]
-    G --> P[结构化规划器]
-    P --> E[ReAct 执行器]
-    E <--> T[数据工具]
-    E --> R[审查与重规划]
-    R -->|继续| E
-    R -->|完成| F[报告与产物]
-    T --> D[(Pandas / SciPy / sklearn / Plotly)]
-    G -. Trace .-> LS[LangSmith]
-```
+## 功能特性
 
-后端边界：
+- **计划-执行式分析流程**：每次分析先生成 2–6 个结构化步骤，每个步骤由 ReAct 执行器调用受控工具完成；重规划器根据真实工具结果删除无用步骤、补充后续分析，证据充分时提前结束，达到步骤上限时强制汇总，避免无限循环。
+- **受控数据工具集**（8 个内置工具）：数据检查、格式修复、安全清洗、非破坏性筛选视图、统计分析、图表生成、数据导出、受限 Python 沙箱。
+  - 清洗带安全护栏：缺失值删除比例超过 50% 会拒绝执行，主数据行数始终不低于原始行数的 20%。
+  - 统计方法覆盖描述统计、相关分析（含 Pearson p 值）、分组聚合、独立/配对 t 检验、ANOVA、卡方检验、线性回归（R² / RMSE / MAE）。
+- **双图表引擎**（Plotly + ECharts）：共享同一套数据准备逻辑，支持折线、柱状、散点（含 3D）、直方图、箱线图、小提琴图、饼图、热力图、相关热力图、散点矩阵、旭日图、矩形树图；自动选图、极端值自动检测与主体尺度/全量视图切换、暗色主题联动、PNG 导出、数据驱动的白话解读。
+- **多格式数据接入**：CSV / TSV / Excel / JSON / JSONL / Parquet，以及 PDF 表格提取、TXT、Word 表格；自动探测编码（UTF-8 / GB18030）与分隔符，大文件分块流式读取，数值列自动降级数据类型以节省内存。
+- **全流程 Web 工作台**：文件上传（含进度与取消）、数据概览指标、分析任务与预设模板、计划审阅/批准、实时步骤与工具调用进度（SSE + 15 秒心跳）、随时取消分析、报告生成后的多轮追问、产物中心（预览/对比/PNG/批量下载）、历史会话（重命名/删除/导出 ZIP/导入）、命令面板与快捷键、深浅主题、移动端适配。
+- **断点续跑与自动恢复**：分析中断后可从已完成的步骤继续，无需重跑；前端支持 SSE 断线自动恢复与一键重试。
+- **安全与访问控制**：可选访问令牌（`APP_ACCESS_TOKEN`）、滑动窗口速率限制、CORS / GZip / 安全响应头；API Key 通过操作系统凭据库（keyring）保存，不落明文文件。
+- **会话持久化**：本地或 S3 兼容对象存储（如 Cloudflare R2）双后端，会话按 session id 自动归档/恢复，带路径穿越防护。
+- **可观测与部署**：LangSmith 全链路 Trace（规划、每次工具调用、重规划、汇总）；LangGraph Agent Server 部署；Dockerfile（非 root 用户 + 健康检查）；Render Blueprint 一键部署；GitHub Actions 自动 CI。
 
-- `src/data_agent/api.py`：文件、配置、会话、SSE 分析和产物下载接口。
-- `src/data_agent/agent.py`：`validate → plan → execute → replan → finalize` 状态图。
-- `src/data_agent/tools/`：检查、清洗、转换、统计、可视化和导出工具（按职责拆分为 `builder`/`charts`/`_cleaning`/`_helpers`）。
-- `src/data_agent/deployment.py`：LangSmith Agent Server 图入口。
-- `langgraph.json`：LangSmith Deployment 构建配置和自定义 FastAPI 路由。
+## 技术栈
 
-前端边界：
+- 后端：Python 3.11–3.13、FastAPI、Uvicorn、LangChain、LangGraph、LangSmith
+- 模型接入：DeepSeek（默认，支持 thinking mode）/ OpenAI 及任意 OpenAI 兼容服务
+- 数据分析：pandas、NumPy、SciPy、scikit-learn、Plotly、Kaleido、openpyxl、PyArrow、pdfplumber、python-docx
+- 存储：本地文件系统 / boto3（S3 / R2）
+- 前端：TypeScript、React 19、Vite、Zustand、lucide-react、motion、react-markdown（Vitest）
+- CLI：Typer + Rich
 
-- `frontend/` 是独立 Vite/React 项目。
-- 前端不导入 Python，也不直接访问文件系统。
-- 开发环境调用 `http://127.0.0.1:8000`；生产环境默认调用当前部署域名。
+## 快速开始
 
-## Plan-and-Execute
+### 环境要求
+- Python 3.11–3.13
+- Node.js 20 或更高版本
+- 一个 LLM API Key（默认 DeepSeek，也兼容 OpenAI）
 
-每次分析会先生成 2 到 6 个结构化步骤。每一步由 ReAct Agent 使用受控工具执行，随后重规划器根据真实工具结果决定：
+### 一键启动（Windows）
+双击 `run.bat`。首次运行会自动创建虚拟环境、安装后端依赖并 `npm install`，随后分别启动：
 
-1. 删除已经没有价值的步骤。
-2. 补充必要的后续分析。
-3. 证据充分时提前结束。
-4. 达到步骤上限时强制汇总，防止无限循环。
+- 前端：http://127.0.0.1:5173
+- 后端 API：http://127.0.0.1:8000
+- API 文档：http://127.0.0.1:8000/docs
 
-最终报告只能引用工具返回的统计数字和生成文件。
-
-## 图表引擎
-
-后端内置 ECharts 与 Plotly 双引擎，统一生成内联 HTML 图表产物，在线预览支持暗色主题联动，无需额外扩展即可渲染 3D 图表。除按数据特征自动选图外，规划步骤也可显式指定图表类型：
-
-- 自动选图：时间序列 → 折线；两数值列 → 散点；分类 + 数值 → 柱状（无分组且类别 ≤ 8 时用饼图展示占比）；单数值分布 → 直方图；仅分类 → 柱状计数；`path_columns` → 旭日图；无 x/y 但 ≥ 3 个数值列 → 相关系数热力图；维度 ≥ 3 → 散点矩阵。
-- 3D 散点：存在第三个有业务意义的数值列时优先 `scatter_3d`，支持旋转、缩放与暗色适配。
-- 分组折线 / 柱状：聚合后按聚合结果排序类目轴，多系列对齐原始 x 值，避免类目乱序与重复。
-
-## 本地启动
-
-要求 Python 3.11-3.13 和 Node.js 20 或更高版本。
-
-双击 `run.bat`。第一次启动会安装依赖，然后分别启动：
-
-- React：`http://127.0.0.1:5173`
-- FastAPI：`http://127.0.0.1:8000`
-- OpenAPI：`http://127.0.0.1:8000/docs`
-
-也可以手动启动：
+### 手动启动
 
 ```powershell
+# 后端
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+Copy-Item .env.example .env   # 编辑填入 DEEPSEEK_API_KEY
 .\.venv\Scripts\python.exe -m uvicorn data_agent.api:app --host 127.0.0.1 --port 8000
+
+# 前端（另开终端）
 cd frontend
 npm install
 npm run dev
 ```
 
-## API
+### 命令行分析
 
-主要接口：
+```bash
+pip install -e ".[dev]"
+export DEEPSEEK_API_KEY=<your-key>        # Windows PowerShell: $env:DEEPSEEK_API_KEY="<your-key>"
+data-agent analyze examples/sample_sales.csv --task "分析各区域销售趋势"
+```
 
-- `GET /api/health`
-- `GET /api/auth`：检查是否需要应用访问令牌
-- `GET /api/settings`
-- `PUT /api/settings`
-- `POST /api/sessions`：multipart 文件上传
-- `GET /api/sessions/{id}`
-- `POST /api/sessions/{id}/analyze`
-- `POST /api/sessions/{id}/analyze/stream`：SSE 节点进度
-- `POST /api/sessions/{id}/cancel`：请求停止当前分析
-- `GET /api/sessions/{id}/artifacts/{filename}`
-- `GET /api/sessions/{id}/artifacts/{filename}/preview`：鉴权后的在线图表预览
+输出为 Markdown 格式分析报告，产物路径一并打印。
 
-分析期间服务每 15 秒发送一次 SSE 心跳，避免模型长思考被误判为超时。前端支持停止分析；后端会在当前模型/工具调用返回后终止后续节点。产物接口默认隐藏 Plotly JSON 和中间清洗文件，只展示去重后的精选图表与最终数据文件。
+## 配置
 
-## LangSmith
-
-在 `.env` 或 LangSmith Deployment 的环境变量中配置：
+复制 `.env.example` 为 `.env` 并填写（所有密钥均为占位符）：
 
 ```dotenv
-DEEPSEEK_API_KEY=...
+MODEL_PROVIDER=deepseek
+DEEPSEEK_API_KEY=<your-deepseek-api-key>
 DEEPSEEK_MODEL=deepseek-v4-pro
-LANGSMITH_TRACING=true
-LANGSMITH_API_KEY=...
-LANGSMITH_PROJECT=data-analysis-agent
-```
+DEEPSEEK_THINKING=true
+DEEPSEEK_REASONING_EFFORT=high
 
-`DEEPSEEK_MODEL` 默认填 `deepseek-v4-pro`；DeepSeek 平台分配的其他模型名也可填入 `DEEPSEEK_MODEL`。启用思考模式时，DeepSeek 仅支持 `high`/`max` 两种推理强度。
+# 或使用 OpenAI 兼容服务
+OPENAI_API_KEY=<your-api-key>
+OPENAI_MODEL=gpt-4.1-mini
 
-启用后，规划、每个 ReAct 工具调用、重规划和最终汇总都会进入 LangSmith Trace。
+# 线上访问保护（公开部署建议设置）
+APP_ACCESS_TOKEN=<your-access-token>
 
-### 线上访问保护
-
-公开部署时建议设置 `APP_ACCESS_TOKEN`。Render Blueprint 使用 `generateValue: true` 时会自动生成随机令牌；首次同步后可在 Render 的 Environment 页面查看并交给使用者。设置后，前端会先要求输入访问令牌，所有上传、分析、设置和产物下载接口都会校验令牌；`/api/health` 仍保持公开，便于 Render 健康检查。生产环境还会限制单文件大小、最大行数、最大单元格数、会话数量和写入请求频率。
-
-`APP_ACCESS_TOKEN` 为空时保持本地开发的免登录模式。不要把 DeepSeek API Key 编译进前端，生产环境优先在 Render 或 LangSmith 的环境变量中配置 `DEEPSEEK_API_KEY`。
-
-### 部署
-
-1. 构建前端：`cd frontend && npm ci && npm run build`。
-2. 确保 `frontend/dist` 随代码提交到 GitHub；仓库 `.gitignore` 已显式保留该目录。
-3. 在 LangSmith 左侧进入 `Deployments`，创建部署并连接该仓库。
-4. 在部署环境变量中填入 `DEEPSEEK_API_KEY`；LangSmith 服务密钥由部署环境管理。
-5. 部署完成后直接打开部署 URL，`/docs` 可查看 Agent Server 与自定义 API。
-
-LangSmith Cloud 会托管 Agent Server、线程、运行队列和检查点。本项目生成的数据文件当前保存在部署实例的 `runs` 目录；需要多副本扩缩容或长期保存上传文件时，应把 `DataWorkspace` 的文件层切换到 S3、OSS 或 Azure Blob。Agent Server 图支持传入 `dataset_id`（优先从 `runs/{dataset_id}/input` 查找）或受控的 `dataset_path`，不要把用户电脑本地路径直接传给云端 Agent。
-
-### 免费部署到 Render
-
-项目根目录已经提供 `render.yaml`。在 Render 中选择 **New > Blueprint**，连接 GitHub 仓库 `xiaomaozjj666/data-analysis-agent`，Render 会自动读取该文件：
-
-1. 选择 Free Web Service。
-2. 在环境变量界面填写 `DEEPSEEK_API_KEY`。
-3. 填写 `LANGSMITH_API_KEY`；Tracing 可以使用 LangSmith Developer 免费额度。
-4. 设置 `APP_ACCESS_TOKEN`，作为工作台登录令牌。
-5. 提交部署，访问 Render 分配的 `https://*.onrender.com` 地址。
-
-前端生产文件已经包含在 `frontend/dist`，FastAPI 会在同一域名托管它；React 仍然只通过 `/api` 和 SSE 接口访问后端。Render Free 服务空闲 15 分钟后会休眠，且 `/tmp/data-agent-runs` 会在重启时清空，所以适合个人测试，不适合长期保存用户数据。需要持久化时接入对象存储或升级实例。
-
-### Cloudflare R2 免费持久化
-
-项目支持把整个会话工作区归档到 Cloudflare R2 或其他 S3 兼容存储。启用后，Render 的 `/tmp` 只作为计算缓存；上传数据、`session.json`、清洗结果和图表产物会在会话创建及每次分析结束时同步到对象存储，服务重启后按 session ID 自动恢复。
-
-```dotenv
+# 可选：Cloudflare R2 / S3 兼容持久化
 DATA_AGENT_STORAGE_BACKEND=s3
-DATA_AGENT_STORAGE_BUCKET=data-analysis-agent
+DATA_AGENT_STORAGE_BUCKET=<bucket-name>
 DATA_AGENT_STORAGE_ENDPOINT_URL=https://<ACCOUNT_ID>.r2.cloudflarestorage.com
-DATA_AGENT_STORAGE_PREFIX=data-analysis-agent/sessions
-AWS_ACCESS_KEY_ID=...
-AWS_SECRET_ACCESS_KEY=...
-AWS_DEFAULT_REGION=auto
+AWS_ACCESS_KEY_ID=<your-access-key-id>
+AWS_SECRET_ACCESS_KEY=<your-secret-access-key>
 ```
 
-Bucket 应保持私有，Token 只授予该 Bucket 的 Object Read & Write 权限。可通过受保护的 `GET /api/storage/health` 检查连接状态；接口不会返回访问密钥。
+完整变量清单见 `.env.example`。
+
+## 项目结构
+
+```
+src/data_agent/
+  api.py             FastAPI 应用装配与前端静态资源托管
+  agent.py           DataAnalysisAgent：Plan-and-Execute + ReAct
+  cli.py             Typer 命令行入口
+  config.py          环境变量驱动的运行时配置
+  nodes/             LangGraph 节点（validate/plan/execute/replan/finalize）
+  tools/             ReAct 工具集（检查/清洗/转换/统计/可视化/导出/沙箱）
+  echarts_engine.py  ECharts 图表引擎（与 Plotly 引擎并列）
+  deployment.py      LangSmith Agent Server 图入口
+  storage.py         本地 / S3 兼容对象存储后端
+  middleware.py      CORS / GZip / 访问令牌 / 速率限制
+  routers/           会话 / 分析 / 产物 / 设置路由
+frontend/            React + Vite 前端（含构建产物 frontend/dist）
+examples/            示例数据
+tests/               pytest 测试
+```
+
+## 部署
+
+- **Docker**：根目录 `Dockerfile` 两阶段构建（Node 构建前端 + Python 运行时），以非 root 用户运行并带健康检查。
+- **LangSmith**：`langgraph.json` 导出 `data_analysis_agent` 图，可直接创建 LangSmith Deployment；数据集通过 `dataset_id` 或受控 `dataset_path` 提供。
+- **Render**：根目录 `render.yaml` 提供 Blueprint 一键部署，附持久磁盘；Free 实例休眠后 `/tmp` 会清空，长期保存数据请启用 S3/R2 后端。
+- **CI**：`.github/workflows/ci.yml` 在 push / PR 时自动执行 ruff、pytest 与前端生产构建。
 
 ## 质量检查
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest
-.\.venv\Scripts\python.exe -m ruff check .
-cd frontend
-npm run build
+.\.venv\Scripts\python.exe -m pytest        # 后端测试（不调用真实 LLM，不产生费用），覆盖率约 91%
+.\.venv\Scripts\python.exe -m ruff check .  # 代码检查
+cd frontend && npm run build                # 前端生产构建
 ```
-
-测试不调用真实 DeepSeek API，也不会产生模型费用；后端测试覆盖率当前约 91%。
-
-仓库根目录的 `.github/workflows/ci.yml` 会在每次 push 和 pull request 时自动执行上述检查：后端安装依赖后运行 ruff 与 pytest，前端 `npm ci` 后执行生产构建。
