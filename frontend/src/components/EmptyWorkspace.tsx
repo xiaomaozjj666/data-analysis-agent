@@ -167,7 +167,7 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
         <p>CSV、Excel、JSON 或 Parquet{dragOver ? " · 松开以上传" : " · 或拖拽文件到此"}</p>
         <div className="empty-actions">
           <ClickSpark sparkColor="var(--accent-fg)" sparkLength={14}>
-            <button
+            <button type="button"
               ref={btnRef}
               className="primary empty-upload-button"
               onClick={onUpload}
