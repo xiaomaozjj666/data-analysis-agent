@@ -133,8 +133,36 @@ const CommandPalette = React.memo(function CommandPalette({
   query, onQueryChange, actions, sessions, onAction, onSelectSession, onClose,
 }: CommandPaletteProps) {
   const inputRef = useRef<HTMLInputElement>(null);
+  // 焦点管理：打开时记录触发元素并聚焦输入框；Tab 在面板内循环（焦点陷阱），
+  // 避免键盘用户穿透命令面板操作背后页面（与 PreviewModal 对齐）。
+  const panelRef = useRef<HTMLDivElement>(null);
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
-  useEffect(() => { inputRef.current?.focus(); }, []);
+  useEffect(() => {
+    restoreFocusRef.current = document.activeElement as HTMLElement | null;
+    inputRef.current?.focus();
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Tab" || !panelRef.current) return;
+      const focusables = panelRef.current.querySelectorAll<HTMLElement>(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      );
+      if (!focusables.length) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      restoreFocusRef.current?.focus?.();
+    };
+  }, []);
   useEffect(() => { setActiveIndex(0); }, [query]);
 
   const q = query.trim().toLowerCase();
@@ -242,7 +270,7 @@ const CommandPalette = React.memo(function CommandPalette({
 
   return (
     <div className="command-palette-backdrop" role="dialog" aria-modal="true" aria-label="命令面板" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="command-palette">
+      <div className="command-palette" ref={panelRef}>
         <div className="command-input-row">
           <Search size={16} />
           <input

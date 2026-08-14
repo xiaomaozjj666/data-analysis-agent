@@ -110,7 +110,7 @@ const ConversationThread = React.memo(function ConversationThread({
         <small className="input-hint">Enter 发送 · Shift+Enter 换行</small>
         <div className="follow-up-actions">
           {running ? (
-            <button className="cancel-button" type="button" onClick={onStop} disabled={false}>
+            <button type="button" className="cancel-button" onClick={onStop} disabled={false}>
               <Square size={12} fill="currentColor" />停止
             </button>
           ) : (

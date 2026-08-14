@@ -74,17 +74,32 @@ const ArtifactCenter = React.memo(function ArtifactCenter({
             <small>{charts.length} 张精选结果</small>
           </div>
           {/* 筛选与排序控件 */}
-          <div className="artifact-controls">
-            <button className={effectiveFilter === "all" ? "active" : ""} onClick={() => setFilter("all")}>
+          <div className="artifact-controls" role="group" aria-label="图表筛选与排序">
+            <button
+              type="button"
+              className={effectiveFilter === "all" ? "active" : ""}
+              aria-pressed={effectiveFilter === "all"}
+              onClick={() => setFilter("all")}
+            >
               全部
             </button>
             {enginesPresent.plotly && (
-              <button className={effectiveFilter === "plotly" ? "active" : ""} onClick={() => setFilter("plotly")}>
+              <button
+                type="button"
+                className={effectiveFilter === "plotly" ? "active" : ""}
+                aria-pressed={effectiveFilter === "plotly"}
+                onClick={() => setFilter("plotly")}
+              >
                 Plotly
               </button>
             )}
             {enginesPresent.echarts && (
-              <button className={effectiveFilter === "echarts" ? "active" : ""} onClick={() => setFilter("echarts")}>
+              <button
+                type="button"
+                className={effectiveFilter === "echarts" ? "active" : ""}
+                aria-pressed={effectiveFilter === "echarts"}
+                onClick={() => setFilter("echarts")}
+              >
                 ECharts
               </button>
             )}
@@ -95,6 +110,7 @@ const ArtifactCenter = React.memo(function ArtifactCenter({
             </select>
             {hasBatchDownload && selected.size > 0 && (
               <button
+                type="button"
                 className="batch-download-btn"
                 onClick={() => {
                   onBatchDownload?.(filteredCharts.filter((c) => selected.has(c.name)));
@@ -134,7 +150,20 @@ const ArtifactCenter = React.memo(function ArtifactCenter({
                     <span className="engine-badge">{item.engine === "plotly" ? "Plotly" : "ECharts"}</span>
                   )}
                   {item.thumbnail_url ? (
-                    <div className="chart-thumbnail" onClick={() => onPreview(item)}>
+                    <div
+                      className="chart-thumbnail"
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`预览 ${item.description || item.name}`}
+                      onClick={() => onPreview(item)}
+                      onKeyDown={(e) => {
+                        // 键盘可达：Enter / Space 与鼠标点击等价，让不用鼠标的用户也能打开预览
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          onPreview(item);
+                        }
+                      }}
+                    >
                       <img
                         src={`${API_URL}${item.thumbnail_url}`}
                         alt={item.description || item.name}
@@ -145,7 +174,19 @@ const ArtifactCenter = React.memo(function ArtifactCenter({
                       />
                     </div>
                   ) : (
-                    <div className="chart-icon" onClick={() => onPreview(item)}>
+                    <div
+                      className="chart-icon"
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`预览 ${item.description || item.name}`}
+                      onClick={() => onPreview(item)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          onPreview(item);
+                        }
+                      }}
+                    >
                       <Icon size={28} />
                     </div>
                   )}
@@ -157,10 +198,10 @@ const ArtifactCenter = React.memo(function ArtifactCenter({
                     </div>
                   </div>
                   <div className="artifact-actions">
-                    <button className="preview-button" onClick={() => onPreview(item)}>
+                    <button type="button" className="preview-button" onClick={() => onPreview(item)}>
                       <ExternalLink size={14} />在线查看
                     </button>
-                    <button className="icon-button" title={`下载 ${item.name}`} onClick={() => onDownload(item)}>
+                    <button type="button" className="icon-button" title={`下载 ${item.name}`} aria-label={`下载 ${item.name}`} onClick={() => onDownload(item)}>
                       <Download size={15} />
                     </button>
                   </div>
@@ -190,7 +231,7 @@ const ArtifactCenter = React.memo(function ArtifactCenter({
               <div key={item.name}>
                 <FileSpreadsheet size={17} />
                 <span><strong title={item.name}>{item.name}</strong><small>{item.description} {formatBytes(item.size_bytes)}</small></span>
-                <button className="artifact-download" title={`下载 ${item.name}`} onClick={() => onDownload(item)}><Download size={16} /></button>
+                <button type="button" className="artifact-download" title={`下载 ${item.name}`} aria-label={`下载 ${item.name}`} onClick={() => onDownload(item)}><Download size={16} /></button>
               </div>
             ))}
           </div>

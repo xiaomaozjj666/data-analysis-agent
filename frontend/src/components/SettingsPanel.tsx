@@ -88,7 +88,7 @@ function SettingsPanel() {
   return (
     <div className="provider-block">
       <span className="sidebar-label">分析引擎</span>
-      <button className="model-line" onClick={() => setKeyOpen((value) => !value)}>
+      <button type="button" className="model-line" onClick={() => setKeyOpen((value) => !value)}>
         <span>
           <i className={settings?.configured ? "online" : ""} />
           <span><strong>{settings?.model || "deepseek-chat"}</strong><small>{settings?.configured ? "已连接" : "等待配置"}</small></span>

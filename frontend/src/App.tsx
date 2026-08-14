@@ -815,7 +815,7 @@ function App() {
         {/* ReactBits ClickSpark：点击时白色火花迸发，强化"新建"这一主操作的确认感；
             spark 层 pointer-events:none 不影响点击，reduced-motion 下自动隐藏 */}
         <ClickSpark sparkColor="#ffffff" sparkCount={8} sparkLength={14} className="sidebar-spark">
-          <button className="new-analysis" onClick={() => fileInput.current?.click()} disabled={uploading}>
+          <button type="button" className="new-analysis" onClick={() => fileInput.current?.click()} disabled={uploading}>
             <FilePlus2 size={17} />
             新建分析
           </button>
@@ -828,7 +828,7 @@ function App() {
               放开 overflow，防止按钮 hover 的 translateX/阴影被裁切 */}
           {session ? (
             <GlareHover className="sidebar-glare" borderRadius="var(--radius-md)" borderColor="transparent">
-              <button className="dataset-button" onClick={() => fileInput.current?.click()}>
+              <button type="button" className="dataset-button" onClick={() => fileInput.current?.click()}>
                 <FileSpreadsheet size={17} />
                 <span>
                   <strong>{session.filename}</strong>
@@ -839,7 +839,7 @@ function App() {
             </GlareHover>
           ) : (
             <GlareHover className="sidebar-glare" borderRadius="var(--radius-md)" borderColor="transparent">
-              <button className="upload-button" onClick={() => fileInput.current?.click()} disabled={uploading}>
+              <button type="button" className="upload-button" onClick={() => fileInput.current?.click()} disabled={uploading}>
                 {uploading ? <LoaderCircle className="spin" size={17} /> : <Upload size={17} />}
                 {uploading ? (uploadProgress != null ? `上传中 ${uploadProgress}%` : "正在读取") : "选择数据文件"}
               </button>
@@ -932,7 +932,7 @@ function App() {
             </GlareHover>
             {/* 主题切换：太阳/月亮图标随当前 theme 切换，与 T 快捷键等价。
                 外层用 ReactBits 的 GlareHover 做悬停流光（默认 accent #5b5bd6），
-                原生 <button> 保留无障碍属性与点击；glare 在 icon 之下、仅作悬停反馈。 */}
+                原生 button 保留无障碍属性与点击；glare 在 icon 之下、仅作悬停反馈。 */}
             <GlareHover
               borderRadius="var(--radius-md)"
               borderColor="transparent"
@@ -1040,7 +1040,7 @@ function App() {
                   <p className="dataset-warning"><AlertTriangle size={13} />{profile.load_warnings[0]}</p>
                 )}
               </div>
-              <button className="change-file" onClick={() => fileInput.current?.click()}>
+              <button type="button" className="change-file" onClick={() => fileInput.current?.click()}>
                 <RefreshCw size={14} />替换数据
               </button>
             </section>
@@ -1096,7 +1096,7 @@ function App() {
               <div className="task-actions">
                 <div className="preset-row">
                   {presets.map(({ title, detail, icon: Icon, task: presetTask }) => (
-                    <button
+                    <button type="button"
                       key={title}
                       title={settings?.configured ? detail : "请先在左下角配置 API Key"}
                       onClick={() => {
@@ -1114,12 +1114,12 @@ function App() {
                 <div className="task-box-footer">
                   <small className="input-hint">Enter 换行 · ⌘/Ctrl+Enter 运行分析</small>
                   {running ? (
-                    <button className="cancel-button" onClick={stopAnalysis} disabled={stopping}>
+                    <button type="button" className="cancel-button" onClick={stopAnalysis} disabled={stopping}>
                       <Square size={13} fill="currentColor" />{stopping ? "停止中…" : "停止分析"}
                     </button>
                   ) : (
                     <>
-                      <button className="plan-review-button" onClick={() => startAnalysis(task, null, true)} disabled={!task.trim() || !settings?.configured || !session} title="先生成计划，审阅后再执行">
+                      <button type="button" className="plan-review-button" onClick={() => startAnalysis(task, null, true)} disabled={!task.trim() || !settings?.configured || !session} title="先生成计划，审阅后再执行">
                         <ListChecks size={15} />
                         审阅计划
                       </button>
@@ -1127,7 +1127,7 @@ function App() {
                           给最重要的操作一个明确的启动反馈（火花层不拦截点击） */}
                       <ClickSpark sparkColor="#5b5bd6" sparkCount={10} sparkLength={16}>
                         <StarBorder disabled={!task.trim() || !settings?.configured}>
-                          <button className="run-button" onClick={() => startAnalysis()} disabled={!task.trim() || !settings?.configured}>
+                          <button type="button" className="run-button" onClick={() => startAnalysis()} disabled={!task.trim() || !settings?.configured}>
                             <Play size={15} fill="currentColor" />运行分析
                           </button>
                         </StarBorder>
@@ -1142,7 +1142,7 @@ function App() {
             {/* tabs 紧贴 task-box 下方：切换分析/数据/产物三个视图 */}
             {/* ARIA tablist 语义：roving tabindex + 左右箭头切换，屏幕阅读器可正确识别 */}
             <nav className="tabs" role="tablist" aria-label="工作区视图">
-              <button
+              <button type="button"
                 id="tab-analysis"
                 role="tab"
                 aria-selected={activeTab === "analysis"}
@@ -1155,7 +1155,7 @@ function App() {
                   else if (e.key === "ArrowLeft") { e.preventDefault(); document.getElementById("tab-artifacts")?.focus(); }
                 }}
               ><BarChart3 size={15} />分析</button>
-              <button
+              <button type="button"
                 id="tab-data"
                 role="tab"
                 aria-selected={activeTab === "data"}
@@ -1168,7 +1168,7 @@ function App() {
                   else if (e.key === "ArrowLeft") { e.preventDefault(); document.getElementById("tab-analysis")?.focus(); }
                 }}
               ><Table2 size={15} />数据</button>
-              <button
+              <button type="button"
                 id="tab-artifacts"
                 role="tab"
                 aria-selected={activeTab === "artifacts"}
