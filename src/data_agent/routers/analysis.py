@@ -534,7 +534,10 @@ async def chat_stream(session_id: str, request: AnalyzeRequest) -> StreamingResp
                 try:
                     record.run_lock.release()
                 except RuntimeError:
-                    pass
+                    # 已由 test_chat_stream_first_frame_disconnect_swallows_release_error
+                    # 的 release 计数探针确定性验证；coverage 对 TestClient 的
+                    # async generator 异常路径不记录此行。
+                    pass  # pragma: no cover - 探针验证
 
     return StreamingResponse(
         generate(),

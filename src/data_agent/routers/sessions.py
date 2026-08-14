@@ -123,7 +123,9 @@ def rename_session(session_id: str, payload: dict[str, Any]) -> dict[str, str]:
     """
     from data_agent import api
 
-    title = str(payload.get("title", "")).strip()
+    # None（显式清除）与空串语义一致：都视为未设置，回退显示 filename。
+    # 不能 str(None) 把 null 变成字面量 "None" 存进会话标题。
+    title = str(payload.get("title") or "").strip()
     cleaned = api.registry.rename(session_id, title)
     return {"title": cleaned}
 
