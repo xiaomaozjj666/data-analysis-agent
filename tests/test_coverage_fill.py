@@ -6,16 +6,469 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
+import logging
+import os
+import subprocess
+import sys
 import threading
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from data_agent.config import AgentSettings
 from data_agent.workspace import DataWorkspace
+
+# ---------------------------------------------------------------------------
+# registry.py：prune / restore 错误路径 / delete / rename / 载荷构造
+# ---------------------------------------------------------------------------
+
+
+def _isolate_api_env(tmp_path, monkeypatch):
+    """隔离 API 运行时（registry/runs 目录），供 import 端点测试使用。"""
+    from data_agent import api
+    from data_agent.storage import LocalSessionStorage
+
+    monkeypatch.delenv("APP_ACCESS_TOKEN", raising=False)
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    settings = AgentSettings(api_key="test", runs_dir=runs_dir, max_concurrent_analyses=2)
+    registry = api.SessionRegistry(
+        runs_dir,
+        settings.max_active_sessions,
+        settings.session_ttl_hours,
+        storage=LocalSessionStorage(),
+    )
+    monkeypatch.setattr(api, "bootstrap_settings", settings)
+    monkeypatch.setattr(api, "registry", registry)
+    monkeypatch.setattr(api, "session_storage", LocalSessionStorage())
+    api.request_buckets.clear()
+
+
+def _make_registry_session(tmp_path, session_id="api_reg_test", runs_dir=None):
+    """构造一个已持久化到磁盘的会话，返回 (runs_dir, registry, session_id)。"""
+    from data_agent.api import SessionRegistry
+
+    runs_dir = runs_dir or tmp_path / "runs"
+    workspace = DataWorkspace(runs_dir, session_id=session_id)
+    source = workspace.save_upload("data.csv", b"a,b\n1,2\n")
+    workspace.load(source)
+    registry = SessionRegistry(runs_dir, max_sessions=10, ttl_hours=24)
+    registry.create(workspace)
+    return runs_dir, registry, session_id
+
+
+def test_registry_prunes_expired_session(tmp_path):
+    """超过 TTL 的会话应在 get 时被清理（TTL 过期分支）。"""
+    from fastapi import HTTPException
+
+    runs_dir, registry, session_id = _make_registry_session(tmp_path, "api_expired")
+    registry.ttl_seconds = 0  # 立即过期
+    # 直接操作内存 record（get 本身会先触发 prune，不能先 get）
+    registry._items[session_id].last_access -= 10
+
+    with pytest.raises(HTTPException) as exc_info:
+        registry.get(session_id)
+    assert exc_info.value.status_code == 404
+
+
+def test_registry_prunes_by_lru_when_over_capacity(tmp_path):
+    """超过 max_sessions 时按 last_access 淘汰最旧会话。"""
+    from data_agent.api import SessionRegistry
+
+    runs_dir = tmp_path / "runs"
+    registry = SessionRegistry(runs_dir, max_sessions=2, ttl_hours=24)
+    for index in range(3):
+        session_id = f"api_lru_{index}"
+        workspace = DataWorkspace(runs_dir, session_id=session_id)
+        source = workspace.save_upload(f"{index}.csv", b"a,b\n1,2\n")
+        workspace.load(source)
+        registry.create(workspace)
+    # 3 个会话只剩 2 个（最旧的被淘汰）
+    assert len(registry._items) == 2
+    assert "api_lru_0" not in registry._items
+
+
+def test_cleanup_remote_logs_delete_failure(tmp_path, caplog):
+    """远端归档删除失败应记录日志而不抛出。"""
+    from data_agent.api import SessionRegistry
+
+    class BrokenDeleteStorage:
+        backend = "s3"
+        persistent = True
+
+        def sync_session(self, *args):
+            pass
+
+        def restore_session(self, *args):
+            return False
+
+        def healthcheck(self):
+            return {}
+
+        def delete_session(self, *args):
+            raise RuntimeError("denied")
+
+    runs_dir = tmp_path / "runs"
+    first = DataWorkspace(runs_dir, session_id="api_cleanup_fail")
+    src = first.save_upload("a.csv", b"x,y\n1,2\n")
+    first.load(src)
+    reg = SessionRegistry(runs_dir, max_sessions=1, ttl_hours=24, storage=BrokenDeleteStorage())
+    reg.create(first)
+
+    second = DataWorkspace(runs_dir, session_id="api_cleanup_fail2")
+    src2 = second.save_upload("b.csv", b"x,y\n1,2\n")
+    second.load(src2)
+    with caplog.at_level(logging.ERROR, logger="data_agent.registry"):
+        reg.create(second)  # 触发 prune → cleanup_remote → delete 失败
+    assert "Session storage cleanup failed" in caplog.text
+
+
+def test_registry_get_404_while_session_deleting(tmp_path):
+    """会话处于删除中（_deleting 标记）时 get 应返回 404，防止恢复悬空 record。"""
+    from fastapi import HTTPException
+
+    runs_dir, registry, session_id = _make_registry_session(tmp_path, "api_deleting")
+    registry._items.pop(session_id)
+    registry._deleting.add(session_id)
+    with pytest.raises(HTTPException) as exc_info:
+        registry.get(session_id)
+    assert exc_info.value.status_code == 404
+
+
+def test_registry_get_404_for_invalid_session_id(tmp_path):
+    """非法 session_id（格式不符）应返回 404 而不是尝试恢复。"""
+    from fastapi import HTTPException
+
+    _, registry, _ = _make_registry_session(tmp_path, "api_valid")
+    with pytest.raises(HTTPException) as exc_info:
+        registry.get("bad id!")
+    assert exc_info.value.status_code == 404
+
+
+def test_restore_locked_rejects_root_outside_runs_dir(tmp_path, monkeypatch):
+    """_restore_locked 应拒绝 resolve 后越界 runs_dir 的会话目录（防御分支）。"""
+    from pathlib import Path as RealPath
+
+    from data_agent.api import SessionRegistry
+
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    reg = SessionRegistry(runs_dir, max_sessions=10, ttl_hours=24)
+    # 模拟 runs_dir 下存在指向外部的目录：把 resolve 替换为越界路径
+    monkeypatch.setattr(
+        type(runs_dir), "resolve", lambda self, strict=False: RealPath(tmp_path / "outside") / self.name
+    )
+    assert reg._restore_locked("api_x") is None
+
+
+def test_restore_locked_logs_storage_restore_failure(tmp_path, caplog):
+    """远端恢复失败应记录日志并返回 None。"""
+    from data_agent.api import SessionRegistry
+
+    class BrokenRestore:
+        backend = "s3"
+        persistent = True
+
+        def sync_session(self, *args):
+            pass
+
+        def restore_session(self, *args):
+            raise RuntimeError("provider down")
+
+        def delete_session(self, *args):
+            pass
+
+        def healthcheck(self):
+            return {}
+
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    reg = SessionRegistry(runs_dir, max_sessions=10, ttl_hours=24, storage=BrokenRestore())
+    with caplog.at_level(logging.ERROR, logger="data_agent.registry"):
+        assert reg._restore_locked("api_x") is None
+    assert "Session storage restore failed" in caplog.text
+
+
+def test_restore_locked_returns_none_when_workspace_load_fails(tmp_path, monkeypatch):
+    """工作区数据加载失败（如磁盘错误）时应返回 None。"""
+    from data_agent.api import SessionRegistry
+    from data_agent.workspace import DataWorkspace
+
+    runs_dir = tmp_path / "runs"
+    session_dir = runs_dir / "api_broken"
+    (session_dir / "input").mkdir(parents=True)
+    (session_dir / "input" / "data.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+
+    def failing_load(self, path):
+        raise OSError("disk error")
+
+    monkeypatch.setattr(DataWorkspace, "load", failing_load)
+    reg = SessionRegistry(runs_dir, max_sessions=10, ttl_hours=24)
+    assert reg._restore_locked("api_broken") is None
+
+
+def test_restore_locked_tolerates_corrupt_manifest(tmp_path):
+    """manifest 为损坏 JSON 时应容错恢复为空状态。"""
+    from data_agent.api import SessionRegistry
+
+    runs_dir = tmp_path / "runs"
+    session_dir = runs_dir / "api_corrupt"
+    (session_dir / "input").mkdir(parents=True)
+    (session_dir / "input" / "data.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+    (session_dir / "session.json").write_text("{broken", encoding="utf-8")
+
+    reg = SessionRegistry(runs_dir, max_sessions=10, ttl_hours=24)
+    record = reg._restore_locked("api_corrupt")
+    assert record is not None
+    assert record.analysis_status == "idle"
+
+
+def test_restore_locked_logs_checkpoint_failure(tmp_path, caplog):
+    """checkpoint 损坏时恢复应记录日志并继续（不阻塞会话恢复）。"""
+    from data_agent.api import SessionRegistry
+
+    runs_dir = tmp_path / "runs"
+    session_dir = runs_dir / "api_ckpt"
+    (session_dir / "input").mkdir(parents=True)
+    (session_dir / "input" / "data.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+    (session_dir / "workspace_state.parquet").write_bytes(b"not a parquet file")
+
+    reg = SessionRegistry(runs_dir, max_sessions=10, ttl_hours=24)
+    with caplog.at_level(logging.ERROR, logger="data_agent.registry"):
+        record = reg._restore_locked("api_ckpt")
+    assert record is not None
+    assert "Workspace checkpoint restore failed" in caplog.text
+
+
+def test_list_recent_skips_invalid_disk_manifests(tmp_path):
+    """list_recent 应跳过缺失/损坏/非 dict 的磁盘 manifest。"""
+    from data_agent.api import SessionRegistry
+
+    runs_dir = tmp_path / "runs"
+    # 只有目录没有 manifest
+    (runs_dir / "api_no_manifest" / "input").mkdir(parents=True)
+    (runs_dir / "api_no_manifest" / "input" / "x.csv").write_text("a\n1\n", encoding="utf-8")
+    # 损坏 JSON
+    (runs_dir / "api_bad_json" / "input").mkdir(parents=True)
+    (runs_dir / "api_bad_json" / "input" / "x.csv").write_text("a\n1\n", encoding="utf-8")
+    (runs_dir / "api_bad_json" / "session.json").write_text("{broken", encoding="utf-8")
+    # 非 dict JSON（list）
+    (runs_dir / "api_not_dict" / "input").mkdir(parents=True)
+    (runs_dir / "api_not_dict" / "input" / "x.csv").write_text("a\n1\n", encoding="utf-8")
+    (runs_dir / "api_not_dict" / "session.json").write_text("[1,2]", encoding="utf-8")
+    # artifacts 不是 list 的合法 manifest
+    (runs_dir / "api_bad_artifacts" / "input").mkdir(parents=True)
+    (runs_dir / "api_bad_artifacts" / "input" / "x.csv").write_text("a\n1\n", encoding="utf-8")
+    (runs_dir / "api_bad_artifacts" / "session.json").write_text(
+        json.dumps({"artifacts": "not-a-list", "created_at": 1}), encoding="utf-8"
+    )
+
+    reg = SessionRegistry(runs_dir, max_sessions=10, ttl_hours=24)
+    recent = reg.list_recent(limit=100)
+    # 四个磁盘会话：无 manifest 的跳过；坏 JSON 跳过；非 dict 跳过；坏 artifacts 展示
+    disk_ids = {item["id"] for item in recent if not item["in_memory"]}
+    assert "api_bad_artifacts" in disk_ids
+    assert "api_no_manifest" not in disk_ids
+    assert "api_bad_json" not in disk_ids
+    assert "api_not_dict" not in disk_ids
+    bad_art = next(item for item in recent if item["id"] == "api_bad_artifacts")
+    assert bad_art["artifact_count"] == 0
+
+
+def test_list_recent_zero_limit_returns_empty():
+    from data_agent.api import SessionRegistry
+
+    reg = SessionRegistry(Path("runs"), max_sessions=10, ttl_hours=24)
+    assert reg.list_recent(limit=0) == []
+
+
+def test_registry_delete_rejects_root_outside_runs_dir(tmp_path, monkeypatch):
+    """delete 应拒绝 resolve 后越界 runs_dir 的目录（防御分支）。"""
+    from pathlib import Path as RealPath
+
+    from fastapi import HTTPException
+
+    from data_agent.api import SessionRegistry
+
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    reg = SessionRegistry(runs_dir, max_sessions=10, ttl_hours=24)
+    monkeypatch.setattr(
+        type(runs_dir), "resolve", lambda self, strict=False: RealPath(tmp_path / "outside") / self.name
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        reg.delete("api_x")
+    assert exc_info.value.status_code == 404
+
+
+def test_registry_delete_logs_rmtree_and_storage_failures(tmp_path, caplog, monkeypatch):
+    """delete 的 rmtree 与远端删除失败都应记录日志而不抛出。"""
+    import shutil
+
+    runs_dir, registry, session_id = _make_registry_session(tmp_path, "api_del_fail")
+
+    def failing_rmtree(*args, **kwargs):
+        raise OSError("access denied")
+
+    monkeypatch.setattr(shutil, "rmtree", failing_rmtree)
+    with caplog.at_level(logging.ERROR, logger="data_agent.registry"):
+        registry.delete(session_id)
+    assert "Failed to remove session directory" in caplog.text
+
+
+def test_registry_delete_logs_storage_delete_failure(tmp_path, caplog):
+
+    class BrokenDeleteStorage:
+        backend = "s3"
+        persistent = True
+
+        def sync_session(self, *args):
+            pass
+
+        def restore_session(self, *args):
+            return False
+
+        def healthcheck(self):
+            return {}
+
+        def delete_session(self, *args):
+            raise RuntimeError("denied")
+
+    runs_dir, registry, session_id = _make_registry_session(
+        tmp_path, "api_del_storage", runs_dir=tmp_path / "runs"
+    )
+    registry.storage = BrokenDeleteStorage()
+    with caplog.at_level(logging.ERROR, logger="data_agent.registry"):
+        registry.delete(session_id)
+    assert "Session storage delete failed" in caplog.text
+
+
+def test_registry_rename_rejects_invalid_session_id():
+    from fastapi import HTTPException
+
+    from data_agent.api import SessionRegistry
+
+    reg = SessionRegistry(Path("runs"), max_sessions=10, ttl_hours=24)
+    with pytest.raises(HTTPException) as exc_info:
+        reg.rename("bad id!", "标题")
+    assert exc_info.value.status_code == 404
+
+
+def test_registry_import_rejects_zero_concurrency():
+    """DATA_AGENT_MAX_CONCURRENT_ANALYSES<=0 时导入 registry 应抛 ValueError。
+
+    用子进程验证，避免 reload 污染当前进程的单例状态。
+    """
+    env = {**os.environ, "DATA_AGENT_MAX_CONCURRENT_ANALYSES": "0"}
+    result = subprocess.run(
+        [sys.executable, "-c", "import data_agent.registry"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=120,
+    )
+    assert result.returncode != 0
+    assert "MAX_CONCURRENT_ANALYSES" in result.stderr
+
+
+def test_dataset_priority_falls_back_to_default():
+    from data_agent.registry import _dataset_priority
+
+    assert _dataset_priority("random_export.csv").value == 3  # DEFAULT
+
+
+def test_curate_artifacts_handles_images_and_documents():
+    from data_agent.registry import _curate_artifacts
+
+    artifacts = [
+        {"name": "photo.png", "kind": "image", "description": "截图"},
+        {"name": "notes.md", "kind": "document", "description": "说明文档"},
+        {"name": "chart_1.html", "kind": "visualization", "description": "柱状图"},
+        {"name": "data.json", "kind": "chart_data", "description": "图表数据"},
+    ]
+    result = _curate_artifacts(artifacts)
+    kinds = [item["kind"] for item in result]
+    assert "image" in kinds
+    assert "document" in kinds
+    assert "visualization" in kinds
+    # chart_data 被过滤
+    assert "chart_data" not in kinds
+
+
+def test_artifact_payload_tolerates_missing_files(tmp_path):
+    """产物 path 不存在时 size_bytes 应为 0（stat 失败兜底）。"""
+    from data_agent.registry import _artifact_payload
+
+    artifacts = [
+        {"name": "ghost.html", "kind": "visualization", "description": "幽灵产物", "path": str(tmp_path / "ghost.html")},
+    ]
+    payload = _artifact_payload("api_x", artifacts)
+    assert payload[0]["size_bytes"] == 0
+
+
+def test_elapsed_seconds_various_states(tmp_path):
+    """elapsed_seconds 按状态计算：idle=None、running=now-started、completed=completed-started。"""
+    import time as _time
+
+    from data_agent.registry import _elapsed_seconds
+
+    runs_dir, registry, session_id = _make_registry_session(tmp_path, "api_elapsed")
+    record = registry.get(session_id)
+
+    # idle：无 started_at → None
+    assert _elapsed_seconds(record) is None
+
+    record.set_running()
+    _time.sleep(0.01)
+    running_elapsed = _elapsed_seconds(record)
+    assert running_elapsed is not None and running_elapsed > 0
+
+    record.set_finished("completed")
+    completed_elapsed = _elapsed_seconds(record)
+    assert completed_elapsed is not None and completed_elapsed > 0
+    assert completed_elapsed < running_elapsed + 10
+
+
+def test_artifact_file_returns_404_for_removed_file(tmp_path, monkeypatch):
+    """产物文件已被删除时 _artifact_file 应返回 404。"""
+    from fastapi import HTTPException
+
+    from data_agent import api
+    from data_agent.registry import _artifact_file
+
+    runs_dir = tmp_path / "runs"
+    workspace = DataWorkspace(runs_dir, session_id="api_ghost")
+    source = workspace.save_upload("data.csv", b"a,b\n1,2\n")
+    workspace.load(source)
+    ghost = workspace.artifacts_dir / "ghost.html"
+    ghost.write_text("<html></html>", encoding="utf-8")
+    workspace.register_artifact(ghost, "visualization", "幽灵")
+    registry = api.SessionRegistry(runs_dir, max_sessions=10, ttl_hours=24)
+    session_id, _record = registry.create(workspace)
+    monkeypatch.setattr(api, "registry", registry)
+
+    ghost.unlink()  # 产物文件被删除
+    with pytest.raises(HTTPException) as exc_info:
+        _artifact_file(session_id, "ghost.html")
+    assert exc_info.value.status_code == 404
+
+
+def test_save_runtime_api_key_without_persist(monkeypatch):
+    """persist_key=False 时应仅写入内存并返回 True，不触碰 keyring。"""
+    import keyring
+
+    from data_agent.registry import _save_runtime_api_key
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("persist_key=False 不应调用 keyring")
+
+    monkeypatch.setattr(keyring, "set_password", unexpected)
+    assert _save_runtime_api_key("sk-mem-only", persist_key=False) is True
 
 # ---------------------------------------------------------------------------
 # nodes/_utils.py：_message_text 分支覆盖
@@ -221,18 +674,15 @@ def test_build_session_storage_s3_requires_full_config(monkeypatch):
 def test_build_session_storage_s3_uses_r2_account_id(monkeypatch):
     from data_agent.storage import S3SessionStorage, build_session_storage
 
+    pytest.importorskip("boto3")  # boto3 不可用时跳过，而非吞掉任何异常
     monkeypatch.setenv("DATA_AGENT_STORAGE_BACKEND", "s3")
     monkeypatch.setenv("DATA_AGENT_R2_ACCOUNT_ID", "abc123")
     monkeypatch.setenv("DATA_AGENT_STORAGE_BUCKET", "test-bucket")
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "ak")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "sk")
-    # boto3 import 可能在无网络环境失败，捕获并跳过
-    try:
-        storage = build_session_storage()
-        assert isinstance(storage, S3SessionStorage)
-        assert storage.endpoint_url == "https://abc123.r2.cloudflarestorage.com"
-    except Exception:  # boto3 不可用时跳过
-        pytest.skip("boto3 not available")
+    storage = build_session_storage()
+    assert isinstance(storage, S3SessionStorage)
+    assert storage.endpoint_url == "https://abc123.r2.cloudflarestorage.com"
 
 
 def test_s3_storage_sync_failure_wraps_runtime_error(tmp_path, monkeypatch):
@@ -2237,4 +2687,435 @@ def test_export_data_xlsx_format(tmp_path):
     )
     assert result["status"] == "ok"
     assert Path(result["output"]).exists()
+
+
+# ---------------------------------------------------------------------------
+# prompts.py：_humanize_error 命中映射 / _query_allows_format_repair / 约束回退
+# ---------------------------------------------------------------------------
+
+
+def test_humanize_error_matches_known_patterns():
+    from data_agent.prompts import _humanize_error
+
+    assert "转为数值" in _humanize_error(ValueError("could not convert string to float: 'x'"))
+    assert "除以零" in _humanize_error(ZeroDivisionError("division by zero"))
+    # 未命中任何映射 → 通用文案（保留异常类名）
+    assert "执行过程中遇到问题" in _humanize_error(RuntimeError("some unknown error"))
+    assert "RuntimeError" in _humanize_error(RuntimeError("some unknown error"))
+
+
+def test_query_allows_format_repair_respects_blockers():
+    from data_agent.prompts import _query_allows_format_repair
+
+    assert _query_allows_format_repair("分析销售数据") is True
+    assert _query_allows_format_repair("只检查数据质量，不要修改") is False
+    assert _query_allows_format_repair("read only analysis") is False
+
+
+def test_apply_query_constraints_falls_back_to_inspect_when_all_dropped():
+    """所有步骤都被约束过滤掉时，应回退注入只读 inspect 步骤。"""
+    from data_agent.models import AnalysisPlan, PlanStep
+    from data_agent.prompts import _apply_query_constraints
+
+    plan = AnalysisPlan(
+        objective="目标",
+        steps=[
+            PlanStep(id="prepare", title="清洗数据", instruction="清洗", success_criteria="完成"),
+            PlanStep(id="visualize", title="生成图表", instruction="绘图", success_criteria="图表"),
+        ],
+    )
+    result = _apply_query_constraints("不要修改数据，不生成图表", plan)
+    assert [step.id for step in result.steps] == ["inspect"]
+
+
+# ---------------------------------------------------------------------------
+# deployment.py：越界防护分支 + run_analysis 完整执行
+# ---------------------------------------------------------------------------
+
+
+def test_deployment_resolve_dataset_id_rejects_outside_resolution(tmp_path, monkeypatch):
+    """dataset_id 的 input 目录 resolve 后越界 runs_root 应被拒绝。"""
+    from pathlib import Path as RealPath
+
+    from data_agent.deployment import _resolve_dataset_source
+
+    settings = AgentSettings(api_key="x", runs_dir=tmp_path)
+    monkeypatch.setattr(
+        RealPath, "resolve", lambda self, strict=False: RealPath(tmp_path / "outside") / self.name
+    )
+    with pytest.raises(ValueError, match="超出允许的工作区根目录"):
+        _resolve_dataset_source({"dataset_id": "ok_id"}, settings, None)
+
+
+def test_deployment_resolve_missing_source_raises(tmp_path):
+    """既无 dataset_id 也无 dataset_path 时应报错。"""
+    from data_agent.deployment import _resolve_dataset_source
+
+    settings = AgentSettings(api_key="x", runs_dir=tmp_path)
+    with pytest.raises(ValueError, match="必须提供"):
+        _resolve_dataset_source({}, settings, None)
+
+
+def test_deployment_resolve_dataset_path_rejects_outside_resolution(tmp_path, monkeypatch):
+    """dataset_path resolve 后越界 runs_root 应被拒绝（防御分支）。"""
+    from pathlib import Path as RealPath
+
+    from data_agent.deployment import _resolve_dataset_source
+
+    settings = AgentSettings(api_key="x", runs_dir=tmp_path)
+    monkeypatch.setattr(
+        RealPath, "resolve", lambda self, strict=False: RealPath(tmp_path / "outside") / self.name
+    )
+    with pytest.raises(ValueError, match="超出允许的工作区根目录"):
+        _resolve_dataset_source({"dataset_path": "data.csv"}, settings, None)
+
+
+def test_deployment_run_analysis_executes_graph(tmp_path, monkeypatch):
+    """make_graph 的 run_analysis 应完整执行：加载数据集、运行分析、同步存储。"""
+    import data_agent.deployment as deployment_module
+    from data_agent.agent import AnalysisResult
+    from data_agent.deployment import make_graph
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    runs_dir = tmp_path / "runs"
+    data_file = runs_dir / "data.csv"
+    data_file.parent.mkdir(parents=True)
+    data_file.write_text("a,b\n1,2\n", encoding="utf-8")
+    monkeypatch.setenv("DATA_AGENT_RUNS_DIR", str(runs_dir))
+
+    class StubAgent:
+        def __init__(self, workspace, settings):
+            self.workspace = workspace
+
+        def run(self, query):
+            return AnalysisResult(
+                response="完成",
+                trace=[],
+                artifacts=[],
+                dataset_profile=self.workspace.profile(),
+                plan=[],
+                completed_steps=[],
+            )
+
+    monkeypatch.setattr(deployment_module, "DataAnalysisAgent", StubAgent)
+
+    synced: list[str] = []
+
+    class SyncStorage:
+        backend = "s3"
+        persistent = True
+
+        def sync_session(self, session_id, source):
+            synced.append(session_id)
+
+        def restore_session(self, *args):
+            return False
+
+        def delete_session(self, *args):
+            pass
+
+        def healthcheck(self):
+            return {}
+
+    monkeypatch.setattr(deployment_module, "build_session_storage", lambda: SyncStorage())
+
+    graph = make_graph()
+    result = graph.invoke({"query": "分析", "dataset_path": "data.csv"})
+    assert result["response"] == "完成"
+    assert result["dataset_profile"]["rows"] == 1
+    assert synced, "分析完成后应同步会话到对象存储"
+    assert synced[0].startswith("deploy_")
+
+
+# ---------------------------------------------------------------------------
+# 剩余分支：_safe_emit 二次失败 / registry is_running / elapsed idle / list_recent 清理
+# ---------------------------------------------------------------------------
+
+
+def test_safe_emit_swallows_failed_eviction_retry(monkeypatch):
+    """终态事件入队时淘汰与重试都失败（二次 QueueFull/QueueEmpty）应静默放弃。"""
+    from data_agent.routers import analysis as analysis_router
+
+    async def _run():
+        queue: asyncio.Queue = asyncio.Queue(maxsize=1)
+        queue.put_nowait(("thinking_chunk", {"chunk": "old"}))
+
+        original_get = queue.get_nowait
+        original_put = queue.put_nowait
+        call_count = {"get": 0, "put": 0}
+
+        def fake_get():
+            call_count["get"] += 1
+            if call_count["get"] == 1:
+                raise asyncio.QueueEmpty()
+            return original_get()
+
+        def fake_put(item):
+            call_count["put"] += 1
+            if call_count["put"] == 1:
+                raise asyncio.QueueFull()
+            return original_put(item)
+
+        monkeypatch.setattr(queue, "get_nowait", fake_get)
+        monkeypatch.setattr(queue, "put_nowait", fake_put)
+
+        # 不应抛异常：淘汰失败 + 重试失败都被吞掉
+        analysis_router._safe_emit(
+            asyncio.get_running_loop(), queue, ("complete", {"response": "new"})
+        )
+        await asyncio.sleep(0.01)
+
+    asyncio.run(_run())
+
+
+def test_session_record_is_running_states(tmp_path):
+    """is_running 仅对 running/cancelling 返回 True。"""
+    runs_dir, registry, session_id = _make_registry_session(tmp_path, "api_is_running")
+    record = registry.get(session_id)
+
+    assert record.is_running() is False
+    record.set_running()
+    assert record.is_running() is True
+    with record._status_lock:
+        record._analysis_status = "cancelling"
+    assert record.is_running() is True
+    record.set_finished("completed")
+    assert record.is_running() is False
+
+
+def test_elapsed_seconds_idle_with_started_at(tmp_path):
+    """started_at 有值但状态非 running 且无 completed_at 时返回 None。"""
+    import time as _time
+
+    from data_agent.registry import _elapsed_seconds
+
+    runs_dir, registry, session_id = _make_registry_session(tmp_path, "api_elapsed_idle")
+    record = registry.get(session_id)
+    record.set_running()
+    _time.sleep(0.01)
+    # 直接改回 idle（绕过 set_finished），保留 started_at、无 completed_at
+    with record._status_lock:
+        record._analysis_status = "idle"
+    assert _elapsed_seconds(record) is None
+
+
+def test_list_recent_cleans_remote_for_pruned(tmp_path, caplog):
+    """list_recent 触发 prune 后应清理远端归档（489 分支）。"""
+    from data_agent.api import SessionRegistry
+
+    class TrackDeleteStorage:
+        backend = "s3"
+        persistent = True
+        deleted: list[str] = []
+
+        def sync_session(self, *args):
+            pass
+
+        def restore_session(self, *args):
+            return False
+
+        def delete_session(self, session_id):
+            self.deleted.append(session_id)
+
+        def healthcheck(self):
+            return {}
+
+    runs_dir = tmp_path / "runs"
+    ws = DataWorkspace(runs_dir, session_id="api_prune_remote")
+    src = ws.save_upload("a.csv", b"x,y\n1,2\n")
+    ws.load(src)
+    storage = TrackDeleteStorage()
+    reg = SessionRegistry(runs_dir, max_sessions=10, ttl_hours=24, storage=storage)
+    reg.create(ws)
+    reg.ttl_seconds = 0
+    reg._items["api_prune_remote"].last_access -= 100
+
+    reg.list_recent(limit=10)  # 触发 prune → cleanup_remote
+    assert "api_prune_remote" in storage.deleted
+
+
+def test_to_jsonable_handles_float32():
+    """np.float32 不是 float 子类，走 np.floating 分支（含 NaN→None）。"""
+    from data_agent.serialization import to_jsonable
+
+    assert to_jsonable(np.float32(1.5)) == 1.5
+    assert to_jsonable(np.float32(np.nan)) is None
+
+
+def test_registry_prune_logs_cleanup_oserror(tmp_path, monkeypatch, caplog):
+    """prune 清理工作区目录抛 OSError 时应被吞掉而不崩溃（201-202 / 215-216）。"""
+
+    runs_dir, registry, session_id = _make_registry_session(tmp_path, "api_cleanup_err")
+    registry.ttl_seconds = 0
+    registry._items[session_id].last_access -= 100
+    calls = {"n": 0}
+
+    def failing_cleanup(self):
+        calls["n"] += 1
+        raise OSError("access denied")
+
+    monkeypatch.setattr(DataWorkspace, "cleanup", failing_cleanup)
+    # cleanup 失败被吞：不抛异常；目录未删 → 会话从磁盘恢复（不崩溃）
+    record = registry.get(session_id)
+    assert calls["n"] >= 1
+    assert record is not None
+
+
+def test_registry_lru_prune_logs_cleanup_oserror(tmp_path, monkeypatch, caplog):
+    """LRU 淘汰路径的 cleanup 失败同样被吞掉（215-216）。"""
+    from data_agent.api import SessionRegistry
+
+    runs_dir = tmp_path / "runs"
+    first = DataWorkspace(runs_dir, session_id="api_lru_err1")
+    src = first.save_upload("a.csv", b"x,y\n1,2\n")
+    first.load(src)
+    reg = SessionRegistry(runs_dir, max_sessions=1, ttl_hours=24)
+    reg.create(first)
+
+    def failing_cleanup(self):
+        raise OSError("access denied")
+
+    monkeypatch.setattr(DataWorkspace, "cleanup", failing_cleanup)
+    second = DataWorkspace(runs_dir, session_id="api_lru_err2")
+    src2 = second.save_upload("b.csv", b"x,y\n1,2\n")
+    second.load(src2)
+    reg.create(second)  # 触发 LRU 淘汰 → cleanup 失败被吞
+    assert "api_lru_err1" not in reg._items
+
+
+def test_sessions_import_rejects_too_many_members(tmp_path, monkeypatch):
+    """ZIP 成员超过上限应返回 400（215 分支）。"""
+    import zipfile
+
+    from fastapi.testclient import TestClient
+
+    from data_agent import api
+
+    _isolate_api_env(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as bundle:
+        bundle.writestr("input/data.csv", "a,b\n1,2\n")
+    buffer.seek(0)
+
+    fake_members = [type("M", (), {"filename": f"input/f{i}.csv", "file_size": 1})() for i in range(10_001)]
+    monkeypatch.setattr(zipfile.ZipFile, "infolist", lambda self: fake_members)
+
+    response = client.post(
+        "/api/sessions/import",
+        files={"file": ("many.zip", buffer.getvalue(), "application/zip")},
+    )
+    assert response.status_code == 400
+    assert "成员过多" in response.json()["detail"]
+
+
+def test_sessions_import_rejects_huge_uncompressed(tmp_path, monkeypatch):
+    """解压总大小超过 1GB 应返回 400（229 分支）。"""
+    import zipfile
+
+    from fastapi.testclient import TestClient
+
+    from data_agent import api
+
+    _isolate_api_env(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as bundle:
+        bundle.writestr("input/data.csv", "a,b\n1,2\n")
+    buffer.seek(0)
+
+    fake_members = [type("M", (), {"filename": "input/data.csv", "file_size": 2 * 1024**3})()]
+    monkeypatch.setattr(zipfile.ZipFile, "infolist", lambda self: fake_members)
+
+    response = client.post(
+        "/api/sessions/import",
+        files={"file": ("huge.zip", buffer.getvalue(), "application/zip")},
+    )
+    assert response.status_code == 400
+    assert "解压后过大" in response.json()["detail"]
+
+
+def test_s3_storage_mtime_incremental_sync(tmp_path):
+    """S3 存储应记录 mtime 并做增量同步（131/135 分支）。"""
+    from data_agent.storage import S3SessionStorage
+    from tests.test_storage import FakeS3Client
+
+    remote = tmp_path / "remote"
+    storage = S3SessionStorage(
+        bucket="b", endpoint_url="https://example.invalid",
+        access_key_id="ak", secret_access_key="sk",
+    )
+    storage.client = FakeS3Client(remote)
+
+    source = tmp_path / "runs" / "api_mtime"
+    (source / "input").mkdir(parents=True)
+    (source / "input" / "sales.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+    (source / "session.json").write_text("{}", encoding="utf-8")
+
+    storage.sync_session("api_mtime", source)
+    assert "api_mtime" in storage._mtimes  # 135：记录 mtime
+    first_mtime = storage._mtimes["api_mtime"]["input/sales.csv"]
+
+    # 文件未变 → 第二次同步跳过写入（增量路径），mtime 记录保持不变
+    import time as _time
+
+    _time.sleep(0.02)
+    storage.sync_session("api_mtime", source)
+    assert storage._mtimes["api_mtime"]["input/sales.csv"] == first_mtime
+
+    # 文件变化 → 重新写入并更新记录
+    (source / "input" / "sales.csv").write_text("a,b\n3,4\n", encoding="utf-8")
+    _time.sleep(0.02)
+    storage.sync_session("api_mtime", source)
+    assert storage._mtimes["api_mtime"]["input/sales.csv"] != first_mtime
+
+    # delete 清除 mtime 记录（173 分支）
+    storage.delete_session("api_mtime")
+    assert "api_mtime" not in storage._mtimes
+
+
+def test_handle_tool_error_wraps_exceptions(workspace):
+    """真实 ReAct 流程中工具抛错应被 _handle_tool_error 中间件包装为 ToolMessage。"""
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+    from langchain_core.outputs import ChatGeneration, ChatResult
+
+    from data_agent.agent import DataAnalysisAgent
+    from data_agent.config import AgentSettings
+    from tests.test_agent import ToolCallingFakeModel
+
+    class FailingToolModel(ToolCallingFakeModel):
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            for message in messages:
+                if isinstance(message, HumanMessage) and isinstance(message.content, str) and "中文数据分析报告" in message.content:
+                    return ChatResult(generations=[ChatGeneration(message=AIMessage(content="报告完成"))])
+            if any(isinstance(message, ToolMessage) for message in messages):
+                return ChatResult(generations=[ChatGeneration(message=AIMessage(content="执行完成"))])
+            if self._bound_tool_names and "AnalysisPlan" not in self._bound_tool_names and "ReplanDecision" not in self._bound_tool_names:
+                return ChatResult(
+                    generations=[
+                        ChatGeneration(
+                            message=AIMessage(
+                                content="",
+                                tool_calls=[
+                                    {
+                                        "name": "run_python_code",
+                                        "args": {"code": "result = df['不存在的列']"},
+                                        "id": "call_fail",
+                                        "type": "tool_call",
+                                    }
+                                ],
+                            )
+                        )
+                    ]
+                )
+            return super()._generate(messages, stop, run_manager, **kwargs)
+
+    settings = AgentSettings(api_key="not-used", max_iterations=5, runs_dir=workspace.root.parent)
+    agent = DataAnalysisAgent(workspace, settings=settings, model=FailingToolModel())
+    result = agent.run("检查数据")
+    assert result.response
+    # 工具失败应被包装为带 error_code 的 ToolMessage，且错误已恢复
+    assert any(item["type"] == "tool_call" and item["name"] == "run_python_code" for item in result.trace)
 

@@ -12,6 +12,7 @@ import threading
 from typing import Any
 
 import pandas as pd
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from data_agent.config import AgentSettings
@@ -630,3 +631,214 @@ def test_route_after_review_returns_finalize_when_no_steps_remain():
 
 def test_route_after_review_returns_finalize_when_key_missing():
     assert route_after_review({}) == "finalize"
+
+
+# ---------------------------------------------------------------------------
+# execute_step：格式修复重试分支 + 取消透传
+# ---------------------------------------------------------------------------
+
+
+class _SequencedRunnable(_MockRunnable):
+    """按队列依次返回响应的 runnable，用于模拟重试场景。"""
+
+    def __init__(self, responses: list[Any]) -> None:
+        super().__init__()
+        self._queue = list(responses)
+
+    def invoke(self, input: Any, config: dict | None = None, **kwargs: Any) -> Any:
+        self.invoke_count += 1
+        self.captured_inputs.append(input)
+        if self._queue:
+            return self._queue.pop(0)
+        return self._response
+
+
+def test_execute_step_recovers_format_error_with_repair(tmp_path):
+    """格式错误可修复时：调用 repair_data_format 并重试，summary 带修复说明。"""
+    workspace = _make_workspace(tmp_path, "exec_recover")
+
+    class RepairTool:
+        name = "repair_data_format"
+
+        def invoke(self, args):
+            return '{"status": "ok", "changed": true}'
+
+    error_messages = [
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "statistical_analysis", "args": {}, "id": "c1", "type": "tool_call"}],
+        ),
+        ToolMessage(
+            content="ValueError: could not convert string to float",
+            tool_call_id="c1",
+            name="statistical_analysis",
+            additional_kwargs={"error_code": "format_error"},
+        ),
+    ]
+    success_messages = [
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "statistical_analysis", "args": {}, "id": "c2", "type": "tool_call"}],
+        ),
+        ToolMessage(content="ok", tool_call_id="c2", name="statistical_analysis"),
+        AIMessage(content="统计分析完成"),
+    ]
+    agent = FakeAgent(
+        workspace,
+        react_agent=_SequencedRunnable([{"messages": error_messages}, {"messages": success_messages}]),
+        tools=[RepairTool()],
+    )
+    state = {
+        "query": "分析数据",
+        "objective": "分析目标",
+        "dataset_profile": {"rows": 6, "columns": 4, "column_info": []},
+        "remaining_steps": [
+            {"id": "analyze", "title": "统计分析", "instruction": "分析", "success_criteria": "完成"}
+        ],
+        "completed_steps": [],
+        "input_messages": [],
+        "trace": [],
+    }
+
+    result = execute_step(agent, state)
+
+    assert result["last_step_result"]["status"] == "ok"
+    # 修复说明应拼入 summary（recovery_note 分支）
+    assert "已执行一次安全格式修复并重试" in result["last_step_result"]["summary"]
+    assert agent.react_agent.invoke_count == 2
+
+
+def test_execute_step_reraises_cancellation(tmp_path):
+    """react_agent 抛 AnalysisCancelled 时应原样透传（不吞掉取消）。"""
+    from data_agent.models import AnalysisCancelled
+
+    workspace = _make_workspace(tmp_path, "exec_cancel")
+    agent = FakeAgent(workspace, react_agent=_MockRunnable(exc=AnalysisCancelled("用户取消")))
+    state = {
+        "query": "检查数据",
+        "objective": "分析目标",
+        "dataset_profile": {"rows": 6, "columns": 4, "column_info": []},
+        "remaining_steps": [
+            {"id": "inspect", "title": "检查数据", "instruction": "检查", "success_criteria": "完成"}
+        ],
+        "completed_steps": [],
+        "input_messages": [],
+        "trace": [],
+    }
+    with pytest.raises(AnalysisCancelled):
+        execute_step(agent, state)
+
+
+# ---------------------------------------------------------------------------
+# plan_analysis：planner 返回普通 dict 的兼容分支
+# ---------------------------------------------------------------------------
+
+
+def test_plan_analysis_accepts_plain_dict_from_planner(tmp_path):
+    """planner 返回普通 dict（而非 AnalysisPlan 实例）时应 model_validate 转换。"""
+    workspace = _make_workspace(tmp_path, "plan_dict")
+    plan_dict = {
+        "objective": "目标",
+        "steps": [
+            {"id": "inspect", "title": "检查", "instruction": "检查", "success_criteria": "完成"},
+        ],
+    }
+    agent = FakeAgent(workspace, planner=_MockRunnable(response=plan_dict))
+    state = {"query": "分析数据", "dataset_profile": {"rows": 6, "columns": 4, "column_info": []}}
+
+    result = plan_analysis(agent, state)
+
+    assert result["plan"][0]["id"] == "inspect"
+    assert result["objective"] == "目标"
+
+
+# ---------------------------------------------------------------------------
+# replan：失败收尾 / dict 兼容 / 空决策回退
+# ---------------------------------------------------------------------------
+
+
+def test_replan_ends_when_last_step_failed_without_followup(tmp_path):
+    """当前步骤失败且无后续步骤时应直接进入汇总，不调用 replanner。"""
+    workspace = _make_workspace(tmp_path, "replan_fail_end")
+    agent = FakeAgent(workspace, replanner=_MockRunnable())  # 不应被调用
+    state = {
+        "query": "分析数据",
+        "objective": "分析目标",
+        "remaining_steps": [],
+        "completed_steps": [],
+        "last_step_result": {"id": "inspect", "title": "检查", "status": "failed", "summary": "失败"},
+        "artifacts": [],
+    }
+
+    result = replan(agent, state)
+
+    assert result["remaining_steps"] == []
+    assert "无后续步骤" in result["replan_reason"]
+    assert agent.replanner.invoke_count == 0
+
+
+def test_replan_accepts_plain_dict_from_replanner(tmp_path):
+    """replanner 返回普通 dict 时应 model_validate 转换。"""
+    workspace = _make_workspace(tmp_path, "replan_dict")
+    agent = FakeAgent(
+        workspace,
+        replanner=_MockRunnable(response={"done": True, "rationale": "完成", "remaining_steps": []}),
+    )
+    state = {
+        "query": "分析数据",
+        "objective": "分析目标",
+        "remaining_steps": [],
+        "completed_steps": [],
+        "last_step_result": {"id": "inspect", "title": "检查", "status": "ok", "summary": "完成"},
+        "artifacts": [],
+    }
+
+    result = replan(agent, state)
+
+    assert result["remaining_steps"] == []
+    assert result["replan_reason"] == "完成"
+
+
+def test_replan_falls_back_to_original_when_decision_empty(tmp_path):
+    """done=False 但 replanner 未返回新步骤时，回退到原计划剩余步骤。"""
+    workspace = _make_workspace(tmp_path, "replan_empty")
+    decision = ReplanDecision(done=False, rationale="补充步骤", remaining_steps=[])
+    agent = FakeAgent(workspace, replanner=_MockRunnable(response=decision))
+    state = {
+        "query": "分析数据",
+        "objective": "分析目标",
+        "remaining_steps": [
+            {"id": "step1", "title": "步骤1", "instruction": "...", "success_criteria": "..."}
+        ],
+        "completed_steps": [{"id": "inspect", "title": "检查", "summary": "完成"}],
+        "last_step_result": {"id": "inspect", "title": "检查", "status": "ok", "summary": "完成"},
+        "artifacts": [],
+    }
+
+    result = replan(agent, state)
+
+    assert result["remaining_steps"] == []
+    assert result["replan_reason"] == "补充步骤"
+
+
+# ---------------------------------------------------------------------------
+# finalize：模型失败且无证据的兜底分支
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_fallback_without_evidence(tmp_path):
+    """模型失败且无步骤摘要时，兜底文案提示无可汇总结果。"""
+    workspace = _make_workspace(tmp_path, "finalize_no_evidence")
+    agent = FakeAgent(workspace, model=_MockRunnable(exc=RuntimeError("LLM error")))
+    state = {
+        "query": "分析数据",
+        "completed_steps": [],
+        "plan": [],
+        "trace": [],
+        "artifacts": [],
+    }
+
+    result = finalize(agent, state)
+
+    assert "没有可汇总的步骤结果" in result["response"]
+    assert result["usage"] is None

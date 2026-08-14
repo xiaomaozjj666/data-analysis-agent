@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import logging
 import threading
 import zipfile
 from collections import deque
@@ -949,18 +950,25 @@ def test_get_session_detail_returns_full_payload(tmp_path, monkeypatch):
 
 
 def test_rename_session_handles_null_title(tmp_path, monkeypatch):
-    """PATCH /api/sessions/{id} 传入 title=null 时应能正常处理（不报 500）。
+    """PATCH /api/sessions/{id} 传入 title=null 应视为清除自定义标题（与空串一致）。
 
-    当前实现 str(None) 会得到字面量 "None"，此测试覆盖该分支的行为。
+    修复前 str(None) 会把 null 变成字面量 "None" 存进标题；修复后 null 与
+    空串语义统一：清除标题、回退显示 filename。
     """
     _isolate_runtime(tmp_path, monkeypatch)
     client = TestClient(api.app)
     uploaded = _upload_csv_session(client)
 
+    # 先设置一个自定义标题，再传 null 清除
+    renamed = client.patch(f"/api/sessions/{uploaded['id']}", json={"title": "临时标题"})
+    assert renamed.status_code == 200
+    assert renamed.json()["title"] == "临时标题"
+
     response = client.patch(f"/api/sessions/{uploaded['id']}", json={"title": None})
     assert response.status_code == 200
-    # str(None).strip() -> "None"，title 被设为字面量 "None"
-    assert response.json()["title"] == "None"
+    assert response.json()["title"] == ""
+    detail = client.get(f"/api/sessions/{uploaded['id']}").json()
+    assert detail["title"] in (None, "")
 
 
 def test_delete_running_session_returns_409(tmp_path, monkeypatch):
@@ -1964,5 +1972,732 @@ def test_analyze_stream_c1_fix_releases_lock_when_worker_start_fails(tmp_path, m
     # 验证 C1 修复路径已释放 analysis_slots
     assert api.analysis_slots.acquire(blocking=False), "analysis_slots 未释放——C1 修复路径未生效"
     api.analysis_slots.release()
+
+
+# ---------------------------------------------------------------------------
+# 流式端点剩余分支：event_callback 透传 / persist 失败降级 / CancelledError 路径
+# ---------------------------------------------------------------------------
+
+
+def _finalize_data(workspace):
+    return {
+        "response": "done",
+        "trace": [],
+        "artifacts": list(workspace.artifacts),
+        "dataset_profile": workspace.profile(),
+        "plan": [],
+        "completed_steps": [],
+    }
+
+
+def test_analyze_stream_forwards_event_callback_events(tmp_path, monkeypatch):
+    """agent.event_callback 推送的细粒度事件（tool_call 等）应透传到 SSE。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client, content=b"region,sales\nEast,100\n")
+
+    monkeypatch.setattr(
+        api, "_effective_settings", lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs")
+    )
+
+    class EmittingAgent:
+        def __init__(self, workspace, settings, cancel_event=None, progress_callback=None, event_callback=None):
+            self.workspace = workspace
+            self.event_callback = event_callback
+
+        def stream(self, query, history=None, resume_from=None, plan_only=False):
+            if self.event_callback:
+                self.event_callback("tool_call", {"name": "inspect_data", "detail": "{}"})
+                self.event_callback("report_chunk", {"chunk": "报告片段"})
+            yield {"node": "finalize", "data": _finalize_data(self.workspace)}
+
+    monkeypatch.setattr(api, "DataAnalysisAgent", EmittingAgent)
+    with client.stream(
+        "POST", f"/api/sessions/{uploaded['id']}/analyze/stream", json={"task": "x"}
+    ) as resp:
+        text = b"".join(resp.iter_bytes()).decode("utf-8")
+    assert "event: tool_call" in text
+    assert "inspect_data" in text
+    assert "event: report_chunk" in text
+
+
+def test_analyze_stream_complete_still_emitted_when_persist_fails(tmp_path, monkeypatch, caplog):
+    """complete 分支的 persist 失败应记录日志且不影响 complete 事件推送。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client, content=b"region,sales\nEast,100\n")
+
+    monkeypatch.setattr(
+        api, "_effective_settings", lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs")
+    )
+
+    class StubAgent:
+        def __init__(self, workspace, settings, cancel_event=None, progress_callback=None, event_callback=None):
+            self.workspace = workspace
+            self._last_usage = {}
+            self._last_reasoning = ""
+
+        def stream(self, query, history=None, resume_from=None, plan_only=False):
+            yield {"node": "finalize", "data": _finalize_data(self.workspace)}
+
+    monkeypatch.setattr(api, "DataAnalysisAgent", StubAgent)
+
+    def failing_persist(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(api.registry, "persist", failing_persist)
+
+    with caplog.at_level(logging.ERROR, logger="data_agent.routers.analysis"):
+        with client.stream(
+            "POST", f"/api/sessions/{uploaded['id']}/analyze/stream", json={"task": "x"}
+        ) as resp:
+            text = b"".join(resp.iter_bytes()).decode("utf-8")
+    assert "event: complete" in text
+    assert "Failed to persist completed state" in caplog.text
+
+
+def test_analyze_stream_cancelled_emitted_when_persist_fails(tmp_path, monkeypatch, caplog):
+    """cancelled 分支的 persist 失败应记录日志且不影响 cancelled 事件推送。"""
+    from data_agent.models import AnalysisCancelled
+
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client, content=b"region,sales\nEast,100\n")
+
+    monkeypatch.setattr(
+        api, "_effective_settings", lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs")
+    )
+
+    class CancellingAgent:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def stream(self, *args, **kwargs):
+            raise AnalysisCancelled("aborted")
+            yield
+
+    monkeypatch.setattr(api, "DataAnalysisAgent", CancellingAgent)
+
+    def failing_persist(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(api.registry, "persist", failing_persist)
+
+    with caplog.at_level(logging.ERROR, logger="data_agent.routers.analysis"):
+        with client.stream(
+            "POST", f"/api/sessions/{uploaded['id']}/analyze/stream", json={"task": "x"}
+        ) as resp:
+            text = b"".join(resp.iter_bytes()).decode("utf-8")
+    assert "event: cancelled" in text
+    assert "Failed to persist cancelled state" in caplog.text
+
+
+def test_analyze_stream_error_emitted_when_persist_fails(tmp_path, monkeypatch, caplog):
+    """error 分支的 persist 失败应记录日志且不影响 error 事件推送。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client, content=b"region,sales\nEast,100\n")
+
+    monkeypatch.setattr(
+        api, "_effective_settings", lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs")
+    )
+
+    class FailingAgent:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def stream(self, *args, **kwargs):
+            raise RuntimeError("boom")
+            yield
+
+    monkeypatch.setattr(api, "DataAnalysisAgent", FailingAgent)
+
+    def failing_persist(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(api.registry, "persist", failing_persist)
+
+    with caplog.at_level(logging.ERROR, logger="data_agent.routers.analysis"):
+        with client.stream(
+            "POST", f"/api/sessions/{uploaded['id']}/analyze/stream", json={"task": "x"}
+        ) as resp:
+            text = b"".join(resp.iter_bytes()).decode("utf-8")
+    assert "event: error" in text
+    assert "Failed to persist failed state" in caplog.text
+
+
+def test_analyze_stream_cancel_error_path(tmp_path, monkeypatch):
+    """generate() 的 except CancelledError 分支：set cancel_event、CAS 写 cancelling、
+    等待 worker 退出（_await_worker_exit 轮询）。
+
+    TestClient 断开连接抛的是 GeneratorExit 而非 CancelledError，因此用
+    monkeypatch 让 queue.get 的 wait_for 抛 CancelledError 确定性触发该路径。
+    """
+    import time
+
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client, content=b"region,sales\nEast,100\n")
+
+    monkeypatch.setattr(
+        api, "_effective_settings", lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs")
+    )
+
+    class SlowAgent:
+        def __init__(self, workspace, settings, cancel_event=None, progress_callback=None, event_callback=None):
+            self.workspace = workspace
+            self.cancel_event = cancel_event
+
+        def stream(self, query, history=None, resume_from=None, plan_only=False):
+            from data_agent.models import AnalysisCancelled
+
+            # 若 CancelledError 路径 set 了 cancel_event，worker 应感知并取消
+            time.sleep(0.8)
+            if self.cancel_event and self.cancel_event.is_set():
+                raise AnalysisCancelled("用户取消")
+            yield {"node": "finalize", "data": _finalize_data(self.workspace)}
+
+    monkeypatch.setattr(api, "DataAnalysisAgent", SlowAgent)
+
+    def cancel_first(awaitable, timeout=None):
+        awaitable.close()  # 关闭未 await 的协程，避免 RuntimeWarning
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(api.asyncio, "wait_for", cancel_first)
+    session_id = uploaded["id"]
+
+    try:
+        with client.stream("POST", f"/api/sessions/{session_id}/analyze/stream", json={"task": "x"}) as resp:
+            for line in resp.iter_lines():
+                if line.startswith("event: started"):
+                    break
+    except Exception:
+        pass  # CancelledError 会传播出 generate
+
+    record = api.registry.get(session_id)
+    deadline = time.time() + 8
+    while record.run_lock.locked() and time.time() < deadline:
+        time.sleep(0.1)
+    # worker 感知取消并写入 cancelled 终态，证明 CancelledError 分支 set 了 event
+    assert record.analysis_status == "cancelled", "CancelledError 路径应 set cancel_event 并取消 worker"
+    assert not record.run_lock.locked(), "worker 退出后 run_lock 应被释放"
+    assert api.analysis_slots.acquire(blocking=False)
+    api.analysis_slots.release()
+
+
+def test_analyze_stream_first_frame_disconnect_persist_failure(tmp_path, monkeypatch, caplog):
+    """首帧断开兜底路径中 persist 失败应记录日志（408-409 分支）。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client, content=b"region,sales\nEast,100\n")
+
+    monkeypatch.setattr(
+        api, "_effective_settings", lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs")
+    )
+
+    class DummyAgent:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def stream(self, *args, **kwargs):
+            yield {"node": "finalize", "data": {"response": "x", "dataset_profile": {}}}
+
+    monkeypatch.setattr(api, "DataAnalysisAgent", DummyAgent)
+
+    original_start = threading.Thread.start
+
+    def failing_start(self):
+        if self.name.startswith("analysis-"):
+            raise RuntimeError("模拟线程启动失败")
+        return original_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", failing_start)
+
+    def failing_persist(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(api.registry, "persist", failing_persist)
+
+    with caplog.at_level(logging.ERROR, logger="data_agent.routers.analysis"):
+        try:
+            with client.stream(
+                "POST", f"/api/sessions/{uploaded['id']}/analyze/stream", json={"task": "x"}
+            ) as resp:
+                for line in resp.iter_lines():
+                    if line.startswith("event: started"):
+                        break
+        except Exception:
+            pass
+    assert "Failed to persist abort state" in caplog.text
+    # 兜底路径已释放锁
+    record = api.registry.get(uploaded["id"])
+    assert record.run_lock.acquire(blocking=False)
+    record.run_lock.release()
+
+
+def test_chat_stream_emits_heartbeat_when_idle(tmp_path, monkeypatch):
+    """chat_stream 长时间无事件时应推送 heartbeat（513-515 分支）。"""
+    import time
+
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client, content=b"region,sales\nEast,100\n")
+    session_id = uploaded["id"]
+    record = api.registry.get(session_id)
+    record.analysis_status = "completed"
+    record.chat = [{"role": "user", "content": "检查"}, {"role": "assistant", "content": "完成"}]
+    api.registry.persist(session_id, record)
+
+    monkeypatch.setattr(
+        api, "_effective_settings", lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs")
+    )
+
+    class SlowChatAgent:
+        def __init__(self, *args, **kwargs):
+            self._last_usage = {}
+            self._last_reasoning = ""
+
+        def chat(self, query, history=None):
+            time.sleep(0.3)
+            return "回答", []
+
+    monkeypatch.setattr(api, "DataAnalysisAgent", SlowChatAgent)
+    # 缩短 wait_for 超时强制心跳
+    monkeypatch.setattr("data_agent.api.asyncio.wait_for", _short_wait_for)
+
+    with client.stream("POST", f"/api/sessions/{session_id}/chat/stream", json={"task": "追问"}) as resp:
+        events = []
+        for line in resp.iter_lines():
+            if line.startswith("event: "):
+                events.append(line[len("event: "):])
+    assert "heartbeat" in events
+    assert "chat_done" in events
+
+
+def test_chat_stream_cancel_error_path(tmp_path, monkeypatch):
+    """chat_stream 的 CancelledError 分支：应 set cancel_event（520-522）。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client, content=b"region,sales\nEast,100\n")
+    session_id = uploaded["id"]
+    record = api.registry.get(session_id)
+    record.analysis_status = "completed"
+    record.chat = [{"role": "user", "content": "检查"}, {"role": "assistant", "content": "完成"}]
+    api.registry.persist(session_id, record)
+
+    monkeypatch.setattr(
+        api, "_effective_settings", lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs")
+    )
+
+    class ChatAgent:
+        def __init__(self, workspace, settings, cancel_event=None, progress_callback=None, event_callback=None):
+            self._last_usage = {}
+            self._last_reasoning = ""
+            self.cancel_event = cancel_event
+
+        def chat(self, query, history=None):
+            # 若 CancelledError 分支 set 了 cancel_event，worker 应感知并抛取消
+            import time
+
+            time.sleep(0.8)
+            if self.cancel_event and self.cancel_event.is_set():
+                from data_agent.models import AnalysisCancelled
+
+                raise AnalysisCancelled("追问取消")
+            return "回答", []
+
+    monkeypatch.setattr(api, "DataAnalysisAgent", ChatAgent)
+
+    def cancel_first(awaitable, timeout=None):
+        awaitable.close()  # 关闭未 await 的协程，避免 RuntimeWarning
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(api.asyncio, "wait_for", cancel_first)
+
+    try:
+        with client.stream("POST", f"/api/sessions/{session_id}/chat/stream", json={"task": "追问"}) as resp:
+            for line in resp.iter_lines():
+                if line.startswith("event: started"):
+                    break
+    except Exception:
+        pass
+
+    record = api.registry.get(session_id)
+    # worker 感知取消 → cancelled 事件已推送；锁由 worker finally 释放
+    import time
+
+    deadline = time.time() + 8
+    while record.run_lock.locked() and time.time() < deadline:
+        time.sleep(0.1)
+    assert not record.run_lock.locked(), "worker 退出后 run_lock 应被释放"
+
+
+def test_chat_stream_first_frame_disconnect_releases_lock_when_start_fails(tmp_path, monkeypatch):
+    """chat_stream 的 worker.start() 失败时兜底释放 run_lock（534-537 分支）。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client, content=b"region,sales\nEast,100\n")
+    session_id = uploaded["id"]
+    record = api.registry.get(session_id)
+    record.analysis_status = "completed"
+    record.chat = [{"role": "user", "content": "检查"}, {"role": "assistant", "content": "完成"}]
+    api.registry.persist(session_id, record)
+
+    monkeypatch.setattr(
+        api, "_effective_settings", lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs")
+    )
+
+    class DummyChatAgent:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def chat(self, query, history=None):
+            return "回答", []
+
+    monkeypatch.setattr(api, "DataAnalysisAgent", DummyChatAgent)
+
+    original_start = threading.Thread.start
+
+    def failing_start(self):
+        if self.name.startswith("chat-"):
+            raise RuntimeError("模拟线程启动失败")
+        return original_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", failing_start)
+
+    try:
+        with client.stream("POST", f"/api/sessions/{session_id}/chat/stream", json={"task": "追问"}) as resp:
+            for line in resp.iter_lines():
+                if line.startswith("event: started"):
+                    break
+    except Exception:
+        pass
+
+    record = api.registry.get(session_id)
+    assert record.run_lock.acquire(blocking=False), "chat 兜底路径应释放 run_lock"
+    record.run_lock.release()
+
+
+def test_edit_chart_returns_500_on_render_failure(tmp_path, monkeypatch):
+    """PUT edit 渲染阶段抛异常应返回 500（图表重新生成失败分支）。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = _create_chart_session(client)
+    chart = _first_chart_artifact(client, session_id)
+
+    from data_agent.routers import artifacts as artifacts_router
+
+    def raise_render(*args, **kwargs):
+        raise RuntimeError("render engine broken")
+
+    monkeypatch.setattr(artifacts_router, "_render_plotly_html", raise_render)
+    response = client.put(
+        f"/api/sessions/{session_id}/artifacts/{chart['name']}/edit",
+        json={"title": "x"},
+    )
+    assert response.status_code == 500
+    assert "图表重新生成失败" in response.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# 流式端点兜底释放的异常吞掉分支 + chat persist 失败降级 + worker 未退出警告
+# ---------------------------------------------------------------------------
+
+
+def test_analyze_stream_first_frame_disconnect_swallows_release_errors(tmp_path, monkeypatch):
+    """worker.start() 失败时兜底路径的 slots/lock 释放异常应被吞掉（400-405 分支）。
+
+    客户端保持连接完整读取：generate 在 worker.start() 处抛错，finally 的
+    兜底路径（worker_started=False）执行释放；释放异常被吞掉后错误继续传播。
+    """
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client, content=b"region,sales\nEast,100\n")
+
+    monkeypatch.setattr(
+        api, "_effective_settings", lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs")
+    )
+
+    class DummyAgent:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def stream(self, *args, **kwargs):
+            yield {"node": "finalize", "data": {"response": "x", "dataset_profile": {}}}
+
+    monkeypatch.setattr(api, "DataAnalysisAgent", DummyAgent)
+
+    class BrokenSlots:
+        def acquire(self, *args, **kwargs):
+            return True
+
+        def release(self):
+            raise ValueError("already released")
+
+    monkeypatch.setattr(api, "analysis_slots", BrokenSlots())
+
+    original_start = threading.Thread.start
+
+    def failing_start(self):
+        if self.name.startswith("analysis-"):
+            raise RuntimeError("模拟线程启动失败")
+        return original_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", failing_start)
+
+    # 完整读取：worker.start() 抛错 → 兜底释放（异常被吞）→ 错误继续传播
+    try:
+        with client.stream(
+            "POST", f"/api/sessions/{uploaded['id']}/analyze/stream", json={"task": "x"}
+        ) as resp:
+            for _line in resp.iter_lines():
+                pass
+    except Exception:
+        pass  # 兜底释放异常已被吞掉，错误最终传播到客户端
+
+    # 兜底路径必须已释放真实 run_lock（worker 从未启动，只有兜底能释放它）
+    record = api.registry.get(uploaded["id"])
+    assert record.run_lock.acquire(blocking=False), "兜底路径应释放 run_lock"
+    record.run_lock.release()
+
+
+def test_analyze_stream_first_frame_disconnect_swallows_lock_release_error(tmp_path, monkeypatch):
+    """兜底路径的 run_lock 释放抛 RuntimeError 应被吞掉（404-405 分支）。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client, content=b"region,sales\nEast,100\n")
+
+    monkeypatch.setattr(
+        api, "_effective_settings", lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs")
+    )
+
+    class DummyAgent:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def stream(self, *args, **kwargs):
+            yield {"node": "finalize", "data": {"response": "x", "dataset_profile": {}}}
+
+    monkeypatch.setattr(api, "DataAnalysisAgent", DummyAgent)
+
+    class BrokenLock:
+        def acquire(self, *args, **kwargs):
+            return True
+
+        def release(self):
+            raise RuntimeError("not held")
+
+        def locked(self):
+            return False
+
+    record = api.registry.get(uploaded["id"])
+    record.run_lock = BrokenLock()
+
+    original_start = threading.Thread.start
+
+    def failing_start(self):
+        if self.name.startswith("analysis-"):
+            raise RuntimeError("模拟线程启动失败")
+        return original_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", failing_start)
+
+    try:
+        with client.stream(
+            "POST", f"/api/sessions/{uploaded['id']}/analyze/stream", json={"task": "x"}
+        ) as resp:
+            for _line in resp.iter_lines():
+                pass
+    except Exception:
+        pass  # 兜底释放异常已被吞掉
+
+    # slots 未被替换 → 兜底正常释放，可重新 acquire
+    assert api.analysis_slots.acquire(blocking=False), "兜底路径应释放 analysis_slots"
+    api.analysis_slots.release()
+
+
+def test_chat_stream_persist_failure_logged(tmp_path, monkeypatch, caplog):
+    """chat_done 分支的 persist 失败应记录日志且不影响 chat_done 推送。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client, content=b"region,sales\nEast,100\n")
+    session_id = uploaded["id"]
+    record = api.registry.get(session_id)
+    record.analysis_status = "completed"
+    record.chat = [{"role": "user", "content": "检查"}, {"role": "assistant", "content": "完成"}]
+    api.registry.persist(session_id, record)
+
+    monkeypatch.setattr(
+        api, "_effective_settings", lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs")
+    )
+
+    class ChatAgent:
+        def __init__(self, *args, **kwargs):
+            self._last_usage = {}
+            self._last_reasoning = ""
+
+        def chat(self, query, history=None):
+            return "回答", []
+
+    monkeypatch.setattr(api, "DataAnalysisAgent", ChatAgent)
+
+    def failing_persist(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(api.registry, "persist", failing_persist)
+
+    with caplog.at_level(logging.ERROR, logger="data_agent.routers.analysis"):
+        with client.stream("POST", f"/api/sessions/{session_id}/chat/stream", json={"task": "追问"}) as resp:
+            text = b"".join(resp.iter_bytes()).decode("utf-8")
+    assert "event: chat_done" in text
+    assert "Failed to persist chat state" in caplog.text
+
+
+def test_chat_stream_cancelled_persist_failure_logged(tmp_path, monkeypatch, caplog):
+    """chat cancelled 分支的 persist 失败应记录日志且不影响 cancelled 推送。"""
+    from data_agent.models import AnalysisCancelled
+
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client, content=b"region,sales\nEast,100\n")
+    session_id = uploaded["id"]
+    record = api.registry.get(session_id)
+    record.analysis_status = "completed"
+    record.chat = [{"role": "user", "content": "检查"}, {"role": "assistant", "content": "完成"}]
+    api.registry.persist(session_id, record)
+
+    monkeypatch.setattr(
+        api, "_effective_settings", lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs")
+    )
+
+    class CancellingChatAgent:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def chat(self, query, history=None):
+            raise AnalysisCancelled("追问取消")
+
+    monkeypatch.setattr(api, "DataAnalysisAgent", CancellingChatAgent)
+
+    def failing_persist(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(api.registry, "persist", failing_persist)
+
+    with caplog.at_level(logging.ERROR, logger="data_agent.routers.analysis"):
+        with client.stream("POST", f"/api/sessions/{session_id}/chat/stream", json={"task": "追问"}) as resp:
+            text = b"".join(resp.iter_bytes()).decode("utf-8")
+    assert "event: cancelled" in text
+    assert "Failed to persist cancelled chat state" in caplog.text
+
+
+def test_chat_stream_first_frame_disconnect_swallows_release_error(tmp_path, monkeypatch):
+    """chat 兜底释放 run_lock 抛 RuntimeError 时应被吞掉（536-537 分支）。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client, content=b"region,sales\nEast,100\n")
+    session_id = uploaded["id"]
+    record = api.registry.get(session_id)
+    record.analysis_status = "completed"
+    record.chat = [{"role": "user", "content": "检查"}, {"role": "assistant", "content": "完成"}]
+    api.registry.persist(session_id, record)
+
+    monkeypatch.setattr(
+        api, "_effective_settings", lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs")
+    )
+
+    class DummyChatAgent:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def chat(self, query, history=None):
+            return "回答", []
+
+    monkeypatch.setattr(api, "DataAnalysisAgent", DummyChatAgent)
+
+    class BrokenLock:
+        released = {"n": 0}
+
+        def acquire(self, *args, **kwargs):
+            return True
+
+        def release(self):
+            BrokenLock.released["n"] += 1
+            raise RuntimeError("not held")
+
+        def locked(self):
+            return False
+
+    record.run_lock = BrokenLock()
+
+    original_start = threading.Thread.start
+    calls = {"n": 0}
+
+    def failing_start(self):
+        calls["n"] += 1
+        if self.name.startswith("chat-"):
+            raise RuntimeError("模拟线程启动失败")
+        return original_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", failing_start)
+
+    # 完整读取：worker.start() 抛错 → 兜底释放（异常被吞）→ 错误继续传播
+    try:
+        with client.stream("POST", f"/api/sessions/{session_id}/chat/stream", json={"task": "追问"}) as resp:
+            for _line in resp.iter_lines():
+                pass
+    except Exception:
+        pass  # 兜底释放异常已被吞掉
+
+    # 探针：chat worker 的 start 必须被调用过，且兜底路径必须调用过 release
+    assert calls["n"] >= 1, "请求未执行（chat worker.start 未被调用）"
+    assert BrokenLock.released["n"] >= 1, "兜底路径未执行 run_lock.release"
+
+def test_analyze_stream_cancel_warns_when_worker_still_alive(tmp_path, monkeypatch, caplog):
+    """取消后 worker 5s 内未退出应记录 warning（376-380 分支）。"""
+    import time
+
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client, content=b"region,sales\nEast,100\n")
+
+    monkeypatch.setattr(
+        api, "_effective_settings", lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs")
+    )
+
+    class VerySlowAgent:
+        def __init__(self, workspace, settings, cancel_event=None, progress_callback=None, event_callback=None):
+            self.workspace = workspace
+            self.cancel_event = cancel_event
+
+        def stream(self, query, history=None, resume_from=None, plan_only=False):
+            # 长于 _await_worker_exit 的 5s 等待窗口，worker 无法及时退出
+            time.sleep(8)
+            if self.cancel_event and self.cancel_event.is_set():
+                from data_agent.models import AnalysisCancelled
+
+                raise AnalysisCancelled("用户取消")
+            yield {"node": "finalize", "data": _finalize_data(self.workspace)}
+
+    monkeypatch.setattr(api, "DataAnalysisAgent", VerySlowAgent)
+    # 缩短等待窗口以加速测试：直接改模块常量不现实（5.0 硬编码），
+    # 用 wait_for 抛 CancelledError 触发取消路径，等待窗口为真实的 5s。
+    def cancel_first(awaitable, timeout=None):
+        awaitable.close()
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(api.asyncio, "wait_for", cancel_first)
+
+    with caplog.at_level(logging.WARNING, logger="data_agent.routers.analysis"):
+        try:
+            with client.stream(
+                "POST", f"/api/sessions/{uploaded['id']}/analyze/stream", json={"task": "x"}
+            ) as resp:
+                for line in resp.iter_lines():
+                    if line.startswith("event: started"):
+                        break
+        except Exception:
+            pass
+    assert "did not exit within 5s" in caplog.text
 
 

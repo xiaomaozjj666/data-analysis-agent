@@ -106,18 +106,23 @@ def test_txt_file_load_and_chart(tmp_path):
 
 
 def test_pdf_file_load(tmp_path):
-    """PDF 文件提取表格数据，验证表格行数和列数。"""
+    """PDF 文件提取表格数据，验证表格行数和列数。
+
+    reportlab 默认字体不含中文字形，中文表头/值提取后可能残缺，但表格
+    结构（3 行数据 × 3 列）必须被完整提取，否则视为解析失败。此断言
+    真实覆盖 _read_pdf 的表格提取路径（之前 try/except pass 使该测试
+    在解析整体失败时依然通过）。
+    """
     pytest.importorskip("pdfplumber")
     pytest.importorskip("reportlab")
     path = tmp_path / "report.pdf"
     _create_simple_pdf(path)
 
     workspace = DataWorkspace(tmp_path / "runs", session_id="pdf_test")
-    try:
-        workspace.load(path, copy_into_workspace=True)
-        assert workspace.dataframe is not None
-    except ValueError:
-        pass
+    profile = workspace.load(path, copy_into_workspace=True)
+    assert profile["rows"] == 3
+    assert profile["columns"] == 3
+    assert workspace.dataframe.shape == (3, 3)
 
 
 def _create_simple_pdf(path: Path):

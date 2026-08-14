@@ -858,3 +858,314 @@ def test_restore_from_directory_returns_existing_when_already_in_memory(tmp_path
     # 已在内存中，应直接返回同一 record
     restored = registry.restore_from_directory(session_id)
     assert restored is record
+
+
+# ---------------------------------------------------------------------------
+# 剩余分支：setter 类型校验 / 加载错误路径 / 编码探测 / PDF-DOCX 边界 / repair 分支
+# ---------------------------------------------------------------------------
+
+
+def test_dataframe_setter_rejects_non_dataframe(tmp_path):
+    workspace = DataWorkspace(tmp_path / "runs", session_id="setter_type")
+    with pytest.raises(TypeError, match="DataFrame"):
+        workspace.dataframe = "not a frame"
+
+
+def test_save_upload_rejects_unsupported_extension(tmp_path):
+    workspace = DataWorkspace(tmp_path / "runs", session_id="upload_ext")
+    with pytest.raises(ValueError, match="不支持"):
+        workspace.save_upload("script.py", b"print(1)")
+
+
+def test_load_raises_for_missing_file(tmp_path):
+    workspace = DataWorkspace(tmp_path / "runs", session_id="load_missing")
+    with pytest.raises(FileNotFoundError):
+        workspace.load(tmp_path / "nonexistent.csv")
+
+
+def test_load_jsonl_content_with_json_extension(tmp_path):
+    """.json 扩展名但内容是 JSONL 时应回退到 lines 读取。"""
+    source = tmp_path / "data.json"
+    source.write_text('{"a": 1}\n{"a": 2}\n', encoding="utf-8")
+    workspace = DataWorkspace(tmp_path / "runs", session_id="json_lines")
+    profile = workspace.load(source)
+    assert profile["rows"] == 2
+    assert workspace.dataframe["a"].tolist() == [1, 2]
+
+
+def test_load_rejects_empty_frame(tmp_path):
+    source = tmp_path / "empty.json"
+    source.write_text("[]", encoding="utf-8")
+    workspace = DataWorkspace(tmp_path / "runs", session_id="load_empty")
+    with pytest.raises(ValueError, match="为空|无法识别"):
+        workspace.load(source)
+
+
+def test_load_rejects_too_many_columns(tmp_path, monkeypatch):
+    import data_agent.workspace as workspace_module
+
+    monkeypatch.setattr(workspace_module, "_MAX_COLUMNS", 2)
+    source = tmp_path / "wide.csv"
+    source.write_text("a,b,c\n1,2,3\n", encoding="utf-8")
+    workspace = DataWorkspace(tmp_path / "runs", session_id="load_wide")
+    with pytest.raises(ValueError, match="列数超过"):
+        workspace.load(source)
+
+
+def test_sniff_delimiter_falls_back_to_comma(tmp_path):
+    """单列 CSV 嗅探失败时应回退逗号分隔。"""
+    import data_agent.workspace as workspace_module
+
+    source = tmp_path / "single.csv"
+    source.write_text("just_one_column\nvalue1\nvalue2\n", encoding="utf-8")
+    assert workspace_module.DataWorkspace._sniff_delimiter(source, "utf-8") == ","
+
+
+def test_read_delimited_skip_also_fails(tmp_path, monkeypatch):
+    """跳过坏行后仍解析失败时应抛出明确错误（475-476 分支）。"""
+    import pandas as pd
+
+    source = tmp_path / "bad.csv"
+    source.write_text("a,b\n1,2,3\n", encoding="utf-8")
+    workspace = DataWorkspace(tmp_path / "runs", session_id="skip_fail")
+
+    calls = {"n": 0}
+
+    def flaky_read_csv(*args, **kwargs):
+        calls["n"] += 1
+        raise pd.errors.ParserError("simulated failure")
+
+    monkeypatch.setattr(pd, "read_csv", flaky_read_csv)
+    with pytest.raises(ValueError, match="文件格式无法解析"):
+        workspace.load(source)
+    assert calls["n"] >= 2  # 首次失败 + skip 重试也失败
+
+
+def test_load_rejects_undecodable_csv(tmp_path):
+    """探测通过但全量读取遇非法字节时应报编码错误（479-480 分支）。
+
+    前 8192 字节必须全部合法 UTF-8（编码探测只看 8KB），非法字节置于
+    探测窗口之外，read_csv 全量读取时才会触发 UnicodeDecodeError。
+    """
+    source = tmp_path / "binary.csv"
+    source.write_bytes(b"a,b\n" + b"1,2\n" * 2050 + b"\xff\xff\xff")
+    workspace = DataWorkspace(tmp_path / "runs", session_id="load_binary")
+    with pytest.raises(ValueError, match="无法识别文件编码"):
+        workspace.load(source)
+
+
+def test_read_pdf_skips_empty_and_short_tables(tmp_path, monkeypatch):
+    """PDF 中空表格与单行表格应被跳过，只提取有效表格。"""
+    source = tmp_path / "mixed.pdf"
+    source.write_bytes(b"%PDF-1.4 dummy")
+
+    import sys
+    import types
+
+    mock_page = type("Page", (), {
+        "extract_tables": lambda self: [
+            [],  # 空表
+            [["only", "header"]],  # 单行（无数据）→ 跳过
+            [["name", "score"], ["Alice", "90"]],  # 有效表
+        ],
+        "extract_text": lambda self: None,
+    })()
+    mock_pdf = type("PDF", (), {"pages": [mock_page]})()
+    mock_module = types.ModuleType("pdfplumber")
+    mock_module.open = lambda path: type(
+        "Ctx", (), {"__enter__": lambda s: mock_pdf, "__exit__": lambda *a: None}
+    )()
+    monkeypatch.setitem(sys.modules, "pdfplumber", mock_module)
+
+    workspace = DataWorkspace(tmp_path / "runs", session_id="pdf_mixed")
+    profile = workspace.load(source)
+    assert profile["rows"] == 1
+    assert workspace.dataframe["name"].tolist() == ["Alice"]
+
+
+def test_read_text_truncates_long_files(tmp_path):
+    source = tmp_path / "long.txt"
+    source.write_text("\n".join(f"line-{i}" for i in range(10)), encoding="utf-8")
+    workspace = DataWorkspace(tmp_path / "runs", session_id="txt_trunc")
+    # 直接调用 _read_text 验证截断分支
+    df = workspace._read_text(source, max_lines=3)
+    assert len(df) == 3
+    assert workspace.load_warnings and "截断" in workspace.load_warnings[0]
+
+
+def test_read_text_raises_when_all_encodings_fail(tmp_path):
+    source = tmp_path / "undecodable.txt"
+    source.write_bytes(b"\x00\x00\xff")
+    workspace = DataWorkspace(tmp_path / "runs", session_id="txt_enc")
+    with pytest.raises(ValueError, match="无法识别文本文件编码"):
+        workspace._read_text(source)
+
+
+def test_read_docx_skips_single_row_table(tmp_path):
+    """DOCX 单行表格应被跳过，回退到段落提取。"""
+    import docx
+
+    source = tmp_path / "single_row.docx"
+    doc = docx.Document()
+    table = doc.add_table(rows=1, cols=2)  # 只有表头
+    table.rows[0].cells[0].text = "a"
+    table.rows[0].cells[1].text = "b"
+    doc.add_paragraph("第一段")
+    doc.save(str(source))
+
+    workspace = DataWorkspace(tmp_path / "runs", session_id="docx_single")
+    profile = workspace.load(source)
+    assert profile["rows"] == 1
+    assert workspace.dataframe.iloc[:, 0].tolist() == ["第一段"]
+
+
+def test_repair_format_skips_empty_and_percent_columns(tmp_path):
+    """repair_format 应跳过全空列、百分比/前导零列（直接注入 DataFrame 避免 CSV 推断干扰）。"""
+    workspace = DataWorkspace(tmp_path / "runs", session_id="repair_edge")
+    workspace.dataframe = pd.DataFrame(
+        {
+            "pct": ["10%", "20%"],
+            "leading_zero": ["0012", "0034"],
+            "all_empty": ["", ""],  # 触发缺失标记归一 → changed=True
+            "note": ["x", "y"],
+        }
+    )
+    result = workspace.repair_format(parse_dates=True)
+    # 百分比列与前导零列不应被转数值（跳过分支）
+    assert workspace.dataframe["pct"].dtype.kind in ("O", "U", "S")
+    assert workspace.dataframe["leading_zero"].dtype.kind in ("O", "U", "S")
+    assert result["changed"] is True  # "" 被归一为缺失触发导出
+
+
+def test_repair_format_warns_on_unparseable_date(tmp_path):
+    source = tmp_path / "bad_date.csv"
+    source.write_text("date_col,value\n2025-01-01,1\nnot-a-date,2\n", encoding="utf-8")
+    workspace = DataWorkspace(tmp_path / "runs", session_id="repair_date")
+    workspace.load(source)
+    result = workspace.repair_format()
+    assert any("无法确认" in warning for warning in result["warnings"])
+
+
+def test_repair_format_date_parse_fallback(tmp_path, monkeypatch):
+    """format='mixed' 解析抛异常时应回退无 format 解析（680-681 分支）。"""
+    import pandas as pd
+
+    source = tmp_path / "dates.csv"
+    source.write_text("date_col,value\n2025-01-01,1\n", encoding="utf-8")
+    workspace = DataWorkspace(tmp_path / "runs", session_id="repair_fallback")
+    workspace.load(source)
+
+    real_to_datetime = pd.to_datetime
+    calls = {"n": 0}
+
+    def flaky_to_datetime(*args, **kwargs):
+        if kwargs.get("format") == "mixed":
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise ValueError("mixed parse error")
+        return real_to_datetime(*args, **kwargs)
+
+    monkeypatch.setattr(pd, "to_datetime", flaky_to_datetime)
+    result = workspace.repair_format()
+    assert pd.api.types.is_datetime64_any_dtype(workspace.dataframe["date_col"])
+    assert result["changed"] is True
+
+
+def test_profile_cache_lru_eviction(tmp_path, monkeypatch):
+    """profile 缓存超过上限时应按 LRU 淘汰最旧条目。"""
+    import data_agent.workspace as workspace_module
+
+    monkeypatch.setattr(workspace_module, "_PROFILE_CACHE_MAX_ENTRIES", 2)
+    source = tmp_path / "data.csv"
+    pd.DataFrame({"a": [1, 2, 3]}).to_csv(source, index=False)
+    workspace = DataWorkspace(tmp_path / "runs", session_id="cache_lru")
+    workspace.load(source)
+    for sample in (1, 2, 3, 4, 5):
+        workspace.profile(sample_rows=sample)
+    assert len(workspace._profile_cache) <= 2
+
+
+def test_ensure_echarts_gl_bundle_reuses_existing_file(tmp_path, monkeypatch):
+    """echarts-gl bundle 已存在时应直接复用，不触发下载。"""
+    import urllib.request
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("不应发起网络下载")
+
+    monkeypatch.setattr(urllib.request, "urlopen", unexpected)
+    workspace = DataWorkspace(tmp_path / "runs", session_id="gl_reuse")
+    bundle = workspace.artifacts_dir / "echarts-gl.min.js"
+    bundle.parent.mkdir(parents=True, exist_ok=True)
+    bundle.write_text("/* existing gl */", encoding="utf-8")
+    assert workspace.ensure_echarts_gl_bundle() == bundle
+
+
+def test_ensure_echarts_gl_bundle_rejects_small_response(tmp_path, monkeypatch):
+    """echarts-gl 下载内容过小时视为无效返回 None。"""
+    import urllib.request
+
+    class FakeResponse:
+        def read(self):
+            return b"too small"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda url, timeout=None: FakeResponse()
+    )
+    workspace = DataWorkspace(tmp_path / "runs", session_id="gl_small")
+    assert workspace.ensure_echarts_gl_bundle() is None
+
+
+def test_snapshot_state_handles_missing_artifacts_dir(tmp_path):
+    """artifacts 目录被删除后 snapshot_state 不应崩溃。"""
+    import shutil
+
+    workspace = DataWorkspace(tmp_path / "runs", session_id="snap_missing")
+    workspace.dataframe = pd.DataFrame({"a": [1, 2]})
+    shutil.rmtree(workspace.artifacts_dir)
+    df, files, version = workspace.snapshot_state()
+    assert files == set()
+    assert df is not None
+
+
+def test_restore_state_restores_dataframe_and_handles_missing_dir(tmp_path):
+    """restore_state 应恢复被修改的 DataFrame 并容忍 artifacts 目录缺失。"""
+    import shutil
+
+    workspace = DataWorkspace(tmp_path / "runs", session_id="restore_missing")
+    workspace.dataframe = pd.DataFrame({"a": [1, 2]})
+    snapshot = workspace.snapshot_state()
+    workspace.dataframe = pd.DataFrame({"a": [99]})  # 修改数据
+    shutil.rmtree(workspace.artifacts_dir)  # 删除产物目录
+    workspace.restore_state(snapshot)
+    assert workspace.dataframe["a"].tolist() == [1, 2]
+
+
+def test_restore_artifacts_returns_early_without_dir(tmp_path):
+    import shutil
+
+    workspace = DataWorkspace(tmp_path / "runs", session_id="restore_no_dir")
+    # 删除 artifacts 目录（DataWorkspace 初始化时会创建），触发 948 早退分支
+    shutil.rmtree(workspace.artifacts_dir)
+    workspace.restore_artifacts()
+    assert workspace.artifacts == []
+
+
+def test_sniff_encoding_falls_back_to_utf8(tmp_path):
+    """所有候选编码都失败时 _sniff_encoding 回退 utf-8（411 分支）。"""
+    source = tmp_path / "weird.bin"
+    source.write_bytes(b"\x00\x00\xff")
+    assert DataWorkspace._sniff_encoding(source) == "utf-8"
+
+
+def test_repair_format_skips_empty_date_column(tmp_path):
+    """日期列全为空时跳过解析（683 分支）。"""
+    workspace = DataWorkspace(tmp_path / "runs", session_id="repair_empty_date")
+    workspace.dataframe = pd.DataFrame({"date_col": [None, None], "v": [1, 2]})
+    result = workspace.repair_format()
+    assert result["changed"] is False

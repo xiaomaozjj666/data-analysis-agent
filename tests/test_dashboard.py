@@ -12,6 +12,7 @@ import pytest
 
 from data_agent.dashboard import (
     _collect_charts,
+    _is_wide_chart,
     _rehydrate_js,
     build_dashboard_html,
     compute_kpis,
@@ -103,6 +104,20 @@ def test_rehydrate_js_restores_functions():
     assert isinstance(out["formatter"], _JsFunction)
     assert out["plain"] == "普通文本"
     assert isinstance(out["nested"][0]["fn"], _JsFunction)
+
+
+def test_collect_charts_skips_non_visualization_and_non_html(tmp_path, dirty_df):
+    """_collect_charts 应跳过非 visualization 与非 .html 的产物（205 分支）。"""
+    ws = _make_workspace(tmp_path, dirty_df)
+    (ws.artifacts_dir / "notes.txt").write_text("文本", encoding="utf-8")
+    ws.register_artifact(ws.artifacts_dir / "notes.txt", "document", "说明")
+    (ws.artifacts_dir / "chart.png").write_bytes(b"\x89PNG")
+    ws.register_artifact(ws.artifacts_dir / "chart.png", "image", "截图")
+    (ws.artifacts_dir / "data.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+    ws.register_artifact(ws.artifacts_dir / "data.csv", "dataset", "数据")
+
+    charts = _collect_charts(ws)
+    assert charts == []
 
 
 def test_collect_charts_prefers_echarts_and_skips_broken(tmp_path, dirty_df):
@@ -202,3 +217,115 @@ def test_dashboard_endpoint(tmp_path, monkeypatch):
 
     missing = client.get("/api/sessions/does-not-exist/dashboard")
     assert missing.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# 补充分支：缺失列聚合 / IQR 边界 / 宽图判定 / bundle 脚本标签
+# ---------------------------------------------------------------------------
+
+
+def test_profile_quality_aggregates_many_missing_columns():
+    """缺失列超过 4 个时应聚合为一张"其余缺失"卡。"""
+    df = pd.DataFrame(
+        {f"col_{i}": [None, None, "x", "y"] for i in range(6)} | {"keep": [1, 2, 3, 4]}
+    )
+    issues = profile_quality(df)
+    tags = [(i["tag"], i["target"]) for i in issues]
+    assert any(tag == "缺失" and "另" in target for tag, target in tags)
+
+
+def test_profile_quality_skips_zero_iqr_numeric_columns():
+    """数值列四分位距为 0（常量）时不应触发离群检测。"""
+    df = pd.DataFrame({"const": [5, 5, 5, 5, 5, 5, 5, 5, 5, 5], "v": range(10)})
+    issues = profile_quality(df)
+    # 常量列应触发"常量列"告警，但不应有"极端离群"
+    assert not any(i["tag"] == "极端离群" for i in issues)
+    assert any(i["tag"] == "常量列" for i in issues)
+
+
+def test_is_wide_chart_variants():
+    """宽图判定：plotly 恒 False；echarts SPLOM（grid>4）与 3D 散点 True。"""
+    assert _is_wide_chart({"engine": "plotly", "fig": {}}) is False
+    assert (
+        _is_wide_chart(
+            {"engine": "echarts", "option": {"grid": [{}] * 6, "series": [{"type": "scatter"}]}}
+        )
+        is True
+    )
+    assert (
+        _is_wide_chart(
+            {"engine": "echarts", "option": {"grid": [{}], "series": [{"type": "scatter3D"}]}}
+        )
+        is True
+    )
+    assert _is_wide_chart({"engine": "echarts", "option": {"series": [{"type": "bar"}]}}) is False
+
+
+def test_bundle_script_tag_falls_back_to_cdn_on_read_error(tmp_path, monkeypatch):
+    """bundle 文件存在但读取失败时应回退 CDN 直引。"""
+    from pathlib import Path as RealPath
+
+    from data_agent.dashboard import _bundle_script_tag
+
+    class FakeWorkspace:
+        def __init__(self):
+            self.artifacts_dir = tmp_path
+
+        def ensure_echarts_bundle(self):
+            bundle = self.artifacts_dir / "echarts.min.js"
+            bundle.write_text("/* echarts */", encoding="utf-8")
+            return bundle
+
+        def ensure_echarts_gl_bundle(self):
+            bundle = self.artifacts_dir / "echarts-gl.min.js"
+            bundle.write_text("/* gl */", encoding="utf-8")
+            return bundle
+
+        def ensure_plotly_bundle(self):
+            bundle = self.artifacts_dir / "plotly.min.js"
+            bundle.write_text("/* plotly */", encoding="utf-8")
+            return bundle
+
+    def failing_read(self, *a, **k):
+        raise OSError("io error")
+
+    monkeypatch.setattr(RealPath, "read_text", failing_read)
+    ws = FakeWorkspace()
+    assert "cdn.jsdelivr.net/npm/echarts" in _bundle_script_tag(ws, "echarts")
+    assert "echarts-gl" in _bundle_script_tag(ws, "echarts-gl")
+    assert "cdn.plot.ly" in _bundle_script_tag(ws, "plotly")
+
+
+def test_build_dashboard_html_with_plotly_and_3d_charts(tmp_path, dirty_df):
+    """同时包含 Plotly 图与 ECharts 3D 图时：bundle 按需内联、脚本正确组装。"""
+    ws = _make_workspace(tmp_path, dirty_df)
+    # ECharts 3D 图（触发 echarts-gl bundle + 宽图）
+    (ws.artifacts_dir / "chart_3d.html").write_text("<html></html>", encoding="utf-8")
+    (ws.artifacts_dir / "chart_3d.echarts.json").write_text(
+        json.dumps({"series": [{"type": "scatter3D", "data": [[1, 2, 3]]}], "grid": [{}] * 5}),
+        encoding="utf-8",
+    )
+    ws.register_artifact(ws.artifacts_dir / "chart_3d.html", "visualization", "3D 散点")
+    # Plotly 图（触发 plotly bundle + newPlot 脚本）
+    (ws.artifacts_dir / "chart_plotly.html").write_text("<html></html>", encoding="utf-8")
+    (ws.artifacts_dir / "chart_plotly.plotly.json").write_text(
+        json.dumps({"data": [{"type": "bar"}], "layout": {"width": 800, "height": 600}}),
+        encoding="utf-8",
+    )
+    ws.register_artifact(ws.artifacts_dir / "chart_plotly.html", "visualization", "柱状图")
+
+    mock_bundle = ws.artifacts_dir / "echarts.min.js"
+    mock_bundle.write_text("/* mock echarts */", encoding="utf-8")
+    mock_gl = ws.artifacts_dir / "echarts-gl.min.js"
+    mock_gl.write_text("/* mock gl */", encoding="utf-8")
+    with patch.object(DataWorkspace, "ensure_echarts_bundle", return_value=mock_bundle), \
+         patch.object(DataWorkspace, "ensure_echarts_gl_bundle", return_value=mock_gl):
+        html = build_dashboard_html(ws)
+
+    assert "/* mock echarts */" in html
+    assert "/* mock gl */" in html
+    assert "Plotly.newPlot" in html
+    # plotly 存档里的固定宽高应被删除（autosize 自适应）
+    assert '"width":800' not in html
+    assert 'card full' in html  # 3D 图占满整行
+    assert "scatter3D" in html

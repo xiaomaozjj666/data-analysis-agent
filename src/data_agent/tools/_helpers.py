@@ -150,7 +150,7 @@ def _nice_axis_formatter(value: float) -> str:
         return f"{value:.4f}".rstrip("0").rstrip(".")
     if abs_val > 0:
         return f"{value:.2e}"
-    return "0"
+    return "0"  # pragma: no cover - 不可达：value==0 已在函数开头返回
 
 
 def _plotly_axis_tickformat(value_range: tuple[float, float]) -> str:

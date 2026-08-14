@@ -42,6 +42,9 @@ dev = [
   "pytest-cov>=6,<8",
   "ruff>=0.16,<0.17",
   "httpx>=0.28,<1",
+  # test_e2e_data_types.py::test_pdf_file_load 用 reportlab 生成真实 PDF 文件；
+  # 不在运行时依赖里，仅测试需要。
+  "reportlab>=4,<6",
 ]
 deploy = [
   "langgraph-cli[inmem]>=0.4,<1",

@@ -298,7 +298,9 @@ def _severe_axis_compression(values: list[Any], *, include_zero: bool = False) -
         mad = float(deviations.median())
         if mad <= 0 or not np.isfinite(mad):
             return None
-        lower_fence, upper_fence = median - 8 * mad, median + 8 * mad
+        # Q1==Q3 且 MAD>0 在常见分位插值下不可达（中间 50% 同值时偏差中位数恒为 0），
+        # 该分支仅作为数值健壮性兜底。
+        lower_fence, upper_fence = median - 8 * mad, median + 8 * mad  # pragma: no cover - 数学上不可达
     else:
         # Three IQRs is deliberately conservative: ordinary high performers stay
         # visible, while only scale-destroying points trigger the alternate view.
@@ -662,7 +664,7 @@ def _looks_like_datetime_series(series: pd.Series) -> bool:
     if len(sample) == 0:
         return False
     try:
-        parsed = pd.to_datetime(sample, errors="coerce")
+        parsed = pd.to_datetime(sample, errors="coerce", format="mixed")
     except Exception:
         return False
     return bool(parsed.notna().mean() >= 0.8)
@@ -762,8 +764,8 @@ def _infer_chart_type(
     # 10) 分类计数
     if (not x_is_numeric) and not y_numeric:
         return "bar"
-    # 兜底
-    return "bar"
+    # 兜底（上述分支已覆盖全部 x/y 类型组合，此处仅防御性保留）
+    return "bar"  # pragma: no cover - 防御性兜底
 
 
 def _humanize_chart_title(title: str | None, chart_type: str) -> str:

@@ -18,6 +18,7 @@ from __future__ import annotations
 import ast
 import builtins as _py_builtins
 import threading
+import time
 from typing import Any
 
 import numpy as np
@@ -166,9 +167,9 @@ def _validate_code(code: str) -> None:
                 raise ValueError(
                     f"沙箱禁止访问下划线开头的属性 {node.attr!r}（防止逃逸受限环境）。"
                 )
-            # 拦截 pandas/numpy 的文件 I/O 方法调用（read_csv/to_csv/save/load 等）。
-            # 只在方法被"调用"时拒绝（Call 节点的 func 是 Attribute），
-            # 单纯属性访问不拦，避免误伤 df.to_dict() 等安全的同名方法。
+            # 拦截 pandas/numpy 的文件 I/O 方法名（read_csv/to_csv/save/load 等）。
+            # 保守起见任何属性访问（含未调用的裸引用）都拒绝：名字本身即危险信号，
+            # 且 LLM 生成代码中"仅取方法引用再间接调用"的模式无法被静态区分。
             if node.attr in _FORBIDDEN_METHODS:
                 raise ValueError(
                     f"沙箱禁止调用文件 I/O 方法 {node.attr!r}。"
@@ -254,7 +255,7 @@ def _execute_with_timeout(code: str, env: dict[str, Any]) -> None:
                     return
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 return
-            threading.Event().wait(0.5)
+            time.sleep(0.5)
 
     worker = threading.Thread(target=_target, name="sandbox-exec", daemon=True)
     worker.start()

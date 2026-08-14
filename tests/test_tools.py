@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -1010,3 +1011,669 @@ class TestPlotlyAxisTickformat:
     ])
     def test_tickformat_values(self, value_range, expected):
         assert _plotly_axis_tickformat(value_range) == expected
+
+
+# ---------------------------------------------------------------------------
+# 剩余分支：datetime 列映射 / mode 空 / nice_ticks 边界 / 沙箱错误路径
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeColumnNamesExtra:
+    def test_datetime_columns_remapped(self):
+        df = pd.DataFrame({"First Date": [1], "Sales!": [2]})
+        result, cols, dt, changed = _normalize_column_names(df, ["Sales!"], ["First Date"])
+        assert changed is True
+        assert cols == ["sales"]
+        assert dt == ["first_date"]
+
+
+def test_apply_missing_strategy_mode_on_all_nan():
+    df = pd.DataFrame({"cat": [None, None]})
+    _apply_missing_strategy(df, ["cat"], "mode")  # mode 为空 → continue 不抛
+    assert df["cat"].isna().sum() == 2
+
+
+def test_summarize_result_none_and_stdout_truncation(workspace, monkeypatch):
+    """_summarize_result(None) 与 print 输出截断分支。"""
+    from data_agent.tools import _sandbox
+    from data_agent.tools._sandbox import _summarize_result
+
+    assert _summarize_result(None) is None  # 192
+
+    monkeypatch.setattr(_sandbox, "_SANDBOX_STDOUT_MAX_CHARS", 100)
+    tool = tool_map(workspace)["run_python_code"]
+    result = json.loads(tool.invoke({"code": "print('x' * 500)\nresult = 1"}))
+    assert result["status"] == "ok"
+    assert "已截断" in result["stdout"]  # 323
+
+
+def test_run_python_code_memory_monitor_process_gone(workspace, monkeypatch):
+    """内存监控线程遇到进程消失（psutil 异常）应静默退出（256-257 分支）。"""
+    import psutil
+
+    class GoneProcess:
+        def memory_info(self):
+            raise psutil.NoSuchProcess(999)
+
+    # _sandbox 在函数内 `import psutil`，拿到的是同一模块对象，替换其 Process
+    monkeypatch.setattr(psutil, "Process", lambda *a: GoneProcess())
+    tool = tool_map(workspace)["run_python_code"]
+    # 加长计算让 worker 存活到 monitor 首次采样（0.5s 间隔）
+    result = json.loads(
+        tool.invoke(
+            {
+                "code": (
+                    "n = 0\n"
+                    "for i in range(30_000_000):\n"
+                    "    n += i\n"
+                    "result = n"
+                )
+            }
+        )
+    )
+    assert result["status"] == "ok"
+
+
+def test_run_python_code_memory_monitor_start_failure(workspace, monkeypatch):
+    """psutil.Process() 抛错时监控线程启动失败应被吞掉（268-270 分支）。"""
+    import psutil
+
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("psutil unavailable")
+
+    monkeypatch.setattr(psutil, "Process", boom)
+    tool = tool_map(workspace)["run_python_code"]
+    result = json.loads(tool.invoke({"code": "result = 2 + 2"}))
+    assert result["status"] == "ok"
+
+
+def test_nice_ticks_step_zero_fallback(monkeypatch):
+    """_nice_num 返回 0 时 step 应回退 1.0（防御分支）。"""
+    from data_agent.tools import _helpers
+
+    monkeypatch.setattr(_helpers, "_nice_num", lambda x, round_=True: 0.0)
+    vmin, vmax, step = _helpers._nice_ticks(0, 100, 5)
+    assert step == 1.0
+    assert vmin <= 0 <= 100 <= vmax
+
+
+def test_run_python_code_rejects_oversized_code(workspace):
+    from data_agent.tools import _sandbox
+
+    tool = tool_map(workspace)["run_python_code"]
+    long_code = "result = 1\n" * (_sandbox._SANDBOX_CODE_MAX_CHARS // 10 + 1)
+    with pytest.raises(ValueError, match="代码过长"):
+        tool.invoke({"code": long_code})
+
+
+def test_run_python_code_rejects_syntax_error(workspace):
+    tool = tool_map(workspace)["run_python_code"]
+    with pytest.raises(ValueError, match="语法错误"):
+        tool.invoke({"code": "def broken(:"})
+
+
+def test_safe_import_rejects_non_whitelisted():
+    from data_agent.tools._sandbox import _safe_import
+
+    with pytest.raises(ImportError):
+        _safe_import("os")
+    with pytest.raises(ImportError):
+        _safe_import("pandas.io", level=1)
+
+
+def test_summarize_result_ndarray_truncation():
+    from data_agent.tools._sandbox import _summarize_result
+
+    result = _summarize_result(np.arange(100))
+    assert result["type"] == "ndarray"
+    assert result["truncated"] is True
+    assert len(result["values"]) == 50
+    # 小 ndarray 直接转 list
+    assert _summarize_result(np.array([1, 2])) == [1, 2]
+
+
+def test_run_python_code_memory_limit_error(workspace, monkeypatch):
+    """worker 结束后内存仍超限应抛 MemoryError（283-284 分支）。"""
+    from data_agent.tools import _sandbox
+
+    monkeypatch.setattr(_sandbox, "_SANDBOX_MEMORY_LIMIT_BYTES", 1024)  # 1KB
+    tool = tool_map(workspace)["run_python_code"]
+    with pytest.raises(MemoryError, match="内存"):
+        tool.invoke(
+            {
+                "code": (
+                    "b = bytes(4 * 1024 * 1024)\n"
+                    "n = 0\n"
+                    "for i in range(20_000_000):\n"
+                    "    n += i\n"
+                    "result = len(b) + n"
+                )
+            }
+        )
+
+
+def test_run_python_code_memory_timeout_while_alive(workspace, monkeypatch):
+    """worker 超时未结束且内存超限应抛 MemoryError（267-270 分支）。"""
+    from data_agent.tools import _sandbox
+
+    monkeypatch.setattr(_sandbox, "_SANDBOX_MEMORY_LIMIT_BYTES", 1024)
+    monkeypatch.setattr(_sandbox, "_SANDBOX_TIMEOUT_SECONDS", 0.5)
+    tool = tool_map(workspace)["run_python_code"]
+    with pytest.raises(MemoryError, match="内存"):
+        tool.invoke({"code": "b = bytes(4 * 1024 * 1024)\nwhile True:\n    pass"})
+
+
+# ---------------------------------------------------------------------------
+# builder.py：nice ticks 边界 / 统计分支 / 图表类型分支 / 导出分支
+# ---------------------------------------------------------------------------
+
+
+def test_apply_plotly_nice_ticks_edge_cases():
+    import plotly.express as px
+
+    from data_agent.tools.builder import _apply_plotly_nice_ticks, _collect_trace_values
+
+    # 无 y 值 → 直接返回不报错（202 分支）
+    fig = px.scatter(x=[1, 2], y=[3, 4])
+    fig.data[0].y = None
+    _apply_plotly_nice_ticks(fig, "scatter", "x", "y", {})
+
+    # scatter_3d：z_range 存在分支（234）
+    fig3d = px.scatter_3d(x=[1, 2], y=[3, 4], z=[5, 6])
+    _apply_plotly_nice_ticks(fig3d, "scatter_3d", "x", "y", {"axis_ranges": {"z": (0, 10)}})
+
+    # scatter_3d：无 z 值 → return（238）
+    fig3b = px.scatter_3d(x=[1, 2], y=[3, 4], z=[5, 6])
+    fig3b.data[0].z = None
+    _apply_plotly_nice_ticks(fig3b, "scatter_3d", "x", "y", {})
+
+    # 异常吞掉（250-252）：nice ticks 失败不影响图表
+    fig2 = px.scatter(x=[1, 2], y=[3, 4])
+    with patch("data_agent.tools.builder._nice_ticks", side_effect=RuntimeError("boom")):
+        _apply_plotly_nice_ticks(fig2, "scatter", "x", "y", {})  # 不应抛出
+
+    # "极端值提示" trace 跳过 + 非数值跳过（259-260 / 269-270）
+    fig3 = px.scatter(x=[1, 2], y=[3, 4])
+    fig3.add_scatter(x=[10], y=[999], name="极端值提示")
+    fig3.data[1].y = ["bad", 999]
+    values = _collect_trace_values(fig3, "y")
+    assert 999 not in values
+    assert values == [3.0, 4.0]
+
+
+def test_clean_data_parse_numeric_and_outlier(workspace):
+    """clean_data 的 parse_numeric 与 outlier 处理分支。"""
+    result = json.loads(
+        tool_map(workspace)["clean_data"].invoke(
+            {
+                "parse_numeric": True,
+                "outlier_method": "iqr",
+                "outlier_action": "cap",
+                "drop_duplicates": False,
+                "trim_strings": False,
+                "missing_strategy": "none",
+            }
+        )
+    )
+    assert result["status"] == "ok"
+    assert any("parsed numeric" in change for change in result["changes"])
+    assert any("capped" in change for change in result["changes"])
+
+
+def test_statistical_analysis_correlation_insufficient_pairs(tmp_path):
+    """相关分析中有效配对 < 3 或值无变化时 p_value 应为 None。"""
+    workspace = DataWorkspace(tmp_path / "runs", session_id="corr_pairs")
+    workspace.dataframe = pd.DataFrame(
+        {
+            "a": [1.0, 2.0, 3.0],
+            "b": [None, None, 1.0],  # 有效配对仅 1 对 < 3
+            "c": [5.0, 5.0, 5.0],  # 常量 → nunique < 2
+        }
+    )
+    result = json.loads(
+        tool_map(workspace)["statistical_analysis"].invoke({"method": "correlation"})
+    )
+    assert result["p_values"]["a"]["b"] is None
+    assert result["p_values"]["a"]["c"] is None
+
+
+def test_statistical_analysis_groupby_requires_group(workspace):
+    with pytest.raises(ValueError, match="group_by"):
+        tool_map(workspace)["statistical_analysis"].invoke({"method": "groupby"})
+
+
+def test_auto_bar_with_duplicate_x_auto_aggregates(tmp_path):
+    """auto 推断 bar + 无 color + 重复 x → 自动按 x 求和聚合（792 分支）。"""
+    workspace = DataWorkspace(tmp_path / "runs", session_id="auto_agg")
+    workspace.dataframe = pd.DataFrame(
+        {"cat": [f"c{i % 12}" for i in range(48)], "sales": [float(i) for i in range(48)]}
+    )
+    result = json.loads(
+        tool_map(workspace)["create_visualization"].invoke(
+            {"chart_type": "auto", "x": "cat", "y": "sales"}
+        )
+    )
+    assert result["status"] == "ok"
+    assert result["chart_type"] == "bar"
+    assert Path(result["html"]).exists()
+
+
+def test_plotly_area_box_violin_charts(workspace):
+    """Plotly 的 area/box/violin 渲染分支。"""
+    tools = tool_map(workspace)
+    for chart_type in ("area", "box", "violin"):
+        result = json.loads(
+            tools["create_visualization"].invoke(
+                {"chart_type": chart_type, "x": "region", "y": "sales"}
+            )
+        )
+        assert result["status"] == "ok", f"{chart_type} 失败: {result}"
+        assert Path(result["html"]).exists()
+
+
+def test_visualization_falls_back_to_full_html_without_bundle(workspace, monkeypatch):
+    """plotly bundle 不可用时应回退到内联 plotlyjs 的完整 HTML（1093 分支）。"""
+    monkeypatch.setattr(workspace, "ensure_plotly_bundle", lambda: None)
+    result = json.loads(
+        tool_map(workspace)["create_visualization"].invoke(
+            {"chart_type": "bar", "x": "region", "y": "sales", "aggregation": "sum"}
+        )
+    )
+    assert result["status"] == "ok"
+    html_text = Path(result["html"]).read_text(encoding="utf-8")
+    assert "Plotly.newPlot" in html_text
+
+
+def test_create_visualization_export_png_success(workspace):
+    """export_png=True 且 kaleido 可用时应生成 PNG 并注册 image 产物。"""
+    result = json.loads(
+        tool_map(workspace)["create_visualization"].invoke(
+            {
+                "chart_type": "bar",
+                "x": "region",
+                "y": "sales",
+                "aggregation": "sum",
+                "export_png": True,
+            }
+        )
+    )
+    assert result["status"] == "ok"
+    assert "png" in result
+    png_path = Path(result["png"])
+    assert png_path.exists()
+    assert png_path.suffix == ".png"
+    assert png_path.read_bytes().startswith(b"\x89PNG")
+
+
+# ---------------------------------------------------------------------------
+# charts.py：聚合/语义防护/解读文本/自动选图边界分支
+# ---------------------------------------------------------------------------
+
+
+def test_aggregate_for_chart_requires_y_for_non_count(workspace):
+    from data_agent.tools.charts import _aggregate_for_chart
+
+    with pytest.raises(ValueError, match="聚合需要 y"):
+        _aggregate_for_chart(workspace.dataframe, x="region", y=None, color=None, aggregation="sum")
+
+
+def test_aggregate_for_chart_all_nan_x_returns_early(workspace):
+    from data_agent.tools.charts import _aggregate_for_chart
+
+    df = pd.DataFrame({"x": [None, None], "color": ["A", "B"], "y": [1.0, 2.0]})
+    result, y, coverage = _aggregate_for_chart(df, x="x", y="y", color="color", aggregation="sum")
+    assert coverage["complete"] is True
+
+
+def test_aggregate_for_chart_skips_reindex_when_too_large(workspace):
+    from data_agent.tools.charts import _aggregate_for_chart
+
+    df = pd.DataFrame(
+        {
+            "x": [f"x{i}" for i in range(60)],
+            "color": [f"c{i}" for i in range(60)],
+            "y": [1.0] * 60,
+        }
+    )
+    result, y, coverage = _aggregate_for_chart(df, x="x", y="y", color="color", aggregation="sum")
+    assert coverage.get("skipped_reindex") is True
+
+
+def test_append_title_note_sup_branch():
+    import plotly.graph_objects as go
+
+    from data_agent.tools.charts import _append_title_note
+
+    fig = go.Figure()
+    fig.update_layout(title_text="标题<br><sup>注1</sup>")
+    _append_title_note(fig, "注2")
+    assert "注2</sup>" in fig.layout.title.text
+    assert "；" in fig.layout.title.text
+
+
+def test_annotate_extreme_values_skips_non_bar_line_and_swallows_errors():
+    import plotly.graph_objects as go
+
+    from data_agent.tools.charts import _annotate_extreme_values
+
+    # pie trace → continue（230）
+    fig = go.Figure(go.Pie(labels=["a"], values=[1]))
+    _annotate_extreme_values(fig)
+    assert len(fig.layout.annotations) == 0
+
+    # x/y 长度不匹配 → continue（234）
+    fig2 = go.Figure(go.Bar(x=["a", "b"], y=[1]))
+    _annotate_extreme_values(fig2)
+    assert len(fig2.layout.annotations) == 0
+
+    # 异常吞掉（279-280）
+    fig3 = go.Figure(go.Bar(x=["a"], y=[1]))
+    with patch("data_agent.tools.charts.max", side_effect=RuntimeError("boom")):
+        _annotate_extreme_values(fig3)  # 不应抛出
+
+
+def test_severe_axis_compression_zero_spread_and_low_ratio():
+    from data_agent.tools.charts import _severe_axis_compression
+
+    # spread==0 → MAD 路径；mad==0 → None（296-301）
+    assert _severe_axis_compression([5, 5, 5, 5, 5, 100]) is None
+    # 压缩比 < 8 → None（316）
+    assert _severe_axis_compression([1, 2, 3, 4, 5, 6, 7, 8]) is None
+    # 正常场景
+    result = _severe_axis_compression([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 1000])
+    assert result is not None
+    assert result["upper"] < 1000
+
+
+def test_trace_axis_values_skips_outlier_hint():
+    import plotly.graph_objects as go
+
+    from data_agent.tools.charts import _trace_axis_values
+
+    fig = go.Figure()
+    fig.add_scatter(x=[1, 2], y=[3, 4])
+    fig.add_scatter(x=[10], y=[999], name="极端值提示")
+    assert _trace_axis_values(fig, "y") == [3.0, 4.0]
+
+
+def test_apply_outlier_scale_controls_empty_trace_and_callout():
+    import plotly.graph_objects as go
+
+    from data_agent.tools.charts import _apply_outlier_scale_controls
+
+    # 极端点 4 个 → callout 带"另有 N 个极端点"（408）
+    fig = go.Figure()
+    fig.add_bar(x=["a", "b", "c", "d", "e"], y=[1, 2, 3, 4, 500])
+    result = _apply_outlier_scale_controls(fig, "bar", "robust")
+    assert result["scale_mode"] == "robust"
+    assert result["extreme_points"] >= 1
+
+    # 无 x/y 的 trace → continue（372）
+    fig2 = go.Figure()
+    fig2.add_bar(x=["a"], y=[1])
+    fig2.add_annotation(text="x")  # 无 trace 数据
+    result2 = _apply_outlier_scale_controls(fig2, "bar", "robust")
+    assert result2["scale_mode"] in ("robust", "full")
+
+
+def test_validate_chart_semantics_high_cardinality(workspace):
+    from data_agent.tools.charts import _validate_chart_semantics
+
+    df = pd.DataFrame(
+        {
+            "类目": [f"c{i % 80}" for i in range(100)],  # 80 唯一（ratio 0.8 < 0.95，非 ID）
+            "数值": list(range(100)),
+            "分组": [f"g{i % 70}" for i in range(100)],  # 70 唯一
+        }
+    )
+    # bar 高基数 x → raise（616）
+    with pytest.raises(ValueError, match="类别过多"):
+        _validate_chart_semantics(df, chart_type="bar", x="类目")
+    # heatmap x 高基数 → raise（622）
+    with pytest.raises(ValueError, match="类别过多"):
+        _validate_chart_semantics(df, chart_type="heatmap", x="类目", y="分组", values="数值")
+    # color 高基数 → raise（630）
+    df_small_x = pd.DataFrame(
+        {
+            "类别": [f"a{i % 5}" for i in range(100)],
+            "数值": list(range(100)),
+            "类目": [f"c{i % 80}" for i in range(100)],
+        }
+    )
+    with pytest.raises(ValueError, match="图例不可读"):
+        _validate_chart_semantics(df_small_x, chart_type="bar", x="类别", y="数值", color="类目")
+    # path_columns 高基数 → raise（636）
+    with pytest.raises(ValueError, match="层级图不可读"):
+        _validate_chart_semantics(df, chart_type="sunburst", path_columns=["类目"], values="数值")
+    # 单行数据直接返回（566）
+    _validate_chart_semantics(df.iloc[:1], chart_type="bar", x="类目")
+
+
+def test_looks_like_id_column_empty_frame():
+    from data_agent.tools.charts import _looks_like_id_column
+
+    df = pd.DataFrame({"id": pd.Series(dtype="object")})
+    assert _looks_like_id_column(df, "id", strict=True) is False  # rows==0 → False（531）
+
+
+def test_looks_like_datetime_series_empty_and_errors(monkeypatch):
+    import pandas as pd
+
+    from data_agent.tools.charts import _looks_like_datetime_series
+
+    # 空 sample → False（663）
+    assert _looks_like_datetime_series(pd.Series([None, None], dtype="object")) is False
+    # to_datetime 抛异常 → False（666-667）
+    monkeypatch.setattr("data_agent.tools.charts.pd.to_datetime", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert _looks_like_datetime_series(pd.Series(["2025-01-01", "2025-01-02"])) is False
+
+
+def test_infer_chart_type_dimensions_two_and_no_columns():
+    from data_agent.tools.charts import _infer_chart_type
+
+    df = pd.DataFrame({"a": [1, 2], "b": [3, 4], "c": ["x", "y"]})
+    result = _infer_chart_type(
+        df, x=None, y=None, color=None, z=None, size=None, values=None,
+        path_columns=None, dimensions=["a", "b"], aggregation="none", top_n=None,
+    )
+    assert result == "scatter"  # 2 维 → scatter（720）
+    df2 = pd.DataFrame({"t": ["x", "y"]})
+    with pytest.raises(ValueError, match="auto 模式下无法确定"):
+        _infer_chart_type(
+            df2, x=None, y=None, color=None, z=None, size=None, values=None,
+            path_columns=None, dimensions=None, aggregation="none", top_n=None,
+        )  # 无 x/y 无数值列 → raise（732）
+
+
+def test_plotly_interpretation_branches():
+    from data_agent.tools.charts import (
+        _plotly_auto_interpret,
+        _plotly_interpret_box,
+        _plotly_interpret_pie,
+        _plotly_interpret_scatter,
+        _plotly_interpret_trend,
+    )
+
+    # box/violin 解读（841/954）
+    box_text = _plotly_auto_interpret(
+        pd.DataFrame({"g": ["a", "b"], "v": [1.0, 2.0]}), chart_type="box", x="g", y="v",
+        color=None, aggregation="none", title="分组分布",
+    )
+    assert "箱体" in box_text
+
+    # trend color 分支 pivot 空（861）：color 列全 NaN → groupby 无有效组
+    trend_text = _plotly_interpret_trend(
+        pd.DataFrame({"x": ["a", "b"], "y": [1.0, 2.0], "c": [None, None]}), chart_type="line",
+        x="x", y="y", color="c", aggregation="sum", title="趋势",
+    )
+    assert "分组对比" in trend_text
+
+    # 少于 3 个点 → 波动描述（901）
+    short = _plotly_interpret_trend(
+        pd.DataFrame({"x": ["a", "b"], "y": [1.0, 2.0]}), chart_type="line",
+        x="x", y="y", color=None, aggregation="sum", title="短序列",
+    )
+    assert "波动" in short
+
+    # pie 无数值列（910）与总和 ≤ 0（914）
+    pie_no_num = _plotly_interpret_pie(pd.DataFrame({"cat": ["a"]}), x="cat", title="占比")
+    assert "占比" in pie_no_num
+    pie_zero = _plotly_interpret_pie(pd.DataFrame({"cat": ["a", "b"], "v": [0.0, -1.0]}), x="cat", title="占比")
+    assert "占比" in pie_zero
+
+    # scatter 非数值列（930）
+    scatter_text = _plotly_interpret_scatter(
+        pd.DataFrame({"x": ["a", "b"], "y": ["c", "d"]}), x="x", y="y", title="关系"
+    )
+    assert "分布关系" in scatter_text
+
+    # scatter corr NaN（936）
+    nan_text = _plotly_interpret_scatter(
+        pd.DataFrame({"x": [1.0, 1.0], "y": [2.0, 2.0]}), x="x", y="y", title="关系"
+    )
+    assert "NaN" not in nan_text and "展示" in nan_text
+
+    # box 本体（954）
+    assert "四分位距" in _plotly_interpret_box(x="g", y="v", title="箱线")
+
+
+# ---------------------------------------------------------------------------
+# charts.py 剩余分支：MAD 路径 / 压缩比 / 空 trace / 高基数 heatmap / 推断边界
+# ---------------------------------------------------------------------------
+
+
+def test_severe_axis_compression_mad_path():
+    from data_agent.tools.charts import _severe_axis_compression
+
+    # spread==0 → MAD 路径；MAD=0 → None（296-300）
+    assert _severe_axis_compression([1.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 100.0]) is None
+
+
+def test_severe_axis_compression_low_ratio_returns_none():
+    from data_agent.tools.charts import _severe_axis_compression
+
+    # 极端点存在但压缩比 < 8 → None（316）
+    assert _severe_axis_compression([float(i) for i in range(1, 11)] + [30.0]) is None
+
+
+def test_apply_outlier_scale_controls_scatter_variants():
+    import plotly.graph_objects as go
+
+    from data_agent.tools.charts import _apply_outlier_scale_controls
+
+    # x 有极端值 → guard 非空，trace 循环执行；空 trace → continue（372）
+    fig = go.Figure()
+    fig.add_scatter(x=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 1000.0], y=[1.0] * 9)
+    fig.add_scatter()  # 空 trace
+    result = _apply_outlier_scale_controls(fig, "scatter", "robust")
+    assert result["scale_mode"] == "robust"
+
+    # x 有极端值、y 无 → y guard 为 None → zeros 分支（385-386）
+    fig2 = go.Figure()
+    fig2.add_scatter(x=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 1000.0], y=[1.0] * 9)
+    result2 = _apply_outlier_scale_controls(fig2, "scatter", "robust")
+    assert result2["scale_mode"] == "robust"
+
+    # x 与 y 都有极端值 → y guard 非空 → 向量化 mask 分支（383-384）
+    fig2b = go.Figure()
+    fig2b.add_scatter(
+        x=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 1000.0],
+        y=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 2000.0],
+    )
+    result2b = _apply_outlier_scale_controls(fig2b, "scatter", "robust")
+    assert result2b["scale_mode"] == "robust"
+
+    # 仅 y 有极端值 → x guard 为 None → x zeros 分支（381-382）
+    fig2c = go.Figure()
+    fig2c.add_scatter(x=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], y=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 2000.0])
+    result2c = _apply_outlier_scale_controls(fig2c, "scatter", "robust")
+    assert result2c["scale_mode"] == "robust"
+
+    # 无任何极端值 → 直接返回 full（363-364）
+    fig2d = go.Figure()
+    fig2d.add_scatter(x=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], y=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
+    result2d = _apply_outlier_scale_controls(fig2d, "scatter", "robust")
+    assert result2d["scale_mode"] == "full"
+
+    # 极端点对应 x 为非数值（字符串）→ 详情走 str 分支（397-398）
+    fig2e = go.Figure()
+    fig2e.add_scatter(x=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, "txt"], y=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 2000.0])
+    result2e = _apply_outlier_scale_controls(fig2e, "scatter", "robust")
+    assert result2e["scale_mode"] == "robust"
+
+    # 极端点 > 3 → callout 带"另有 N 个"（408）
+    fig3 = go.Figure()
+    fig3.add_scatter(
+        x=[float(i) for i in range(1, 51)] + [1000.0, 2000.0, 3000.0, 4000.0],
+        y=[1.0] * 54,
+    )
+    result3 = _apply_outlier_scale_controls(fig3, "scatter", "robust")
+    assert result3["extreme_points"] >= 4
+
+
+def test_validate_chart_semantics_heatmap_y_high_cardinality():
+    from data_agent.tools.charts import _validate_chart_semantics
+
+    df = pd.DataFrame(
+        {
+            "类目": [f"c{i % 30}" for i in range(120)],
+            "分组": [f"g{i % 80}" for i in range(120)],
+            "数值": list(range(120)),
+        }
+    )
+    # x 低基数、y 高基数（80 > 60）→ 626
+    with pytest.raises(ValueError, match="类别过多"):
+        _validate_chart_semantics(df, chart_type="heatmap", x="类目", y="分组", values="数值")
+
+
+def test_looks_like_datetime_series_empty_string_column():
+    from data_agent.tools.charts import _looks_like_datetime_series
+
+    # string dtype 全 NaN → sample 空 → False（663）
+    series = pd.Series([None, None], dtype="string")
+    assert _looks_like_datetime_series(series) is False
+
+
+def test_infer_chart_type_single_numeric_no_xy():
+    from data_agent.tools.charts import _infer_chart_type
+
+    # 1-2 个数值列且无 x/y → histogram（731）
+    df = pd.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]})
+    result = _infer_chart_type(
+        df, x=None, y=None, color=None, z=None, size=None, values=None,
+        path_columns=None, dimensions=None, aggregation="none", top_n=None,
+    )
+    assert result == "histogram"
+    # 分类 x + 分类 y → bar（766 分类计数）
+    df2 = pd.DataFrame({"cat": ["a", "b"], "kind": ["x", "y"]})
+    result2 = _infer_chart_type(
+        df2, x="cat", y="kind", color=None, z=None, size=None, values=None,
+        path_columns=None, dimensions=None, aggregation="none", top_n=None,
+    )
+    assert result2 == "bar"
+
+
+def test_apply_plotly_nice_ticks_empty_x_values():
+    import plotly.express as px
+
+    from data_agent.tools.builder import _apply_plotly_nice_ticks
+
+    # x 值清空 → 220 分支 return（不报错）
+    fig = px.scatter(x=[1, 2], y=[3, 4])
+    fig.data[0].x = None
+    fig.data[0].y = [3.0, 4.0]
+    _apply_plotly_nice_ticks(fig, "scatter", "x", "y", {})
+
+
+def test_collect_trace_values_non_numeric_values():
+    import plotly.graph_objects as go
+
+    from data_agent.tools.builder import _collect_trace_values
+
+    # 非数值元素转换失败 → continue（269-270）
+    fig = go.Figure()
+    fig.add_scatter(x=[1, 2], y=[3, 4])
+    fig.data[0].y = ["bad", 4]
+    values = _collect_trace_values(fig, "y")
+    assert values == [4.0]

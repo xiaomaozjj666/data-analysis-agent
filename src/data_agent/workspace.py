@@ -374,6 +374,18 @@ class DataWorkspace:
             raise ValueError("数据文件为空或无法识别出列。")
         if len(df.columns) > _MAX_COLUMNS:
             raise ValueError(f"列数超过 {_MAX_COLUMNS}，拒绝加载以防止意外资源耗尽。")
+        if not df.columns.is_unique:
+            # PDF/DOCX 表格提取或 JSON 数据可能产生重复列名：重复列在
+            # to_dict(orient="records") 序列化时会被 pandas 静默丢弃，
+            # profile 的 column_info 也会错位。加载时统一加序号去重。
+            seen: dict[str, int] = {}
+            normalized: list[str] = []
+            for value in df.columns:
+                base = str(value).strip() or "column"
+                seen[base] = seen.get(base, 0) + 1
+                normalized.append(base if seen[base] == 1 else f"{base}_{seen[base]}")
+            df.columns = normalized
+            self.load_warnings.append("检测到重复列名，已自动加序号区分。")
         # 通过 setter 赋值，确保 _profile_cache 被清除（虽然 load 是首次设置，
         # 缓存此时为空，但走 setter 保持一致性，避免未来重构引入缓存失效 bug）。
         self.dataframe = df
@@ -519,7 +531,13 @@ class DataWorkspace:
         for encoding in _CSV_ENCODING_CANDIDATES:
             try:
                 with open(path, encoding=encoding) as f:
-                    lines = f.readlines(max_lines + 1)
+                    # 逐行读取并计数：readlines(hint) 的 hint 是字节数而非行数，
+                    # 用它做行数上限会按字节截断（中文 UTF-8 下实际行数远小于上限）。
+                    lines: list[str] = []
+                    for _line in f:
+                        lines.append(_line)
+                        if len(lines) > max_lines:
+                            break
                 truncated = len(lines) > max_lines
                 if truncated:
                     lines = lines[:max_lines]

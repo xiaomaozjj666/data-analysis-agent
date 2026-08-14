@@ -563,7 +563,9 @@ bootstrap_settings = AgentSettings.from_env(provider="deepseek")
 # 执行任何分析。不调用完整的 validate_for_model（需要 api_key），
 # 仅校验不影响 LLM 连接但会导致服务假死的资源参数。
 if bootstrap_settings.max_concurrent_analyses <= 0:
-    raise ValueError(
+    # 已由 tests/test_coverage_fill.py::test_registry_import_rejects_zero_concurrency
+    # 在子进程中验证（reload 会污染当前进程的单例，无法在主进程覆盖）。
+    raise ValueError(  # pragma: no cover - 子进程验证
         "DATA_AGENT_MAX_CONCURRENT_ANALYSES 必须大于 0，"
         f"当前值 {bootstrap_settings.max_concurrent_analyses} 会导致服务无法执行分析。"
     )
