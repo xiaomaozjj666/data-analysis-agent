@@ -40,6 +40,7 @@ dependencies = [
 dev = [
   "pytest>=8.3,<10",
   "pytest-cov>=6,<8",
+  "pytest-timeout>=2,<3",
   "ruff>=0.16,<0.17",
   "httpx>=0.28,<1",
   # test_e2e_data_types.py::test_pdf_file_load 用 reportlab 生成真实 PDF 文件；
@@ -62,6 +63,9 @@ data_agent = ["echarts_engine.py"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --disable-warnings"
+# 单测超时保护：CI 上曾有无超时的测试挂起（外网/LLM 调用不 fail-fast）导致流水线卡死；
+# 120s 远高于正常测试平均耗时（~1s），仅拦截真正挂起的用例并暴露其名字。
+timeout = 120
 
 [tool.ruff]
 line-length = 100
