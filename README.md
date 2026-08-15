@@ -124,7 +124,7 @@ tests/               pytest 测试
 ## 质量检查
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest        # 后端测试（不调用真实 LLM，不产生费用），覆盖率约 91%
+.\.venv\Scripts\python.exe -m pytest --cov  # 后端测试（不调用真实 LLM，不产生费用），覆盖率约 100%（源码）
 .\.venv\Scripts\python.exe -m ruff check .  # 代码检查
 cd frontend && npm run build                # 前端生产构建
 ```
