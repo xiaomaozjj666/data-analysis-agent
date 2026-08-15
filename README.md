@@ -119,12 +119,14 @@ tests/               pytest 测试
 - **Docker**：根目录 `Dockerfile` 两阶段构建（Node 构建前端 + Python 运行时），以非 root 用户运行并带健康检查。
 - **LangSmith**：`langgraph.json` 导出 `data_analysis_agent` 图，可直接创建 LangSmith Deployment；数据集通过 `dataset_id` 或受控 `dataset_path` 提供。
 - **Render**：根目录 `render.yaml` 提供 Blueprint 一键部署，附持久磁盘；Free 实例休眠后 `/tmp` 会清空，长期保存数据请启用 S3/R2 后端。
-- **CI**：`.github/workflows/ci.yml` 在 push / PR 时自动执行 ruff、pytest 与前端生产构建。
+- **CI**：`.github/workflows/ci.yml` 在 push / PR 时自动执行 ruff、pytest（含 120s 单测超时保护）与前端类型检查、测试及生产构建。
 
 ## 质量检查
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest --cov  # 后端测试（不调用真实 LLM，不产生费用），覆盖率约 100%（源码）
-.\.venv\Scripts\python.exe -m ruff check .  # 代码检查
+.\.venv\Scripts\python.exe -m ruff check .  # 后端代码检查
+cd frontend && npm run typecheck            # 前端 TypeScript 类型检查
+cd frontend && npm test                     # 前端单元/组件测试
 cd frontend && npm run build                # 前端生产构建
 ```
