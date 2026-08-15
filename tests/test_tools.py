@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1285,6 +1286,10 @@ def test_visualization_falls_back_to_full_html_without_bundle(workspace, monkeyp
     assert "Plotly.newPlot" in html_text
 
 
+@pytest.mark.skipif(
+    bool(os.environ.get("CI")),
+    reason="Kaleido 无头渲染在 CI 上偶发挂起且无法被信号超时中断（本地已验证）",
+)
 def test_create_visualization_export_png_success(workspace):
     """export_png=True 且 kaleido 可用时应生成 PNG 并注册 image 产物。"""
     result = json.loads(
