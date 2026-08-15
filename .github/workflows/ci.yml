@@ -31,7 +31,8 @@ jobs:
         run: ruff check .
 
       - name: Run tests
-        run: python -m pytest
+        # -v：逐个测试名输出，挂起时日志能精确定位最后一个启动的测试
+        run: python -m pytest -v
 
   frontend:
     name: Frontend (typecheck + test + build)
