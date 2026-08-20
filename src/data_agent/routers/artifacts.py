@@ -537,6 +537,16 @@ def edit_chart(session_id: str, filename: str, request: ChartEditRequest) -> dic
             _os.replace(tmp_path, json_path)
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"图表重新生成失败：{exc}") from exc
+        # 标题变更后同步产物描述并持久化：产物卡片、预览模态头部与会话
+        # 归档读的都是 description，只改图表 HTML 会让 UI 停留在旧标题。
+        if request.title is not None:
+            workspace.update_artifact_description(html_path, display_title)
+            try:
+                api.registry._persist_locked(session_id, record)
+            except Exception:
+                # 持久化失败不影响本次编辑结果，仅记录
+                import logging
+                logging.getLogger(__name__).exception("Failed to persist manifest after chart edit")
         return {"status": "ok", "message": "图表已更新。"}
     finally:
         record.run_lock.release()

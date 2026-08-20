@@ -185,7 +185,12 @@ async def import_session(file: Annotated[UploadFile, File()]) -> dict[str, Any]:
     from data_agent import api
 
     session_id = f"api_{uuid4().hex[:12]}"
-    root = api.bootstrap_settings.runs_dir / session_id
+    # 必须 resolve 为绝对路径：bootstrap_settings.runs_dir 可能是相对路径
+    # （如 .env 默认的 ./runs），而下方校验用 (root / member.filename)
+    # .resolve() 得到绝对路径做 parents 包含判断；root 保持相对形式时
+    # 绝对路径的 parents 里永远找不到相对 root，导入一律误报
+    # "归档包含不安全路径"。
+    root = (api.bootstrap_settings.runs_dir / session_id).resolve()
     root.mkdir(parents=True, exist_ok=True)
     # Zip bomb 防护：限制上传大小、解压总大小、成员数量
     _MAX_IMPORT_BYTES = api.bootstrap_settings.max_upload_bytes

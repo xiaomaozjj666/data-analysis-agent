@@ -6,6 +6,8 @@
 @media (max-width: 1040px) {
   .app-shell { grid-template-columns: 248px minmax(0, 1fr); }
   .app-main { padding-inline: 28px; }
+  /* 空状态负 margin 与 padding-inline 对齐，避免横向溢出 */
+  .empty-workspace { margin: 0 -28px; }
   .analysis-grid { grid-template-columns: minmax(0, 1fr) 296px; gap: 22px; }
   .preset-row button { padding-inline: 12px; }
 }
@@ -14,7 +16,9 @@
   .analysis-grid { grid-template-columns: 1fr; }
   .chart-grid { grid-template-columns: 1fr; }
   .plan-panel { position: static; }
-  .empty-workspace { grid-template-columns: 1fr; gap: 40px; padding: 54px 7vw; }
+  /* 负 margin 与 .app-main 的 padding-inline 对齐（28px），
+     否则空状态比视口宽产生横向滚动 */
+  .empty-workspace { margin: 0 -28px; grid-template-columns: 1fr; gap: 40px; padding: 54px 7vw; }
   .empty-grid { width: min(72vw, 520px); justify-self: center; }
   .empty-copy { justify-self: center; text-align: center; }
 }
@@ -55,6 +59,13 @@
   .task-box textarea { min-height: 98px; padding: 14px; font-size: var(--text-base); }
   .task-actions { align-items: stretch; flex-direction: column; padding: 8px; }
   .preset-row { width: 100%; }
+  /* 移动端按钮纵向堆叠：footer 改 column，input-hint 居中；
+     StarBorder/ClickSpark 包裹层必须撑满宽度，否则 run-button 的
+     width:100% 相对内容宽容器不生效，按钮溢出视口产生横向滚动 */
+  .task-box-footer { flex-direction: column; align-items: stretch; gap: 8px; }
+  .task-box-footer .input-hint { text-align: center; }
+  .task-box-footer .click-spark-container,
+  .task-box-footer .star-border { width: 100%; }
   .run-button, .cancel-button, .plan-review-button { width: 100%; justify-content: center; }
   .preview-backdrop { padding: 0; }
   .preview-panel { width: 100vw; height: 100vh; border-radius: 0; }
@@ -72,7 +83,8 @@
   .report-copy { height: 26px; padding: 0 8px; font-size: var(--text-xs); }
   /* 移动端 sidebar 文件名不再被限宽，允许撑满到换行。 */
   .dataset-button strong { max-width: none; }
-  .empty-workspace { min-height: 610px; padding: 45px 0; }
+  /* 负 margin 与 .app-main 的 12px padding 对齐，消除空状态横向溢出 */
+  .empty-workspace { margin: 0 -12px; min-height: 610px; padding: 45px 12px; }
   .empty-grid { width: 88vw; }
   .empty-grid i { min-height: 40px; }
   /* 历史列表在移动端不再限高，让用户能整屏滚动浏览。 */

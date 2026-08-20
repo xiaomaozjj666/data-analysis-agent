@@ -383,6 +383,11 @@ function useArtifactPreview(): UseArtifactPreviewResult {
       // 刷新 session 以获取更新的 artifacts（描述等可能被后端覆盖）
       const updated = await api<Session>(`/api/sessions/${session.id}`);
       setSession(updated);
+      // 同步更新 previewItem：模态头部标题与产物卡片标题立即反映编辑
+      // 结果，不必等下次打开。旧 previewItem 是编辑前的对象，session
+      // 刷新不会自动同步它。
+      const fresh = updated.artifacts?.find((a) => a.name === previewItem.name);
+      if (fresh) setPreviewItem({ ...previewItem, ...fresh });
     } catch (err) {
       setError(`图表编辑失败：${err instanceof Error ? err.message : "未知错误"}`);
     } finally {

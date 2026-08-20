@@ -329,7 +329,9 @@ const HistoryItem = React.memo(function HistoryItem({
 
   if (editing) {
     return (
-      <li className="is-editing">
+      // 保留 is-active：编辑态行也是当前会话，维持高亮与左侧竖条，
+      // 避免切到编辑态时"当前会话"视觉丢失（旧版只有 is-editing）。
+      <li className={active ? "is-editing is-active" : "is-editing"}>
         <div className="history-edit-bar">
           <input
             ref={editInputRef}

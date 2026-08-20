@@ -201,6 +201,8 @@
 .history-list li > button:active { transform: scale(0.98); }
 /* 当前会话：左侧竖条 + 浅蓝底，比单纯背景色更醒目 */
 .history-list li.is-active > button { background: var(--accent-subtle); }
+/* 编辑态行保留 is-active 时，编辑栏同样继承当前会话高亮底 */
+.history-list li.is-active .history-edit-bar { background: var(--accent-subtle); }
 .history-list li.is-active::before { content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 2px; border-radius: 1px; background: var(--accent-fg); animation: active-bar-in 0.25s var(--ease-out) both; }
 @keyframes active-bar-in {
   from { transform: scaleY(0); opacity: 0; }

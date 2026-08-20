@@ -1031,6 +1031,52 @@ def test_import_session_restores_from_exported_zip(tmp_path, monkeypatch):
     assert any(s["id"] == payload["id"] for s in history)
 
 
+def test_import_session_works_with_relative_runs_dir(tmp_path, monkeypatch):
+    """runs_dir 为相对路径（.env 默认 ./runs）时，导入不得误报"不安全路径"。
+
+    回归保护：校验代码用 ``(root / member.filename).resolve()``（绝对路径）
+    做 parents 包含判断，若 root 保持相对形式（runs/api_xxx），绝对路径的
+    parents 里永远找不到相对 root，导入一律 400。真实部署（DATA_AGENT_
+    RUNS_DIR=./runs）即相对路径，此测试模拟该场景。
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("APP_ACCESS_TOKEN", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    runs_dir = Path("runs")  # 相对路径，相对 cwd（已被 chdir 到 tmp_path）解析
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    settings = AgentSettings(
+        api_key="not-used",
+        provider="deepseek",
+        runs_dir=runs_dir,
+        max_active_sessions=100,
+        session_ttl_hours=24,
+        rate_limit_per_minute=1000,
+        max_concurrent_analyses=2,
+    )
+    registry = api.SessionRegistry(
+        runs_dir,
+        settings.max_active_sessions,
+        settings.session_ttl_hours,
+        storage=LocalSessionStorage(),
+    )
+    monkeypatch.setattr(api, "bootstrap_settings", settings)
+    monkeypatch.setattr(api, "registry", registry)
+    monkeypatch.setattr(api, "session_storage", LocalSessionStorage())
+    monkeypatch.setattr(api, "analysis_slots", threading.BoundedSemaphore(settings.max_concurrent_analyses))
+    api.request_buckets.clear()
+
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client)
+    export = client.get(f"/api/sessions/{uploaded['id']}/export")
+    assert export.status_code == 200
+    imported = client.post(
+        "/api/sessions/import",
+        files={"file": ("session.zip", export.content, "application/zip")},
+    )
+    assert imported.status_code == 201, imported.text
+    assert imported.json()["profile"]["rows"] == 2
+
+
 def test_import_session_rejects_invalid_zip(tmp_path, monkeypatch):
     """POST /api/sessions/import 收到非 ZIP 内容应返回 400。"""
     _isolate_runtime(tmp_path, monkeypatch)
@@ -1341,6 +1387,37 @@ def test_edit_chart_regenerates_html(tmp_path, monkeypatch):
     preview = client.get(chart["preview_url"])
     assert preview.status_code == 200
     assert "新标题" in preview.text
+
+    # 产物描述必须同步：卡片/模态标题读 description，只改 HTML 会让
+    # UI 停留在旧标题；且应持久化到 manifest，重启后不回退。
+    session = client.get(f"/api/sessions/{session_id}").json()
+    edited = next(a for a in session["artifacts"] if a["name"] == chart["name"])
+    assert edited["description"] == "新标题"
+    manifest = api.registry._manifest_path(api.registry.get(session_id))
+    assert json.loads(manifest.read_text(encoding="utf-8"))["artifacts"][0]["description"] == "新标题"
+
+
+def test_edit_chart_description_sync_survives_persist_failure(tmp_path, monkeypatch):
+    """持久化 manifest 失败不应影响图表编辑结果（描述同步仍生效）。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = _create_chart_session(client)
+    chart = _first_chart_artifact(client, session_id)
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(api.registry, "_persist_locked", _boom)
+    response = client.put(
+        f"/api/sessions/{session_id}/artifacts/{chart['name']}/edit",
+        json={"title": "持久化失败也更新"},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    # 内存中的 description 已同步（本次编辑结果有效）
+    session = client.get(f"/api/sessions/{session_id}").json()
+    edited = next(a for a in session["artifacts"] if a["name"] == chart["name"])
+    assert edited["description"] == "持久化失败也更新"
 
 
 def test_edit_chart_returns_409_when_run_lock_held(tmp_path, monkeypatch):
