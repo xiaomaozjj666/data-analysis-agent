@@ -270,6 +270,21 @@ class DataWorkspace:
             self._artifacts.append(artifact)
         return artifact
 
+    def update_artifact_description(self, path: str | Path, description: str) -> None:
+        """更新已注册产物的描述。
+
+        图表编辑（改标题）后同步 description，让产物卡片标题、预览模态
+        头部与导出的会话归档立即一致，而不是停留在编辑前的旧值。
+        Artifact 是 frozen dataclass，用 replace 重建后原位替换。
+        """
+        from dataclasses import replace
+
+        resolved = Path(path).resolve()
+        for index, item in enumerate(self._artifacts):
+            if item.path == resolved:
+                self._artifacts[index] = replace(item, description=description)
+                return
+
     def save_upload(self, filename: str, content: bytes) -> Path:
         safe_name = re.sub(r"[^\w.\-()\u4e00-\u9fff]", "_", Path(filename).name)
         if Path(safe_name).suffix.lower() not in SUPPORTED_EXTENSIONS:
