@@ -105,8 +105,10 @@
   border-radius: var(--radius-md);
   background: transparent;
   color: var(--fg-muted);
+  transition: color var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out), background var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
 }
-.icon-button:hover, .artifact-download:hover { color: var(--accent-fg); border-color: var(--accent-fg); background: var(--accent-subtle); }
+.icon-button:hover, .artifact-download:hover { color: var(--accent-fg); border-color: var(--accent-fg); background: var(--accent-subtle); box-shadow: var(--shadow-xs); }
+.icon-button:active, .artifact-download:active { transform: translateY(1px); box-shadow: none; }
 
 /* 小标签：章节上方的英文 kicker / 侧栏分组标签 */
 .sidebar-label, .section-kicker {
@@ -143,6 +145,7 @@ i.warning { background: var(--attention-fg); box-shadow: 0 0 0 3px rgba(154, 103
   background: var(--canvas-default);
   color: var(--fg-muted);
   box-shadow: var(--shadow-xs);
+  transition: color var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out), background var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
 }
-.theme-toggle:hover { color: var(--accent-fg); border-color: var(--accent-fg); background: var(--accent-subtle); }
-.theme-toggle:active { transform: translateY(1px); }
+.theme-toggle:hover { color: var(--accent-fg); border-color: var(--accent-fg); background: var(--accent-subtle); box-shadow: var(--shadow-sm); }
+.theme-toggle:active { transform: translateY(1px); box-shadow: none; }

@@ -249,18 +249,21 @@ const DataTable = React.memo(function DataTable({ rows }: DataTableProps) {
                         top: 0,
                         zIndex: 2,
                       }}
-                      className={sortKey ? `is-sorted is-${sortKey.dir}` : ""}
+                      className={`${sortKey ? `is-sorted is-${sortKey.dir}` : ""} ${
+                        colTypes[column] === "number" ? "is-number" : ""
+                      }`}
                       onClick={(e) => handleHeaderClick(column, e.shiftKey)}
                       title="点击切换升序 / 降序 · Shift+点击追加排序键"
                     >
                       {column}
                       <span className="data-table-type-badge">{typeLabel(colTypes[column])}</span>
                       {sortKey && (
-                        <>
-                          <span className="data-table-sort-badge">{sortIndex + 1}</span>
-                          <span className="data-table-arrow">{sortKey.dir === "asc" ? "▲" : "▼"}</span>
-                        </>
+                        <span className="data-table-sort-badge">{sortIndex + 1}</span>
                       )}
+                      {/* 箭头常驻渲染：未排序时淡显（hover 显现），排序后 ▲/▼ 强调 */}
+                      <span className={`data-table-arrow${sortKey ? " is-active" : ""}`}>
+                        {sortKey ? (sortKey.dir === "asc" ? "▲" : "▼") : "↕"}
+                      </span>
                       <span
                         className="col-resize-handle"
                         role="separator"
@@ -295,8 +298,9 @@ const DataTable = React.memo(function DataTable({ rows }: DataTableProps) {
                         {columns.map((column) => {
                           const cellValue = row[column];
                           const isEmpty = cellValue == null || cellValue === "" || (typeof cellValue === "number" && isNaN(cellValue));
+                          const typeClass = colTypes[column] === "number" ? "is-number" : colTypes[column] === "date" ? "is-date" : "";
                           return (
-                            <td key={column} className={isEmpty ? "cell-empty" : ""}>
+                            <td key={column} className={`${isEmpty ? "cell-empty " : ""}${typeClass}`}>
                               {isEmpty ? "—" : formatCell(column, cellValue)}
                             </td>
                           );
