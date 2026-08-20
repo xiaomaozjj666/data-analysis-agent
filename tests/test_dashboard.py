@@ -329,3 +329,6 @@ def test_build_dashboard_html_with_plotly_and_3d_charts(tmp_path, dirty_df):
     assert '"width":800' not in html
     assert 'card full' in html  # 3D 图占满整行
     assert "scatter3D" in html
+    # 回归保护（图例溢出 bug）：dashboard 内 Plotly 图必须把图例锚定在
+    # 绘图区内部右上角，窄窗口/窄卡片下图例不溢出、类别文字不被裁。
+    assert "l.legend.xanchor='right'" in html
