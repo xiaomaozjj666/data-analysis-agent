@@ -228,7 +228,7 @@
 .history-status-dot.is-failed { background: var(--danger-fg); }
 .history-status-dot.is-idle { background: #c2c7cd; }
 .history-status-text { font-weight: 600; }
-.history-result { color: var(--success-fg); font-weight: 600; }
+.history-result { color: var(--accent-fg); font-weight: 600; }
 .history-time { color: var(--fg-subtle); }
 .history-count { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: var(--radius-full); background: var(--neutral-muted); color: var(--fg-muted); font-size: 10px; font-style: normal; font-weight: 600; flex: 0 0 auto; }
 .history-list li.is-active .history-count { background: var(--accent-fg); color: #fff; }

@@ -18,7 +18,7 @@ tbody tr:hover td { background: var(--accent-subtle); }
 .data-table-toolbar { display: flex; align-items: center; gap: 8px; margin-top: 18px; margin-bottom: 8px; }
 .data-table-search-icon { color: var(--fg-muted); flex-shrink: 0; }
 .data-table-search { height: 30px; padding: 0 10px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); font-size: var(--text-sm); background: var(--canvas-default); color: var(--fg-default); flex: 0 1 280px; }
-.data-table-search:focus { outline: none; border-color: var(--accent-fg); }
+.data-table-search:focus { outline: none; border-color: var(--accent-fg); box-shadow: 0 0 0 3px var(--accent-ring); }
 .data-table-count { margin-left: auto; color: var(--fg-muted); font-size: var(--text-xs); white-space: nowrap; }
 /* 可点击列头：排序交互 */
 .data-table th { cursor: pointer; user-select: none; transition: background-color var(--duration-fast) var(--ease-out); }
@@ -34,6 +34,13 @@ tbody tr:hover td { background: var(--accent-subtle); }
   font-style: italic;
   text-align: center;
 }
+
+/* 数字列右对齐（数据表格惯例）+ 日期列等宽数字：扫读数值时小数点对齐、
+   比较大小更高效。空值单元格保持居中（"-" 视觉居中更稳）。 */
+.data-table td.is-number { text-align: right; }
+.data-table th.is-number { text-align: right; }
+.data-table td.is-number:not(.cell-empty),
+.data-table th.is-number { font-variant-numeric: tabular-nums; }
 
 /* 行号列冻结：横向滚动时保持行号列可见，便于参照行位置。
    z-index 层级：td.row-number (1) < th (2) < th.row-number (3)，
@@ -84,7 +91,18 @@ tbody tr:hover td { background: var(--accent-subtle); }
 }
 
 /* ---------- 多列排序徽标 + 排序箭头 ---------- */
-.data-table-arrow { margin-left: 4px; color: var(--accent-fg); font-size: 10px; }
+/* 箭头常驻 DOM：未排序时淡显（悬停列头时显现，预告可排序），
+   排序后品牌色实显 ▲/▼。排序徽标（多列优先级）仍仅在排序时出现。 */
+.data-table-arrow {
+  margin-left: 5px;
+  color: var(--fg-subtle);
+  font-size: 11px;
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+.data-table th:hover .data-table-arrow,
+.data-table-arrow.is-active { opacity: 1; }
+.data-table-arrow.is-active { color: var(--accent-fg); }
 .data-table-sort-badge {
   display: inline-block;
   margin-left: 3px;
