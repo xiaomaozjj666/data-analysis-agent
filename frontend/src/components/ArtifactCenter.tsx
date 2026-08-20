@@ -1,7 +1,8 @@
 import React, { useMemo, useState } from "react";
 import { Download, ExternalLink, FileSpreadsheet } from "lucide-react";
-import { API_URL, pickChartIcon } from "../constants";
+import { pickChartIcon } from "../constants";
 import { formatBytes } from "../utils/format";
+import AuthImage from "./AuthImage";
 import SpotlightCard from "./rb/SpotlightCard";
 import type { Artifact } from "../types";
 
@@ -164,13 +165,10 @@ const ArtifactCenter = React.memo(function ArtifactCenter({
                         }
                       }}
                     >
-                      <img
-                        src={`${API_URL}${item.thumbnail_url}`}
+                      <AuthImage
+                        src={item.thumbnail_url}
                         alt={item.description || item.name}
                         loading="lazy"
-                        onError={(e) => {
-                          (e.target as HTMLImageElement).style.display = "none";
-                        }}
                       />
                     </div>
                   ) : (

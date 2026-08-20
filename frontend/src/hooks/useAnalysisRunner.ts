@@ -123,8 +123,13 @@ function useAnalysisRunner(deps: UseAnalysisRunnerDeps): UseAnalysisRunnerResult
     planOnly: boolean = false,
   ) {
     if (!session || !nextTask.trim() || running) return;
+    // 通知权限请求绝不能阻塞分析启动：浏览器首次点击时会弹出权限确认框，
+    // 若 await 它，分析要等用户处理弹窗才开始；在无头/被忽略的环境里
+    // requestPermission() 的 promise 可能永不 resolve，导致 fetch 永不发出、
+    // 界面毫无反应（实测复现）。改为 fire-and-forget：同步调用（保留用户
+    // 手势激活）但不等待结果，权限框异步弹出，不打断分析流程。
     if ("Notification" in window && Notification.permission === "default") {
-      try { await Notification.requestPermission(); } catch { /* noop */ }
+      try { void Notification.requestPermission(); } catch { /* noop */ }
     }
     setRunning(true);
     setError("");

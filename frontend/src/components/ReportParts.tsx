@@ -7,8 +7,9 @@ import {
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
+import AuthImage from "./AuthImage";
 import CodeBlock from "./CodeBlock";
-import { API_URL, REMARK_PLUGINS, pickChartIcon } from "../constants";
+import { REMARK_PLUGINS, pickChartIcon } from "../constants";
 import { formatTokens } from "../utils/format";
 import type { Artifact, TokenUsage } from "../types";
 
@@ -103,17 +104,11 @@ function markdownComponents(
           return (
             <button type="button" className="embedded-chart" onClick={() => onPreview?.(artifact)}>
               {artifact.thumbnail_url ? (
-                <img
+                <AuthImage
                   className="embedded-chart-thumb"
-                  src={`${API_URL}${artifact.thumbnail_url}`}
+                  src={artifact.thumbnail_url}
                   alt={alt || label || artifact.description || artifact.name}
                   loading="lazy"
-                  onError={(e) => {
-                    // 缩略图加载失败时隐藏图片，避免显示破损图标；
-                    // 由于同按钮内没有图标回退，此处仅隐藏避免视觉污染，
-                    // 文字描述仍可点击进入预览。
-                    (e.currentTarget as HTMLImageElement).style.display = "none";
-                  }}
                 />
               ) : (
                 <Icon size={18} />

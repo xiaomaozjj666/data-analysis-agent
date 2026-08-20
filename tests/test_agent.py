@@ -471,8 +471,8 @@ def test_create_visualization_escapes_script_tag_in_html(tmp_path):
     """H1 (tools.py): 图表 HTML 必须转义 </script>，防止用户数据触发 XSS。
 
     用户 CSV 某列含 "</script><script>alert(1)</script>" 字符串，LLM 用
-    该列作 x 时，Plotly to_html 会把它原样写入 <script> 块。浏览器解析
-    时第一个 </script> 提前关闭 Plotly script，剩余 JS 在 iframe 执行。
+    该列作 x 时，若该字符串原样写入 <script> 块，浏览器解析时第一个
+    </script> 会提前关闭 Plotly script，剩余 JS 在 iframe 执行。
     """
     import pandas as pd
 
@@ -504,13 +504,28 @@ def test_create_visualization_escapes_script_tag_in_html(tmp_path):
     assert html_artifacts, "应该生成 HTML 产物"
     html_path = html_artifacts[0]["path"]
     html_content = Path(html_path).read_text(encoding="utf-8")
-    # 用户数据中的 </script> 必须被转义为 <\/script>，不能形成有效的 script 闭合。
-    assert "<\\/script>" in html_content, "用户数据中的 </script> 必须被转义为 <\\/script>"
+    # 用户数据中的 </script> 由 Plotly JSON 编码器转义为 \u003c\u002fscript\u003e，
+    # 不能形成有效的 script 闭合；此处同时验证生成器自身的纵深防御
+    # 不会破坏文档结构（详见下方闭合标签断言）。
+    assert "\\u003c\\u002fscript" in html_content, "用户数据中的 </script> 必须被转义"
     # Plotly 自身的 <script> 标签是合法的，不应被转义。
-    # 统计未转义的 </script>：应有 Plotly 自身 1 个 + 暗色适配脚本 1 个 = 2 个。
-    # 用户数据中的 </script> 必须全部被转义，不能出现在原始计数里。
+    # 统计未转义的 </script>：应有 bundle 标签 1 个 + to_html 脚本块闭合
+    # 1 个 + 暗色适配脚本 1 个 = 3 个。用户数据中的 </script> 必须全部
+    # 被转义，不能出现在原始计数里。
     raw_close_count = html_content.count("</script>")
-    assert raw_close_count == 2, f"应有 Plotly + 暗色适配共 2 个 </script>，实际 {raw_close_count}"
+    assert raw_close_count == 3, f"应有 bundle + to_html + 暗色适配共 3 个 </script>，实际 {raw_close_count}"
+    # 回归保护（旧版 bug）：to_html 自身脚本块的闭合标签不能被转义，
+    # 否则 script 元素无法闭合、与后续暗色脚本合并成无效 JS
+    # （"Unexpected token '<'"），图表预览空白。newPlot 调用之后必须
+    # 紧跟一个未转义的 </script>，且其间不能再出现 <script 开标签。
+    newplot_idx = html_content.find("Plotly.newPlot")
+    assert newplot_idx != -1, "to_html 脚本块中应包含 Plotly.newPlot 调用"
+    tail = html_content[newplot_idx:]
+    first_close = tail.find("</script>")
+    first_open = tail.find("<script")
+    assert first_close != -1 and (first_open == -1 or first_close < first_open), (
+        "newPlot 脚本块必须正确闭合：闭合 </script> 应出现在任何新的 <script 之前"
+    )
 
 
 def test_truncate_tool_message_caps_oversized_output():
