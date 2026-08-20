@@ -1722,6 +1722,31 @@ def test_repair_legacy_plotly_theme_keys_removes_layout_prefix():
     assert _repair_legacy_plotly_theme_keys(modern) == modern
 
 
+def test_inject_legend_anchor_fix_is_idempotent_and_scoped():
+    """历史 Plotly 图表注入图例锚定修正脚本：幂等、只作用于 Plotly 文档。"""
+    from data_agent.routers.artifacts import _inject_legend_anchor_fix
+
+    # 1. Plotly 文档：注入脚本
+    plotly_html = "<html><head><title>t</title></head><body><div class='plotly-graph-div'></div></body></html>"
+    injected = _inject_legend_anchor_fix(plotly_html)
+    assert "legend-anchor-fix" in injected
+    assert "legend.xanchor" in injected
+    # 注入位置在 <head> 之后
+    head_end = injected.find("</head>")
+    assert "legend-anchor-fix" in injected[:head_end]
+
+    # 2. 幂等：二次注入不重复
+    assert _inject_legend_anchor_fix(injected) == injected
+
+    # 3. 非 Plotly 文档（ECharts）：跳过
+    echarts_html = "<html><head></head><body><div id='chart'></div></body></html>"
+    assert _inject_legend_anchor_fix(echarts_html) == echarts_html
+
+    # 4. 无 <head> 的文档：原样返回（不注入到错误位置）
+    no_head = "<html><body><div class='plotly-graph-div'></div></body></html>"
+    assert _inject_legend_anchor_fix(no_head) == no_head
+
+
 def test_dashboard_returns_404_when_no_data_loaded(tmp_path, monkeypatch):
     """GET /api/sessions/{id}/dashboard 在未加载数据集时应返回 404。"""
     _isolate_runtime(tmp_path, monkeypatch)

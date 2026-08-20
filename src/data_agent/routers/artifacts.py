@@ -251,6 +251,50 @@ def _repair_legacy_plotly_theme_keys(html_text: str) -> str:
     return html_text
 
 
+#: 图例锚定修正脚本标记：新图生成时已在 layout 里把图例锚定在绘图区
+#: 内部右上角（x=0.98, xanchor=right）；历史图仍是默认"右侧竖排"
+#: （x=1.02），在窄容器（预览模态 / 小窗口）下图例框会溢出 SVG 右缘、
+#: 类别文字被裁成残字。此脚本轮询等待图表就绪，若发现图例锚点不是
+#: right 则 relayout 修正；幂等（含标记不再注入，条件不满足不动作）。
+_LEGEND_ANCHOR_FIX_MARKER = "/*legend-anchor-fix*/"
+_LEGEND_ANCHOR_FIX_SCRIPT = (
+    "<script>/*legend-anchor-fix*/\n"
+    "(function() {\n"
+    "  var tries = 0;\n"
+    "  var timer = setInterval(function() {\n"
+    "    tries++;\n"
+    "    var gd = document.querySelector('.plotly-graph-div');\n"
+    "    if (gd && window.Plotly && gd._fullLayout && gd._fullLayout.legend) {\n"
+    "      clearInterval(timer);\n"
+    "      var lg = gd._fullLayout.legend;\n"
+    "      if (lg.xanchor !== 'right') {\n"
+    "        try { Plotly.relayout(gd, {'legend.x': 0.98, 'legend.xanchor': 'right', 'legend.y': 0.98, 'legend.yanchor': 'top'}); } catch (_) {}\n"
+    "      }\n"
+    "    } else if (tries > 40) { clearInterval(timer); }\n"
+    "  }, 200);\n"
+    "})();\n"
+    "</script>"
+)
+
+
+def _inject_legend_anchor_fix(html_text: str) -> str:
+    """为历史 Plotly 图表注入图例锚定修正脚本（窄容器下图例不再溢出被裁）。
+
+    幂等：已含标记的文档跳过；非 Plotly 文档（无 plotly-graph-div 容器）
+    跳过；注入位置与 CSP meta 一致（<head> 之后），'unsafe-inline' 放行。
+    注意：HTML 属性里是 ``class="plotly-graph-div"``（无前导点），
+    CSS 选择器写法 ``.plotly-graph-div`` 在这里匹配不到。
+    """
+    if _LEGEND_ANCHOR_FIX_MARKER in html_text or "plotly-graph-div" not in html_text:
+        return html_text
+    head_pattern = re.compile(r"<head(?:\s[^>]*)?>", flags=re.IGNORECASE)
+    if head_pattern.search(html_text):
+        return head_pattern.sub(
+            lambda match: f"{match.group(0)}{_LEGEND_ANCHOR_FIX_SCRIPT}", html_text, count=1
+        )
+    return html_text
+
+
 def _preview_etag(path: Path) -> str:
     """基于文件 mtime + size 生成 ETag，文件重写即失效。"""
     st = path.stat()
@@ -289,12 +333,14 @@ def preview_artifact(session_id: str, filename: str, request: Request) -> Respon
     # 被重写（如重新生成图表）缓存立即失效、拿到最新内容，永不滞留旧版乱码。
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304, headers={"ETag": etag})
-    # 旧版生成器（<2026-08）的两个 bug 统一修复后再内联 bundle：
+    # 旧版生成器（<2026-08）的三个问题统一修复后再内联 bundle：
     # 1) to_html 脚本块闭合标签被误转义导致预览空白；
-    # 2) 暗色脚本 relayout 键带 'layout.' 前缀被 Plotly v3 静默忽略。
+    # 2) 暗色脚本 relayout 键带 'layout.' 前缀被 Plotly v3 静默忽略；
+    # 3) 图例默认右侧竖排，窄容器下溢出 SVG 被裁（历史图注入锚定修正）。
     html_text = _repair_legacy_plotly_theme_keys(
         _repair_unterminated_plotly_script(_read_utf8_robust(path))
     )
+    html_text = _inject_legend_anchor_fix(html_text)
     html_text = _inline_plotly_bundle(record, html_text)
     # gl 扩展先内联：其标签更具体，先处理可避免主 bundle 正则的 CDN
     # 分支（https?://...echarts....js）误吞 echarts-gl 的 CDN 引用。
@@ -320,6 +366,7 @@ def download_artifact(session_id: str, filename: str) -> Response:
         html_text = _repair_legacy_plotly_theme_keys(
             _repair_unterminated_plotly_script(_read_utf8_robust(path))
         )
+        html_text = _inject_legend_anchor_fix(html_text)
         html_text = _inline_plotly_bundle(record, html_text)
         html_text = _inline_echarts_gl_bundle(record, html_text)
         html_text = _inline_echarts_bundle(record, html_text)

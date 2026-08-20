@@ -421,6 +421,10 @@ def build_dashboard_html(workspace: DataWorkspace) -> str:
                 "<script>(function(){"
                 f"var fig={fig_js};var l=fig.layout||{{}};"
                 "delete l.width;delete l.height;l.autosize=true;"
+                # 图例锚定在绘图区内部右上角：默认右侧竖排（x=1.02）在窄
+                # 窗口/窄卡片下图例框会溢出被裁、类别文字只剩残字。
+                "l.legend=l.legend||{};l.legend.x=0.98;l.legend.xanchor='right';"
+                "l.legend.y=0.98;l.legend.yanchor='top';"
                 f"Plotly.newPlot('{el_id}',fig.data||[],l,"
                 "{responsive:true,displaylogo:false,modeBarButtonsToRemove:['lasso2d','select2d']});"
                 f"window.__plotlyDivs.push(document.getElementById('{el_id}'));"

@@ -4,6 +4,20 @@
 
 后端采用 LangChain + LangGraph 的 Plan-and-Execute + ReAct 混合架构，前端为独立 React 应用，本地通过 HTTP/SSE 通信。可一键本地运行，也可部署到 LangSmith / Render / Docker。
 
+<p align="center">
+  <img src="docs/screenshots/overview-light.png" alt="数据分析工作台主界面（浅色主题）" width="88%" />
+  <br />
+  <em>全流程工作台：数据概览 → 分析任务 → 实时执行进度 → 结构化报告</em>
+</p>
+
+## 界面预览
+
+| 浅色主题 · 分析工作区 | 深色主题 · 分析工作区 |
+| :---: | :---: |
+| <img src="docs/screenshots/overview-light.png" alt="浅色主题主界面" width="100%" /> | <img src="docs/screenshots/overview-dark.png" alt="深色主题主界面" width="100%" /> |
+| 产物中心 · 图表与数据文件 | 图表预览 · 交互式 Plotly / ECharts |
+| <img src="docs/screenshots/artifacts-light.png" alt="产物中心" width="100%" /> | <img src="docs/screenshots/preview-light.png" alt="图表预览模态" width="100%" /> |
+
 ## 功能特性
 
 - **计划-执行式分析流程**：每次分析先生成 2–6 个结构化步骤，每个步骤由 ReAct 执行器调用受控工具完成；重规划器根据真实工具结果删除无用步骤、补充后续分析，证据充分时提前结束，达到步骤上限时强制汇总，避免无限循环。

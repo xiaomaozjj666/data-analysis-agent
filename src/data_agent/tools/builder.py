@@ -1003,6 +1003,15 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             hoverlabel={"bgcolor": "#102a2a", "font_color": "white"},
             title={"x": 0.01, "xanchor": "left", "font": {"size": 22, "color": "#102a2a"}},
             legend={
+                # 图例锚定在绘图区内部右上角（overlay）：默认的"右侧竖排"
+                # （x=1.02）在窄容器（预览模态/小窗口）下图例框会溢出 SVG
+                # 右缘被 overflow:hidden 裁掉，类别文字只剩首字。锚定在
+                # 绘图区内（x=0.98, xanchor=right）任何宽度都不溢出，
+                # 半透明底 + 边框保证可读且不遮挡数据（图例仍可拖动）。
+                "x": 0.98,
+                "xanchor": "right",
+                "y": 0.98,
+                "yanchor": "top",
                 "bgcolor": "rgba(255,255,255,0.82)",
                 "bordercolor": "#D9E1DE",
                 "borderwidth": 1,
