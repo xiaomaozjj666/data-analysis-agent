@@ -123,14 +123,20 @@ _PLOTLY_DARK_MODE_SCRIPT = """<script>
     var isDark = getIsDark();
     var plotEl = document.querySelector('.plotly-graph-div');
     if (!plotEl) return;
+    // 注意：relayout 的键必须是相对 figure 根节点的属性路径（如
+    // 'paper_bgcolor' / 'font.color'）。带 'layout.' 前缀的写法（旧版
+    // bug）在 Plotly v3 会被静默忽略，导致暗色只改了页面背景、
+    // 图表画布/文字/网格仍是浅色。
     var update = {
-      'layout.paper_bgcolor': isDark ? '#1c2433' : '#fbfaf5',
-      'layout.plot_bgcolor': isDark ? '#1c2433' : '#fbfaf5',
-      'layout.font.color': isDark ? '#e6eaf0' : '#102a2a',
-      'layout.xaxis.gridcolor': isDark ? '#2a3445' : '#E5ECE9',
-      'layout.yaxis.gridcolor': isDark ? '#2a3445' : '#E5ECE9',
-      'layout.xaxis.zerolinecolor': isDark ? '#3a4458' : '#C9D5D1',
-      'layout.yaxis.zerolinecolor': isDark ? '#3a4458' : '#C9D5D1',
+      'paper_bgcolor': isDark ? '#1c2433' : '#fbfaf5',
+      'plot_bgcolor': isDark ? '#1c2433' : '#fbfaf5',
+      'font.color': isDark ? '#e6eaf0' : '#102a2a',
+      'xaxis.gridcolor': isDark ? '#2a3445' : '#E5ECE9',
+      'yaxis.gridcolor': isDark ? '#2a3445' : '#E5ECE9',
+      'xaxis.zerolinecolor': isDark ? '#3a4458' : '#C9D5D1',
+      'yaxis.zerolinecolor': isDark ? '#3a4458' : '#C9D5D1',
+      'legend.bgcolor': isDark ? 'rgba(28, 36, 51, 0.85)' : 'rgba(255, 255, 255, 0.82)',
+      'legend.bordercolor': isDark ? '#2a3445' : '#D9E1DE',
     };
     Plotly.relayout(plotEl, update);
     document.documentElement.style.background = isDark ? '#1c2433' : '#fbfaf5';
@@ -1071,12 +1077,20 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                     "modeBarButtonsToRemove": ["lasso2d", "select2d"],
                 },
             )
-            # XSS 防护：Plotly to_html 把 figure 数据序列化进 <script> 标签，
-            # json.dumps 默认不转义 </script>。若用户 CSV 某列含
-            # "</script><script>alert(1)</script>"，LLM 用该列作 x/color，
-            # 浏览器解析时第一个 </script> 会提前关闭 Plotly 的 script 块，
-            # 剩余 JS 在 iframe 上下文执行。统一转义 <\/script> 避免注入。
-            div = div.replace("</script>", "<\\/script>")
+            # XSS 纵深防御：Plotly 的 JSON 编码器会把数据中的 < 转义为
+            # \u003c，正常情况 div 中只有 to_html 自身脚本块的那一个
+            # </script>。但若未来版本或数据路径出现未转义的 </script>
+            # （浏览器解析时它会提前关闭 script 块、剩余 JS 在 iframe
+            # 上下文执行），这里统一转义 <\/script> 兜底。
+            # 注意：必须保留最后一个 </script> —— 它是 to_html 自身脚本
+            # 块的闭合标签。若一并转义（旧版 bug），该 script 元素无法
+            # 闭合，会与后续注入的暗色脚本合并成同一 script 块（内含
+            # 字面 "<script>"），产生 "Unexpected token '<'" 语法错误，
+            # 图表预览直接空白。数据中的 </script> 均位于闭合标签之前，
+            # 因此"转义全部但保留最后一个"同时满足防护与结构正确。
+            close_idx = div.rfind("</script>")
+            if close_idx != -1:
+                div = div[:close_idx].replace("</script>", "<\\/script>") + div[close_idx:]
             # 原子写：进程被 kill / 磁盘满时不会留下半截 HTML 让预览 iframe
             # 加载到损坏页面。tmp + os.replace 对同目录文件是原子的。
             _atomic_write_text(

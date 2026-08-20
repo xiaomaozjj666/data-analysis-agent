@@ -188,6 +188,17 @@ const DataTable = React.memo(function DataTable({ rows }: DataTableProps) {
 
   const typeLabel = (t: ColType | undefined) => (t === "number" ? "#" : t === "date" ? "📅" : "A");
 
+  // 单元格展示格式化：pandas 导出的纯日期常带 "T00:00:00" 尾巴（如
+  // "2024-01-15T00:00:00"），对用户是噪音。仅当时间部分全为 0 时折叠为日期，
+  // 真实带时刻的值（如 "2024-01-15T14:30:00"）保持原样，不丢信息。
+  const formatCell = (column: string, value: unknown) => {
+    const s = String(value ?? "");
+    if (colTypes[column] === "date") {
+      return s.replace(/^(\d{4}-\d{2}-\d{2})T00:00:00(?:\.\d+)?$/, "$1");
+    }
+    return s;
+  };
+
   if (!rows?.length) return <div className="empty-row">没有可预览的数据</div>;
 
   const hasCustomWidths = Object.keys(colWidths).length > 0;
@@ -286,7 +297,7 @@ const DataTable = React.memo(function DataTable({ rows }: DataTableProps) {
                           const isEmpty = cellValue == null || cellValue === "" || (typeof cellValue === "number" && isNaN(cellValue));
                           return (
                             <td key={column} className={isEmpty ? "cell-empty" : ""}>
-                              {isEmpty ? "—" : String(cellValue)}
+                              {isEmpty ? "—" : formatCell(column, cellValue)}
                             </td>
                           );
                         })}

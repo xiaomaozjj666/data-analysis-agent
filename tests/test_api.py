@@ -1626,6 +1626,102 @@ def test_harden_preview_document_fallback_branches():
     assert result.count("<!doctype") == 1
 
 
+def test_repair_unterminated_plotly_script_fixes_legacy_bug():
+    """旧版生成器把 to_html 脚本块的闭合 </script> 也转义成 <\\/script>，
+    导致 script 无法闭合、预览空白。修复函数应还原最后一个 <\\/script>，
+    且不触碰数据中真正的转义。"""
+    from data_agent.routers.artifacts import _repair_unterminated_plotly_script
+
+    # 1. 旧版坏文件：3 个开标签、2 个闭标签（to_html 闭合被转义）
+    broken = (
+        "<script src='plotly.min.js'></script>"
+        "<script>window.PLOTLYENV={};Plotly.newPlot('g',{},{});<\\/script>"
+        "<div class='plotly-interpretation'>解读</div>"
+        "<script>(function(){})();</script>"
+    )
+    assert broken.count("<script") == 3 and broken.count("</script>") == 2
+    repaired = _repair_unterminated_plotly_script(broken)
+    assert repaired.count("<script") == repaired.count("</script>") == 3
+    # 被还原的闭合标签位于 newPlot 之后、暗色脚本之前
+    newplot_idx = repaired.find("Plotly.newPlot")
+    assert repaired.find("</script>", newplot_idx) < repaired.find("<script>", newplot_idx)
+
+    # 2. 数据本身也含 </script>（已转义）：只还原最后一个（闭合标签），
+    #    数据中的转义必须原样保留，不重新引入 XSS。
+    broken_with_data = (
+        "<script src='plotly.min.js'></script>"
+        "<script>var x='<\\/script><script>alert(1)<\\/script>';"
+        "Plotly.newPlot('g',{},{});<\\/script>"
+        "<script>(function(){})();</script>"
+    )
+    repaired2 = _repair_unterminated_plotly_script(broken_with_data)
+    # bundle 1 个 + 还原的 to_html 闭合 1 个 + 暗色脚本 1 个
+    assert repaired2.count("</script>") == 3
+    # 数据中的两个 </script> 转义必须原样保留（未被还原）
+    assert repaired2.count("<\\/script>") == 2
+    # 还原的闭合标签在 newPlot 之后、暗色脚本之前
+    newplot_idx = repaired2.find("Plotly.newPlot")
+    tail2 = repaired2[newplot_idx:]
+    assert tail2.find("</script>") != -1 and (
+        tail2.find("<script") == -1 or tail2.find("</script>") < tail2.find("<script")
+    )
+
+    # 3. 结构正确的文件（开闭数量相等）：原样返回
+    healthy = (
+        "<script src='plotly.min.js'></script>"
+        "<script>window.PLOTLYENV={};Plotly.newPlot('g',{},{});</script>"
+        "<script>(function(){})();</script>"
+    )
+    assert _repair_unterminated_plotly_script(healthy) == healthy
+
+    # 4. 含数据转义但结构正确的文件（如 ECharts option JSON）：原样返回
+    healthy_with_escaped = (
+        "<script>echarts.init();var o='<\\/script>';</script>"
+        "<script>(function(){})();</script>"
+    )
+    assert _repair_unterminated_plotly_script(healthy_with_escaped) == healthy_with_escaped
+
+    # 5. 含转义但之后没有原始闭合标签的异常片段：原样返回，不做猜测性修改
+    odd_fragment = "<script>var x='<\\/script>';"
+    assert _repair_unterminated_plotly_script(odd_fragment) == odd_fragment
+
+
+def test_repair_legacy_plotly_theme_keys_removes_layout_prefix():
+    """旧版暗色脚本的 relayout 键带 'layout.' 前缀，Plotly v3 会静默忽略，
+    导致深色主题下图表保持浅色。修复应替换为合法的根路径键且幂等。"""
+    from data_agent.routers.artifacts import _repair_legacy_plotly_theme_keys
+
+    legacy = (
+        "<script>"
+        "var update = {"
+        "'layout.paper_bgcolor': '#1c2433',"
+        "'layout.plot_bgcolor': '#1c2433',"
+        "'layout.font.color': '#e6eaf0',"
+        "'layout.xaxis.gridcolor': '#2a3445',"
+        "'layout.yaxis.zerolinecolor': '#3a4458'"
+        "};"
+        "Plotly.relayout(plotEl, update);"
+        "</script>"
+    )
+    repaired = _repair_legacy_plotly_theme_keys(legacy)
+    assert "'layout.paper_bgcolor'" not in repaired
+    assert "'layout.plot_bgcolor'" not in repaired
+    assert "'layout.font.color'" not in repaired
+    assert "'layout.xaxis.gridcolor'" not in repaired
+    assert "'layout.yaxis.zerolinecolor'" not in repaired
+    assert "'paper_bgcolor'" in repaired
+    assert "'font.color'" in repaired
+    assert "'xaxis.gridcolor'" in repaired
+    assert "'yaxis.zerolinecolor'" in repaired
+
+    # 幂等：修复后再修一次结果不变
+    assert _repair_legacy_plotly_theme_keys(repaired) == repaired
+
+    # 新版文件（无 'layout.' 前缀键）原样返回
+    modern = "<script>var update = {'paper_bgcolor': '#1c2433'};</script>"
+    assert _repair_legacy_plotly_theme_keys(modern) == modern
+
+
 def test_dashboard_returns_404_when_no_data_loaded(tmp_path, monkeypatch):
     """GET /api/sessions/{id}/dashboard 在未加载数据集时应返回 404。"""
     _isolate_runtime(tmp_path, monkeypatch)
