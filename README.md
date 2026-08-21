@@ -1,5 +1,13 @@
 # Data Analysis Agent
 
+<p align="center">
+  <a href="https://github.com/xiaomaozjj666/data-analysis-agent/actions/workflows/ci.yml"><img src="https://github.com/xiaomaozjj666/data-analysis-agent/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <img src="https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-3776AB" alt="Python 3.11–3.13" />
+  <img src="https://img.shields.io/badge/react-19-61DAFB" alt="React 19" />
+  <img src="https://img.shields.io/badge/coverage-100%25-brightgreen" alt="Test coverage 100%" />
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License" />
+</p>
+
 一个基于 LLM 的全流程数据分析工作台：上传数据集，即可自动完成数据检查、清洗、统计分析、可视化与报告生成。适合需要快速从表格数据中获得可靠洞察的分析师、运营与数据工作者。
 
 后端采用 LangChain + LangGraph 的 Plan-and-Execute + ReAct 混合架构，前端为独立 React 应用，本地通过 HTTP/SSE 通信。可一键本地运行，也可部署到 LangSmith / Render / Docker。
@@ -9,6 +17,27 @@
   <br />
   <em>全流程工作台：数据概览 → 分析任务 → 实时执行进度 → 结构化报告</em>
 </p>
+
+## 系统架构
+
+```mermaid
+flowchart LR
+    U[上传数据集] --> W[工作区 DataWorkspace<br/>数据档案 / 清洗 / 产物]
+    W --> P[Plan-and-Execute 规划器<br/>生成 2–6 步结构化计划]
+    P --> R[ReAct 执行器]
+    R --> T[受控工具集]
+    T --> T1[数据检查 / 格式修复]
+    T --> T2[安全清洗 / 筛选视图]
+    T --> T3[统计分析 · 假设检验]
+    T --> T4[Plotly / ECharts 图表]
+    T --> T5[导出 / Python 沙箱]
+    R -->|重规划器<br/>裁剪与补充步骤| P
+    R --> F[汇总 · 生成报告]
+    F --> G[结构化分析报告]
+    F --> C[交互式图表产物]
+    G --> Q[多轮追问对话]
+    C --> Q
+```
 
 ## 界面预览
 
