@@ -8,7 +8,8 @@ from __future__ import annotations
 import math
 
 # 业务列名 → 中文可读标签映射。双引擎（Plotly / ECharts）共享同一份映射，
-# 避免"同一列在两个引擎下显示不同标签"的语义分裂。
+# 避免"同一列在两个引擎下显示不同标签"的语义分裂。仅收录语义无歧义的
+# 常见业务列名；不确定含义的列名保持原文（数据工具的轴标签应可溯源）。
 _COLUMN_LABELS: dict[str, str] = {
     "units": "销量",
     "revenue": "收入",
@@ -25,6 +26,31 @@ _COLUMN_LABELS: dict[str, str] = {
     "date": "日期",
     "count": "记录数",
     "is_returned": "是否退货",
+    "quantity": "数量",
+    "qty": "数量",
+    "customer_segment": "客户细分",
+    "price": "价格",
+    "cost": "成本",
+    "amount": "金额",
+    "total": "总计",
+    "name": "名称",
+    "order_id": "订单编号",
+    "customer_id": "客户编号",
+    "product_id": "产品编号",
+    "status": "状态",
+    "type": "类型",
+    "city": "城市",
+    "province": "省份",
+    "country": "国家",
+    "month": "月份",
+    "year": "年份",
+    "week": "周",
+    "time": "时间",
+    "datetime": "日期时间",
+    "age": "年龄",
+    "gender": "性别",
+    "email": "邮箱",
+    "phone": "电话",
 }
 
 

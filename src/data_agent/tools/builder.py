@@ -998,19 +998,21 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                 "t": 108
                 if scale_details["scale_mode"] == "robust" or coverage.get("missing_combinations")
                 else 76,
-                "b": 64,
+                # 底部为横向图例预留空间（图例高约 30px + 刻度空间）
+                "b": 120,
             },
             hoverlabel={"bgcolor": "#102a2a", "font_color": "white"},
             title={"x": 0.01, "xanchor": "left", "font": {"size": 22, "color": "#102a2a"}},
             legend={
-                # 图例锚定在绘图区内部右上角（overlay）：默认的"右侧竖排"
-                # （x=1.02）在窄容器（预览模态/小窗口）下图例框会溢出 SVG
-                # 右缘被 overflow:hidden 裁掉，类别文字只剩首字。锚定在
-                # 绘图区内（x=0.98, xanchor=right）任何宽度都不溢出，
-                # 半透明底 + 边框保证可读且不遮挡数据（图例仍可拖动）。
-                "x": 0.98,
-                "xanchor": "right",
-                "y": 0.98,
+                # 图例放绘图区下方居中横向排布：竖排图例（含绘图区内
+                # overlay）会挤压绘图区或在窄容器下溢出 SVG 被裁、或
+                # 遮挡数据点。横向图例不占绘图区宽度、不遮挡数据，
+                # 任何容器宽度都不溢出（放不下时 plotly 自动换行）。
+                # margin.b 需容纳图例高度（约 30px）+ 原底部刻度空间。
+                "orientation": "h",
+                "x": 0.5,
+                "xanchor": "center",
+                "y": -0.15,
                 "yanchor": "top",
                 "bgcolor": "rgba(255,255,255,0.82)",
                 "bordercolor": "#D9E1DE",

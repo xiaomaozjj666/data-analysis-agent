@@ -251,11 +251,11 @@ def _repair_legacy_plotly_theme_keys(html_text: str) -> str:
     return html_text
 
 
-#: 图例锚定修正脚本标记：新图生成时已在 layout 里把图例锚定在绘图区
-#: 内部右上角（x=0.98, xanchor=right）；历史图仍是默认"右侧竖排"
-#: （x=1.02），在窄容器（预览模态 / 小窗口）下图例框会溢出 SVG 右缘、
-#: 类别文字被裁成残字。此脚本轮询等待图表就绪，若发现图例锚点不是
-#: right 则 relayout 修正；幂等（含标记不再注入，条件不满足不动作）。
+#: 图例修正脚本标记：新图生成时图例已是"绘图区下方居中横向排布"
+#: （orientation=h，不遮挡数据、窄容器不溢出）；历史图仍是默认右侧竖排
+#: （x=1.02）或绘图区内 overlay（会遮挡数据）。此脚本轮询等待图表就绪，
+#: 若图例不是横向则 relayout 为横向底部并加大底部 margin；幂等
+#: （含标记不再注入，条件不满足不动作）。
 _LEGEND_ANCHOR_FIX_MARKER = "/*legend-anchor-fix*/"
 _LEGEND_ANCHOR_FIX_SCRIPT = (
     "<script>/*legend-anchor-fix*/\n"
@@ -267,8 +267,13 @@ _LEGEND_ANCHOR_FIX_SCRIPT = (
     "    if (gd && window.Plotly && gd._fullLayout && gd._fullLayout.legend) {\n"
     "      clearInterval(timer);\n"
     "      var lg = gd._fullLayout.legend;\n"
-    "      if (lg.xanchor !== 'right') {\n"
-    "        try { Plotly.relayout(gd, {'legend.x': 0.98, 'legend.xanchor': 'right', 'legend.y': 0.98, 'legend.yanchor': 'top'}); } catch (_) {}\n"
+    "      if (lg.orientation !== 'h') {\n"
+    "        try { Plotly.relayout(gd, {\n"
+    "          'legend.orientation': 'h',\n"
+    "          'legend.x': 0.5, 'legend.xanchor': 'center',\n"
+    "          'legend.y': -0.15, 'legend.yanchor': 'top',\n"
+    "          'margin.b': 120\n"
+    "        }); } catch (_) {}\n"
     "      }\n"
     "    } else if (tries > 40) { clearInterval(timer); }\n"
     "  }, 200);\n"
@@ -291,6 +296,87 @@ def _inject_legend_anchor_fix(html_text: str) -> str:
     if head_pattern.search(html_text):
         return head_pattern.sub(
             lambda match: f"{match.group(0)}{_LEGEND_ANCHOR_FIX_SCRIPT}", html_text, count=1
+        )
+    return html_text
+
+
+#: Plotly 模式栏（modebar）按钮提示本地化脚本：plotly v3 的 data-title/
+#: aria-label 是英文（如 "Download plot as a PNG"），locale 资源未覆盖
+#: zh-CN。此脚本把按钮提示替换为中文，MutationObserver 监听 modebar
+#: 渲染，5 秒后断开（newPlot 后立即渲染，足够）；幂等（含标记跳过）。
+_MODEBAR_I18N_MARKER = "/*modebar-i18n*/"
+_MODEBAR_I18N_SCRIPT = (
+    "<script>/*modebar-i18n*/\n"
+    "(function() {\n"
+    "  var map = {\n"
+    "    'Download plot as a PNG': '下载为 PNG 图片',\n"
+    "    'Zoom': '缩放',\n"
+    "    'Pan': '平移',\n"
+    "    'Zoom in': '放大',\n"
+    "    'Zoom out': '缩小',\n"
+    "    'Autoscale': '自动缩放',\n"
+    "    'Reset axes': '重置坐标轴',\n"
+    "    'Box Select': '框选',\n"
+    "    'Lasso Select': '套索选择',\n"
+    "    'Toggle Spike Lines': '切换辅助线',\n"
+    "    'Show closest data on hover': '悬停显示最近数据',\n"
+    "    'Compare data on hover': '悬停对比数据',\n"
+    "    'Edit chart': '编辑图表',\n"
+    "    'Toggle Hover Info': '切换悬停信息'\n"
+    "  };\n"
+    "  function localize() {\n"
+    "    var btns = document.querySelectorAll('.modebar-btn');\n"
+    "    for (var i = 0; i < btns.length; i++) {\n"
+    "      var t = btns[i].getAttribute('data-title');\n"
+    "      if (t && map[t]) {\n"
+    "        btns[i].setAttribute('data-title', map[t]);\n"
+    "        btns[i].setAttribute('aria-label', map[t]);\n"
+    "      }\n"
+    "    }\n"
+    "  }\n"
+    "  function boot() {\n"
+    "    localize();\n"
+    "    if (document.body) {\n"
+    "      var obs = new MutationObserver(localize);\n"
+    "      obs.observe(document.body, { childList: true, subtree: true });\n"
+    "      setTimeout(function() { obs.disconnect(); localize(); }, 5000);\n"
+    "    }\n"
+    "  }\n"
+    "  // 脚本注入在 <head> 中，body 可能尚未解析，等 DOM 就绪再启动\n"
+    "  if (document.readyState !== 'loading') { boot(); }\n"
+    "  else { document.addEventListener('DOMContentLoaded', boot); }\n"
+    "})();\n"
+    "</script>"
+)
+
+
+def _inject_modebar_i18n(html_text: str) -> str:
+    """为 Plotly 图表注入 modebar 按钮提示中文本地化 + 按钮间距统一。
+
+    幂等（含标记跳过）；只作用于 Plotly 文档；注入到 <head> 之后。
+    plotly 的 modebar 按钮按功能分组，组内/组间间距不一致（视觉上
+    图标疏密不均），统一按钮宽度与组间距让工具栏等距排布。
+    """
+    if _MODEBAR_I18N_MARKER in html_text or "plotly-graph-div" not in html_text:
+        return html_text
+    style = (
+        "<style>/*modebar-i18n*/\n"
+        ".modebar{display:flex;align-items:center}\n"
+        ".modebar-group{display:flex;align-items:center;margin:0 !important;"
+        "padding-left:0 !important}\n"
+        ".modebar-btn{width:26px;height:26px;padding:0 !important;"
+        "margin:0 3px !important;"
+        "display:inline-flex;align-items:center;justify-content:center}\n"
+        ".modebar-group:first-child .modebar-btn:first-child{margin-left:0 !important}\n"
+        ".modebar-btn svg{width:16px;height:16px}\n"
+        "</style>"
+    )
+    head_pattern = re.compile(r"<head(?:\s[^>]*)?>", flags=re.IGNORECASE)
+    if head_pattern.search(html_text):
+        return head_pattern.sub(
+            lambda match: f"{match.group(0)}{style}{_MODEBAR_I18N_SCRIPT}",
+            html_text,
+            count=1,
         )
     return html_text
 
@@ -337,10 +423,12 @@ def preview_artifact(session_id: str, filename: str, request: Request) -> Respon
     # 1) to_html 脚本块闭合标签被误转义导致预览空白；
     # 2) 暗色脚本 relayout 键带 'layout.' 前缀被 Plotly v3 静默忽略；
     # 3) 图例默认右侧竖排，窄容器下溢出 SVG 被裁（历史图注入锚定修正）。
+    # 另注入 modebar 按钮提示中文本地化（plotly 自带 locale 不含 zh-CN）。
     html_text = _repair_legacy_plotly_theme_keys(
         _repair_unterminated_plotly_script(_read_utf8_robust(path))
     )
     html_text = _inject_legend_anchor_fix(html_text)
+    html_text = _inject_modebar_i18n(html_text)
     html_text = _inline_plotly_bundle(record, html_text)
     # gl 扩展先内联：其标签更具体，先处理可避免主 bundle 正则的 CDN
     # 分支（https?://...echarts....js）误吞 echarts-gl 的 CDN 引用。
@@ -367,6 +455,7 @@ def download_artifact(session_id: str, filename: str) -> Response:
             _repair_unterminated_plotly_script(_read_utf8_robust(path))
         )
         html_text = _inject_legend_anchor_fix(html_text)
+        html_text = _inject_modebar_i18n(html_text)
         html_text = _inline_plotly_bundle(record, html_text)
         html_text = _inline_echarts_gl_bundle(record, html_text)
         html_text = _inline_echarts_bundle(record, html_text)

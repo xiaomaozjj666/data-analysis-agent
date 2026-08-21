@@ -1807,7 +1807,7 @@ def test_inject_legend_anchor_fix_is_idempotent_and_scoped():
     plotly_html = "<html><head><title>t</title></head><body><div class='plotly-graph-div'></div></body></html>"
     injected = _inject_legend_anchor_fix(plotly_html)
     assert "legend-anchor-fix" in injected
-    assert "legend.xanchor" in injected
+    assert "legend.orientation" in injected
     # 注入位置在 <head> 之后
     head_end = injected.find("</head>")
     assert "legend-anchor-fix" in injected[:head_end]
@@ -1822,6 +1822,24 @@ def test_inject_legend_anchor_fix_is_idempotent_and_scoped():
     # 4. 无 <head> 的文档：原样返回（不注入到错误位置）
     no_head = "<html><body><div class='plotly-graph-div'></div></body></html>"
     assert _inject_legend_anchor_fix(no_head) == no_head
+
+
+def test_inject_modebar_i18n_is_idempotent_and_scoped():
+    """modebar 按钮提示中文本地化脚本：幂等、只作用于 Plotly 文档。"""
+    from data_agent.routers.artifacts import _inject_modebar_i18n
+
+    plotly_html = "<html><head><title>t</title></head><body><div class='plotly-graph-div'></div></body></html>"
+    injected = _inject_modebar_i18n(plotly_html)
+    assert "modebar-i18n" in injected
+    assert "下载为 PNG 图片" in injected
+    # 幂等
+    assert _inject_modebar_i18n(injected) == injected
+    # 非 Plotly 文档跳过
+    echarts_html = "<html><head></head><body><div id='chart'></div></body></html>"
+    assert _inject_modebar_i18n(echarts_html) == echarts_html
+    # 无 <head> 的 Plotly 文档：原样返回
+    no_head = "<html><body><div class='plotly-graph-div'></div></body></html>"
+    assert _inject_modebar_i18n(no_head) == no_head
 
 
 def test_dashboard_returns_404_when_no_data_loaded(tmp_path, monkeypatch):

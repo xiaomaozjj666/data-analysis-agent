@@ -333,6 +333,31 @@ _DASH_PLOTLY_SCRIPT = """<script>
   new MutationObserver(function() { setTimeout(apply, 60); })
     .observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', apply);
+  // modebar 按钮提示本地化：plotly 自带 locale 不含 zh-CN，按钮
+  // data-title/aria-label 是英文，替换为中文（如"下载为 PNG 图片"）。
+  var i18n = {
+    'Download plot as a PNG': '下载为 PNG 图片',
+    'Zoom': '缩放', 'Pan': '平移',
+    'Zoom in': '放大', 'Zoom out': '缩小',
+    'Autoscale': '自动缩放', 'Reset axes': '重置坐标轴',
+    'Box Select': '框选', 'Lasso Select': '套索选择',
+    'Toggle Spike Lines': '切换辅助线',
+    'Show closest data on hover': '悬停显示最近数据',
+    'Compare data on hover': '悬停对比数据'
+  };
+  function localizeModebar() {
+    var btns = document.querySelectorAll('.modebar-btn');
+    for (var i = 0; i < btns.length; i++) {
+      var t = btns[i].getAttribute('data-title');
+      if (t && i18n[t]) {
+        btns[i].setAttribute('data-title', i18n[t]);
+        btns[i].setAttribute('aria-label', i18n[t]);
+      }
+    }
+  }
+  localizeModebar();
+  new MutationObserver(localizeModebar)
+    .observe(document.body, { childList: true, subtree: true });
   var t;
   window.addEventListener('resize', function() {
     clearTimeout(t);
@@ -421,10 +446,12 @@ def build_dashboard_html(workspace: DataWorkspace) -> str:
                 "<script>(function(){"
                 f"var fig={fig_js};var l=fig.layout||{{}};"
                 "delete l.width;delete l.height;l.autosize=true;"
-                # 图例锚定在绘图区内部右上角：默认右侧竖排（x=1.02）在窄
-                # 窗口/窄卡片下图例框会溢出被裁、类别文字只剩残字。
-                "l.legend=l.legend||{};l.legend.x=0.98;l.legend.xanchor='right';"
-                "l.legend.y=0.98;l.legend.yanchor='top';"
+                # 图例放绘图区下方居中横向排布：不遮挡数据、窄卡片不溢出
+                # （默认右侧竖排 x=1.02 会溢出被裁）；底部 margin 容纳图例。
+                "l.legend=l.legend||{};l.legend.orientation='h';"
+                "l.legend.x=0.5;l.legend.xanchor='center';"
+                "l.legend.y=-0.15;l.legend.yanchor='top';"
+                "l.margin=l.margin||{};l.margin.b=120;"
                 f"Plotly.newPlot('{el_id}',fig.data||[],l,"
                 "{responsive:true,displaylogo:false,modeBarButtonsToRemove:['lasso2d','select2d']});"
                 f"window.__plotlyDivs.push(document.getElementById('{el_id}'));"
@@ -463,6 +490,13 @@ def build_dashboard_html(workspace: DataWorkspace) -> str:
 {bundle_tags}
 <style>
   body{{font-family:{_ECHARTS_FONT_FAMILY};}}
+  /* modebar 按钮等距排布：统一按钮宽度与组间距，消除分组疏密不均；
+     !important 覆盖 plotly 运行时注入的同级样式（组分隔是 padding-left） */
+  .modebar{{display:flex;align-items:center}}
+  .modebar-group{{display:flex;align-items:center;margin:0 !important;padding-left:0 !important}}
+  .modebar-btn{{width:26px;height:26px;padding:0 !important;margin:0 3px !important;display:inline-flex;align-items:center;justify-content:center}}
+  .modebar-group:first-child .modebar-btn:first-child{{margin-left:0 !important}}
+  .modebar-btn svg{{width:16px;height:16px}}
 {_DASH_CSS}
 </style>
 </head>
