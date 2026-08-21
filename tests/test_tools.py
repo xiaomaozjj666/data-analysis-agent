@@ -1690,3 +1690,45 @@ def test_collect_trace_values_non_numeric_values():
     fig.data[0].y = ["bad", 4]
     values = _collect_trace_values(fig, "y")
     assert values == [4.0]
+
+
+class TestChartPalette:
+    """图表分类色板：Tableau 10 官方色板，双引擎共享同一实例。"""
+
+    def test_palette_is_tableau10_without_duplicates(self):
+        from data_agent.tools.builder import _CHART_COLORS
+
+        assert len(_CHART_COLORS) == 10
+        assert len(set(_CHART_COLORS)) == 10, "色板不得包含重复色"
+        # Tableau 10 前两色（蓝/橙）锚定，防止误改
+        assert _CHART_COLORS[0] == "#4E79A7"
+        assert _CHART_COLORS[1] == "#F28E2B"
+        # 全部为合法的 6 位十六进制
+        for color in _CHART_COLORS:
+            assert len(color) == 7 and color.startswith("#")
+
+    def test_palette_shared_with_echarts_engine(self):
+        from data_agent.echarts_engine import _ECHARTS_PALETTE
+        from data_agent.tools.builder import _CHART_COLORS
+
+        # 双引擎必须使用同一份色板，否则同数据两引擎配色分裂
+        assert _ECHARTS_PALETTE is _CHART_COLORS
+
+    def test_generated_chart_html_embeds_new_palette(self, tmp_path):
+        """create_visualization 生成的 HTML 应携带 Tableau 10 colorway。"""
+        from data_agent.tools import build_tools
+        from data_agent.workspace import DataWorkspace
+
+        runs_dir = tmp_path / "runs"
+        runs_dir.mkdir()
+        workspace = DataWorkspace(runs_dir, session_id="api_palette")
+        workspace.dataframe = pd.DataFrame({
+            "category": ["A", "B", "C"],
+            "sales": [100, 200, 300],
+        })
+        tools = build_tools(workspace)
+        vis = next(t for t in tools if t.name == "create_visualization")
+        vis.invoke({"chart_type": "bar", "x": "category", "y": "sales", "aggregation": "sum"})
+        html = (workspace.artifacts_dir / "柱状图_1.html").read_text(encoding="utf-8")
+        assert "#4E79A7" in html
+        assert '"colorway"' in html
