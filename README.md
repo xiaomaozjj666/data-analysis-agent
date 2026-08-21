@@ -4,6 +4,9 @@
   <a href="https://github.com/xiaomaozjj666/data-analysis-agent/actions/workflows/ci.yml"><img src="https://github.com/xiaomaozjj666/data-analysis-agent/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-3776AB" alt="Python 3.11–3.13" />
   <img src="https://img.shields.io/badge/react-19-61DAFB" alt="React 19" />
+  <img src="https://img.shields.io/badge/FastAPI-API-009688" alt="FastAPI" />
+  <img src="https://img.shields.io/badge/LangGraph-agent-4D6BFE" alt="LangGraph" />
+  <img src="https://img.shields.io/badge/Docker-ready-2496ED" alt="Docker" />
   <img src="https://img.shields.io/badge/coverage-100%25-brightgreen" alt="Test coverage 100%" />
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License" />
 </p>
@@ -89,9 +92,9 @@ flowchart LR
 ```powershell
 # 后端
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\venv\Scripts\python.exe -m pip install -e ".[dev]"
 Copy-Item .env.example .env   # 编辑填入 DEEPSEEK_API_KEY
-.\.venv\Scripts\python.exe -m uvicorn data_agent.api:app --host 127.0.0.1 --port 8000
+.\venv\Scripts\python.exe -m uvicorn data_agent.api:app --host 127.0.0.1 --port 8000
 
 # 前端（另开终端）
 cd frontend
@@ -167,8 +170,8 @@ tests/               pytest 测试
 ## 质量检查
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest --cov  # 后端测试（不调用真实 LLM，不产生费用），覆盖率约 100%（源码）
-.\.venv\Scripts\python.exe -m ruff check .  # 后端代码检查
+.\venv\Scripts\python.exe -m pytest --cov  # 后端测试（不调用真实 LLM，不产生费用），覆盖率约 100%（源码）
+.\venv\Scripts\python.exe -m ruff check .  # 后端代码检查
 cd frontend && npm run typecheck            # 前端 TypeScript 类型检查
 cd frontend && npm test                     # 前端单元/组件测试
 cd frontend && npm run build                # 前端生产构建
