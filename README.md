@@ -41,11 +41,11 @@ flowchart LR
 
 ## 界面预览
 
-| 浅色主题 · 分析工作区 | 深色主题 · 分析工作区 |
+| 深色主题 · 分析工作区 | 产物中心 · 图表与数据文件 |
 | :---: | :---: |
-| <img src="docs/screenshots/overview-light.png" alt="浅色主题主界面" width="100%" /> | <img src="docs/screenshots/overview-dark.png" alt="深色主题主界面" width="100%" /> |
-| 产物中心 · 图表与数据文件 | 图表预览 · 交互式 Plotly / ECharts |
-| <img src="docs/screenshots/artifacts-light.png" alt="产物中心" width="100%" /> | <img src="docs/screenshots/preview-light.png" alt="图表预览模态" width="100%" /> |
+| <img src="docs/screenshots/overview-dark.png" alt="深色主题主界面" width="100%" /> | <img src="docs/screenshots/artifacts-light.png" alt="产物中心" width="100%" /> |
+| 图表预览 · 中文工具栏与横向图例 | 数据预览 · 类型识别与列对齐 |
+| <img src="docs/screenshots/preview-light.png" alt="图表预览模态" width="100%" /> | <img src="docs/screenshots/data-preview.png" alt="数据预览表格" width="100%" /> |
 
 ## 功能特性
 
