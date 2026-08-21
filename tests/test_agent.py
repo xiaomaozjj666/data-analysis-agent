@@ -526,12 +526,12 @@ def test_create_visualization_escapes_script_tag_in_html(tmp_path):
     assert first_close != -1 and (first_open == -1 or first_close < first_open), (
         "newPlot 脚本块必须正确闭合：闭合 </script> 应出现在任何新的 <script 之前"
     )
-    # 回归保护（图例溢出 bug）：图例必须锚定在绘图区内部右上角
-    # （xanchor=right），默认右侧竖排（x=1.02）在窄容器下会溢出 SVG
-    # 右缘、类别文字被裁成残字。to_html 把 layout 序列化进脚本 JSON
-    # （plotly 使用无空格紧凑格式 "xanchor":"right"，兼容两种写法）。
-    assert '"xanchor": "right"' in html_content or '"xanchor":"right"' in html_content, (
-        "图例必须锚定在绘图区内部（xanchor=right）"
+    # 回归保护（图例溢出/遮挡 bug）：图例必须横向排布在绘图区下方居中
+    # （orientation=h），默认右侧竖排（x=1.02）在窄容器下会溢出 SVG 右缘、
+    # 类别文字被裁成残字；绘图区内 overlay 则会遮挡数据点。to_html 把
+    # layout 序列化进脚本 JSON（plotly 紧凑格式无空格，兼容两种写法）。
+    assert '"orientation":"h"' in html_content or '"orientation": "h"' in html_content, (
+        "图例必须横向排布在绘图区下方（orientation=h）"
     )
 
 

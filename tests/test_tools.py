@@ -887,10 +887,18 @@ class TestHumanColumnLabel:
         assert _human_column_label("sales") == "销售额"
         assert _human_column_label("revenue") == "收入"
         assert _human_column_label("order_date") == "订单日期"
+        # 扩充映射：数量/客户细分/订单编号等常见业务列名
+        assert _human_column_label("quantity") == "数量"
+        assert _human_column_label("qty") == "数量"
+        assert _human_column_label("customer_segment") == "客户细分"
+        assert _human_column_label("order_id") == "订单编号"
+        assert _human_column_label("unit_price") == "单价"
 
     def test_fallback_underscore_to_space(self):
         assert _human_column_label("first_name") == "first name"
         assert _human_column_label("user_id") == "user id"
+        # 未收录但语义明确的列名保持原文（可溯源）
+        assert _human_column_label("sales_target") == "sales target"
 
     def test_empty_or_none(self):
         assert _human_column_label(None) == ""
