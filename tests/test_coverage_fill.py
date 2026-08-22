@@ -369,6 +369,7 @@ def test_registry_import_rejects_zero_concurrency():
         [sys.executable, "-c", "import data_agent.registry"],
         capture_output=True,
         text=True,
+        encoding="utf-8",  # 子进程 traceback 含 UTF-8 中文，GBK locale 下 text=True 会解码失败
         env=env,
         timeout=120,
     )
