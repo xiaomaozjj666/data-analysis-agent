@@ -109,24 +109,45 @@ app.include_router(settings_router.router)
 # catch-all 路由必须注册在所有 /api/... 路由之后，确保 API 端点优先匹配。
 # ---------------------------------------------------------------------------
 frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
-if frontend_dist.is_dir():
+
+
+def _mount_frontend_assets() -> None:
+    """挂载前端构建产物中的 /assets 静态目录（仅当真实 dist 存在时）。
+
+    与 catch-all 路由解耦：catch-all 在 import 时**无条件**注册（保证测试与
+    运行期行为一致），而 /assets 仅在磁盘上确有产物时才挂载，避免对不存在的
+    目录调用 StaticFiles（会抛异常）。
+    """
     assets_dir = frontend_dist / "assets"
     if assets_dir.is_dir():
         app.mount("/assets", StaticFiles(directory=assets_dir), name="frontend-assets")
 
-    @app.get("/{full_path:path}", include_in_schema=False)
-    def frontend_app(full_path: str) -> Response:
-        if full_path.startswith(("api/", "docs", "redoc", "openapi.json")):
-            raise HTTPException(status_code=404, detail="Not found")
-        raw_path = frontend_dist / full_path
-        if raw_path.is_symlink():
-            raise HTTPException(status_code=404, detail="Not found")
-        requested = raw_path.resolve()
-        if frontend_dist.resolve() in requested.parents and requested.is_file():
-            # 带内容的静态资源（JS/CSS/图片）文件名含 hash，可长期缓存
-            return FileResponse(requested, headers={"Cache-Control": "public, max-age=31536000, immutable"})
-        # index.html 必须禁止缓存，否则浏览器加载旧 HTML 引用的旧 JS 文件名
-        return FileResponse(
-            frontend_dist / "index.html",
-            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
-        )
+
+# catch-all 路由在所有 /api/... 路由之后注册（模块加载时即完成），保证 API 端点优先匹配。
+# 注意：dist 是否存在**不**应影响路由注册——handler 在请求时读取模块级 ``frontend_dist``
+# 全局，因此测试可通过 ``monkeypatch.setattr(api, "frontend_dist", tmp)`` 注入临时 dist，
+# 运行期 dist 缺失时也只会导致 SPA 回退 404，而不会让整条路由消失（回归保护）。
+@app.get("/{full_path:path}", include_in_schema=False)
+def frontend_app(full_path: str) -> Response:
+    if full_path.startswith(("api/", "docs", "redoc", "openapi.json")):
+        raise HTTPException(status_code=404, detail="Not found")
+    dist = frontend_dist  # 请求时取值，支持测试 monkeypatch 覆盖
+    if not dist.is_dir():
+        # 前端未构建（如仅运行后端、dist 未生成）：不提供 SPA 回退，避免对缺失文件
+        # 调用 FileResponse 触发 500。API 路由不受影响（已在 catch-all 之前匹配）。
+        raise HTTPException(status_code=404, detail="Not found")
+    raw_path = dist / full_path
+    if raw_path.is_symlink():
+        raise HTTPException(status_code=404, detail="Not found")
+    requested = raw_path.resolve()
+    if dist.resolve() in requested.parents and requested.is_file():
+        # 带内容的静态资源（JS/CSS/图片）文件名含 hash，可长期缓存
+        return FileResponse(requested, headers={"Cache-Control": "public, max-age=31536000, immutable"})
+    # index.html 必须禁止缓存，否则浏览器加载旧 HTML 引用的旧 JS 文件名
+    return FileResponse(
+        dist / "index.html",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
+
+
+_mount_frontend_assets()
