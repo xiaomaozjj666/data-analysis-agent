@@ -33,9 +33,14 @@ jobs:
       - name: Run tests
         # kaleido 无头渲染在 CI 上偶发挂起且无法被信号超时中断；
         # 显式跳过真实 PNG 渲染分支（降级路径仍由 503/500 测试覆盖）。
+        # -n 4：按 runner vCPU 并行分片，将全量 ~23min 压缩到 ~6min；
+        # pytest-timeout=120 仍按 worker 兜底拦截挂起用例。
+        # 注意：不要用 -n auto——本机多核会瞬时拉起过多 worker 触发 OpenBLAS
+        # 内存分配失败（见 test_registry_import_rejects_zero_concurrency 子进程），
+        # 固定 4 路既匹配 CI runner 规格也避免本地/CI 行为漂移。
         env:
           DATA_AGENT_SKIP_KALEIDO: "1"
-        run: python -m pytest
+        run: python -m pytest -n 4
 
   frontend:
     name: Frontend (typecheck + test + build)

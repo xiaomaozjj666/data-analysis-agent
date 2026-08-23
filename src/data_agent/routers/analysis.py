@@ -41,6 +41,10 @@ router = APIRouter()
 #: 防止超长异常文本（如带文件路径的 traceback repr）泄露到客户端或撞坏 UI。
 _CLIENT_ERROR_MAX_CHARS = 300
 
+#: 取消分析后等待 worker 线程退出的窗口（秒）。抽为模块级常量以便测试
+#: monkeypatch 缩短，避免真实 5s 等待拖累 CI 墙钟时间；运行期保持 5.0。
+WORKER_EXIT_TIMEOUT = 5.0
+
 
 def _client_error_detail(exc: Exception) -> str:
     """把异常压缩成适合回传前端的简短文案。
@@ -371,7 +375,7 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
                         record._analysis_status = "cancelling"
                 if not already_terminal:
                     api.registry.persist(session_id, record)
-                exited = await _await_worker_exit(timeout=5.0)
+                exited = await _await_worker_exit(timeout=WORKER_EXIT_TIMEOUT)
                 if not exited:
                     logger.warning(
                         "Analysis worker for session %s did not exit within 5s of cancel; "

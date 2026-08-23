@@ -41,6 +41,7 @@ dev = [
   "pytest>=8.3,<10",
   "pytest-cov>=6,<8",
   "pytest-timeout>=2,<3",
+  "pytest-xdist>=3.6,<4",
   "ruff>=0.16,<0.17",
   "httpx>=0.28,<1",
   # test_e2e_data_types.py::test_pdf_file_load 用 reportlab 生成真实 PDF 文件；

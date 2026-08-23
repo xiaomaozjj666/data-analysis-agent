@@ -2645,8 +2645,10 @@ def test_analyze_stream_cancel_error_path(tmp_path, monkeypatch):
         def stream(self, query, history=None, resume_from=None, plan_only=False):
             from data_agent.models import AnalysisCancelled
 
-            # 若 CancelledError 路径 set 了 cancel_event，worker 应感知并取消
-            time.sleep(0.8)
+            # 若 CancelledError 路径 set 了 cancel_event，worker 应感知并取消。
+            # wait_for 已被 monkeypatch 为立即取消，此处仅需让 worker 线程短暂存活
+            # 即可触发取消分支，无需长睡（原 0.8s 为纯浪费的墙钟时间）。
+            time.sleep(0.1)
             if self.cancel_event and self.cancel_event.is_set():
                 raise AnalysisCancelled("用户取消")
             yield {"node": "finalize", "data": _finalize_data(self.workspace)}
@@ -2752,7 +2754,8 @@ def test_chat_stream_emits_heartbeat_when_idle(tmp_path, monkeypatch):
             self._last_reasoning = ""
 
         def chat(self, query, history=None):
-            time.sleep(0.3)
+            # wait_for 已被 _short_wait_for 缩短，仅需短暂耗时触发心跳；0.1s 足够。
+            time.sleep(0.1)
             return "回答", []
 
     monkeypatch.setattr(api, "DataAnalysisAgent", SlowChatAgent)
@@ -2790,10 +2793,12 @@ def test_chat_stream_cancel_error_path(tmp_path, monkeypatch):
             self.cancel_event = cancel_event
 
         def chat(self, query, history=None):
-            # 若 CancelledError 分支 set 了 cancel_event，worker 应感知并抛取消
+            # 若 CancelledError 分支 set 了 cancel_event，worker 应感知并抛取消。
+            # wait_for 已被 monkeypatch 为立即取消，此处仅需让 worker 线程短暂存活，
+            # 0.1s 足够触发取消分支（原 0.8s 为纯浪费的墙钟时间）。
             import time
 
-            time.sleep(0.8)
+            time.sleep(0.1)
             if self.cancel_event and self.cancel_event.is_set():
                 from data_agent.models import AnalysisCancelled
 
@@ -3165,8 +3170,10 @@ def test_analyze_stream_cancel_warns_when_worker_still_alive(tmp_path, monkeypat
             self.cancel_event = cancel_event
 
         def stream(self, query, history=None, resume_from=None, plan_only=False):
-            # 长于 _await_worker_exit 的 5s 等待窗口，worker 无法及时退出
-            time.sleep(8)
+            # 模拟 worker 在取消后未能及时退出：休眠须长于 _await_worker_exit 的
+            # 等待窗口（测试已将其 monkeypatch 为 0.2s），才能触发"5s 未退出"的
+            # warning 分支。这里取 0.5s 留足余量。
+            time.sleep(0.5)
             if self.cancel_event and self.cancel_event.is_set():
                 from data_agent.models import AnalysisCancelled
 
@@ -3174,8 +3181,12 @@ def test_analyze_stream_cancel_warns_when_worker_still_alive(tmp_path, monkeypat
             yield {"node": "finalize", "data": _finalize_data(self.workspace)}
 
     monkeypatch.setattr(api, "DataAnalysisAgent", VerySlowAgent)
-    # 缩短等待窗口以加速测试：直接改模块常量不现实（5.0 硬编码），
-    # 用 wait_for 抛 CancelledError 触发取消路径，等待窗口为真实的 5s。
+    # 缩短等待窗口以加速测试：把模块级 WORKER_EXIT_TIMEOUT 从默认 5.0 改为 0.2s，
+    # 配合上面 0.5s 的 worker 休眠，仍能在取消后触发"未在窗口内退出"的 warning 分支。
+    from data_agent.routers import analysis as analysis_router
+
+    monkeypatch.setattr(analysis_router, "WORKER_EXIT_TIMEOUT", 0.2)
+
     def cancel_first(awaitable, timeout=None):
         awaitable.close()
         raise asyncio.CancelledError()
