@@ -78,6 +78,18 @@ function simplifyForThumb(option: Record<string, unknown>): Record<string, unkno
   return output;
 }
 
+// 检测 option 是否包含 echarts-gl 3D 系列（scatter3D/bar3D/surface/
+// lines3D/scatterGL 等）。核心 echarts 库对这类系列静默失败，渲染
+// 出空白 SVG，检测到则跳过迷你图、回退占位（点击打开完整交互预览）。
+function hasGlSeries(option: Record<string, unknown>): boolean {
+  const series = option.series;
+  if (!Array.isArray(series)) return false;
+  return series.some((item) => {
+    const type = typeof item === "object" && item !== null ? (item as { type?: unknown }).type : undefined;
+    return typeof type === "string" && (/3D$/.test(type) || /GL$/.test(type));
+  });
+}
+
 // ECharts 产物卡片的内联迷你图：产物页无需点击即可预览图表内容。
 // 渲染策略：fetch 后端 echarts-json → 剥离函数字段 + 精简布局 →
 // 懒加载 echarts → SVG 渲染到浅色画布（与 Plotly PNG 缩略图的米白底
@@ -99,6 +111,13 @@ const EChartThumb = React.memo(function EChartThumb({ previewUrl, alt }: EChartT
         const raw = (await response.json()) as unknown;
         const cleaned = stripFunctions(raw) as Record<string, unknown> | undefined;
         if (disposed || !cleaned) return;
+        // 3D 系列（scatter3D/bar3D/surface 等）需要 echarts-gl 扩展，
+        // 核心库无法渲染（setOption 静默失败产出空白 SVG）。迷你图
+        // 回退占位（点击仍可打开含 echarts-gl 的交互预览）。
+        if (hasGlSeries(cleaned)) {
+          setFailed(true);
+          return;
+        }
         const option = simplifyForThumb(cleaned);
         const echarts = await import("echarts");
         if (disposed || !containerRef.current) return;
