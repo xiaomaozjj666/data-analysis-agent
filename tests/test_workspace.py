@@ -538,6 +538,19 @@ def test_restore_artifacts_skips_bundle_files(tmp_path):
     assert "chart_1.html" in names
 
 
+def test_restore_artifacts_skips_thumbnail_cache(tmp_path):
+    """*_thumb.png 是缩略图端点中间缓存，不应作为产物注册。"""
+    workspace = DataWorkspace(tmp_path / "runs", session_id="restore_skip_thumb")
+    (workspace.artifacts_dir / "散点图_1_thumb.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    (workspace.artifacts_dir / "chart_1.html").write_text("<html></html>", encoding="utf-8")
+
+    workspace.restore_artifacts()
+
+    names = [a["name"] for a in workspace.artifacts]
+    assert "散点图_1_thumb.png" not in names
+    assert "chart_1.html" in names
+
+
 def test_restore_artifacts_uses_metadata_when_provided(tmp_path):
     """传入 metadata 时应使用其中的 kind/description 而非按扩展名推断。"""
     workspace = DataWorkspace(tmp_path / "runs", session_id="restore_meta")
