@@ -1898,6 +1898,71 @@ def test_echarts_json_endpoint_rejects_path_traversal(tmp_path, monkeypatch):
     assert response.status_code in (404, 422, 400)
 
 
+def test_plotly_json_endpoint_returns_figure(tmp_path, monkeypatch):
+    """GET /artifacts/{name}/plotly-json 应返回 Plotly figure JSON。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = _create_chart_session(client)
+    # 手工放置 plotly.json 模拟 Plotly 产物
+    record = api.registry.get(session_id)
+    stem = "柱状图_1"
+    (record.workspace.artifacts_dir / f"{stem}.plotly.json").write_text(
+        json.dumps(
+            {"data": [{"type": "scatter", "x": [1, 2, 3], "y": [2, 3, 4]}],
+             "layout": {"title": {"text": "sales_by_region"}}}
+        ),
+        encoding="utf-8",
+    )
+    response = client.get(f"/api/sessions/{session_id}/artifacts/{stem}.html/plotly-json")
+    assert response.status_code == 200
+    assert response.json()["data"][0]["type"] == "scatter"
+    assert response.headers["content-type"].startswith("application/json")
+
+
+def test_plotly_json_endpoint_500_on_corrupt_file(tmp_path, monkeypatch):
+    """损坏的 .plotly.json（非法 JSON）应返回 500。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = _create_chart_session(client)
+    record = api.registry.get(session_id)
+    (record.workspace.artifacts_dir / "柱状图_1.plotly.json").write_text(
+        "{not valid json", encoding="utf-8"
+    )
+    response = client.get(
+        f"/api/sessions/{session_id}/artifacts/柱状图_1.html/plotly-json"
+    )
+    assert response.status_code == 500
+
+
+def test_plotly_json_endpoint_404_without_data_file(tmp_path, monkeypatch):
+    """无 .plotly.json 的图表（如 ECharts 图）应返回 404，前端据此回退 PNG。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = _upload_csv_session(client)
+    record = api.registry.get(uploaded["id"])
+    tools = {item.name: item for item in build_tools(record.workspace)}
+    tools["create_visualization"].invoke(
+        {"chart_type": "bar", "x": "region", "y": "sales",
+         "title": "r", "chart_engine": "echarts"}
+    )
+    chart = _first_chart_artifact(client, uploaded["id"])
+    response = client.get(
+        f"/api/sessions/{uploaded['id']}/artifacts/{chart['name']}/plotly-json"
+    )
+    assert response.status_code == 404
+
+
+def test_plotly_json_endpoint_rejects_path_traversal(tmp_path, monkeypatch):
+    """文件名中的路径穿越应被拒绝（基名校验）。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = _create_chart_session(client)
+    response = client.get(
+        f"/api/sessions/{session_id}/artifacts/..%2F..%2Fetc%2Fpasswd/plotly-json"
+    )
+    assert response.status_code in (404, 422, 400)
+
+
 def test_dashboard_returns_404_when_no_data_loaded(tmp_path, monkeypatch):
     """GET /api/sessions/{id}/dashboard 在未加载数据集时应返回 404。"""
     _isolate_runtime(tmp_path, monkeypatch)

@@ -4,6 +4,7 @@ import { pickChartIcon } from "../constants";
 import { formatBytes } from "../utils/format";
 import AuthImage from "./AuthImage";
 import EChartThumb from "./EChartThumb";
+import PlotlyThumb from "./PlotlyThumb";
 import SpotlightCard from "./rb/SpotlightCard";
 import type { Artifact } from "../types";
 
@@ -151,7 +152,31 @@ const ArtifactCenter = React.memo(function ArtifactCenter({
                   {item.engine && (
                     <span className="engine-badge">{item.engine === "plotly" ? "Plotly" : "ECharts"}</span>
                   )}
-                  {item.thumbnail_url ? (
+                  {item.engine === "plotly" && item.preview_url ? (
+                    /* Plotly 缩略图是服务端静态 PNG，悬停无法查看数据；
+                       改为 plotly.js 原地渲染的交互迷你图（与 ECharts
+                       卡片一致），失败时回退原有 PNG 缩略图 */
+                    <div
+                      className="chart-thumbnail"
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`预览 ${item.description || item.name}`}
+                      onClick={() => onPreview(item)}
+                      onKeyDown={(e) => {
+                        // 键盘可达：Enter / Space 与鼠标点击等价，让不用鼠标的用户也能打开预览
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          onPreview(item);
+                        }
+                      }}
+                    >
+                      <PlotlyThumb
+                        previewUrl={item.preview_url}
+                        fallbackSrc={item.thumbnail_url}
+                        alt={item.description || item.name}
+                      />
+                    </div>
+                  ) : item.thumbnail_url ? (
                     <div
                       className="chart-thumbnail"
                       role="button"
