@@ -11,7 +11,7 @@
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License" />
 </p>
 
-一个基于 LLM 的全流程数据分析工作台：上传数据集，即可自动完成数据检查、清洗、统计分析、可视化与报告生成。适合需要快速从表格数据中获得可靠洞察的分析师、运营与数据工作者。
+一个基于 LLM 的数据分析工作台：上传数据集，自动完成数据检查、清洗、统计分析、可视化与报告生成。
 
 后端采用 LangChain + LangGraph 的 Plan-and-Execute + ReAct 混合架构，前端为独立 React 应用，本地通过 HTTP/SSE 通信。可一键本地运行，也可部署到 LangSmith / Render / Docker。
 
