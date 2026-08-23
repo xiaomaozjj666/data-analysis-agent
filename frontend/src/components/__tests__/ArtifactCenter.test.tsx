@@ -50,6 +50,19 @@ describe("ArtifactCenter", () => {
     expect(screen.getByText(/分析完成后/)).toBeTruthy();
   });
 
+  it("renders interactive Plotly mini preview when plotly-json is available", () => {
+    const artifacts = makeArtifacts();
+    artifacts[1] = {
+      ...artifacts[1],
+      preview_url: "/api/sessions/x/artifacts/散点图_1.html/preview",
+    };
+    const { container } = render(
+      <ArtifactCenter artifacts={artifacts} onDownload={vi.fn()} onPreview={vi.fn()} />,
+    );
+    // Plotly 卡片从静态 PNG 升级为 plotly.js 交互迷你图（悬停可读数）
+    expect(container.querySelector(".plotly-thumb")).toBeTruthy();
+  });
+
   it("filters charts by engine with aria-pressed state", () => {
     render(<ArtifactCenter artifacts={makeArtifacts()} onDownload={vi.fn()} onPreview={vi.fn()} />);
 

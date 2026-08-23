@@ -496,6 +496,34 @@ def get_echarts_option(session_id: str, filename: str) -> Response:
     )
 
 
+@router.get("/api/sessions/{session_id}/artifacts/{filename}/plotly-json")
+def get_plotly_option(session_id: str, filename: str) -> Response:
+    """返回 Plotly 图表的 figure JSON，供前端产物卡片渲染交互迷你图。
+
+    镜像 echarts-json 端点：Plotly 卡片的缩略图是服务端渲染的静态 PNG
+    （kaleido），悬停无任何反应；前端拿到 figure JSON 后用 plotly.js
+    原地渲染迷你图，即可像 ECharts 卡片一样悬停查看数据。安全：文件名
+    经 _artifact_file 基名校验；Plotly 的 JSON 是纯数据（无函数字段），
+    前端不会执行任何代码。
+    """
+    record, _path = _artifact_file(session_id, filename)
+    stem = Path(filename).name
+    if stem.endswith(".html"):
+        stem = stem[: -len(".html")]
+    json_path = record.workspace.artifacts_dir / f"{stem}.plotly.json"
+    if not json_path.is_file():
+        raise HTTPException(status_code=404, detail="该图表没有 Plotly 数据文件。")
+    try:
+        figure = json.loads(_read_utf8_robust(json_path))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=500, detail=f"Plotly 数据读取失败：{exc}") from exc
+    return Response(
+        content=json.dumps(figure, ensure_ascii=False),
+        media_type="application/json",
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
 @router.get("/api/sessions/{session_id}/artifacts/{filename}/thumbnail")
 def get_chart_thumbnail(session_id: str, filename: str) -> FileResponse:
     """生成图表缩略图 PNG（best-effort，依赖 Kaleido）。

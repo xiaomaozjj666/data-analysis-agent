@@ -35,35 +35,138 @@ function stripFunctions(node: unknown): unknown {
   return node;
 }
 
+// #RRGGBB → HSL，暗色画布上把深色系提亮：热力图单元格颜色是
+// visualMap 阶色板（浅→深蓝/红），深色端在 #1c2433 画布上几乎与
+// 背景融为一体；只提亮明度 < 0.6 的颜色，浅色端保持不变，色相不受影响。
+function boostForDark(hex: string): string {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  const [h, s, l] = rgbToHsl(r, g, b);
+  // 浅色端保持原样（含大小写），只提亮深色端
+  if (l >= 0.6) return hex;
+  const boosted = Math.min(0.82, l * 1.9);
+  return hslToHex(h, s, boosted);
+}
+
+function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
+  const rr = r / 255;
+  const gg = g / 255;
+  const bb = b / 255;
+  const max = Math.max(rr, gg, bb);
+  const min = Math.min(rr, gg, bb);
+  const l = (max + min) / 2;
+  if (max === min) return [0, 0, l];
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h = 0;
+  if (max === rr) h = ((gg - bb) / d + (gg < bb ? 6 : 0)) / 6;
+  else if (max === gg) h = ((bb - rr) / d + 2) / 6;
+  else h = ((rr - gg) / d + 4) / 6;
+  return [h, s, l];
+}
+
+function hslToHex(h: number, s: number, l: number): string {
+  if (s === 0) {
+    const v = Math.round(l * 255);
+    return `#${[v, v, v].map((x) => x.toString(16).padStart(2, "0")).join("")}`;
+  }
+  const hue2rgb = (p: number, q: number, t: number): number => {
+    let tt = t;
+    if (tt < 0) tt += 1;
+    if (tt > 1) tt -= 1;
+    if (tt < 1 / 6) return p + (q - p) * 6 * tt;
+    if (tt < 1 / 2) return q;
+    if (tt < 2 / 3) return p + (q - p) * (2 / 3 - tt) * 6;
+    return p;
+  };
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  const toHex = (x: number) => Math.round(x * 255).toString(16).padStart(2, "0");
+  return `#${toHex(hue2rgb(p, q, h + 1 / 3))}${toHex(hue2rgb(p, q, h))}${toHex(hue2rgb(p, q, h - 1 / 3))}`;
+}
+
+const DEFAULT_HEATMAP_PALETTE = ["#EDF3F9", "#8FB3D1", "#2C5F8D"];
+
+function hasSeriesType(option: Record<string, unknown>, type: string): boolean {
+  const series = option.series;
+  if (!Array.isArray(series)) return false;
+  return series.some((item) => {
+    const t = typeof item === "object" && item !== null ? (item as { type?: unknown }).type : undefined;
+    return t === type;
+  });
+}
+
+// 大数值在迷你卡里的紧凑格式（与全图 "x万" 口径一致）
+function formatCompact(value: number): string {
+  if (!Number.isFinite(value)) return "";
+  if (Math.abs(value) >= 10000) return `${(value / 10000).toFixed(1)}万`;
+  return String(Number(value.toFixed(2)));
+}
+
 // 大图 option 直接塞进 140px 迷你会让图例/标题/坐标轴挤压重叠、文字
 // 错乱。渲染迷你图前精简：删标题/图例/交互组件/轴标题，放大绘图区，
 // 坐标文字用默认深色（画布是浅色底，无论原图深浅主题都可读）。
-// 数据系列（柱条/箱线/散点）与关键标注（markPoint 等）全部保留。
-function simplifyForThumb(option: Record<string, unknown>): Record<string, unknown> {
+// 数据系列（柱条/箱线/散点）与关键标注（markPoint 等）全部保留；
+// 但保留最小 tooltip（剥离 formatter 后走默认样式），卡片悬停即可
+// 读数——与 Plotly 交互迷你图体验一致。
+function simplifyForThumb(option: Record<string, unknown>, isDark: boolean): Record<string, unknown> {
   const output: Record<string, unknown> = { ...option };
   // 迷你图不需要的顶层组件
   delete output.title;
   delete output.legend;
   delete output.toolbox;
-  delete output.tooltip;
   delete output.dataZoom;
-  delete output.visualMap;
   delete output.animation;
-  // 绘图区占满容器：留少量边距 + 容纳轴标签（顶部多留一点，
-  // 避免柱状图/折线图顶部网格线贴边被卡片裁切）
-  output.grid = { left: 4, right: 10, top: 14, bottom: 6, containLabel: true };
 
   // 文字/轴线随主题：浅色画布（#fbfaf5）用深灰文字，深色画布
   // （#1c2433）用浅灰文字——迷你图首次渲染时读取当前主题。
-  const isDark = document.documentElement.dataset.theme === "dark";
   const textColor = isDark ? "#9aa0a6" : "#5f6368";
   const axisColor = isDark ? "#4a4b50" : "#c7ccd4";
+
+  // 热力图：color 映射完全来自 visualMap，直接删除会让所有格子
+  // 退化成同一个色块（global 色板第一色）。保留精简 visualMap
+  // （隐藏滑条、只留 inRange），暗色画布下把深色端提亮保证对比度。
+  // 热力图 tooltip 剥离 formatter 后默认展示原始数组 [x,y,v]，
+  // 比没有更糟糕，故不保留；点进完整交互图可读。
+  if (hasSeriesType(output, "heatmap")) {
+    delete output.tooltip;
+    const sourceVm = (output.visualMap ?? {}) as Record<string, unknown>;
+    const sourceColors = (
+      ((sourceVm.inRange as Record<string, unknown> | undefined)?.color as string[] | undefined) ?? DEFAULT_HEATMAP_PALETTE
+    );
+    output.visualMap = {
+      min: sourceVm.min,
+      max: sourceVm.max,
+      show: false,
+      inRange: { color: isDark ? sourceColors.map(boostForDark) : sourceColors },
+    };
+  } else if (output.tooltip) {
+    // formatter 是 JS 函数字符串，已在上游剥离；保留 trigger 走默认样式
+    const trigger =
+      typeof output.tooltip === "object" && (output.tooltip as { trigger?: unknown }).trigger === "axis"
+        ? "axis"
+        : "item";
+    output.tooltip = {
+      trigger,
+      backgroundColor: isDark ? "#232b3a" : "#ffffff",
+      borderColor: isDark ? "#3a4258" : "#d8dce3",
+      textStyle: { color: isDark ? "#e8ebf0" : "#333a45" },
+    };
+  } else {
+    output.tooltip = { trigger: "item" };
+  }
 
   const ax = (axis: unknown): unknown => {
     if (!axis || typeof axis !== "object") return axis;
     const a: Record<string, unknown> = { ...(axis as Record<string, unknown>) };
     delete a.name;
-    const label = { fontSize: 9, color: textColor, ...((a.axisLabel as Record<string, unknown> | undefined) ?? {}) };
+    // 默认值放在展开之后：迷你图固定 9px 与主题色，同时保留
+    // 原配置里的 rotate/interval 等排版设定
+    const label = { ...((a.axisLabel as Record<string, unknown> | undefined) ?? {}), fontSize: 9, color: textColor };
     a.axisLabel = label;
     if (typeof a.axisLine !== "object") {
       a.axisLine = { lineStyle: { color: axisColor } };
@@ -74,8 +177,73 @@ function simplifyForThumb(option: Record<string, unknown>): Record<string, unkno
   else if (output.xAxis) output.xAxis = ax(output.xAxis);
   if (Array.isArray(output.yAxis)) output.yAxis = output.yAxis.map(ax);
   else if (output.yAxis) output.yAxis = ax(output.yAxis);
+
+  // 3D 轴（xAxis3D 等）：轴名（销售额/利润/数量）与轴刻度在 209×131
+  // 小卡里重叠成文字团，一并删除；刻度字号降到 8
+  for (const key of ["xAxis3D", "yAxis3D", "zAxis3D"]) {
+    const axis = output[key];
+    if (axis && typeof axis === "object") {
+      const a: Record<string, unknown> = { ...(axis as Record<string, unknown>) };
+      delete a.name;
+      a.axisLabel = {
+        ...((a.axisLabel as Record<string, unknown> | undefined) ?? {}),
+        fontSize: 8,
+        color: textColor,
+      };
+      a.nameTextStyle = { fontSize: 8 };
+      output[key] = a;
+    }
+  }
+
   // 全局文字统一主题色，画布上才可读
   if (!output.textStyle) output.textStyle = { color: textColor };
+
+  // 峰谷大头针（42px）在 131px 高卡片里过大且顶部被裁：缩小并预先把
+  // formatter 换成格式化好的静态文本（函数字符串剥离后默认会显示
+  // 裸值 148062，"效果粗糙"）。markLine 均值同理。
+  let gridTop = 14;
+  if (Array.isArray(output.series)) {
+    for (const item of output.series) {
+      if (!item || typeof item !== "object") continue;
+      const s = item as Record<string, unknown>;
+      const data = Array.isArray(s.data) ? s.data : [];
+      const nums: number[] = [];
+      for (const v of data) {
+        const n = typeof v === "number" ? v : Array.isArray(v) ? v[v.length - 1] : NaN;
+        if (Number.isFinite(n)) nums.push(n);
+      }
+      if (nums.length === 0) continue;
+      const markPoint = s.markPoint as Record<string, unknown> | undefined;
+      if (markPoint && typeof markPoint === "object") {
+        markPoint.symbolSize = 20;
+        if (Array.isArray(markPoint.data)) {
+          for (const item of markPoint.data) {
+            if (!item || typeof item !== "object") continue;
+            const it = item as Record<string, unknown>;
+            const val = it.type === "max" ? Math.max(...nums) : it.type === "min" ? Math.min(...nums) : undefined;
+            if (val !== undefined) {
+              it.label = { ...((it.label as Record<string, unknown> | undefined) ?? {}), formatter: formatCompact(val as number) };
+            }
+          }
+        }
+        gridTop = Math.max(gridTop, 24);
+      }
+      const markLine = s.markLine as Record<string, unknown> | undefined;
+      if (markLine && typeof markLine === "object" && Array.isArray(markLine.data)) {
+        const avg = nums.reduce((a, b) => a + b, 0) / nums.length;
+        for (const item of markLine.data) {
+          if (item && typeof item === "object" && (item as { type?: unknown }).type === "average") {
+            const it = item as Record<string, unknown>;
+            it.label = { ...((it.label as Record<string, unknown> | undefined) ?? {}), formatter: `均值 ${formatCompact(avg)}` };
+          }
+        }
+      }
+    }
+  }
+
+  // 绘图区占满容器：留少量边距 + 容纳轴标签（顶部多留一点，
+  // 避免柱状图/折线图顶部网格线贴边被卡片裁切）
+  output.grid = { left: 4, right: 10, top: gridTop, bottom: 6, containLabel: true };
   return output;
 }
 
@@ -90,7 +258,7 @@ function hasGlSeries(option: Record<string, unknown>): boolean {
   });
 }
 
-// 迷你图渲染前精简布局。热力图/大表图全量格子数值 label 在 209×131
+// 迷你图渲染前精简布局。热力图全量格子数值 label 在 209×131
 // 小卡里会全部挤成文字块，剥离 series.label 只保留颜色编码。
 function stripDenseLabels(option: Record<string, unknown>): void {
   const series = option.series;
@@ -111,6 +279,17 @@ function stripDenseLabels(option: Record<string, unknown>): void {
 const EChartThumb = React.memo(function EChartThumb({ previewUrl, alt }: EChartThumbProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [failed, setFailed] = useState(false);
+  // 主题随 data-theme 变化响应：迷你图颜色在渲染时按主题取色，
+  // 切换主题后重渲染（容器 CSS 背景即时变化，画布文字需同步）。
+  const [theme, setTheme] = useState(() => document.documentElement.dataset.theme === "dark");
+
+  useEffect(() => {
+    const observer = new MutationObserver(() => {
+      setTheme(document.documentElement.dataset.theme === "dark");
+    });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -128,7 +307,7 @@ const EChartThumb = React.memo(function EChartThumb({ previewUrl, alt }: EChartT
         // 3D 系列（scatter3D 等）需要 echarts-gl 扩展，懒加载后同样
         // 能在卡片内渲染迷你 3D 视图。
         const needsGl = hasGlSeries(cleaned);
-        const simplify = simplifyForThumb(cleaned);
+        const simplify = simplifyForThumb(cleaned, theme);
         stripDenseLabels(simplify);
         // 等两帧让容器的 aspect-ratio 布局稳定后再初始化，避免 ECharts
         // 按错误尺寸初绘导致坐标轴错位/顶部被裁。
@@ -155,7 +334,7 @@ const EChartThumb = React.memo(function EChartThumb({ previewUrl, alt }: EChartT
       observer?.disconnect();
       chart?.dispose();
     };
-  }, [previewUrl]);
+  }, [previewUrl, theme]);
 
   if (failed) {
     const { Icon } = pickChartIcon(alt);
@@ -170,3 +349,4 @@ const EChartThumb = React.memo(function EChartThumb({ previewUrl, alt }: EChartT
 });
 
 export default EChartThumb;
+export { simplifyForThumb, stripFunctions, boostForDark, formatCompact };
