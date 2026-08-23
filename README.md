@@ -155,7 +155,7 @@ src/data_agent/
   storage.py         本地 / S3 兼容对象存储后端
   middleware.py      CORS / GZip / 访问令牌 / 速率限制
   routers/           会话 / 分析 / 产物 / 设置路由
-frontend/            React + Vite 前端（含构建产物 frontend/dist）
+frontend/            React + Vite 前端（构建产物 frontend/dist 由 `npm run build` 生成，不入 git）
 examples/            示例数据
 tests/               pytest 测试
 ```

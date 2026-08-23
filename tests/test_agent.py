@@ -510,10 +510,10 @@ def test_create_visualization_escapes_script_tag_in_html(tmp_path):
     assert "\\u003c\\u002fscript" in html_content, "用户数据中的 </script> 必须被转义"
     # Plotly 自身的 <script> 标签是合法的，不应被转义。
     # 统计未转义的 </script>：应有 bundle 标签 1 个 + to_html 脚本块闭合
-    # 1 个 + 暗色适配脚本 1 个 = 3 个。用户数据中的 </script> 必须全部
-    # 被转义，不能出现在原始计数里。
+    # 1 个 + 暗色适配脚本 1 个 + scattergl 缩放修复脚本 1 个 = 4 个。
+    # 用户数据中的 </script> 必须全部被转义，不能出现在原始计数里。
     raw_close_count = html_content.count("</script>")
-    assert raw_close_count == 3, f"应有 bundle + to_html + 暗色适配共 3 个 </script>，实际 {raw_close_count}"
+    assert raw_close_count == 4, f"应有 bundle + to_html + 暗色适配 + gl 修复共 4 个 </script>，实际 {raw_close_count}"
     # 回归保护（旧版 bug）：to_html 自身脚本块的闭合标签不能被转义，
     # 否则 script 元素无法闭合、与后续暗色脚本合并成无效 JS
     # （"Unexpected token '<'"），图表预览空白。newPlot 调用之后必须

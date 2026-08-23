@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,6 +9,7 @@ import numpy as np
 import pandas as pd
 import plotly.io as pio
 import pytest
+from conftest import _skip_kaleido
 
 from data_agent.tools import build_tools
 from data_agent.tools._cleaning import (
@@ -1281,6 +1281,21 @@ def test_plotly_area_box_violin_charts(workspace):
         assert Path(result["html"]).exists()
 
 
+def test_plotly_html_dark_interpretation_and_scrollzoom(workspace):
+    """生成产物的 HTML 必须：暗色模式下的数据解读卡片换肤（不再白块）、
+    预览支持滚轮缩放（scrollZoom）、携带 scattergl 缩放修复脚本。"""
+    result = json.loads(
+        tool_map(workspace)["create_visualization"].invoke(
+            {"chart_type": "scatter", "x": "region", "y": "sales"}
+        )
+    )
+    assert result["status"] == "ok"
+    html_text = Path(result["html"]).read_text(encoding="utf-8")
+    assert "html[data-theme='dark'] .plotly-interpretation" in html_text
+    assert "scrollZoom" in html_text and "true" in html_text
+    assert "gl-refresh-fix" in html_text
+
+
 def test_plotly_large_scatter_switches_to_webgl(tmp_path):
     """大数据（>10K 行）Plotly 散点/折线应切换为 scattergl（WebGL），
     否则 SVG 全量渲染 30 万点以分钟计（实测浏览器 30s 无反应）。"""
@@ -1360,8 +1375,8 @@ def test_visualization_falls_back_to_full_html_without_bundle(workspace, monkeyp
 
 
 @pytest.mark.skipif(
-    bool(os.environ.get("CI")),
-    reason="Kaleido 无头渲染在 CI 上偶发挂起且无法被信号超时中断（本地已验证）",
+    _skip_kaleido(),
+    reason="Kaleido 无头渲染偶发挂起且无法被信号超时中断；由 DATA_AGENT_SKIP_KALEIDO / CI 控制",
 )
 def test_create_visualization_export_png_success(workspace):
     """export_png=True 且 kaleido 可用时应生成 PNG 并注册 image 产物。"""
