@@ -15,6 +15,7 @@ re-export 以兼容测试（如 ``test_echarts_engine.test_echarts_api_preview_i
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import threading
@@ -381,6 +382,81 @@ def _inject_modebar_i18n(html_text: str) -> str:
     return html_text
 
 
+#: 迷你图数据上限：产物卡片的缩略图只需要"看得出分布形状"，全量点云
+#: 会让 JSON 体积和渲染成本随数据行数线性暴涨（30 万行散点的
+#: .echarts.json 实测约 11.7MB、Plotly 约 3.3MB）。等距抽样到该上限，
+#: 形状保留且卡片渲染恒定 O(1)。
+_THUMB_MAX_POINTS = 2500
+
+
+def _sample_echarts_option_for_thumb(option: dict[str, Any], max_points: int = _THUMB_MAX_POINTS) -> None:
+    """就地抽样 ECharts option 的散点系列，供迷你图渲染。
+
+    只处理 ``type=="scatter"`` 系列：折线/柱状/直方图数据量由类别或
+    bin 数决定（天然很小），热力图的格子抽样会产生缺格破图，散点矩阵
+    与 3D 散点在生成阶段已采样。等距步进抽样（data[::k]），保留
+    整体分布形状与两端特征。
+    """
+    if not isinstance(option, dict):
+        return
+    series = option.get("series")
+    if not isinstance(series, list):
+        return
+    for item in series:
+        if not isinstance(item, dict) or item.get("type") != "scatter":
+            continue
+        data = item.get("data")
+        if not isinstance(data, list) or len(data) <= max_points:
+            continue
+        step = math.ceil(len(data) / max_points)
+        item["data"] = data[::step]
+
+
+#: 按点一维数组的图型（轨迹数据是"每行一个点"的长数组）；矩阵型
+#: （heatmap 的 z 是二维网格）与类别型（bar 的 x/y 是类别维度）排除。
+_PLOTLY_SAMPLE_TRACE_TYPES = {
+    "scatter", "scattergl", "scatter3d", "scatterternary", "scatterpolar",
+    "scatterpolargl", "line", "box", "violin",
+}
+
+
+def _sample_plotly_figure_for_thumb(figure: dict[str, Any], max_points: int = _THUMB_MAX_POINTS) -> None:
+    """就地抽样 Plotly figure 的按点数据数组，供迷你图渲染。
+
+    每个 trace 先取所有数组字段的最大长度 n（x/y/z/text/customdata/
+    marker.color 等），n 超过上限时统一按同一等距步长抽样——同一下标
+    规则保证 x、y、颜色、悬浮文本一致，不会错位。只处理按点图型；
+    heatmap（z 矩阵）/pie/sunburst 等非按点图型不动。
+    """
+    if not isinstance(figure, dict):
+        return
+    data = figure.get("data")
+    if not isinstance(data, list):
+        return
+    for trace in data:
+        if not isinstance(trace, dict) or trace.get("type") not in _PLOTLY_SAMPLE_TRACE_TYPES:
+            continue
+        n = 0
+        for value in trace.values():
+            if isinstance(value, list) and len(value) > n:
+                n = len(value)
+        if n <= max_points:
+            continue
+        step = math.ceil(n / max_points)
+
+        def _sample(value: Any) -> Any:
+            # 递归抽样：散点的 marker.color/marker.size 等嵌套按点数组
+            # 与 x/y 同一步长，保证颜色/大小/悬浮文本不错位。
+            if isinstance(value, list):
+                return value[::step] if len(value) == n else value
+            if isinstance(value, dict):
+                return {key: _sample(item) for key, item in value.items()}
+            return value
+
+        for key, value in list(trace.items()):
+            trace[key] = _sample(value)
+
+
 def _preview_etag(path: Path) -> str:
     """基于文件 mtime + size 生成 ETag，文件重写即失效。"""
     st = path.stat()
@@ -476,7 +552,8 @@ def get_echarts_option(session_id: str, filename: str) -> Response:
     Plotly），前端直接读取 option 并用 echarts 原地渲染迷你图，让产物
     卡片无需点击即可预览。安全：文件名经 _artifact_file 基名校验；
     option 中存档的 JS 函数以字符串形式返回，前端渲染迷你图时剥离
-    函数字段（不执行任意代码）。
+    函数字段（不执行任意代码）。大数据兜底：散点系列按等距抽样到
+    ``_THUMB_MAX_POINTS``，避免几十万行时迷你图传输/渲染卡顿。
     """
     record, _path = _artifact_file(session_id, filename)
     stem = Path(filename).name
@@ -489,6 +566,9 @@ def get_echarts_option(session_id: str, filename: str) -> Response:
         option = json.loads(json_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=500, detail=f"ECharts 数据读取失败：{exc}") from exc
+    # 大数据兜底：30 万行散点的 option 可达十几 MB，卡片迷你图无需
+    # 全量点云——按等距抽样到固定上限，传输与渲染恒定开销。
+    _sample_echarts_option_for_thumb(option)
     return Response(
         content=json.dumps(option, ensure_ascii=False),
         media_type="application/json",
@@ -504,7 +584,8 @@ def get_plotly_option(session_id: str, filename: str) -> Response:
     （kaleido），悬停无任何反应；前端拿到 figure JSON 后用 plotly.js
     原地渲染迷你图，即可像 ECharts 卡片一样悬停查看数据。安全：文件名
     经 _artifact_file 基名校验；Plotly 的 JSON 是纯数据（无函数字段），
-    前端不会执行任何代码。
+    前端不会执行任何代码。大数据兜底：按点图型（散点/箱线等）等距抽样
+    到 ``_THUMB_MAX_POINTS``。
     """
     record, _path = _artifact_file(session_id, filename)
     stem = Path(filename).name
@@ -517,6 +598,9 @@ def get_plotly_option(session_id: str, filename: str) -> Response:
         figure = json.loads(_read_utf8_robust(json_path))
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=500, detail=f"Plotly 数据读取失败：{exc}") from exc
+    # 大数据兜底：散点/箱线等按点图型抽样到固定上限（与 echarts-json
+    # 端点同口径），卡片迷你图渲染与传输恒定开销。
+    _sample_plotly_figure_for_thumb(figure)
     return Response(
         content=json.dumps(figure, ensure_ascii=False),
         media_type="application/json",

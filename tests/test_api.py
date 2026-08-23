@@ -1963,6 +1963,92 @@ def test_plotly_json_endpoint_rejects_path_traversal(tmp_path, monkeypatch):
     assert response.status_code in (404, 422, 400)
 
 
+# === 迷你图大数据兜底：散点按等距抽样到 _THUMB_MAX_POINTS ===
+
+
+def test_echarts_json_supports_big_datasets_by_sampling(tmp_path, monkeypatch):
+    """30 万行散点的 option 十几 MB，端点必须抽样后再返回，且不破坏
+    热力图/柱状图等非散点系列。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = _create_chart_session(client)
+    record = api.registry.get(session_id)
+    (record.workspace.artifacts_dir / "柱状图_1.echarts.json").write_text(
+        json.dumps({
+            "series": [
+                {"type": "scatter", "data": [[i, i * 2] for i in range(300_000)]},
+                {"type": "heatmap", "data": [[0, 0, i] for i in range(60)]},
+                {"type": "bar", "data": [1] * 3000},
+            ],
+        }),
+        encoding="utf-8",
+    )
+    response = client.get(
+        f"/api/sessions/{session_id}/artifacts/柱状图_1.html/echarts-json"
+    )
+    assert response.status_code == 200
+    option = response.json()
+    series = option["series"]
+    assert len(series[0]["data"]) == 2500
+    assert series[0]["data"][0] == [0, 0]          # 等距保留首端
+    assert len(series[1]["data"]) == 60            # 热力图不抽样（缺格破图）
+    assert len(series[2]["data"]) == 3000          # bar 不抽样
+
+
+def test_plotly_json_supports_big_datasets_by_sampling(tmp_path, monkeypatch):
+    """Plotly 散点/箱线的按点数组按同一下标规则抽样（x/y/颜色不错位），
+    矩阵型（heatmap z）保持不变。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = _create_chart_session(client)
+    record = api.registry.get(session_id)
+    (record.workspace.artifacts_dir / "柱状图_1.plotly.json").write_text(
+        json.dumps({
+            "data": [
+                {"type": "scatter", "x": list(range(5000)), "y": list(range(5000)),
+                 "marker": {"color": ["#4E79A7"] * 5000}},
+                {"type": "box", "x": ["A"] * 8000, "y": list(range(8000))},
+                {"type": "heatmap", "z": [[1.0] * 30 for _ in range(30)]},
+            ],
+        }),
+        encoding="utf-8",
+    )
+    response = client.get(
+        f"/api/sessions/{session_id}/artifacts/柱状图_1.html/plotly-json"
+    )
+    assert response.status_code == 200
+    traces = response.json()["data"]
+    assert len(traces[0]["x"]) == 2500
+    assert len(traces[0]["y"]) == 2500
+    assert len(traces[0]["marker"]["color"]) == 2500
+    assert traces[0]["x"][:3] == [0, 2, 4]         # 下标同步（等距）
+    assert len(traces[1]["y"]) == 2000             # 8000 点 → step=4 → 2000
+    assert len(traces[1]["x"]) == 2000
+    assert len(traces[2]["z"]) == 30               # 矩阵型不动
+
+
+def test_thumb_sampling_helpers_edge_cases():
+    """抽样助手对非散点/非按点结构必须原样放行。"""
+    from data_agent.routers.artifacts import (
+        _sample_echarts_option_for_thumb,
+        _sample_plotly_figure_for_thumb,
+    )
+
+    opt = {"series": [{"type": "scatter", "data": [1, 2, 3]}, "junk"]}
+    _sample_echarts_option_for_thumb(opt)
+    assert opt["series"][0]["data"] == [1, 2, 3]   # 小数据不动
+    _sample_echarts_option_for_thumb({})            # 无 series
+    _sample_echarts_option_for_thumb({"series": None})
+    _sample_echarts_option_for_thumb("not-a-dict")  # type: ignore[arg-type]
+
+    fig = {"data": [{"type": "scatter", "x": [1, 2], "y": [3]}, "junk"]}
+    _sample_plotly_figure_for_thumb(fig)
+    assert fig["data"][0]["x"] == [1, 2]           # 未超上限不动
+    _sample_plotly_figure_for_thumb({})
+    _sample_plotly_figure_for_thumb({"data": None})
+    _sample_plotly_figure_for_thumb("not-a-dict")  # type: ignore[arg-type]
+
+
 def test_dashboard_returns_404_when_no_data_loaded(tmp_path, monkeypatch):
     """GET /api/sessions/{id}/dashboard 在未加载数据集时应返回 404。"""
     _isolate_runtime(tmp_path, monkeypatch)
