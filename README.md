@@ -7,7 +7,7 @@
   <img src="https://img.shields.io/badge/FastAPI-API-009688" alt="FastAPI" />
   <img src="https://img.shields.io/badge/LangGraph-agent-4D6BFE" alt="LangGraph" />
   <img src="https://img.shields.io/badge/Docker-ready-2496ED" alt="Docker" />
-  <img src="https://img.shields.io/badge/coverage-100%25-brightgreen" alt="Test coverage 100%" />
+  <img src="https://img.shields.io/badge/tests-700%2B%20passing-brightgreen" alt="Tests passing" />
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License" />
 </p>
 
@@ -170,9 +170,13 @@ tests/               pytest 测试
 ## 质量检查
 
 ```powershell
-.\venv\Scripts\python.exe -m pytest --cov  # 后端测试（不调用真实 LLM，不产生费用），覆盖率约 100%（源码）
+.\venv\Scripts\python.exe -m pytest -n 4   # 后端测试（默认并行 4 路；不调用真实 LLM，不产生费用）
 .\venv\Scripts\python.exe -m ruff check .  # 后端代码检查
 cd frontend && npm run typecheck            # 前端 TypeScript 类型检查
 cd frontend && npm test                     # 前端单元/组件测试
 cd frontend && npm run build                # 前端生产构建
 ```
+
+后端测试覆盖 `src/data_agent` 全部核心路径（节点、工具、路由、注册表、存储、
+CLI、部署），含异常分支与降级路径；CI 中以 `DATA_AGENT_SKIP_KALEIDO=1` 跳过
+偶发挂起的无头 PNG 渲染（503/500 降级分支仍被覆盖）。
