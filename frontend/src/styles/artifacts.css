@@ -52,7 +52,7 @@
    一致的比例与外观——都是"完整图表小卡片"居中显示（height 由容器
    确定、aspect-ratio 推出宽度，与 Plotly img 的 contain 结果一致），
    四张卡片在产物页大小统一。失败时回退占位 */
-.echart-thumb { height: calc(100% - 8px); aspect-ratio: 16 / 10; max-width: calc(100% - 8px); border-radius: 4px; background: #fbfaf5; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12); }
+.echart-thumb { height: calc(100% - 8px); aspect-ratio: 16 / 10; max-width: calc(100% - 8px); border-radius: 4px; background: #fbfaf5; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12); overflow: visible; }
 .echart-thumb svg { display: block; width: 100%; height: 100%; }
 .echart-thumb-fallback { width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--accent-fg); background: var(--canvas-subtle); border-radius: 4px; }
 .echart-thumb-fallback small { color: var(--fg-subtle); font-size: var(--text-xs); font-weight: 500; letter-spacing: 0.02em; }

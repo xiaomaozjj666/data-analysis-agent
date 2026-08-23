@@ -49,8 +49,9 @@ function simplifyForThumb(option: Record<string, unknown>): Record<string, unkno
   delete output.dataZoom;
   delete output.visualMap;
   delete output.animation;
-  // 绘图区占满容器：留少量边距 + 容纳轴标签
-  output.grid = { left: 4, right: 8, top: 8, bottom: 4, containLabel: true };
+  // 绘图区占满容器：留少量边距 + 容纳轴标签（顶部多留一点，
+  // 避免柱状图/折线图顶部网格线贴边被卡片裁切）
+  output.grid = { left: 4, right: 10, top: 14, bottom: 6, containLabel: true };
 
   // 文字/轴线随主题：浅色画布（#fbfaf5）用深灰文字，深色画布
   // （#1c2433）用浅灰文字——迷你图首次渲染时读取当前主题。
@@ -79,8 +80,7 @@ function simplifyForThumb(option: Record<string, unknown>): Record<string, unkno
 }
 
 // 检测 option 是否包含 echarts-gl 3D 系列（scatter3D/bar3D/surface/
-// lines3D/scatterGL 等）。核心 echarts 库对这类系列静默失败，渲染
-// 出空白 SVG，检测到则跳过迷你图、回退占位（点击打开完整交互预览）。
+// lines3D/scatterGL 等）。这类系列需要 echarts-gl 扩展才能渲染。
 function hasGlSeries(option: Record<string, unknown>): boolean {
   const series = option.series;
   if (!Array.isArray(series)) return false;
@@ -88,6 +88,20 @@ function hasGlSeries(option: Record<string, unknown>): boolean {
     const type = typeof item === "object" && item !== null ? (item as { type?: unknown }).type : undefined;
     return typeof type === "string" && (/3D$/.test(type) || /GL$/.test(type));
   });
+}
+
+// 迷你图渲染前精简布局。热力图/大表图全量格子数值 label 在 209×131
+// 小卡里会全部挤成文字块，剥离 series.label 只保留颜色编码。
+function stripDenseLabels(option: Record<string, unknown>): void {
+  const series = option.series;
+  if (!Array.isArray(series)) return;
+  for (const item of series) {
+    if (typeof item !== "object" || item === null) continue;
+    const type = (item as { type?: unknown }).type;
+    if (type === "heatmap") {
+      delete (item as { label?: unknown }).label;
+    }
+  }
 }
 
 // ECharts 产物卡片的内联迷你图：产物页无需点击即可预览图表内容。
@@ -111,18 +125,23 @@ const EChartThumb = React.memo(function EChartThumb({ previewUrl, alt }: EChartT
         const raw = (await response.json()) as unknown;
         const cleaned = stripFunctions(raw) as Record<string, unknown> | undefined;
         if (disposed || !cleaned) return;
-        // 3D 系列（scatter3D/bar3D/surface 等）需要 echarts-gl 扩展，
-        // 核心库无法渲染（setOption 静默失败产出空白 SVG）。迷你图
-        // 回退占位（点击仍可打开含 echarts-gl 的交互预览）。
-        if (hasGlSeries(cleaned)) {
-          setFailed(true);
-          return;
-        }
-        const option = simplifyForThumb(cleaned);
+        // 3D 系列（scatter3D 等）需要 echarts-gl 扩展，懒加载后同样
+        // 能在卡片内渲染迷你 3D 视图。
+        const needsGl = hasGlSeries(cleaned);
+        const simplify = simplifyForThumb(cleaned);
+        stripDenseLabels(simplify);
+        // 等两帧让容器的 aspect-ratio 布局稳定后再初始化，避免 ECharts
+        // 按错误尺寸初绘导致坐标轴错位/顶部被裁。
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         const echarts = await import("echarts");
+        if (needsGl) await import("echarts-gl");
         if (disposed || !containerRef.current) return;
-        const instance = echarts.init(containerRef.current, undefined, { renderer: "svg" });
-        instance.setOption(option);
+        const instance = echarts.init(containerRef.current, undefined, {
+          renderer: needsGl ? "canvas" : "svg",
+        });
+        instance.setOption(simplify);
+        // 布局稳定后再强重绘一次，修复 init 与最终 CSS 尺寸不一致
+        requestAnimationFrame(() => instance.resize());
         chart = instance;
         observer = new ResizeObserver(() => instance.resize());
         observer.observe(containerRef.current);
