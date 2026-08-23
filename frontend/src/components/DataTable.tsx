@@ -132,9 +132,13 @@ const DataTable = React.memo(function DataTable({ rows }: DataTableProps) {
   // 滚动事件：用 rAF 节流避免频繁 setState 导致卡顿。
   const rafRef = useRef<number>(0);
   const onScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    // 必须先把 currentTarget 存成局部变量：React 合成事件的 currentTarget
+    // 在 handler 返回后会被置 null，rAF 回调执行时再读会抛
+    // "Cannot read properties of null (reading 'scrollTop')"。
+    const el = e.currentTarget;
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     rafRef.current = requestAnimationFrame(() => {
-      setScrollTop(e.currentTarget.scrollTop);
+      setScrollTop(el.scrollTop);
     });
   }, []);
 
