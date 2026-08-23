@@ -45,6 +45,8 @@ describe("PlotlyThumb.simplifyPlotlyForThumb", () => {
     expect(layout.title).toBeUndefined();
     expect(layout.showlegend).toBe(false);
     expect(layout.paper_bgcolor).toBe("#fbfaf5");
+    // 迷你卡不做拖拽缩放（点击卡片是打开完整交互图）
+    expect(layout.dragmode).toBe(false);
     expect(layout.hoverlabel).toEqual(
       expect.objectContaining({ bgcolor: "#102a2a" }),
     );

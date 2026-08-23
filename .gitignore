@@ -16,9 +16,9 @@ output/
 build/
 *.egg-info/
 frontend/node_modules/
-# Production assets are served by FastAPI and must be included in deployments.
-!frontend/dist/
-!frontend/dist/**
+# 前端构建产物：由 `npm run build` / Dockerfile 前端阶段生成，运行时由
+# FastAPI 从磁盘静态托管，无需入库（避免每次改动产生哈希重命名的大 diff）。
+frontend/dist/
 
 
 # AI 工具工作目录（不入库）

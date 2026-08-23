@@ -31,6 +31,10 @@ jobs:
         run: ruff check .
 
       - name: Run tests
+        # kaleido 无头渲染在 CI 上偶发挂起且无法被信号超时中断；
+        # 显式跳过真实 PNG 渲染分支（降级路径仍由 503/500 测试覆盖）。
+        env:
+          DATA_AGENT_SKIP_KALEIDO: "1"
         run: python -m pytest
 
   frontend:

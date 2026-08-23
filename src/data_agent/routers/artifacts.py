@@ -29,7 +29,7 @@ from fastapi.responses import FileResponse, Response
 
 from data_agent.registry import ChartEditRequest, SessionRecord, _artifact_file
 from data_agent.tools import _PLOTLY_DARK_MODE_SCRIPT
-from data_agent.tools.builder import _render_plotly_html
+from data_agent.tools.builder import _PLOTLY_GL_REFRESH_SCRIPT, _render_plotly_html
 from data_agent.workspace import (
     ECHARTS_BUNDLE_NAME,
     ECHARTS_GL_BUNDLE_NAME,
@@ -351,6 +351,29 @@ _MODEBAR_I18N_SCRIPT = (
 )
 
 
+#: scattergl 缩放修复标记：新版生成器已在模板里带 gl-refresh-fix 脚本，
+#: 历史产物预览/下载时由本函数注入（与 legend/modebar 修复同一模式）。
+_GL_REFRESH_FIX_MARKER = "/*gl-refresh-fix*/"
+
+
+def _inject_gl_refresh_fix(html_text: str) -> str:
+    """为历史 Plotly 图表注入 scattergl 缩放修复脚本（暗色模式白带）。
+
+    plotly.js 的 WebGL 画布（scattergl）缓存初始化时的背景色，暗色脚本
+    用 relayout 换肤后，深度缩放时绘图区会退回初始浅色（"白带"）。
+    修复脚本监听 plotly_relayout 事件，在暗色主题下对含 WebGL 轨迹的
+    图表做一次 react 重渲染。幂等（含标记跳过）；只作用于 Plotly 文档。
+    """
+    if _GL_REFRESH_FIX_MARKER in html_text or "plotly-graph-div" not in html_text:
+        return html_text
+    head_pattern = re.compile(r"<head(?:\s[^>]*)?>", flags=re.IGNORECASE)
+    if head_pattern.search(html_text):
+        return head_pattern.sub(
+            lambda match: f"{match.group(0)}{_PLOTLY_GL_REFRESH_SCRIPT}", html_text, count=1
+        )
+    return html_text
+
+
 def _inject_modebar_i18n(html_text: str) -> str:
     """为 Plotly 图表注入 modebar 按钮提示中文本地化 + 按钮间距统一。
 
@@ -538,6 +561,7 @@ def preview_artifact(session_id: str, filename: str, request: Request) -> Respon
     )
     html_text = _inject_legend_anchor_fix(html_text)
     html_text = _inject_modebar_i18n(html_text)
+    html_text = _inject_gl_refresh_fix(html_text)
     html_text = _inline_plotly_bundle(record, html_text)
     # gl 扩展先内联：其标签更具体，先处理可避免主 bundle 正则的 CDN
     # 分支（https?://...echarts....js）误吞 echarts-gl 的 CDN 引用。
@@ -768,6 +792,7 @@ def edit_chart(session_id: str, filename: str, request: ChartEditRequest) -> dic
                         "responsive": True,
                         "displaylogo": False,
                         "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+                        "scrollZoom": True,
                     },
                 )
                 # XSS 防护：与 tools.py 一致，转义 </script> 避免 Plotly

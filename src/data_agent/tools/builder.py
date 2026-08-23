@@ -134,6 +134,51 @@ _CHART_COLORS = [
 #: Plotly 暗色模式自适应脚本：注入图表 HTML，监听主题变化动态切换背景和文字颜色。
 #: 浅色回退值与图表生成时的原始色板一致（#fbfaf5/#102a2a/#E5ECE9/#C9D5D1），
 #: 避免 applyTheme 首次执行时改变浅色图表的视觉。
+#: scattergl WebGL 图表在运行时主题 relayout（暗色脚本）后的缩放修复：
+#: plotly.js 的 gl 画布缓存在初始化时的背景色，relayout 更新 layout
+#: 背景色后不会重绘 gl 画布——深度缩放（modebar/框选）后绘图区会退回
+#: 初始浅色（暗色模式下出现"白带"）。此处监听 plotly_relayout 事件，
+#: 对含 WebGL 轨迹的图表在暗色主题下做一次 react 全量重渲染（保留当前
+#: 缩放范围），浅色主题下 gl 初始色一致，无需处理。自包含 IIFE，可被
+#: 预览/下载修复链注入到历史产物（旧模板不含本脚本）。
+_PLOTLY_GL_REFRESH_SCRIPT = """<script>/*gl-refresh-fix*/
+(function() {
+  var bound = false, reacting = false, timer = null, polled = 0;
+  function hasGl() {
+    var gd = document.querySelector('.plotly-graph-div');
+    var traces = gd ? gd.data : [];
+    for (var i = 0; i < traces.length; i++) {
+      if (/gl$|3d$/i.test(String(traces[i].type || ''))) return true;
+    }
+    return false;
+  }
+  function refresh() {
+    var gd = document.querySelector('.plotly-graph-div');
+    if (!gd || !window.Plotly || reacting) return;
+    if (document.documentElement.dataset.theme !== 'dark') return;
+    reacting = true;
+    try { Plotly.react(gd, gd.data, gd.layout); } catch (e) {}
+    setTimeout(function () { reacting = false; }, 250);
+  }
+  function schedule() {
+    clearTimeout(timer);
+    timer = setTimeout(refresh, 150);
+  }
+  function bind() {
+    var gd = document.querySelector('.plotly-graph-div');
+    if (bound || !gd || !gd.on || !window.Plotly) return false;
+    bound = true;
+    if (hasGl()) { gd.on('plotly_relayout', schedule); }
+    return true;
+  }
+  var keep = setInterval(function () {
+    if (bound) { clearInterval(keep); return; }
+    if (bind()) { clearInterval(keep); return; }
+    if (++polled > 25) { clearInterval(keep); }
+  }, 200);
+})();
+</script>"""
+
 _PLOTLY_DARK_MODE_SCRIPT = """<script>
 (function() {
   // 运行时错误上报：图表脚本执行失败且画布未渲染时，把错误消息回传
@@ -203,7 +248,8 @@ _PLOTLY_DARK_MODE_SCRIPT = """<script>
     }
   });
 })();
-</script>"""
+</script>
+""" + _PLOTLY_GL_REFRESH_SCRIPT
 
 _AGGREGATION_LABELS = {
     "sum": "合计",
@@ -321,6 +367,11 @@ def _render_plotly_html(
         "font-size:13px;line-height:1.75;color:#374151;max-height:160px;overflow-y:auto}"
         ".plotly-interpretation-title{font-size:12px;color:#6b7280;font-weight:600;"
         "margin-bottom:6px;letter-spacing:0.5px}"
+        # 暗色模式：数据解读卡片必须随主题换肤，否则暗背景下一块白色
+        # 卡片非常突兀（iframe 文档由 chart-theme-bridge 设置 data-theme）。
+        "html[data-theme='dark'] .plotly-interpretation{border-top-color:#2a3445;"
+        "background:#1c2433;color:#c9cfd9}"
+        "html[data-theme='dark'] .plotly-interpretation-title{color:#9aa4b5}"
     )
     if full_page:
         body = (
@@ -1109,6 +1160,9 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                     "responsive": True,
                     "displaylogo": False,
                     "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+                    # 滚轮缩放：预览模态是独立 iframe，页面本身不滚动，
+                    # 滚轮交给图表做缩放是用户预期（此前滚轮无效）。
+                    "scrollZoom": True,
                 },
             )
             # XSS 纵深防御：Plotly 的 JSON 编码器会把数据中的 < 转义为

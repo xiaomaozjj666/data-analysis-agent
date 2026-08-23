@@ -4,13 +4,13 @@ import asyncio
 import io
 import json
 import logging
-import os
 import threading
 import zipfile
 from collections import deque
 from pathlib import Path
 
 import pytest
+from conftest import _skip_kaleido
 from fastapi.testclient import TestClient
 
 from data_agent import api
@@ -1532,8 +1532,8 @@ def test_preview_handles_non_utf8_html(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(
-    bool(os.environ.get("CI")),
-    reason="Kaleido 无头渲染在 CI 上偶发挂起且无法被信号超时中断（本地已验证）",
+    _skip_kaleido(),
+    reason="Kaleido 无头渲染偶发挂起且无法被信号超时中断；由 DATA_AGENT_SKIP_KALEIDO / CI 控制",
 )
 def test_thumbnail_renders_png_when_no_cache(tmp_path, monkeypatch):
     """GET thumbnail 无缓存时应从 .plotly.json 渲染 PNG（kaleido）。"""
@@ -1822,6 +1822,34 @@ def test_inject_legend_anchor_fix_is_idempotent_and_scoped():
     # 4. 无 <head> 的文档：原样返回（不注入到错误位置）
     no_head = "<html><body><div class='plotly-graph-div'></div></body></html>"
     assert _inject_legend_anchor_fix(no_head) == no_head
+
+
+def test_inject_gl_refresh_fix_is_idempotent_and_scoped():
+    """历史 Plotly 图表注入 scattergl 缩放修复脚本：幂等、只作用于
+    Plotly 文档；新版生成器的暗色脚本已自带修复（标记存在）。"""
+    from data_agent.routers.artifacts import _inject_gl_refresh_fix
+
+    # 1. Plotly 文档：注入脚本（无标记时）
+    plotly_html = "<html><head><title>t</title></head><body><div class='plotly-graph-div'></div></body></html>"
+    injected = _inject_gl_refresh_fix(plotly_html)
+    assert "gl-refresh-fix" in injected
+    assert "plotly_relayout" in injected
+
+    # 2. 幂等：二次注入不重复
+    assert _inject_gl_refresh_fix(injected) == injected
+
+    # 3. 非 Plotly 文档（ECharts）：跳过
+    echarts_html = "<html><head></head><body><div id='chart'></div></body></html>"
+    assert _inject_gl_refresh_fix(echarts_html) == echarts_html
+
+    # 4. 无 <head> 的文档：原样返回（不注入到错误位置）
+    no_head = "<html><body><div class='plotly-graph-div'></div></body></html>"
+    assert _inject_gl_refresh_fix(no_head) == no_head
+
+    # 5. 新版生成器的暗色脚本自带修复标记（新产物无需注入）
+    from data_agent.tools.builder import _PLOTLY_DARK_MODE_SCRIPT
+
+    assert "gl-refresh-fix" in _PLOTLY_DARK_MODE_SCRIPT
 
 
 def test_inject_modebar_i18n_is_idempotent_and_scoped():

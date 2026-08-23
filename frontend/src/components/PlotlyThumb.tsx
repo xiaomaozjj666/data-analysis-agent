@@ -69,6 +69,10 @@ export function simplifyPlotlyForThumb(
   delete layout.title;
   layout.showlegend = false;
   layout.autosize = true;
+  // 迷你卡不缩放：拖拽框选会触发 plotly 缩放（且 scattergl 缩放后
+  // gl 画布背景色需重渲染，卡片内没有该修复链）；卡片点击本来就是
+  // 打开完整交互图。dragmode=false 禁用拖拽缩放层。
+  layout.dragmode = false;
   layout.margin = { l: 38, r: 6, t: 6, b: 22 };
   layout.paper_bgcolor = theme.paper;
   layout.plot_bgcolor = theme.paper;
