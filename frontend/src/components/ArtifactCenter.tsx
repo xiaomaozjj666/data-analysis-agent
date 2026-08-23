@@ -186,7 +186,7 @@ const ArtifactCenter = React.memo(function ArtifactCenter({
                       }}
                     >
                       <Icon size={28} />
-                      <small>点击预览</small>
+                      <small>点击查看交互图</small>
                     </div>
                   )}
                   <div className="chart-card-info">
