@@ -969,6 +969,10 @@ class DataWorkspace:
         for path in sorted(self.artifacts_dir.iterdir()):
             if not path.is_file() or path.name in (PLOTLY_BUNDLE_NAME, ECHARTS_BUNDLE_NAME):
                 continue
+            if path.name.endswith("_thumb.png"):
+                # 缩略图缓存是 thumbnail 端点的中间产物，不是用户产物，
+                # 不应出现在产物中心的数据文件列表里。
+                continue
             suffix = path.suffix.lower()
             saved = metadata_by_name.get(path.name, {})
             kind = saved.get("kind") or (
