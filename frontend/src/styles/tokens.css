@@ -13,7 +13,10 @@
 /* ---------- 设计令牌 ---------- */
 :root {
   font-family: "Inter", "IBM Plex Sans", "Noto Sans SC", -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", sans-serif;
-  color: #1a1d29;
+  /* 文字色必须走令牌：暗色模式仅覆盖 --fg-default（[data-theme="dark"]），
+     若这里硬编码亮色值，继承 :root 颜色的元素（表格单元格、标题、
+     默认文本）在暗色下会与深色画布同色不可见。 */
+  color: var(--fg-default);
   background: #f6f7f9;
   font-synthesis: none;
   letter-spacing: 0;

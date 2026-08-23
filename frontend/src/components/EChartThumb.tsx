@@ -52,14 +52,20 @@ function simplifyForThumb(option: Record<string, unknown>): Record<string, unkno
   // 绘图区占满容器：留少量边距 + 容纳轴标签
   output.grid = { left: 4, right: 8, top: 8, bottom: 4, containLabel: true };
 
+  // 文字/轴线随主题：浅色画布（#fbfaf5）用深灰文字，深色画布
+  // （#1c2433）用浅灰文字——迷你图首次渲染时读取当前主题。
+  const isDark = document.documentElement.dataset.theme === "dark";
+  const textColor = isDark ? "#9aa0a6" : "#5f6368";
+  const axisColor = isDark ? "#4a4b50" : "#c7ccd4";
+
   const ax = (axis: unknown): unknown => {
     if (!axis || typeof axis !== "object") return axis;
     const a: Record<string, unknown> = { ...(axis as Record<string, unknown>) };
     delete a.name;
-    const label = { fontSize: 9, color: "#5f6368", ...((a.axisLabel as Record<string, unknown> | undefined) ?? {}) };
+    const label = { fontSize: 9, color: textColor, ...((a.axisLabel as Record<string, unknown> | undefined) ?? {}) };
     a.axisLabel = label;
     if (typeof a.axisLine !== "object") {
-      a.axisLine = { lineStyle: { color: "#c7ccd4" } };
+      a.axisLine = { lineStyle: { color: axisColor } };
     }
     return a;
   };
@@ -67,8 +73,8 @@ function simplifyForThumb(option: Record<string, unknown>): Record<string, unkno
   else if (output.xAxis) output.xAxis = ax(output.xAxis);
   if (Array.isArray(output.yAxis)) output.yAxis = output.yAxis.map(ax);
   else if (output.yAxis) output.yAxis = ax(output.yAxis);
-  // 全局文字（如散点/气泡轴内文字）统一深色，浅色画布上才可读
-  if (!output.textStyle) output.textStyle = { color: "#5f6368" };
+  // 全局文字统一主题色，画布上才可读
+  if (!output.textStyle) output.textStyle = { color: textColor };
   return output;
 }
 
