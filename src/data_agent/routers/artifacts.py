@@ -468,6 +468,34 @@ def download_artifact(session_id: str, filename: str) -> Response:
     return FileResponse(path, filename=path.name)
 
 
+@router.get("/api/sessions/{session_id}/artifacts/{filename}/echarts-json")
+def get_echarts_option(session_id: str, filename: str) -> Response:
+    """返回 ECharts 图表的 option JSON，供前端产物卡片渲染迷你图。
+
+    ECharts 没有像 Plotly 那样的服务端 PNG 缩略图通道（kaleido 仅支持
+    Plotly），前端直接读取 option 并用 echarts 原地渲染迷你图，让产物
+    卡片无需点击即可预览。安全：文件名经 _artifact_file 基名校验；
+    option 中存档的 JS 函数以字符串形式返回，前端渲染迷你图时剥离
+    函数字段（不执行任意代码）。
+    """
+    record, _path = _artifact_file(session_id, filename)
+    stem = Path(filename).name
+    if stem.endswith(".html"):
+        stem = stem[: -len(".html")]
+    json_path = record.workspace.artifacts_dir / f"{stem}.echarts.json"
+    if not json_path.is_file():
+        raise HTTPException(status_code=404, detail="该图表没有 ECharts 数据文件。")
+    try:
+        option = json.loads(json_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=500, detail=f"ECharts 数据读取失败：{exc}") from exc
+    return Response(
+        content=json.dumps(option, ensure_ascii=False),
+        media_type="application/json",
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
 @router.get("/api/sessions/{session_id}/artifacts/{filename}/thumbnail")
 def get_chart_thumbnail(session_id: str, filename: str) -> FileResponse:
     """生成图表缩略图 PNG（best-effort，依赖 Kaleido）。
