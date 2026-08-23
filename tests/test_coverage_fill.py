@@ -369,12 +369,17 @@ def test_registry_import_rejects_zero_concurrency():
         [sys.executable, "-c", "import data_agent.registry"],
         capture_output=True,
         text=True,
-        encoding="utf-8",  # 子进程 traceback 含 UTF-8 中文，GBK locale 下 text=True 会解码失败
+        # 子进程 traceback 含中文：Windows 控制台按 GBK 输出字节，但源码
+        # 与期望断言是 UTF-8。encoding=utf-8 + errors=replace 双保险：
+        # 纯 utf-8 环境无损解码，GBK 输出的中文替换为占位符也不崩溃
+        #（仅 encoding 无 errors 时 reader 线程解码失败会把 stderr 变 None）。
+        encoding="utf-8",
+        errors="replace",
         env=env,
         timeout=120,
     )
     assert result.returncode != 0
-    assert "MAX_CONCURRENT_ANALYSES" in result.stderr
+    assert "MAX_CONCURRENT_ANALYSES" in (result.stderr or "")
 
 
 def test_dataset_priority_falls_back_to_default():

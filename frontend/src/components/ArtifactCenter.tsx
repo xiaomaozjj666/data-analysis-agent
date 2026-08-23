@@ -3,6 +3,7 @@ import { Download, ExternalLink, FileSpreadsheet } from "lucide-react";
 import { pickChartIcon } from "../constants";
 import { formatBytes } from "../utils/format";
 import AuthImage from "./AuthImage";
+import EChartThumb from "./EChartThumb";
 import SpotlightCard from "./rb/SpotlightCard";
 import type { Artifact } from "../types";
 
@@ -170,6 +171,24 @@ const ArtifactCenter = React.memo(function ArtifactCenter({
                         alt={item.description || item.name}
                         loading="lazy"
                       />
+                    </div>
+                  ) : item.engine === "echarts" && item.preview_url ? (
+                    /* ECharts 无服务端 PNG 缩略图（kaleido 仅支持 Plotly）：
+                       内联渲染迷你交互图，与 Plotly 卡片一样无需点击即可预览 */
+                    <div
+                      className="chart-thumbnail"
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`预览 ${item.description || item.name}`}
+                      onClick={() => onPreview(item)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          onPreview(item);
+                        }
+                      }}
+                    >
+                      <EChartThumb previewUrl={item.preview_url} alt={item.description || item.name} />
                     </div>
                   ) : (
                     <div

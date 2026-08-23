@@ -1842,6 +1842,62 @@ def test_inject_modebar_i18n_is_idempotent_and_scoped():
     assert _inject_modebar_i18n(no_head) == no_head
 
 
+def test_echarts_json_endpoint_returns_option(tmp_path, monkeypatch):
+    """GET /artifacts/{name}/echarts-json 应返回 ECharts option JSON。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = _create_chart_session(client)
+    # 手工放置 echarts.json 模拟 ECharts 产物
+    record = api.registry.get(session_id)
+    stem = "柱状图_1"
+    (record.workspace.artifacts_dir / f"{stem}.echarts.json").write_text(
+        json.dumps({"series": [{"type": "bar", "data": [1, 2, 3]}], "xAxis": {"data": ["A", "B", "C"]}}),
+        encoding="utf-8",
+    )
+    response = client.get(f"/api/sessions/{session_id}/artifacts/{stem}.html/echarts-json")
+    assert response.status_code == 200
+    assert response.json()["series"][0]["type"] == "bar"
+    assert response.headers["content-type"].startswith("application/json")
+
+
+def test_echarts_json_endpoint_500_on_corrupt_file(tmp_path, monkeypatch):
+    """损坏的 .echarts.json（非法 JSON）应返回 500。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = _create_chart_session(client)
+    record = api.registry.get(session_id)
+    (record.workspace.artifacts_dir / "柱状图_1.echarts.json").write_text(
+        "{not valid json", encoding="utf-8"
+    )
+    response = client.get(
+        f"/api/sessions/{session_id}/artifacts/柱状图_1.html/echarts-json"
+    )
+    assert response.status_code == 500
+
+
+def test_echarts_json_endpoint_404_without_data_file(tmp_path, monkeypatch):
+    """无 .echarts.json 的图表（如 Plotly 图）应返回 404，前端据此回退占位。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = _create_chart_session(client)
+    chart = _first_chart_artifact(client, session_id)
+    response = client.get(
+        f"/api/sessions/{session_id}/artifacts/{chart['name']}/echarts-json"
+    )
+    assert response.status_code == 404
+
+
+def test_echarts_json_endpoint_rejects_path_traversal(tmp_path, monkeypatch):
+    """文件名中的路径穿越应被拒绝（基名校验）。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = _create_chart_session(client)
+    response = client.get(
+        f"/api/sessions/{session_id}/artifacts/..%2F..%2Fetc%2Fpasswd/echarts-json"
+    )
+    assert response.status_code in (404, 422, 400)
+
+
 def test_dashboard_returns_404_when_no_data_loaded(tmp_path, monkeypatch):
     """GET /api/sessions/{id}/dashboard 在未加载数据集时应返回 404。"""
     _isolate_runtime(tmp_path, monkeypatch)

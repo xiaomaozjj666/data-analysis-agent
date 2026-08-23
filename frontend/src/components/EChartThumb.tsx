@@ -1,0 +1,90 @@
+import React, { useEffect, useRef, useState } from "react";
+import { API_URL } from "../constants";
+import { pickChartIcon } from "../constants";
+import { requestHeaders } from "../utils/api";
+
+interface EChartThumbProps {
+  /** 图表 preview_url（/api/sessions/{sid}/artifacts/{name}/preview），
+      用于推导 echarts-json 地址与点击预览回调。 */
+  previewUrl: string;
+  alt: string;
+}
+
+// 递归移除 option 中以字符串存档的 JS 函数（"function(...){...}"）。
+// 迷你图只渲染基础图形，不执行任何代码——避免 new Function 执行
+// 产物 JSON 里任意字符串的安全风险（与 dashboard 服务端还原不同，
+// 前端没有可信的执行上下文）。
+function stripFunctions(node: unknown): unknown {
+  if (typeof node === "string") {
+    const s = node.trim();
+    if (s.startsWith("function(") && s.endsWith("}")) return undefined;
+    return node;
+  }
+  if (Array.isArray(node)) {
+    const cleaned = node.map(stripFunctions).filter((v) => v !== undefined);
+    return cleaned;
+  }
+  if (node && typeof node === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      const cleaned = stripFunctions(value);
+      if (cleaned !== undefined) out[key] = cleaned;
+    }
+    return out;
+  }
+  return node;
+}
+
+// ECharts 产物卡片的内联迷你图：产物页无需点击即可预览图表内容。
+// 渲染策略：fetch 后端 echarts-json → 剥离函数字段 → 懒加载 echarts →
+// SVG 渲染到浅色画布（与 Plotly PNG 缩略图的米白底一致，深浅主题下
+// 都像一张"嵌入的图表卡片"）。失败（无数据文件/损坏）时回退占位。
+const EChartThumb = React.memo(function EChartThumb({ previewUrl, alt }: EChartThumbProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let disposed = false;
+    let chart: { resize: () => void; dispose: () => void } | null = null;
+    let observer: ResizeObserver | null = null;
+
+    (async () => {
+      try {
+        const jsonUrl = previewUrl.replace(/\/preview$/, "/echarts-json");
+        const response = await fetch(`${API_URL}${jsonUrl}`, { headers: requestHeaders() });
+        if (!response.ok) throw new Error(`echarts-json ${response.status}`);
+        const raw = (await response.json()) as unknown;
+        const option = stripFunctions(raw) as Record<string, unknown> | undefined;
+        if (disposed || !option) return;
+        const echarts = await import("echarts");
+        if (disposed || !containerRef.current) return;
+        const instance = echarts.init(containerRef.current, undefined, { renderer: "svg" });
+        instance.setOption(option);
+        chart = instance;
+        observer = new ResizeObserver(() => instance.resize());
+        observer.observe(containerRef.current);
+      } catch {
+        if (!disposed) setFailed(true);
+      }
+    })();
+
+    return () => {
+      disposed = true;
+      observer?.disconnect();
+      chart?.dispose();
+    };
+  }, [previewUrl]);
+
+  if (failed) {
+    const { Icon } = pickChartIcon(alt);
+    return (
+      <div className="echart-thumb-fallback">
+        <Icon size={26} />
+        <small>点击查看交互图</small>
+      </div>
+    );
+  }
+  return <div ref={containerRef} className="echart-thumb" role="img" aria-label={alt} />;
+});
+
+export default EChartThumb;
