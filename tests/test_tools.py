@@ -1281,6 +1281,71 @@ def test_plotly_area_box_violin_charts(workspace):
         assert Path(result["html"]).exists()
 
 
+def test_plotly_large_scatter_switches_to_webgl(tmp_path):
+    """大数据（>10K 行）Plotly 散点/折线应切换为 scattergl（WebGL），
+    否则 SVG 全量渲染 30 万点以分钟计（实测浏览器 30s 无反应）。"""
+    import numpy as np
+
+    rng = np.random.default_rng(7)
+    n = 12_000
+    big = pd.DataFrame(
+        {
+            "region": ["East", "West"] * (n // 2),
+            "sales": rng.uniform(100, 5_000, n),
+            "profit": rng.uniform(10, 1_500, n),
+        }
+    )
+    source = tmp_path / "big.csv"
+    big.to_csv(source, index=False)
+    ws = DataWorkspace(tmp_path / "runs", session_id="big")
+    ws.load(source, copy_into_workspace=True)
+    tools = tool_map(ws)
+
+    # 散点：轨迹应被换成 scattergl，且 marker/数据保留
+    result = json.loads(
+        tools["create_visualization"].invoke(
+            {"chart_type": "scatter", "x": "profit", "y": "sales", "color": "region"}
+        )
+    )
+    assert result["status"] == "ok"
+    payload = json.loads(Path(result["plotly_json"]).read_text(encoding="utf-8"))
+    assert payload["data"][0]["type"] == "scattergl"
+    assert payload["data"][0]["marker"]["color"]
+    # plotly.py 把 numpy 数组写成 typed-array（{"dtype","bdata"}），解码验证点数
+    import base64 as _b64
+
+    x = payload["data"][0]["x"]
+    if isinstance(x, dict):
+        arr = np.frombuffer(_b64.b64decode(x["bdata"]), dtype=np.dtype(x["dtype"]))
+    else:
+        arr = np.asarray(x)
+    # color 分组时每个 trace 只带本组数据（2 组 × 6000 = 12000）
+    assert arr.size * len(payload["data"]) == n
+    html_text = Path(result["html"]).read_text(encoding="utf-8")
+    assert "scattergl" in html_text
+
+    # 折线同样切换
+    result_line = json.loads(
+        tools["create_visualization"].invoke(
+            {"chart_type": "line", "x": "sales", "y": "profit", "aggregation": "none", "title": "序列"}
+        )
+    )
+    line_payload = json.loads(Path(result_line["plotly_json"]).read_text(encoding="utf-8"))
+    assert line_payload["data"][0]["type"] == "scattergl"
+
+    # 小数据仍保持普通 scatter（不切换）
+    small_ws = DataWorkspace(tmp_path / "runs_small", session_id="small")
+    big.head(50).to_csv(tmp_path / "small.csv", index=False)
+    small_ws.load(tmp_path / "small.csv", copy_into_workspace=True)
+    small_result = json.loads(
+        tool_map(small_ws)["create_visualization"].invoke(
+            {"chart_type": "scatter", "x": "profit", "y": "sales"}
+        )
+    )
+    small_payload = json.loads(Path(small_result["plotly_json"]).read_text(encoding="utf-8"))
+    assert small_payload["data"][0]["type"] == "scatter"
+
+
 def test_visualization_falls_back_to_full_html_without_bundle(workspace, monkeypatch):
     """plotly bundle 不可用时应回退到内联 plotlyjs 的完整 HTML（1093 分支）。"""
     monkeypatch.setattr(workspace, "ensure_plotly_bundle", lambda: None)

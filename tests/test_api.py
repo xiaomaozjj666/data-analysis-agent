@@ -1963,6 +1963,34 @@ def test_plotly_json_endpoint_rejects_path_traversal(tmp_path, monkeypatch):
     assert response.status_code in (404, 422, 400)
 
 
+def test_plotly_json_endpoint_decodes_typed_arrays(tmp_path, monkeypatch):
+    """plotly.py 把 numpy 数组写成 {dtype, bdata} typed-array，端点必须
+    先解码为标准列表再抽样，否则按点数据无法统计与等距抽样。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = _create_chart_session(client)
+    record = api.registry.get(session_id)
+
+    import numpy as np
+    import plotly.graph_objects as go
+
+    arr = np.linspace(0, 1_000_000, 50_000, dtype="float32")
+    fig = go.Figure(go.Scatter(x=arr, y=arr))
+    (record.workspace.artifacts_dir / "柱状图_1.plotly.json").write_text(
+        fig.to_json(), encoding="utf-8"
+    )
+    response = client.get(
+        f"/api/sessions/{session_id}/artifacts/柱状图_1.html/plotly-json"
+    )
+    assert response.status_code == 200
+    trace = response.json()["data"][0]
+    assert isinstance(trace["x"], list)      # 已解码为普通数组
+    assert len(trace["x"]) == 2500           # 且已抽样
+    assert abs(trace["x"][0]) < 1e-3         # 数值正确（从 0 起）
+    assert isinstance(trace["y"], list)
+    assert len(trace["y"]) == 2500
+
+
 # === 迷你图大数据兜底：散点按等距抽样到 _THUMB_MAX_POINTS ===
 
 
@@ -2030,6 +2058,7 @@ def test_plotly_json_supports_big_datasets_by_sampling(tmp_path, monkeypatch):
 def test_thumb_sampling_helpers_edge_cases():
     """抽样助手对非散点/非按点结构必须原样放行。"""
     from data_agent.routers.artifacts import (
+        _decode_plotly_typed_arrays,
         _sample_echarts_option_for_thumb,
         _sample_plotly_figure_for_thumb,
     )
@@ -2047,6 +2076,14 @@ def test_thumb_sampling_helpers_edge_cases():
     _sample_plotly_figure_for_thumb({})
     _sample_plotly_figure_for_thumb({"data": None})
     _sample_plotly_figure_for_thumb("not-a-dict")  # type: ignore[arg-type]
+
+    # typed-array 解码：合法 i4 数组 → [-1]；非法 dtype 原样返回（不崩溃）
+    assert _decode_plotly_typed_arrays({"dtype": "i4", "bdata": "/////w=="}) == [-1]
+    bad = {"dtype": "bogus", "bdata": "AAAA"}
+    assert _decode_plotly_typed_arrays(bad) == bad
+    # 非 typed-array 递归穿过
+    assert _decode_plotly_typed_arrays({"a": [1, {"b": [2, 3]}]}) == {"a": [1, {"b": [2, 3]}]}
+    assert _decode_plotly_typed_arrays("plain") == "plain"
 
 
 def test_dashboard_returns_404_when_no_data_loaded(tmp_path, monkeypatch):

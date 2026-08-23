@@ -420,6 +420,38 @@ _PLOTLY_SAMPLE_TRACE_TYPES = {
 }
 
 
+def _decode_plotly_typed_arrays(value: Any) -> Any:
+    """递归解码 Plotly typed-array 序列化，返回普通 Python list。
+
+    plotly.py 的 ``fig.to_json()`` 默认把 numpy 数组压缩成
+    ``{"dtype": "f4", "bdata": "<base64>"}``（30 万行散点的 x/y 都是
+    这种形式，直接当 dict 处理无法统计/抽样）。解码后用标准 JSON
+    数组返回，等距抽样与 json.dumps 都按普通列表工作；
+    plotly.js 对普通数组同样支持。
+    """
+    if isinstance(value, dict):
+        dtype = value.get("dtype")
+        bdata = value.get("bdata")
+        if (
+            isinstance(dtype, str)
+            and isinstance(bdata, str)
+            and set(value) == {"dtype", "bdata"}
+            and dtype != "object"
+        ):
+            try:
+                import base64
+
+                import numpy as np
+
+                return np.frombuffer(base64.b64decode(bdata), dtype=np.dtype(dtype)).tolist()
+            except Exception:
+                return value
+        return {key: _decode_plotly_typed_arrays(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_decode_plotly_typed_arrays(item) for item in value]
+    return value
+
+
 def _sample_plotly_figure_for_thumb(figure: dict[str, Any], max_points: int = _THUMB_MAX_POINTS) -> None:
     """就地抽样 Plotly figure 的按点数据数组，供迷你图渲染。
 
@@ -444,13 +476,14 @@ def _sample_plotly_figure_for_thumb(figure: dict[str, Any], max_points: int = _T
             continue
         step = math.ceil(n / max_points)
 
-        def _sample(value: Any) -> Any:
+        def _sample(value: Any, _n: int = n, _step: int = step) -> Any:
             # 递归抽样：散点的 marker.color/marker.size 等嵌套按点数组
             # 与 x/y 同一步长，保证颜色/大小/悬浮文本不错位。
+            # 默认参数绑定循环变量（ruff B023）。
             if isinstance(value, list):
-                return value[::step] if len(value) == n else value
+                return value[::_step] if len(value) == _n else value
             if isinstance(value, dict):
-                return {key: _sample(item) for key, item in value.items()}
+                return {key: _sample(item, _n, _step) for key, item in value.items()}
             return value
 
         for key, value in list(trace.items()):
@@ -598,8 +631,10 @@ def get_plotly_option(session_id: str, filename: str) -> Response:
         figure = json.loads(_read_utf8_robust(json_path))
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=500, detail=f"Plotly 数据读取失败：{exc}") from exc
-    # 大数据兜底：散点/箱线等按点图型抽样到固定上限（与 echarts-json
-    # 端点同口径），卡片迷你图渲染与传输恒定开销。
+    # plotly.py 把 numpy 数组写成了 typed-array（{"dtype","bdata"}），
+    # 先解码成普通列表；再按大数据兜底规则等距抽样到 _THUMB_MAX_POINTS
+    # （散点/箱线等按点图型），迷你图传输与渲染恒定开销。
+    figure = _decode_plotly_typed_arrays(figure)
     _sample_plotly_figure_for_thumb(figure)
     return Response(
         content=json.dumps(figure, ensure_ascii=False),
