@@ -209,10 +209,12 @@ def _echarts_value_axis(
         numeric = pd.to_numeric(df[y], errors="coerce").dropna()
     if len(numeric) > 0:
         vmin, vmax = float(numeric.min()), float(numeric.max())
-        nice_min, nice_max, step = _nice_ticks(vmin, vmax, n=5)
+        nice_min, nice_max, _ = _nice_ticks(vmin, vmax, n=5)
         base["min"] = nice_min
         base["max"] = nice_max
-        base["interval"] = step
+        # 不固定 interval：dataZoom/滚轮缩放后 ECharts 会按新范围自动
+        # 重算圆数刻度；固定步长会让放大后的坐标轴只剩零星刻度甚至
+        # 一个都没有，无法读取数值做比较。min/max 仍保留初始 nice 范围。
         # axisLabel formatter 用 JS 函数字符串注入 _nice_axis_formatter 逻辑。
         # ECharts option 是 JSON，但 formatter 字段支持函数字符串（前端 eval）。
         base["axisLabel"] = {

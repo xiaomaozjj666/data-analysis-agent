@@ -85,6 +85,36 @@ _GROUPBY_MAX_ROWS = 500
 #: transform_data 的 limit 参数上限。
 _TRANSFORM_LIMIT_MAX = 1_000_000
 
+#: Plotly 大数据 WebGL 阈值：超过该行数的散点/折线切换为 scattergl
+#: （WebGL 渲染）。30 万行散点在 SVG 下渲染以分钟计（浏览器无响应），
+#: scattergl 走 GPU 管线，几十万点仍可流畅悬停/缩放/导出。
+_PLOTLY_WEBGL_THRESHOLD = 10_000
+
+
+def _as_scattergl(fig: Any) -> Any:
+    """把 Plotly 图例的 Scatter 轨迹整体换成 Scattergl（WebGL 渲染）。
+
+    plotly.py 的 trace type 是只读的（update_traces(type=...) 抛
+    "property 'type' is read-only"），且 fig.data 赋值要求轨迹来自原
+    figure 本身，只能重建整个 figure。Scatter→Scattergl 属性完全兼容
+    （marker/mode/hovertemplate/customdata 等全部透传），布局不变。
+    """
+    import plotly.graph_objects as go
+
+    traces: list[go.Scattergl] = []
+    for trace in fig.data:
+        payload = trace.to_plotly_json()
+        payload.pop("type", None)
+        traces.append(go.Scattergl(**payload))
+    return go.Figure(data=traces, layout=fig.layout)
+
+
+def _plotly_webgl_if_large(fig: Any, df: pd.DataFrame, chart_type: str) -> Any:
+    """大数据时把点状/线状图型切换为 WebGL 轨迹（仅 Plotly 分支）。"""
+    if chart_type in {"scatter", "line"} and len(df) > _PLOTLY_WEBGL_THRESHOLD:
+        return _as_scattergl(fig)
+    return fig
+
 #: 图表分类色板：Tableau 10 官方默认色板（数据可视化业界标准，明度
 #: 层级统一、色相分布均匀，白底/暗底均协调）。双引擎（Plotly /
 #: ECharts）共享，保证视觉一致。
@@ -194,9 +224,10 @@ def _apply_plotly_nice_ticks(
 ) -> None:
     """对 Plotly 图表的数值轴应用 nice ticks（圆数刻度）。
 
-    遍历所有 trace 收集 x/y 数值范围，计算 nice step 后设置
-    dtick/tick0/tickmode。若 _apply_outlier_scale_controls 已设置范围
-    （robust 模式），优先用该范围计算 nice ticks。category 轴跳过。
+    遍历所有 trace 收集 x/y 数值范围，据此设置 tickformat（千分位/缩写）。
+    注意：不固定 dtick/tick0——plotly 的框选/滚轮缩放在放大后按新范围
+    自动重算刻度；若固定步长，深度缩小的区间里可能一个刻度都没有，
+    无法读取坐标轴数据做比较。category 轴跳过。
     """
     try:
         axis_ranges = scale_details.get("axis_ranges", {}) or {}
@@ -212,12 +243,7 @@ def _apply_plotly_nice_ticks(
                 vmin, vmax = float(min(values)), float(max(values))
             nice_min, nice_max, step = _nice_ticks(vmin, vmax, n=5)
             if step > 0:
-                fig.update_yaxes(
-                    tickmode="linear",
-                    dtick=step,
-                    tick0=nice_min,
-                    tickformat=_plotly_axis_tickformat((nice_min, nice_max)),
-                )
+                fig.update_yaxes(tickformat=_plotly_axis_tickformat((nice_min, nice_max)))
         # X 轴（仅散点图等数值 X 轴）
         if x and chart_type in {"scatter", "scatter_3d"}:
             x_range = axis_ranges.get("x")
@@ -230,12 +256,7 @@ def _apply_plotly_nice_ticks(
                 vmin, vmax = float(min(values)), float(max(values))
             nice_min, nice_max, step = _nice_ticks(vmin, vmax, n=5)
             if step > 0:
-                fig.update_xaxes(
-                    tickmode="linear",
-                    dtick=step,
-                    tick0=nice_min,
-                    tickformat=_plotly_axis_tickformat((nice_min, nice_max)),
-                )
+                fig.update_xaxes(tickformat=_plotly_axis_tickformat((nice_min, nice_max)))
         # Z 轴（仅 scatter_3d）
         if chart_type == "scatter_3d":
             z_range = axis_ranges.get("z")
@@ -249,12 +270,7 @@ def _apply_plotly_nice_ticks(
             nice_min, nice_max, step = _nice_ticks(vmin, vmax, n=5)
             if step > 0:
                 fig.update_scenes(
-                    zaxis=dict(
-                        tickmode="linear",
-                        dtick=step,
-                        tick0=nice_min,
-                        tickformat=_plotly_axis_tickformat((nice_min, nice_max)),
-                    )
+                    zaxis=dict(tickformat=_plotly_axis_tickformat((nice_min, nice_max)))
                 )
     except Exception:
         # nice ticks 是 best-effort，不能影响图表生成
@@ -979,6 +995,8 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             fig = px.treemap(**common, path=path_columns, values=values, color=color)
 
         scale_details = _apply_outlier_scale_controls(fig, chart_type, scale_mode)
+        # 大数据切换 WebGL：SVG 下 30 万行散点/折线的完整预览渲染以分钟计
+        fig = _plotly_webgl_if_large(fig, df, chart_type)
         if chart_type == "bar" and aggregation != "none":
             _add_missing_combination_markers(
                 fig,
@@ -1060,7 +1078,9 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                 fig.update_xaxes(categoryorder="total descending")
             fig.update_layout(bargap=0.26, bargroupgap=0.08)
         elif chart_type == "scatter":
+            # 大数据时轨迹已被切换为 scattergl（WebGL），两个选择器都覆盖
             fig.update_traces(marker={"size": 9, "opacity": 0.82, "line": {"width": 0.7, "color": "white"}}, selector={"type": "scatter"})
+            fig.update_traces(marker={"size": 9, "opacity": 0.82, "line": {"width": 0.7, "color": "white"}}, selector={"type": "scattergl"})
         if color:
             fig.update_layout(legend_title_text=_human_column_label(color))
         html_path = workspace.artifacts_dir / f"{stem}.html"
