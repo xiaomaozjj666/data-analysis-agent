@@ -263,6 +263,16 @@ _ECHARTS_AXIS_LABEL_FORMATTER_JS = _JsFunction(
 )
 
 
+#: 数值标签 formatter（柱状图顶部数值等）：大数用「万」缩写、其余
+#: 千分位并去浮点噪声。用 {c} 模板会裸显 70012.68000000001 这类
+#: 浮点尾巴，且 10 万级数字与相邻标签重叠成乱码。
+_ECHARTS_VALUE_LABEL_JS = _JsFunction(
+    "function(p){var v=p.value;if(v==null||isNaN(v))return '';"
+    "return Math.abs(v)>=10000?(v/10000).toFixed(1)+'\u4e07'"
+    ":Number(v.toFixed(2)).toLocaleString();}"
+)
+
+
 # === 自动白话解读：纯数据驱动，不依赖 LLM ===
 
 def _auto_interpret(
@@ -619,7 +629,7 @@ def _echarts_bar(
                     "borderRadius": [4, 4, 0, 0],
                 },
                 "emphasis": {"itemStyle": {"color": _ECHARTS_PALETTE[0], "shadowBlur": 12, "shadowColor": _hex_to_rgba(_ECHARTS_PALETTE[0], 0.4)}},
-                "label": {"show": len(categories) <= 12, "position": "top", "color": _ECHARTS_TEXT_SECONDARY, "fontSize": 11, "formatter": "{c}"},
+                "label": {"show": len(categories) <= 12, "position": "top", "color": _ECHARTS_TEXT_SECONDARY, "fontSize": 11, "formatter": _ECHARTS_VALUE_LABEL_JS},
             }]
 
     base["tooltip"]["formatter"] = _bar_tooltip_formatter(x_label, y_label, agg_suffix)

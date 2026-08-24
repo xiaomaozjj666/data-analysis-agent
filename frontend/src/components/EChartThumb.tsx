@@ -244,7 +244,31 @@ function simplifyForThumb(option: Record<string, unknown>, isDark: boolean): Rec
   // 绘图区占满容器：留少量边距 + 容纳轴标签（顶部多留一点，
   // 避免柱状图/折线图顶部网格线贴边被卡片裁切）
   output.grid = { left: 4, right: 10, top: gridTop, bottom: 6, containLabel: true };
+  // 柱状图数值标签：预格式化静态文本（在 markPoint 数值提取之后，
+  // 不能把数据项提前转成对象）
+  bakeBarValueLabels(output);
   return output;
+}
+
+// 柱状图顶部数值标签：formatter 是 JS 函数字符串，迷你图里被剥离后
+// ECharts 会退回默认显示裸浮点（70012.68000000001）。把每个数值预
+// 格式化成静态文本（5.5万 / 7.0万）挂到数据项上，迷你图与全图读数
+// 口径一致。
+function bakeBarValueLabels(option: Record<string, unknown>): void {
+  const series = option.series;
+  if (!Array.isArray(series)) return;
+  for (const item of series) {
+    if (!item || typeof item !== "object") continue;
+    const s = item as Record<string, unknown>;
+    const label = s.label as Record<string, unknown> | undefined;
+    if (!label || label.show === false) continue;
+    const data = s.data as unknown[] | undefined;
+    if (!Array.isArray(data) || data.length > 60) continue;
+    s.data = data.map((v) => {
+      if (typeof v !== "number") return v;
+      return { value: v, label: { show: true, formatter: formatCompact(v) } };
+    });
+  }
 }
 
 // 检测 option 是否包含 echarts-gl 3D 系列（scatter3D/bar3D/surface/
