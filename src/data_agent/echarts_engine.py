@@ -1976,6 +1976,7 @@ _ECHARTS_HTML_TEMPLATE = """<!doctype html>
     // 滚轮缩放会连续触发 datazoom，setOption 每次执行会与缩放动画
     // 打架（点径一颤一颤）；静默 250ms 后再统一应用一次。
     var _zoomTimer = null;
+    var _lastSize = 0;
     var _applyZoomSize = function () {{
       var dz = (chart.getOption() || {{}}).dataZoom;
       if (!dz || !dz.length) return;
@@ -1985,6 +1986,9 @@ _ECHARTS_HTML_TEMPLATE = """<!doctype html>
       var zoom = 100 / span;
       var size = Math.min(9, Math.max(4, 4 * Math.sqrt(zoom)));
       var opacity = Math.min(0.9, Math.max(0.5, 0.5 * Math.pow(zoom, 0.2)));
+      // 点径未变（深层放大封顶后）跳过 setOption，避免无意义的全量重绘
+      if (Math.abs(size - _lastSize) < 0.25) return;
+      _lastSize = size;
       var updates = (option.series || []).map(function (s) {{
         if (s && s.type === 'scatter' && typeof s.symbolSize === 'number') {{
           return {{ symbolSize: size, itemStyle: {{ opacity: opacity }} }};

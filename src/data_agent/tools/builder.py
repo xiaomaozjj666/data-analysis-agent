@@ -147,6 +147,11 @@ _PLOTLY_GL_REFRESH_SCRIPT = """<script>/*gl-refresh-fix*/
 (function() {
   var bound = false, reacting = false, timer = null, polled = 0;
   var fullRanges = null;
+  // 白带修复只需每个主题状态做一次：react 会重建 gl 画布（暗色底色被
+  // 固化），后续缩放的画布重绘不再回退浅色。每次缩放都 react 意味着
+  // 每次缩放后都要全量重绘几秒——深层放大/缩小时持续抖动卡顿的来源。
+  var repaired = false;
+  var lastSize = 0, lastOpacity = 0;
   function hasGl() {
     var gd = document.querySelector('.plotly-graph-div');
     var traces = gd ? gd.data : [];
@@ -178,13 +183,18 @@ _PLOTLY_GL_REFRESH_SCRIPT = """<script>/*gl-refresh-fix*/
     return factor;
   }
   // 大数据点阵缩放自适应：全量小点半透明（分组色混合），放大后点径
-  // 与不透明度随缩放倍数提升，深度缩放下依然清晰可辨。
+  // 与不透明度随缩放倍数提升，深度缩放下依然清晰可辨。数值未变时
+  // 跳过 restyle（无变化的 restyle 也会触发一次全量重绘——深层放大
+  // 时点径封顶后每次缩放都 restyle 会造成一颤一颤）。
   function adaptPointSize() {
     var gd = document.querySelector('.plotly-graph-div');
     if (!gd || !window.Plotly) return;
     var z = zoomLevel();
     var size = Math.min(9, Math.max(3.5, 3.5 * Math.sqrt(z)));
     var opacity = Math.min(0.9, Math.max(0.5, 0.5 * Math.pow(z, 0.2)));
+    if (Math.abs(size - lastSize) < 0.25 && Math.abs(opacity - lastOpacity) < 0.02) return;
+    lastSize = size;
+    lastOpacity = opacity;
     try { Plotly.restyle(gd, { 'marker.size': size, 'marker.opacity': opacity }); } catch (e) {}
   }
   function refresh() {
@@ -207,7 +217,12 @@ _PLOTLY_GL_REFRESH_SCRIPT = """<script>/*gl-refresh-fix*/
     clearTimeout(settleTimer);
     settleTimer = setTimeout(function () {
       adaptPointSize();
-      schedule();
+      // 白带修复：每个主题状态只需一次（react 后画布底色固化），
+      // 避免每次缩放后都触发几秒的全量重绘。
+      if (document.documentElement.dataset.theme === 'dark' && !repaired) {
+        repaired = true;
+        schedule();
+      }
     }, 250);
   }
   function bind() {
@@ -218,6 +233,13 @@ _PLOTLY_GL_REFRESH_SCRIPT = """<script>/*gl-refresh-fix*/
       recordRanges();
       adaptPointSize();
       gd.on('plotly_relayout', settledApply);
+      // 主题切换后暗色 gl 画布重新变为未修复状态：下一次缩放时再修复
+      var themeWatcher = new MutationObserver(function () {
+        repaired = false;
+        lastSize = 0;
+        lastOpacity = 0;
+      });
+      themeWatcher.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     }
     return true;
   }
