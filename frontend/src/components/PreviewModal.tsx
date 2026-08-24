@@ -25,7 +25,7 @@ function PreviewModal({ preview, theme, setTheme, onDownload }: PreviewModalProp
     openArtifactPreview, closeArtifactPreview, loadCompareChart, downloadPng, editChart,
     onPreviewIframeLoaded,
     chartEditOpen, setChartEditOpen, chartEditTitle, setChartEditTitle,
-    chartEditColor, setChartEditColor, chartEditSaving,
+    chartEditColor, setChartEditColor, setChartEditColorTouched, chartEditSaving,
     previewFullscreen, setPreviewFullscreen, compareMode, setCompareMode,
     compareItem, compareHtml, compareLoading, pngDownloading,
   } = preview;
@@ -137,7 +137,7 @@ function PreviewModal({ preview, theme, setTheme, onDownload }: PreviewModalProp
             </label>
             <label>
               <span>主色</span>
-              <input type="color" value={chartEditColor} onChange={(e) => setChartEditColor(e.target.value)} aria-label="图表主色" />
+              <input type="color" value={chartEditColor} onChange={(e) => { setChartEditColor(e.target.value); setChartEditColorTouched(true); }} aria-label="图表主色" />
             </label>
             <button type="button" onClick={editChart} disabled={chartEditSaving}>
               {chartEditSaving ? "保存中…" : "应用修改"}

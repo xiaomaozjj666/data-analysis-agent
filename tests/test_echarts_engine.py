@@ -206,6 +206,34 @@ def test_echarts_scatter_highlights_iqr_outliers(tmp_path):
     assert "IQR 检出 1 个离群点" in option["title"]["subtext"]
 
 
+def test_echarts_large_scatter_uses_small_transparent_points(tmp_path):
+    """大数据散点：缩小点径 + 半透明，避免后绘制的系列盖住其它分组
+    颜色（视觉上只有一个颜色）。"""
+    import numpy as np
+
+    rng = np.random.default_rng(3)
+    n = 12_000
+    df = pd.DataFrame({
+        "region": ["East", "West"] * (n // 2),
+        "sales": rng.uniform(100, 5000, n),
+        "profit": rng.uniform(10, 1500, n),
+    })
+    ws = _make_workspace(tmp_path, df)
+    tools = {t.name: t for t in build_tools(ws)}
+    with patch.object(DataWorkspace, "ensure_echarts_bundle", return_value=_mock_bundle(tmp_path)):
+        result = json.loads(tools["create_visualization"].invoke({
+            "chart_type": "scatter", "x": "profit", "y": "sales",
+            "color": "region", "chart_engine": "echarts",
+        }))
+    option = json.loads(Path(result["echarts_json"]).read_text(encoding="utf-8"))
+    series = option["series"]
+    assert len(series) == 2                       # 两个区域的独立系列
+    assert series[0]["symbolSize"] == 4           # 大数据：小点
+    assert series[0]["itemStyle"]["opacity"] == 0.5
+    # 分组颜色保留（Tableau 色板按系列索引区分）
+    assert series[0]["itemStyle"]["color"] != series[1]["itemStyle"]["color"]
+
+
 def test_echarts_scatter_skips_outlier_split_when_heavy_tailed(tmp_path):
     """离群占比超 20% 时视为重尾分布，不做高亮（避免满屏红点误导）。"""
     # 双峰：一半在 1~10，一半在 1000+，大量点超界

@@ -4,6 +4,21 @@ import { api, describeApiError, requestHeaders } from "../utils/api";
 import { API_URL, PREVIEW_CACHE_MAX } from "../constants";
 import type { Artifact, Session } from "../types";
 
+// 编辑请求体构造：颜色只在用户主动修改过色块时才随请求发送。图表
+// 生成时按分类分配多色（如按品类着色的每组一个颜色），编辑表单的
+// 色块默认值是品牌单色——若"只改标题"也把默认色发给后端，后端会
+// 把整张图的所有 trace 刷成同一颜色，分组配色永久丢失。
+export function buildChartEditPayload(
+  title: string | undefined,
+  color: string | undefined,
+  colorTouched: boolean,
+): Record<string, string> {
+  const payload: Record<string, string> = {};
+  if (title) payload.title = title;
+  if (colorTouched && color) payload.color = color;
+  return payload;
+}
+
 export interface UseArtifactPreviewResult {
   openArtifactPreview: (item: Artifact) => Promise<void>;
   closeArtifactPreview: () => void;
@@ -20,6 +35,8 @@ export interface UseArtifactPreviewResult {
   setChartEditTitle: React.Dispatch<React.SetStateAction<string>>;
   chartEditColor: string;
   setChartEditColor: React.Dispatch<React.SetStateAction<string>>;
+  // 用户是否主动改过主色（未动过时编辑请求不携带 color，避免覆盖分组配色）
+  setChartEditColorTouched: React.Dispatch<React.SetStateAction<boolean>>;
   chartEditSaving: boolean;
   // 预览增强状态：全屏 / 对比 / PNG 导出
   previewFullscreen: boolean;
@@ -59,6 +76,10 @@ function useArtifactPreview(): UseArtifactPreviewResult {
   const [chartEditOpen, setChartEditOpen] = useState(false);
   const [chartEditTitle, setChartEditTitle] = useState("");
   const [chartEditColor, setChartEditColor] = useState("#245C55");
+  // 用户是否主动改过主色：编辑表单的色块默认值是品牌色，改标题时若
+  // 未经用户确认就把默认色发给后端，会把图表原本的分组配色（如按
+  // 品类着色的 4 个颜色）全部刷成同一个颜色。
+  const [chartEditColorTouched, setChartEditColorTouched] = useState(false);
   const [chartEditSaving, setChartEditSaving] = useState(false);
 
   // === Batch B1：图表预览增强 ===
@@ -368,7 +389,7 @@ function useArtifactPreview(): UseArtifactPreviewResult {
       const response = await fetch(`${API_URL}/api/sessions/${session.id}/artifacts/${previewItem.name}/edit`, {
         method: "PUT",
         headers: requestHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({ title: chartEditTitle || undefined, color: chartEditColor || undefined }),
+        body: JSON.stringify(buildChartEditPayload(chartEditTitle || undefined, chartEditColor, chartEditColorTouched)),
       });
       if (!response.ok) throw new Error("图表编辑失败");
       // 仅清除被编辑图表的缓存条目，保留其他图表的缓存（LRU 设计）。
@@ -400,6 +421,7 @@ function useArtifactPreview(): UseArtifactPreviewResult {
     if (previewItem) {
       setChartEditTitle(previewItem.description || previewItem.name);
       setChartEditColor("#245C55");
+      setChartEditColorTouched(false);
       setChartEditOpen(false);
     }
   }, [previewItem]);
@@ -413,7 +435,7 @@ function useArtifactPreview(): UseArtifactPreviewResult {
     onPreviewIframeLoaded,
     chartEditOpen, setChartEditOpen,
     chartEditTitle, setChartEditTitle,
-    chartEditColor, setChartEditColor,
+    chartEditColor, setChartEditColor, setChartEditColorTouched,
     chartEditSaving,
     previewFullscreen, setPreviewFullscreen,
     compareMode, setCompareMode,

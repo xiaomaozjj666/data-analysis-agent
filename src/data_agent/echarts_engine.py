@@ -785,6 +785,13 @@ def _echarts_scatter(
     x_label = _build_axis_label(x)
     y_label = _build_axis_label(y) if y else ""
 
+    # 大数据语义与 Plotly 分支对齐：数十万点全量绘制时 10px 不透明点
+    # 互相覆盖，最后绘制的系列把其它分组的颜色完全盖住（视觉上"只有
+    # 一个颜色"）。缩小点径 + 半透明让分组色混合成彩色点阵。
+    large_cloud = len(df) > 10_000
+    base_symbol = 4 if large_cloud else 10
+    base_opacity = 0.5 if large_cloud else 0.78
+
     base: dict[str, Any] = {
         "title": {**_ECHARTS_BASE_TITLE, "text": title, "subtext": f"{x_label} × {y_label}"},
         "tooltip": {**_ECHARTS_BASE_TOOLTIP, "trigger": "item",
@@ -821,10 +828,10 @@ def _echarts_scatter(
                 "data": data,
                 # 超过阈值自动启用 large 模式：万级点量下浏览器仍能丝滑交互
                 "large": True, "largeThreshold": 4000,
-                "symbolSize": _size_func(size, size_min, size_max) if size else 10,
+                "symbolSize": _size_func(size, size_min, size_max) if size else base_symbol,
                 "itemStyle": {
                     "color": _series_color(idx),
-                    "opacity": 0.78,
+                    "opacity": base_opacity,
                     "borderWidth": 0.8,
                     "borderColor": "#fff",
                     "shadowBlur": 4,
@@ -876,10 +883,10 @@ def _echarts_scatter(
             "type": "scatter",
             "data": _rows_data(normal_df, data_cols),
             "large": True, "largeThreshold": 4000,
-            "symbolSize": _size_func(size, size_min, size_max) if size else 10,
+            "symbolSize": _size_func(size, size_min, size_max) if size else base_symbol,
             "itemStyle": {
                 "color": _ECHARTS_PALETTE[0],
-                "opacity": 0.78,
+                "opacity": base_opacity,
                 "borderWidth": 0.8,
                 "borderColor": "#fff",
                 "shadowBlur": 4,
@@ -892,10 +899,10 @@ def _echarts_scatter(
                 "name": "离群点",
                 "type": "scatter",
                 "data": _rows_data(outlier_df, data_cols),
-                "symbolSize": _size_func(size, size_min, size_max) if size else 13,
+                "symbolSize": _size_func(size, size_min, size_max) if size else (6 if large_cloud else 13),
                 "itemStyle": {
                     "color": _ECHARTS_PALETTE[3],
-                    "opacity": 0.92,
+                    "opacity": 0.7 if large_cloud else 0.92,
                     "borderWidth": 1.2,
                     "borderColor": "#fff",
                     "shadowBlur": 6,
