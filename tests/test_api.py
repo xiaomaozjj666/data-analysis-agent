@@ -1834,6 +1834,9 @@ def test_inject_gl_refresh_fix_is_idempotent_and_scoped():
     injected = _inject_gl_refresh_fix(plotly_html)
     assert "gl-refresh-fix" in injected
     assert "plotly_relayout" in injected
+    # 缩放自适应点径（大数据点阵深放大后清晰可辨）
+    assert "adaptPointSize" in injected
+    assert "marker.size" in injected
 
     # 2. 幂等：二次注入不重复
     assert _inject_gl_refresh_fix(injected) == injected

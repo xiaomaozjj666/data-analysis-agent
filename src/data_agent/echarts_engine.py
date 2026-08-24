@@ -1966,6 +1966,31 @@ _ECHARTS_HTML_TEMPLATE = """<!doctype html>
   var chart = echarts.init(el, null, {{renderer: 'canvas', devicePixelRatio: Math.min(window.devicePixelRatio || 1, 2)}});
   var option = {option};
   chart.setOption(option, true);
+  // 大数据散点自适应点径：dataZoom 放大后全量的 4px/50% 透明度点阵
+  // 太淡，点径与不透明度随缩放倍数提升；回到全量恢复彩色点阵混合
+  // （与 Plotly 分支的缩放自适应语义一致）。
+  var _scatterSeries = (option.series || []).filter(function(s) {{
+    return s && s.type === 'scatter' && typeof s.symbolSize === 'number';
+  }});
+  if (_scatterSeries.length) {{
+    chart.on('datazoom', function () {{
+      var dz = (chart.getOption() || {{}}).dataZoom;
+      if (!dz || !dz.length) return;
+      var start = dz[0].start == null ? 0 : dz[0].start;
+      var end = dz[0].end == null ? 100 : dz[0].end;
+      var span = Math.max(1e-6, end - start);
+      var zoom = 100 / span;
+      var size = Math.min(9, Math.max(4, 4 * Math.sqrt(zoom)));
+      var opacity = Math.min(0.9, Math.max(0.5, 0.5 * Math.pow(zoom, 0.2)));
+      var updates = (option.series || []).map(function (s) {{
+        if (s && s.type === 'scatter' && typeof s.symbolSize === 'number') {{
+          return {{ symbolSize: size, itemStyle: {{ opacity: opacity }} }};
+        }}
+        return {{}};
+      }});
+      chart.setOption({{ series: updates }});
+    }});
+  }}
   window.addEventListener('resize', function(){{ chart.resize(); }});
   // 主题切换：监听 prefers-color-scheme（暂只渲染浅色，预留深色扩展点）
   window.__echartsInstance = chart;

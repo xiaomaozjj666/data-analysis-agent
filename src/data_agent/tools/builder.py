@@ -134,16 +134,19 @@ _CHART_COLORS = [
 #: Plotly 暗色模式自适应脚本：注入图表 HTML，监听主题变化动态切换背景和文字颜色。
 #: 浅色回退值与图表生成时的原始色板一致（#fbfaf5/#102a2a/#E5ECE9/#C9D5D1），
 #: 避免 applyTheme 首次执行时改变浅色图表的视觉。
-#: scattergl WebGL 图表在运行时主题 relayout（暗色脚本）后的缩放修复：
-#: plotly.js 的 gl 画布缓存在初始化时的背景色，relayout 更新 layout
-#: 背景色后不会重绘 gl 画布——深度缩放（modebar/框选）后绘图区会退回
-#: 初始浅色（暗色模式下出现"白带"）。此处监听 plotly_relayout 事件，
-#: 对含 WebGL 轨迹的图表在暗色主题下做一次 react 全量重渲染（保留当前
-#: 缩放范围），浅色主题下 gl 初始色一致，无需处理。自包含 IIFE，可被
-#: 预览/下载修复链注入到历史产物（旧模板不含本脚本）。
+#: scattergl WebGL 图表在运行时主题 relayout（暗色脚本）后的缩放修复 +
+#: 点径自适应。plotly.js 的 gl 画布缓存在初始化时的背景色，relayout 更新
+#: layout 背景色后不会重绘 gl 画布——深度缩放（modebar/框选）后绘图区会
+#: 退回初始浅色（暗色模式下出现"白带"）。此处监听 plotly_relayout 事件：
+#: 含 WebGL 轨迹的图表在暗色主题下 react 重渲染修复白带（保留当前缩放
+#: 范围）；同时按缩放深度自适应点径/不透明度——全量 3.5px/50% 的彩色
+#: 点阵在深度放大后太淡，放大越深点越大越实，回到全量恢复点阵（浅色
+#: 主题同样需要点径自适应，白带修复才限定暗色）。自包含 IIFE，可被
+#: 预览/下载修复链注入历史产物（旧模板不含本脚本）。
 _PLOTLY_GL_REFRESH_SCRIPT = """<script>/*gl-refresh-fix*/
 (function() {
   var bound = false, reacting = false, timer = null, polled = 0;
+  var fullRanges = null;
   function hasGl() {
     var gd = document.querySelector('.plotly-graph-div');
     var traces = gd ? gd.data : [];
@@ -151,6 +154,38 @@ _PLOTLY_GL_REFRESH_SCRIPT = """<script>/*gl-refresh-fix*/
       if (/gl$|3d$/i.test(String(traces[i].type || ''))) return true;
     }
     return false;
+  }
+  function recordRanges() {
+    var gd = document.querySelector('.plotly-graph-div');
+    if (!gd || !gd._fullLayout) return;
+    fullRanges = { x: gd._fullLayout.xaxis.range, y: gd._fullLayout.yaxis.range };
+  }
+  // 缩放倍数：当前轴范围相对初始全量范围的宽度比（x/y 取较大者）
+  function zoomLevel() {
+    var gd = document.querySelector('.plotly-graph-div');
+    if (!gd || !gd._fullLayout) return 1;
+    var factor = 1;
+    if (fullRanges && fullRanges.x && gd._fullLayout.xaxis.range) {
+      var fx = Math.abs(fullRanges.x[1] - fullRanges.x[0]) || 1;
+      var wx = Math.abs(gd._fullLayout.xaxis.range[1] - gd._fullLayout.xaxis.range[0]) || 1;
+      factor = fx / wx;
+    }
+    if (fullRanges && fullRanges.y && gd._fullLayout.yaxis.range) {
+      var fy = Math.abs(fullRanges.y[1] - fullRanges.y[0]) || 1;
+      var wy = Math.abs(gd._fullLayout.yaxis.range[1] - gd._fullLayout.yaxis.range[0]) || 1;
+      factor = Math.max(factor, fy / wy);
+    }
+    return factor;
+  }
+  // 大数据点阵缩放自适应：全量小点半透明（分组色混合），放大后点径
+  // 与不透明度随缩放倍数提升，深度缩放下依然清晰可辨。
+  function adaptPointSize() {
+    var gd = document.querySelector('.plotly-graph-div');
+    if (!gd || !window.Plotly) return;
+    var z = zoomLevel();
+    var size = Math.min(9, Math.max(3.5, 3.5 * Math.sqrt(z)));
+    var opacity = Math.min(0.9, Math.max(0.5, 0.5 * Math.pow(z, 0.2)));
+    try { Plotly.restyle(gd, { 'marker.size': size, 'marker.opacity': opacity }); } catch (e) {}
   }
   function refresh() {
     var gd = document.querySelector('.plotly-graph-div');
@@ -168,7 +203,14 @@ _PLOTLY_GL_REFRESH_SCRIPT = """<script>/*gl-refresh-fix*/
     var gd = document.querySelector('.plotly-graph-div');
     if (bound || !gd || !gd.on || !window.Plotly) return false;
     bound = true;
-    if (hasGl()) { gd.on('plotly_relayout', schedule); }
+    if (hasGl()) {
+      recordRanges();
+      adaptPointSize();
+      gd.on('plotly_relayout', function () {
+        adaptPointSize();
+        schedule();
+      });
+    }
     return true;
   }
   var keep = setInterval(function () {

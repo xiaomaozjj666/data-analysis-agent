@@ -254,6 +254,15 @@ def test_echarts_bar_value_label_uses_wan_formatter(tmp_path):
     assert "万" in formatter
 
 
+def test_echarts_html_template_has_datazoom_adaptive_size():
+    """ECharts 模板必须带 datazoom 自适应点径逻辑（大数据散点深度放大
+    后仍清晰可辨，与 Plotly 分支语义一致）。"""
+    from data_agent.echarts_engine import _ECHARTS_HTML_TEMPLATE
+
+    assert "chart.on('datazoom'" in _ECHARTS_HTML_TEMPLATE
+    assert "4 * Math.sqrt(zoom)" in _ECHARTS_HTML_TEMPLATE
+
+
 def test_echarts_scatter_skips_outlier_split_when_heavy_tailed(tmp_path):
     """离群占比超 20% 时视为重尾分布，不做高亮（避免满屏红点误导）。"""
     # 双峰：一半在 1~10，一半在 1000+，大量点超界
