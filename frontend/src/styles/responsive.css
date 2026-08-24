@@ -18,7 +18,7 @@
   .plan-panel { position: static; }
   /* 负 margin 与 .app-main 的 padding-inline 对齐（28px），
      否则空状态比视口宽产生横向滚动 */
-  .empty-workspace { margin: 0 -28px; grid-template-columns: 1fr; gap: 40px; padding: 54px 7vw; }
+  .empty-workspace { margin: 0 -16px; grid-template-columns: 1fr; gap: 40px; padding: 54px 7vw; }
   .empty-grid { width: min(72vw, 520px); justify-self: center; }
   .empty-copy { justify-self: center; text-align: center; }
 }
@@ -141,6 +141,10 @@
   /* main 区域 padding 收窄到 16px */
   .app-main { padding: 0 16px 48px; }
 
+  /* 空状态负 margin 与 app-main 的 16px padding 对齐（≤1040 的 -28px
+     规则在这里会各侧多出 12px，导致空状态比视口宽出 24px 出现横向滚动） */
+  .empty-workspace { margin: 0 -16px; }
+
   /* analysis-grid 由双列改为单列堆叠 */
   .analysis-grid { grid-template-columns: 1fr; }
 }
@@ -149,6 +153,9 @@
 @media (max-width: 768px) {
   /* main 区域 padding 进一步收窄到 12px */
   .app-main { padding: 0 12px 32px; }
+
+  /* 空状态负 margin 与 12px padding 对齐 */
+  .empty-workspace { margin: 0 -12px; }
 
   /* topbar 高度减小并允许换行，避免操作区挤压标题 */
   .topbar { flex-wrap: wrap; height: 52px; }
