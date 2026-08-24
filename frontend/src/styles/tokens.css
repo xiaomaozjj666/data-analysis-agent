@@ -164,6 +164,12 @@
   background: linear-gradient(135deg, #1a1b1e 0%, #161719 45%, #131415 100%) fixed;
 }
 
+/* 暗色模式兜底：根节点 `<html>` 也覆盖为暗色。body 的渐变只铺满内容
+   区域，任何布局未覆盖的边缘（如窄窗口/大屏缩放时容器未撑满）会露出
+   html 的默认浅色背景，在暗色主题下形成刺眼的白边（"不能全屏"的
+   观感）。html 换深色后，任何状态下都不会露白。 */
+html[data-theme="dark"] { background: #131415; }
+
 /* 暗色下 iframe 内的 ECharts 图表无法感知主题，预览模态框给一个深底适配 */
 [data-theme="dark"] .preview-stage {
   background: var(--canvas-subtle);
