@@ -1132,6 +1132,14 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             # 大数据时轨迹已被切换为 scattergl（WebGL），两个选择器都覆盖
             fig.update_traces(marker={"size": 9, "opacity": 0.82, "line": {"width": 0.7, "color": "white"}}, selector={"type": "scatter"})
             fig.update_traces(marker={"size": 9, "opacity": 0.82, "line": {"width": 0.7, "color": "white"}}, selector={"type": "scattergl"})
+            if len(df) > _PLOTLY_WEBGL_THRESHOLD:
+                # 大数据全量点互相覆盖：不透明的 9px 点会让最后绘制的
+                # 系列把其它品类的颜色完全盖住，视觉上"只有一个颜色"。
+                # 缩小点径 + 降低透明度，让分组色混合成彩色点阵（密度
+                # 感由色彩混合表达而非实心色块），放大后仍可分辨。
+                small = {"size": 3.5, "opacity": 0.5, "line": {"width": 0.2, "color": "white"}}
+                fig.update_traces(marker=small, selector={"type": "scatter"})
+                fig.update_traces(marker=small, selector={"type": "scattergl"})
         if color:
             fig.update_layout(legend_title_text=_human_column_label(color))
         html_path = workspace.artifacts_dir / f"{stem}.html"
