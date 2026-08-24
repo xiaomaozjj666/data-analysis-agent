@@ -93,10 +93,26 @@ describe("EChartThumb.simplifyForThumb", () => {
     // 大头针区域顶部留白加大，防裁切
     expect((option.grid as { top: number }).top).toBe(24);
   });
+
+  it("bakes formatted static value labels for bar charts", () => {
+    const option = simplifyForThumb(
+      {
+        series: [
+          {
+            type: "bar",
+            data: [54849.46, 70012.68000000001, 109179.03],
+            label: { show: true, position: "top", formatter: "function(p){return p.value;}" },
+          },
+        ],
+      },
+      false,
+    ) as { series: Array<{ data: Array<{ value: number; label: { formatter: string } }> }> };
+    // 迷你图剥离 JS formatter 后，静态格式化文本避免裸浮点
+    expect(option.series[0].data.map((d) => d.label.formatter)).toEqual(["5.5万", "7.0万", "10.9万"]);
+  });
 });
 
-describe("EChartThumb.stripFunctions", () => {
-  it("removes function strings without executing anything", () => {
+describe("EChartThumb.stripFunctions", () => {  it("removes function strings without executing anything", () => {
     const out = stripFunctions({
       tooltip: { formatter: "function(p){return p.value;}" },
       series: [{ type: "bar", data: [1], label: { formatter: "function(v){return v;}" } }],

@@ -234,6 +234,26 @@ def test_echarts_large_scatter_uses_small_transparent_points(tmp_path):
     assert series[0]["itemStyle"]["color"] != series[1]["itemStyle"]["color"]
 
 
+def test_echarts_bar_value_label_uses_wan_formatter(tmp_path):
+    """柱状图顶部数值标签用「万」缩写 formatter，而非 {c} 模板裸显
+    浮点（70012.68000000001）与 10 万级长数字。"""
+    df = pd.DataFrame({
+        "region": ["A", "B", "C"],
+        "sales": [54849.46, 70012.68, 109179.03],
+    })
+    ws = _make_workspace(tmp_path, df)
+    tools = {t.name: t for t in build_tools(ws)}
+    with patch.object(DataWorkspace, "ensure_echarts_bundle", return_value=_mock_bundle(tmp_path)):
+        result = json.loads(tools["create_visualization"].invoke({
+            "chart_type": "bar", "x": "region", "y": "sales",
+            "aggregation": "sum", "chart_engine": "echarts",
+        }))
+    option = json.loads(Path(result["echarts_json"]).read_text(encoding="utf-8"))
+    formatter = option["series"][0]["label"]["formatter"]
+    assert isinstance(formatter, str) and formatter.startswith("function(p)")
+    assert "万" in formatter
+
+
 def test_echarts_scatter_skips_outlier_split_when_heavy_tailed(tmp_path):
     """离群占比超 20% 时视为重尾分布，不做高亮（避免满屏红点误导）。"""
     # 双峰：一半在 1~10，一半在 1000+，大量点超界

@@ -117,11 +117,14 @@ function PreviewModal({ preview, theme, setTheme, onDownload }: PreviewModalProp
                 对比
               </button>
             ) : null}
-            {/* 图表编辑：切换内联编辑面板，修改标题或主色后调用后端更新产物 */}
-            <button type="button" onClick={() => setChartEditOpen(!chartEditOpen)} title="编辑图表" aria-label="编辑图表标题或主色">
-              <Palette size={15} />
-              编辑
-            </button>
+            {/* 图表编辑：仅 Plotly 图表支持（后端 /edit 基于 .plotly.json 重新生成），
+                ECharts 图表点了会 404，直接隐藏入口 */}
+            {previewItem?.engine === "plotly" && (
+              <button type="button" onClick={() => setChartEditOpen(!chartEditOpen)} title="编辑图表" aria-label="编辑图表标题或主色">
+                <Palette size={15} />
+                编辑
+              </button>
+            )}
             {/* 全屏切换（#17）：撑满视口，配合响应式 resize 自适应图表尺寸 */}
             <button type="button" title="全屏" aria-label={previewFullscreen ? "退出全屏" : "全屏预览"} onClick={() => setPreviewFullscreen(v => !v)}>
               <Maximize2 size={15} />
