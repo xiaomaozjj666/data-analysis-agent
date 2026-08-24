@@ -1973,11 +1973,10 @@ _ECHARTS_HTML_TEMPLATE = """<!doctype html>
     return s && s.type === 'scatter' && typeof s.symbolSize === 'number';
   }});
   if (_scatterSeries.length) {{
-    // 滚轮缩放会连续触发 datazoom，setOption 每次执行会与缩放动画
-    // 打架（点径一颤一颤）；静默 250ms 后再统一应用一次。
-    var _zoomTimer = null;
+    // 每次 datazoom 直接微调点径（setOption 增量更新开销小，delta
+    // 跳过保证封顶/回底后零操作），避免"缩放停止后跳变"的突跳感。
     var _lastSize = 0;
-    var _applyZoomSize = function () {{
+    chart.on('datazoom', function () {{
       var dz = (chart.getOption() || {{}}).dataZoom;
       if (!dz || !dz.length) return;
       var start = dz[0].start == null ? 0 : dz[0].start;
@@ -1986,7 +1985,6 @@ _ECHARTS_HTML_TEMPLATE = """<!doctype html>
       var zoom = 100 / span;
       var size = Math.min(9, Math.max(4, 4 * Math.sqrt(zoom)));
       var opacity = Math.min(0.9, Math.max(0.5, 0.5 * Math.pow(zoom, 0.2)));
-      // 点径未变（深层放大封顶后）跳过 setOption，避免无意义的全量重绘
       if (Math.abs(size - _lastSize) < 0.25) return;
       _lastSize = size;
       var updates = (option.series || []).map(function (s) {{
@@ -1996,10 +1994,6 @@ _ECHARTS_HTML_TEMPLATE = """<!doctype html>
         return {{}};
       }});
       chart.setOption({{ series: updates }});
-    }};
-    chart.on('datazoom', function () {{
-      clearTimeout(_zoomTimer);
-      _zoomTimer = setTimeout(_applyZoomSize, 250);
     }});
   }}
   window.addEventListener('resize', function(){{ chart.resize(); }});

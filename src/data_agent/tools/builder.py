@@ -209,21 +209,24 @@ _PLOTLY_GL_REFRESH_SCRIPT = """<script>/*gl-refresh-fix*/
     clearTimeout(timer);
     timer = setTimeout(refresh, 150);
   }
-  // 滚轮缩放会连续触发大量 plotly_relayout（每次滚动一格一次），
-  // 若每个事件都 restyle/react，点径反复变化会与缩放动画打架
-  // （一颤一颤）。改为缩放停止后的静默期统一应用一次。
+  // 滚轮缩放会连续触发大量 plotly_relayout（每次滚动一格一次）。
+  // 策略：
+  // 1) 点径随缩放连续微调（每次 relayout 立即 adaptPointSize——
+  //    实测单次 gl restyle 仅 ~7ms，delta 跳过保证封顶/回底后零操作），
+  //    避免"缩放停止后一次性跳变"造成的点径突跳感；
+  // 2) 白带修复的 react（30 万点全量重绘约 2.5s）只在缩放完全停止
+  //    900ms 后执行且每主题状态仅一次——不与连续缩放抢占主线程。
   var settleTimer = null;
   function settledApply() {
+    adaptPointSize();
     clearTimeout(settleTimer);
     settleTimer = setTimeout(function () {
-      adaptPointSize();
       // 白带修复：每个主题状态只需一次（react 后画布底色固化），
-      // 避免每次缩放后都触发几秒的全量重绘。
       if (document.documentElement.dataset.theme === 'dark' && !repaired) {
         repaired = true;
         schedule();
       }
-    }, 250);
+    }, 900);
   }
   function bind() {
     var gd = document.querySelector('.plotly-graph-div');
