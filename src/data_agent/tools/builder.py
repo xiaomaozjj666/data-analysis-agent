@@ -199,6 +199,17 @@ _PLOTLY_GL_REFRESH_SCRIPT = """<script>/*gl-refresh-fix*/
     clearTimeout(timer);
     timer = setTimeout(refresh, 150);
   }
+  // 滚轮缩放会连续触发大量 plotly_relayout（每次滚动一格一次），
+  // 若每个事件都 restyle/react，点径反复变化会与缩放动画打架
+  // （一颤一颤）。改为缩放停止后的静默期统一应用一次。
+  var settleTimer = null;
+  function settledApply() {
+    clearTimeout(settleTimer);
+    settleTimer = setTimeout(function () {
+      adaptPointSize();
+      schedule();
+    }, 250);
+  }
   function bind() {
     var gd = document.querySelector('.plotly-graph-div');
     if (bound || !gd || !gd.on || !window.Plotly) return false;
@@ -206,10 +217,7 @@ _PLOTLY_GL_REFRESH_SCRIPT = """<script>/*gl-refresh-fix*/
     if (hasGl()) {
       recordRanges();
       adaptPointSize();
-      gd.on('plotly_relayout', function () {
-        adaptPointSize();
-        schedule();
-      });
+      gd.on('plotly_relayout', settledApply);
     }
     return true;
   }

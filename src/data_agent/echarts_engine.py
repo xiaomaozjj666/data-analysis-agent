@@ -1973,7 +1973,10 @@ _ECHARTS_HTML_TEMPLATE = """<!doctype html>
     return s && s.type === 'scatter' && typeof s.symbolSize === 'number';
   }});
   if (_scatterSeries.length) {{
-    chart.on('datazoom', function () {{
+    // 滚轮缩放会连续触发 datazoom，setOption 每次执行会与缩放动画
+    // 打架（点径一颤一颤）；静默 250ms 后再统一应用一次。
+    var _zoomTimer = null;
+    var _applyZoomSize = function () {{
       var dz = (chart.getOption() || {{}}).dataZoom;
       if (!dz || !dz.length) return;
       var start = dz[0].start == null ? 0 : dz[0].start;
@@ -1989,6 +1992,10 @@ _ECHARTS_HTML_TEMPLATE = """<!doctype html>
         return {{}};
       }});
       chart.setOption({{ series: updates }});
+    }};
+    chart.on('datazoom', function () {{
+      clearTimeout(_zoomTimer);
+      _zoomTimer = setTimeout(_applyZoomSize, 250);
     }});
   }}
   window.addEventListener('resize', function(){{ chart.resize(); }});
