@@ -477,6 +477,21 @@ def test_frontend_catchall_blocks_traversal_and_symlink(tmp_path, monkeypatch):
     assert client.get("/app.js").status_code == 404
 
 
+def test_frontend_catchall_404_when_dist_missing(monkeypatch):
+    """dist 目录不存在（如仅部署后端、前端未构建）时，catch-all 必须
+    返回 404 而不是对缺失文件调用 FileResponse 触发 500。"""
+    from fastapi.testclient import TestClient
+
+    from data_agent import api
+
+    monkeypatch.delenv("APP_ACCESS_TOKEN", raising=False)
+    monkeypatch.setattr(api, "frontend_dist", api.frontend_dist / "no-such-build")
+    client = TestClient(api.app)
+    assert client.get("/some/spa/route").status_code == 404
+    # API 前缀逻辑不受影响
+    assert client.get("/api/not-a-real-endpoint").status_code == 404
+
+
 # ---------------------------------------------------------------------------
 # artifacts.py：bundle 缓存错误路径 / latin-1 兜底 / 内联失败保持原样
 # ---------------------------------------------------------------------------
