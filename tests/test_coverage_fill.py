@@ -3125,3 +3125,43 @@ def test_handle_tool_error_wraps_exceptions(workspace):
     # 工具失败应被包装为带 error_code 的 ToolMessage，且错误已恢复
     assert any(item["type"] == "tool_call" and item["name"] == "run_python_code" for item in result.trace)
 
+
+
+def test_curate_artifacts_keeps_dual_engine_same_title(tmp_path):
+    """双引擎同标题是两张独立图：去重键带引擎维度，不能互顶。
+
+    实测发现：LLM 按要求用 plotly/echarts 各生成一张同主题散点图时，
+    旧去重逻辑按语义标题合并，ECharts 图被 Plotly 图顶掉，产物中心
+    只剩一张卡。同引擎的重试仍应去重（只保留最新）。
+    """
+    from data_agent.registry import _curate_artifacts
+
+    # 构造真实的姊妹 JSON 文件供引擎推断
+    plotly_html = tmp_path / "散点图_1.html"
+    echarts_html = tmp_path / "散点图_2.html"
+    (tmp_path / "散点图_1.plotly.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "散点图_2.echarts.json").write_text("{}", encoding="utf-8")
+    plotly_html.write_text("<html></html>", encoding="utf-8")
+    echarts_html.write_text("<html></html>", encoding="utf-8")
+
+    artifacts = [
+        {"name": "散点图_1.html", "kind": "visualization", "description": "sales 与 profit 关系散点图（全量 60,000 点）", "path": str(plotly_html)},
+        {"name": "散点图_2.html", "kind": "visualization", "description": "sales 与 profit 关系散点图（全量 60,000 点）", "path": str(echarts_html)},
+    ]
+    result = _curate_artifacts(artifacts)
+    visualizations = [item for item in result if item["kind"] == "visualization"]
+    assert len(visualizations) == 2
+
+    # 同引擎重试：同标题 + 同引擎 → 只保留最新一个
+    plotly_retry = tmp_path / "散点图_3.html"
+    (tmp_path / "散点图_3.plotly.json").write_text("{}", encoding="utf-8")
+    plotly_retry.write_text("<html></html>", encoding="utf-8")
+    artifacts.append({
+        "name": "散点图_3.html", "kind": "visualization",
+        "description": "sales 与 profit 关系散点图（全量 60,000 点）", "path": str(plotly_retry),
+    })
+    result2 = _curate_artifacts(artifacts)
+    visualizations2 = [item for item in result2 if item["kind"] == "visualization"]
+    assert len(visualizations2) == 2  # plotly 最新一张 + echarts 一张
+    assert any(item["name"] == "散点图_3.html" for item in visualizations2)
+    assert any(item["name"] == "散点图_2.html" for item in visualizations2)

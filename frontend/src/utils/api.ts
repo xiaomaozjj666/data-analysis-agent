@@ -135,4 +135,22 @@ function uploadWithProgress<T = unknown>(path: string, form: FormData, options: 
   });
 }
 
-export { api, requestHeaders, describeApiError, ApiError, uploadWithProgress };
+// 缩略图等轻量 JSON 拉取：带超时兜底。普通 fetch 在服务端中断/连接
+// 挂起时 response.json() 可能永久 pending（实测：后端重启时缩略图链路
+// 永远卡死且无任何可见状态），超时转 AbortError 让调用方走失败回退。
+async function fetchJsonWithTimeout<T = unknown>(path: string, timeoutMs = 10_000): Promise<T> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${API_URL}${path}`, {
+      headers: requestHeaders(),
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new ApiError(describeApiError(await response.text(), response.status), response.status);
+    return (await response.json()) as T;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+export { api, requestHeaders, describeApiError, ApiError, uploadWithProgress, fetchJsonWithTimeout };

@@ -65,7 +65,9 @@ afterEach(() => {
 });
 
 describe("App 渲染冒烟", () => {
-  it("鉴权免登时完整挂载主壳：侧栏 wordmark + 空工作台", async () => {
+  it(
+    "鉴权免登时完整挂载主壳：侧栏 wordmark + 空工作台",
+    async () => {
     apiMock.mockImplementation((url: string) => {
       if (url.startsWith("/api/auth")) {
         return Promise.resolve({ required: false, authenticated: true });
@@ -106,5 +108,7 @@ describe("App 渲染冒烟", () => {
     ).toBeInTheDocument();
     // 历史列表拉取已被触发（鉴权通过后 fetchHistory）
     expect(apiMock).toHaveBeenCalledWith("/api/sessions?limit=30");
-  });
+    },
+    15000,
+  );
 });

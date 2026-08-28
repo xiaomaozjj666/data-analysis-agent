@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
-import { API_URL } from "../constants";
 import { pickChartIcon } from "../constants";
-import { requestHeaders } from "../utils/api";
+import { fetchJsonWithTimeout } from "../utils/api";
 import useInView from "../hooks/useInView";
 
 interface EChartThumbProps {
@@ -340,12 +339,9 @@ const EChartThumb = React.memo(function EChartThumb({ previewUrl, alt }: EChartT
         }
         if (!optionRef.current) {
           const jsonUrl = previewUrl.replace(/\/preview$/, "/echarts-json");
-          const response = await fetch(`${API_URL}${jsonUrl}`, { headers: requestHeaders() });
-          if (!response.ok) throw new Error(`echarts-json ${response.status}`);
-          const raw = (await response.json()) as unknown;
-          const cleaned = stripFunctions(raw) as Record<string, unknown> | undefined;
+          const cleaned = await fetchJsonWithTimeout<Record<string, unknown>>(jsonUrl);
           if (disposed) return;
-          if (cleaned) optionRef.current = cleaned;
+          if (cleaned) optionRef.current = stripFunctions(cleaned) as Record<string, unknown>;
         }
         const cleaned = optionRef.current;
         if (disposed || !cleaned) return;
