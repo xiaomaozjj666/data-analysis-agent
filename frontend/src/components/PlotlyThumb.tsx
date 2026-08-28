@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { API_URL } from "../constants";
 import { pickChartIcon } from "../constants";
 import { requestHeaders } from "../utils/api";
+import useInView from "../hooks/useInView";
 import AuthImage from "./AuthImage";
 
 interface PlotlyThumbProps {
@@ -129,7 +130,10 @@ export function simplifyPlotlyForThumb(
 // 渲染迷你图，悬停即可查看数据点；失败（无数据文件/损坏）时回退到
 // 原有 PNG 缩略图，保证任何情况下卡片都有内容。
 const PlotlyThumb = React.memo(function PlotlyThumb({ previewUrl, fallbackSrc, alt }: PlotlyThumbProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
+  // 容器同时承担可见性观测：进入视口才拉取数据并初始化图表，离开视口
+  // purge 释放实例（重新进入时用已缓存的 figure 重绘，不再发请求）。
+  // 产物网格几十张卡时，常驻实例数从"卡片总数"降到"可见数"。
+  const { ref: containerRef, inView } = useInView<HTMLDivElement>("240px");
   const [failed, setFailed] = useState(false);
   const [figure, setFigure] = useState<FigureShape | null>(null);
   const [theme, setTheme] = useState(() => document.documentElement.dataset.theme === "dark");
@@ -137,6 +141,7 @@ const PlotlyThumb = React.memo(function PlotlyThumb({ previewUrl, fallbackSrc, a
   const renderedRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
+    if (!inView || figure) return;
     let disposed = false;
     (async () => {
       try {
@@ -152,7 +157,7 @@ const PlotlyThumb = React.memo(function PlotlyThumb({ previewUrl, fallbackSrc, a
     return () => {
       disposed = true;
     };
-  }, [previewUrl]);
+  }, [previewUrl, inView, figure]);
 
   useEffect(() => {
     const observer = new MutationObserver(() => {
@@ -162,9 +167,21 @@ const PlotlyThumb = React.memo(function PlotlyThumb({ previewUrl, fallbackSrc, a
     return () => observer.disconnect();
   }, []);
 
-  // 渲染 / 换肤：figure 就绪后 newPlot；主题切换后 react（保留悬停状态）
+  // 渲染 / 换肤 / 释放：figure 就绪且在视口内 → newPlot（首次）或
+  // react（主题切换，保留悬停状态）；离开视口 → purge 释放实例。
   useEffect(() => {
-    if (!figure || failed) return;
+    if (!figure || failed || !inView) {
+      if (!inView && renderedRef.current) {
+        renderedRef.current = null;
+        void import("plotly.js-dist-min")
+          .then((m) => {
+            const el = containerRef.current;
+            if (el) m.default.purge(el);
+          })
+          .catch(() => {});
+      }
+      return;
+    }
     let disposed = false;
     (async () => {
       try {
@@ -186,7 +203,7 @@ const PlotlyThumb = React.memo(function PlotlyThumb({ previewUrl, fallbackSrc, a
     return () => {
       disposed = true;
     };
-  }, [figure, theme, failed]);
+  }, [figure, theme, failed, inView, containerRef]);
 
   // 容器尺寸变化（卡片网格重排/窗口缩放）时让 plotly 跟随
   useEffect(() => {
@@ -205,7 +222,7 @@ const PlotlyThumb = React.memo(function PlotlyThumb({ previewUrl, fallbackSrc, a
     });
     observer.observe(el);
     return () => observer.disconnect();
-  }, [figure, failed]);
+  }, [figure, failed, containerRef]);
 
   // 卸载时 purge，避免跨组件复用同一 DOM 产生残留
   useEffect(() => {

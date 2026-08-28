@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import operator
 import re
@@ -36,6 +37,7 @@ from scipy import stats
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
+from data_agent.chart_sampling import _EMBED_MAX_POINTS, sample_plotly_figure_for_embed, sampling_note
 from data_agent.serialization import json_text
 from data_agent.workspace import DataWorkspace, _atomic_write_text
 
@@ -1225,6 +1227,31 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             df, chart_type=chart_type, x=x, y=y, color=color,
             aggregation=aggregation, title=display_title,
         )
+        # 全量 figure 序列化一次复用：完整数据写入 .plotly.json 产物，
+        # 大数据时也作为嵌入降采样的输入源。抽样决策必须在解读块构建
+        # 之前完成——抽样声明要追加进解读文本一起渲染。
+        fig_json_text = fig.to_json()
+        html_fig = fig
+        sampling_info: dict[str, Any] | None = None
+        # 大数据 HTML 嵌入降采样：散点/折线超过嵌入上限时，交互 HTML
+        # 按等距抽样渲染（5 万点以上视觉上已是密度饱和，HTML 体积、
+        # 传输、iframe 解析、tab 内存却随点数线性增长）。完整数据不丢：
+        # 全量 figure 仍写入 .plotly.json 产物。
+        if chart_type in {"scatter", "line"} and len(df) > _EMBED_MAX_POINTS:
+            sampled_dict, original_pts, embedded_pts = sample_plotly_figure_for_embed(
+                json.loads(fig_json_text), _EMBED_MAX_POINTS
+            )
+            if embedded_pts < original_pts:
+                import plotly.io as pio
+
+                html_fig = pio.from_json(json.dumps(sampled_dict))
+                interpretation += sampling_note("plotly", original_pts, embedded_pts)
+                sampling_info = {
+                    "applied": True,
+                    "original_points": original_pts,
+                    "embedded_points": embedded_pts,
+                    "full_data_json": str(workspace.artifacts_dir / f"{stem}.plotly.json"),
+                }
         interpretation_block = ""
         if interpretation:
             interpretation_block = (
@@ -1234,7 +1261,7 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                 '</div>'
             )
         if relative_script is not None:
-            div = fig.to_html(
+            div = html_fig.to_html(
                 full_html=False,
                 include_plotlyjs=False,
                 default_width="100%",
@@ -1280,7 +1307,8 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         json_path = workspace.artifacts_dir / f"{stem}.plotly.json"
         # plotly write_json 不带 encoding 时在 Windows 上按 locale(cp936/GBK) 写文件，
         # 必须显式 UTF-8，否则后续 UTF-8 读取会 UnicodeDecodeError。
-        json_path.write_text(fig.to_json(), encoding="utf-8")
+        # fig_json_text 在 div 生成前已序列化（完整 figure，非抽样副本）。
+        json_path.write_text(fig_json_text, encoding="utf-8")
         workspace.register_artifact(json_path, "chart_data", "Plotly figure JSON")
 
         response: dict[str, Any] = {
@@ -1298,6 +1326,8 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             "html": html_path,
             "plotly_json": json_path,
         }
+        if sampling_info is not None:
+            response["sampling"] = sampling_info
         if export_png:
             png_path = workspace.artifacts_dir / f"{stem}.png"
             try:

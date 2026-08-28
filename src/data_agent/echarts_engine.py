@@ -2221,6 +2221,12 @@ def _render_echarts(
     chart_type_source: str = "explicit",
 ) -> dict[str, Any]:
     """ECharts 渲染主入口：生成 option、HTML、解读文本，返回 response dict。"""
+    from data_agent.chart_sampling import (
+        _EMBED_MAX_POINTS,
+        sample_echarts_option_for_embed,
+        sampling_note,
+    )
+
     # 生成 ECharts option
     option = _build_echarts_option(
         df, chart_type=chart_type, x=x, y=y, color=color, z=z, size=size,
@@ -2233,6 +2239,26 @@ def _render_echarts(
         df, chart_type=chart_type, x=x, y=y, color=color,
         aggregation=aggregation, title=display_title,
     )
+
+    # 大数据 HTML 嵌入降采样：散点/折线超过嵌入上限时，交互 HTML 按等距
+    # 抽样渲染（5 万点以上视觉密度已饱和，HTML 体积/传输/解析/内存随点数
+    # 线性增长——30 万行 ECharts 散点 HTML 约 12MB）。完整 option 不丢：
+    # .echarts.json 产物仍写全量数据（也是损坏恢复链的数据源）。
+    html_option = option
+    sampling_info: dict[str, Any] | None = None
+    if chart_type in {"scatter", "scatter_3d", "line", "area"} and len(df) > _EMBED_MAX_POINTS:
+        html_option, original_pts, embedded_pts = sample_echarts_option_for_embed(
+            option, _EMBED_MAX_POINTS
+        )
+        if embedded_pts < original_pts:
+            note = sampling_note("echarts", original_pts, embedded_pts)
+            interpretation += note
+            sampling_info = {
+                "applied": True,
+                "original_points": original_pts,
+                "embedded_points": embedded_pts,
+                "full_data_json": str(workspace.artifacts_dir / f"{stem}.echarts.json"),
+            }
 
     # 获取 echarts bundle（首次从 CDN 下载，失败时用 CDN URL 直引）
     bundle = workspace.ensure_echarts_bundle()
@@ -2254,7 +2280,7 @@ def _render_echarts(
     html_path = workspace.artifacts_dir / f"{stem}.html"
     html_content = _build_echarts_html(
         title=display_title,
-        option=option,
+        option=html_option,
         script_src=relative_script,
         interpretation=interpretation,
         extra_script_src=extra_script_src,
@@ -2262,12 +2288,13 @@ def _render_echarts(
     _atomic_write_text(html_path, html_content)
     workspace.register_artifact(html_path, "visualization", display_title)
 
-    # ECharts option JSON：供前端动态渲染 / 调试
+    # ECharts option JSON：供前端动态渲染 / 调试。始终写全量 option
+    #（HTML 可能是抽样副本），损坏恢复链依赖这里的完整数据。
     json_path = workspace.artifacts_dir / f"{stem}.echarts.json"
     _atomic_write_text(json_path, json.dumps(option, ensure_ascii=False, default=_json_default))
     workspace.register_artifact(json_path, "chart_data", "ECharts option JSON")
 
-    return {
+    result = {
         "status": "ok",
         "chart_engine": "echarts",
         "chart_type": chart_type,
@@ -2285,3 +2312,6 @@ def _render_echarts(
         "scale_mode": "auto",
         "scale_details": {"scale_mode": "auto", "extreme_points": []},
     }
+    if sampling_info is not None:
+        result["sampling"] = sampling_info
+    return result
