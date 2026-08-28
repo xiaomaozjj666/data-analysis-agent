@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
-import { API_URL } from "../constants";
 import { pickChartIcon } from "../constants";
-import { requestHeaders } from "../utils/api";
+import { fetchJsonWithTimeout } from "../utils/api";
 import useInView from "../hooks/useInView";
 import AuthImage from "./AuthImage";
 
@@ -146,9 +145,7 @@ const PlotlyThumb = React.memo(function PlotlyThumb({ previewUrl, fallbackSrc, a
     (async () => {
       try {
         const jsonUrl = previewUrl.replace(/\/preview$/, "/plotly-json");
-        const response = await fetch(`${API_URL}${jsonUrl}`, { headers: requestHeaders() });
-        if (!response.ok) throw new Error(`plotly-json ${response.status}`);
-        const fig = (await response.json()) as FigureShape;
+        const fig = await fetchJsonWithTimeout<FigureShape>(jsonUrl);
         if (!disposed) setFigure(fig);
       } catch {
         if (!disposed) setFailed(true);

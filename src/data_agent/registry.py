@@ -650,6 +650,25 @@ def _dataset_priority(name: str) -> _ArtifactPriority:
     return _ArtifactPriority.DEFAULT
 
 
+def _visualization_engine(item: dict[str, str]) -> str:
+    """从产物文件推断图表引擎：同名 .plotly.json → plotly，.echarts.json → echarts。
+
+    可视化产物的去重键需要引擎维度：同一语义标题下，不同引擎的图是
+    独立产物（双引擎对比是明确的产品诉求），只有同引擎的重试才视为
+    「最新覆盖旧版」。无 path 或找不到姊妹 JSON 时返回空串。
+    """
+    raw_path = item.get("path") or ""
+    if not raw_path:
+        return ""
+    stem = Path(raw_path).stem
+    parent = Path(raw_path).parent
+    if (parent / f"{stem}.plotly.json").is_file():
+        return "plotly"
+    if (parent / f"{stem}.echarts.json").is_file():
+        return "echarts"
+    return ""
+
+
 def _curate_artifacts(artifacts: list[dict[str, str]]) -> list[dict[str, str]]:
     """Return a concise, user-facing result set instead of every intermediate file."""
     latest_visualizations: dict[str, dict[str, str]] = {}
@@ -666,7 +685,10 @@ def _curate_artifacts(artifacts: list[dict[str, str]]) -> list[dict[str, str]]:
         key = re.sub(r"[^\w\u4e00-\u9fff]+", "", semantic_title)
         key = key or Path(item.get("name", "artifact")).stem.lower()
         if kind == "visualization":
-            latest_visualizations[key] = item
+            # 去重键带引擎维度：双引擎同标题是两张独立图（实测发现
+            # ECharts/Plotly 双图被旧逻辑互顶只剩一张），同引擎重试才覆盖
+            engine = _visualization_engine(item)
+            latest_visualizations[(key, engine)] = item
         elif kind == "image":
             images[key] = item
         elif kind == "dataset":
