@@ -812,9 +812,12 @@ def _echarts_scatter(
         "color": _ECHARTS_PALETTE,
         "xAxis": [_echarts_value_axis(df, x, name=x_label, scale=True)],
         "yAxis": [_echarts_value_axis(df, y, name=y_label, scale=True)],
+        # 显式 id（dz-x/dz-y）：模板里的缩放自适应脚本按 id 区分事件来自
+        # 哪个轴的 dataZoom（e.batch[].dataZoomId），未加 id 时 ECharts 生成
+        # 内部自动 id，脚本无法归因轴。
         "dataZoom": [
-            {"type": "inside", "xAxisIndex": 0, "filterMode": "none"},
-            {"type": "inside", "yAxisIndex": 0, "filterMode": "none"},
+            {"id": "dz-x", "type": "inside", "xAxisIndex": 0, "filterMode": "none"},
+            {"id": "dz-y", "type": "inside", "yAxisIndex": 0, "filterMode": "none"},
         ],
     }
 
@@ -1783,6 +1786,12 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
           var rf = isDark ? LR : DR, rt = isDark ? DR : LR;
           update.series = cur.series.map(function(s) {
             var m = mapNode(s, tbl, rf, rt);
+            // mapNode 跳过 data 键：m.data 是 getOption 深拷贝出的全量
+            // 数据副本。主题翻转只改颜色不改数据，未做数据级映射的系列
+            // 把 data 从 update 里剥掉，setOption 合并时保留现场数据——
+            // 否则 30 万点散点每次换肤都要把整份数据回灌 setOption（重
+            // 建整个系列层，秒级卡顿）。
+            var dataMapped = false;
             if (s.type === 'treemap' || s.type === 'sunburst') {
               // 层级图节点色在 data 树里（mapNode 跳过 data），对 data 单独递归：
               // name/value 不在色表中不受影响，只翻节点 itemStyle 颜色
@@ -1795,6 +1804,7 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
                 }
                 return node;
               });
+              dataMapped = true;
             }
             if (s.type === 'boxplot' && Array.isArray(s.data)) {
               // 箱体颜色在数据项级 itemStyle（mapNode 跳过 data），单独映射：
@@ -1803,6 +1813,7 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
                 if (!d || !d.itemStyle) return d;
                 return { value: d.value, itemStyle: mapNode(d.itemStyle, tbl, rf, rt) };
               });
+              dataMapped = true;
             }
             if (s.type === 'heatmap') {
               m.itemStyle = m.itemStyle || {};
@@ -1818,12 +1829,14 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
                   }
                   return d;
                 });
+                dataMapped = true;
               }
             }
             if (s.type === 'scatter' && s.name === '\u5747\u503c') {
               m.itemStyle = { color: isDark ? '#1a1b1e' : '#ffffff',
                               borderColor: isDark ? '#e8eaed' : '#1a1d29', borderWidth: 1.5 };
             }
+            if (!dataMapped) delete m.data;
             return m;
           });
         }
@@ -1972,17 +1985,29 @@ _ECHARTS_HTML_TEMPLATE = """<!doctype html>
   var _scatterSeries = (option.series || []).filter(function(s) {{
     return s && s.type === 'scatter' && typeof s.symbolSize === 'number';
   }});
-  if (_scatterSeries.length) {{
+  // 双轴 dataZoom 的显式 id 归因表（dz-x/dz-y，Python 端写入）。
+  // 同时充当门控：只有散点图带显式 id，箱线图离群点等同为 scatter
+  // 数值 symbolSize 的系列不参与散点的点径自适应（缩放时保持
+  // 设计点径 7/9，不被改写成 4-9px）。
+  var _dzAxis = {{}};
+  (option.dataZoom || []).forEach(function (d) {{
+    if (!d || !d.id) return;
+    _dzAxis[d.id] = (d.yAxisIndex != null && d.xAxisIndex == null) ? 'y' : 'x';
+  }});
+  if (_scatterSeries.length && Object.keys(_dzAxis).length) {{
     // 每次 datazoom 直接微调点径（setOption 增量更新开销小，delta
     // 跳过保证封顶/回底后零操作），避免"缩放停止后跳变"的突跳感。
+    // 缩放倍数只从事件 payload 增量记账（inside 走 e.batch，滑条走顶层
+    // start/end），不调 chart.getOption()——它深拷贝整个 option（30 万点
+    // 散点的 series 数据可达几十 MB），滚轮缩放每个事件一次就是持续卡顿
+    // 源。双轴 dataZoom 按显式 id（dz-x/dz-y）分别记账，取缩放更深的轴
+    // （与 Plotly 分支 max(x,y) 因子语义一致；此前只读 dz[0]，缩放 Y 轴
+    // 点径不更新）。无 id 的组件（其他图型的 dataZoom）归入 x 轴，
+    // 与旧版单 dataZoom 行为等价。
     var _lastSize = 0;
-    chart.on('datazoom', function () {{
-      var dz = (chart.getOption() || {{}}).dataZoom;
-      if (!dz || !dz.length) return;
-      var start = dz[0].start == null ? 0 : dz[0].start;
-      var end = dz[0].end == null ? 100 : dz[0].end;
-      var span = Math.max(1e-6, end - start);
-      var zoom = 100 / span;
+    var _spans = {{ x: 100, y: 100 }};
+    var _applyAdaptiveSize = function () {{
+      var zoom = 100 / Math.min(_spans.x, _spans.y);
       var size = Math.min(9, Math.max(4, 4 * Math.sqrt(zoom)));
       var opacity = Math.min(0.9, Math.max(0.5, 0.5 * Math.pow(zoom, 0.2)));
       if (Math.abs(size - _lastSize) < 0.25) return;
@@ -1994,6 +2019,23 @@ _ECHARTS_HTML_TEMPLATE = """<!doctype html>
         return {{}};
       }});
       chart.setOption({{ series: updates }});
+    }};
+    chart.on('datazoom', function (e) {{
+      var batch = e.batch || (e.start != null || e.end != null
+        ? [{{ dataZoomId: e.dataZoomId, start: e.start, end: e.end }}] : []);
+      for (var _bi = 0; _bi < batch.length; _bi++) {{
+        var _it = batch[_bi];
+        if (!_it || _it.start == null || _it.end == null) continue;
+        _spans[_dzAxis[_it.dataZoomId] || 'x'] = Math.max(1e-6, _it.end - _it.start);
+      }}
+      _applyAdaptiveSize();
+    }});
+    // toolbox「重置」回到全量视图：恢复双轴跨度并回底点径（restore 后
+    // datazoom 事件不一定触发，显式监听保证点径一定回底）。
+    chart.on('restore', function () {{
+      _spans.x = 100;
+      _spans.y = 100;
+      _applyAdaptiveSize();
     }});
   }}
   window.addEventListener('resize', function(){{ chart.resize(); }});

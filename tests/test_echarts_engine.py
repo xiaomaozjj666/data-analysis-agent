@@ -263,6 +263,39 @@ def test_echarts_html_template_has_datazoom_adaptive_size():
     assert "4 * Math.sqrt(zoom)" in _ECHARTS_HTML_TEMPLATE
 
 
+def test_echarts_html_template_zoom_adaptive_is_event_driven():
+    """缩放自适应点径必须事件驱动，且双轴归因 + restore 回底。
+
+    - 旧实现每个 datazoom 事件调 chart.getOption()——它深拷贝整个
+      option（30 万点散点的 series 数据几十 MB），滚轮缩放逐事件执行
+      就是持续卡顿源；
+    - 旧实现只读 dz[0]，只缩放 Y 轴时点径不更新（Plotly 分支取
+      max(x,y) 因子，语义不一致）；
+    - 自适应按 dataZoom 显式 id 门控，箱线图离群点等同为 scatter
+      数值 symbolSize 的系列不被散点点径改写。
+    """
+    from data_agent.echarts_engine import _ECHARTS_HTML_TEMPLATE
+
+    assert "(chart.getOption() || {}).dataZoom" not in _ECHARTS_HTML_TEMPLATE
+    assert "e.batch" in _ECHARTS_HTML_TEMPLATE
+    assert "chart.on('restore'" in _ECHARTS_HTML_TEMPLATE
+    # 门控：只有带显式 id 的双轴 dataZoom（散点图）才挂自适应
+    assert "Object.keys(_dzAxis).length" in _ECHARTS_HTML_TEMPLATE
+
+
+def test_echarts_scatter_datazoom_has_axis_ids(workspace, sample_df):
+    """散点双轴 dataZoom 必须带显式 id（dz-x/dz-y）：模板自适应脚本
+    按 e.batch[].dataZoomId 归因事件来自哪个轴，无 id 时无法区分。"""
+    tools = {t.name: t for t in build_tools(workspace)}
+    result = json.loads(tools["create_visualization"].invoke({
+        "chart_type": "scatter", "x": "sales", "y": "profit",
+        "chart_engine": "echarts",
+    }))
+    option = json.loads(Path(result["echarts_json"]).read_text(encoding="utf-8"))
+    ids = [z.get("id") for z in option["dataZoom"]]
+    assert ids == ["dz-x", "dz-y"]
+
+
 def test_echarts_scatter_skips_outlier_split_when_heavy_tailed(tmp_path):
     """离群占比超 20% 时视为重尾分布，不做高亮（避免满屏红点误导）。"""
     # 双峰：一半在 1~10，一半在 1000+，大量点超界
