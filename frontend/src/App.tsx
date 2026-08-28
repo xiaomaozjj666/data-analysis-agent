@@ -1,21 +1,17 @@
 import React, { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
-  BarChart3,
   ChevronRight,
   Command,
   FilePlus2,
   FileSpreadsheet,
   Keyboard,
-  ListChecks,
   LoaderCircle,
   Menu,
   Moon,
   Play,
   RefreshCw,
-  Square,
   Sun,
-  Table2,
   Upload,
   X,
 } from "lucide-react";
@@ -28,6 +24,8 @@ import HistoryPanel from "./components/HistoryPanel";
 import ArtifactCenter from "./components/ArtifactCenter";
 import SettingsPanel from "./components/SettingsPanel";
 import PreviewModal from "./components/PreviewModal";
+import TaskBox from "./components/TaskBox";
+import WorkspaceTabs from "./components/WorkspaceTabs";
 // React Bits 风格动效（手写、零新增依赖）：品牌渐变 / 指标数字滚动 /
 // 主 CTA 流光描边 / 数据概览滚动入场，均兼容暗色与 prefers-reduced-motion。
 import CountUp from "./components/rb/CountUp";
@@ -49,6 +47,8 @@ import useArtifactPreview from "./hooks/useArtifactPreview";
 import useAuthBootstrap from "./hooks/useAuthBootstrap";
 import useChatRunner from "./hooks/useChatRunner";
 import useDownloads from "./hooks/useDownloads";
+import useHistorySync from "./hooks/useHistorySync";
+import useSessionMutations from "./hooks/useSessionMutations";
 import useScrollProgress from "./hooks/useScrollProgress";
 import useSettingsPanel from "./hooks/useSettingsPanel";
 import useShortcuts from "./hooks/useShortcuts";
@@ -56,35 +56,24 @@ import useTabPersistence from "./hooks/useTabPersistence";
 import useTheme from "./hooks/useTheme";
 import useTimer from "./hooks/useTimer";
 import { useAppStore } from "./store/useAppStore";
-import { api, ApiError, describeApiError, requestHeaders, uploadWithProgress } from "./utils/api";
-import { formatDuration, wait } from "./utils/format";
+import { api, ApiError, uploadWithProgress } from "./utils/api";
+import { wait } from "./utils/format";
+import { restoreCompletedAnalysis, restoreFollowUps } from "./utils/sessionRestore";
 import {
-  API_URL,
   ACTIVE_ANALYSIS_STATES,
   COMMAND_ACTIONS,
   MAX_UPLOAD_BYTES_CLIENT,
-  presets,
 } from "./constants";
 import type {
   CommandAction,
   DatasetProfile,
-  FollowUpMessage,
   HistorySessionItem,
   PlanStep,
   RetryOffer,
   Session,
 } from "./types";
 
-// /api/auth 返回的轻量结构
-interface AuthStatus {
-  required?: boolean;
-  authenticated?: boolean;
-}
-
-// /api/sessions GET 列表响应
-interface SessionListResponse {
-  sessions?: HistorySessionItem[];
-}
+// /api/sessions GET 列表响应的解析已随 fetchHistory 移入 useHistorySync。
 
 function App() {
   // 所有 UI 状态从 Zustand store 获取（见 src/store/useAppStore.js）。
@@ -136,9 +125,11 @@ function App() {
     // Busy：停止分析的 busy 状态（保存设置的 busy 已移至 SettingsPanel）
     stopping,
     setStopping,
-    // 历史（historyError 区分"没数据"和"加载失败"，避免用户误以为数据丢失）
+    // 历史（historyError 区分"没数据"和"加载失败"，避免用户误以为数据丢失）。
+    // setHistory/setHistoryLoading/setHistoryError 已随 fetchHistory 移入
+    // useHistorySync，这里只读列表状态和展开开关。
     history, historyLoading, historyError, historyExpanded, switchingSessionId,
-    setHistory, setHistoryLoading, setHistoryError, setHistoryExpanded, setSwitchingSessionId,
+    setHistoryExpanded, setSwitchingSessionId,
     // 计时：running 时由 setInterval 每秒刷新；非 running 时由
     // session.elapsed_seconds / completed - started 计算一次性赋值
     elapsedSeconds, setElapsedSeconds,
@@ -224,26 +215,9 @@ function App() {
   // Tab 持久化：activeTab 变化时同步到 lastActiveTab（提取至 useTabPersistence）。
   useTabPersistence(activeTab, setLastActiveTab);
 
-  // 拉取历史会话列表。鉴权通过后立即拉一次，让用户在初次进入时就能
-  // 看到之前的会话；上传/切换/分析完成时也会调用，保持列表新鲜。
-  // manual=true 表示用户主动触发（点刷新按钮），才设置 historyLoading
-  // 让刷新按钮转圈；轮询调用 manual=false，不触发按钮 disabled，避免
-  // 30 秒一次的轮询让整个历史列表短暂瘫痪（用户正要点击时被禁用）。
-  const fetchHistory = async (manual = false) => {
-    if (manual) setHistoryLoading(true);
-    try {
-      const payload = await api<SessionListResponse>("/api/sessions?limit=30");
-      setHistory(payload.sessions || []);
-      setHistoryError(false);
-    } catch {
-      // 加载失败不阻塞主流程，但记录错误状态，让用户能区分"没数据"
-      // 和"加载失败"，并提供重试入口（之前是完全静默，用户有几十个
-      // 会话却看到"还没有历史会话"，会以为数据丢了）。
-      setHistoryError(true);
-    } finally {
-      if (manual) setHistoryLoading(false);
-    }
-  };
+  // 历史会话列表同步：fetchHistory + 分析结束刷新 + 自动轮询（提取至 useHistorySync）。
+  // 必须在 useAuthBootstrap 之前调用：引导流程鉴权就绪后会调用 fetchHistory。
+  const { fetchHistory } = useHistorySync({ authReady, authRequired, authenticated, running });
 
   // 认证引导 + 鉴权就绪后拉取历史（提取至 useAuthBootstrap）。
   useAuthBootstrap({
@@ -279,8 +253,8 @@ function App() {
       setAwaitingApproval(false);
       setPendingObjective("");
       setStepProgress(null);
-      restoreCompletedAnalysis(latest);
-      restoreFollowUps(latest);
+      restoreCompletedAnalysis(latest, { setResult, setPlan, setCompleted });
+      restoreFollowUps(latest, setFollowUps);
       if (!running) {
         startedAtRef.current = (latest as Session & { analysis_started_at?: number | null }).analysis_started_at ?? null;
         setElapsedSeconds(latest.elapsed_seconds ?? null);
@@ -301,36 +275,14 @@ function App() {
     }
   };
 
+  // 会话增删改：导入 / 删除 / 重命名（提取至 useSessionMutations）。
+  // 在 selectSession 定义之后调用：导入成功后要复用它跳转新会话。
+  const { importSession, deleteSession, renameSession } = useSessionMutations({
+    selectSession, fetchHistory, retryController, analysisController, chatControllerRef,
+  });
+
   // 实时耗时：running 时持续刷新 elapsed = now - startedAtRef（提取至 useTimer）。
   useTimer(running, startedAtRef, setElapsedSeconds);
-
-  // 分析结束（running 转 false）时刷新历史，把当前会话的最新状态
-  // 同步到侧边栏（产物数、状态、相对时间）。
-  useEffect(() => {
-    if (!running && session) fetchHistory();
-  }, [running]);
-
-  // 历史会话列表自动轮询：默认 30 秒刷新一次（保持相对时间新鲜），
-  // 当本会话或其他会话正在 running 时缩短到 5 秒——让"运行中"圆点
-  // 能及时变成"已完成"。后台 tab 时暂停轮询节省请求。
-  // 不在 running 时也轮询是为了：用户在另一个 tab 启动分析，回到本 tab
-  // 时列表能反映最新状态；相对时间"3 分钟前"也需要定期刷新才准确。
-  useEffect(() => {
-    if (!authReady || (authRequired && !authenticated)) return undefined;
-    const interval = running ? 5000 : 30000;
-    const poll = () => {
-      if (document.hidden) return;
-      fetchHistory();
-    };
-    const timer = window.setInterval(poll, interval);
-    // 回到前台时立即刷新一次，避免等待下一个 interval tick
-    const onVisible = () => { if (!document.hidden) fetchHistory(); };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, [authReady, authRequired, authenticated, running]);
 
   // 命令面板动作执行器：根据 action.id 路由到具体操作。
   // 用 useCallback 保持身份稳定，作为 props 传入 CommandPalette 时不会触发重渲染。
@@ -387,101 +339,8 @@ function App() {
   });
 
   // loadCompareChart / downloadPng 已提取至 useArtifactPreview；
-  // downloadArtifact / batchDownload / exportSession 已提取至 useDownloads。
-
-  // 导入会话：multipart 上传 ZIP，后端返回完整 session payload；
-  // 成功后刷新历史并切到新会话。FormData 不能带 Content-Type，
-  // 浏览器会自动设置 multipart/form-data 边界。
-  const importSession = useCallback(async (file: File) => {
-    setUploading(true);
-    try {
-      const formData = new FormData();
-      formData.append("file", file);
-      const response = await fetch(`${API_URL}/api/sessions/import`, {
-        method: "POST",
-        headers: requestHeaders(),
-        body: formData,
-      });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({})) as { detail?: string };
-        throw new Error(payload.detail || "导入失败");
-      }
-      const sessionPayload = await response.json() as Session;
-      await fetchHistory();
-      selectSession({ id: sessionPayload.id, filename: sessionPayload.filename, analysis_status: sessionPayload.analysis_status } as HistorySessionItem);
-    } catch (err) {
-      setError(`导入会话失败：${err instanceof Error ? err.message : "未知错误"}`);
-    } finally {
-      setUploading(false);
-    }
-  }, [fetchHistory, selectSession]);
-
-  // 删除会话：调用 DELETE 端点清理服务端数据，成功后刷新历史列表。
-  // 若删除的是当前正在查看的会话，清空前端状态回到空状态，让用户
-  // 重新上传数据开始新分析，避免停留在已失效的会话视图上。
-  const deleteSession = useCallback(async (item: HistorySessionItem) => {
-    try {
-      const response = await fetch(`${API_URL}/api/sessions/${item.id}`, {
-        method: "DELETE",
-        headers: requestHeaders(),
-      });
-      if (!response.ok) {
-        const contentType = response.headers.get("content-type") || "";
-        const payload: unknown = contentType.includes("application/json")
-          ? await response.json().catch(() => ({}))
-          : await response.text().catch(() => "");
-        throw new Error(describeApiError(payload, response.status));
-      }
-      // 删除的是当前会话：清空状态回到空工作台
-      if (session?.id === item.id) {
-        setSession(null);
-        setResult(null);
-        setPlan([]);
-        setCompleted([]);
-        setCurrentNodeTitle("");
-        setRetryOffer(null);
-        setFollowUps([]);
-        setAwaitingApproval(false);
-        setPendingObjective("");
-        setStepProgress(null);
-        setTask("");
-        retryController.current?.abort();
-        analysisController.current?.abort();
-        chatControllerRef.current?.abort();
-      }
-      fetchHistory();
-    } catch (err) {
-      setError(`删除会话失败：${err instanceof Error ? err.message : "未知错误"}`);
-    }
-  }, [session?.id, fetchHistory]);
-
-  // 重命名会话：PATCH 更新服务端 title，乐观更新本地 history 列表与当前 session。
-  // 空串视为清除自定义标题（回退 filename），后端会存 None。
-  const renameSession = useCallback(async (item: HistorySessionItem, title: string) => {
-    try {
-      const response = await fetch(`${API_URL}/api/sessions/${item.id}`, {
-        method: "PATCH",
-        headers: { ...requestHeaders(), "Content-Type": "application/json" },
-        body: JSON.stringify({ title }),
-      });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({})) as { detail?: string };
-        throw new Error(payload.detail || "重命名失败");
-      }
-      const data = await response.json() as { title: string };
-      // 乐观更新 history 列表中该 item 的 title
-      const updated = (history || []).map((s) => s.id === item.id ? { ...s, title: data.title || undefined } : s);
-      setHistory(updated);
-      // 当前会话同步更新标题
-      if (session?.id === item.id) {
-        setSession((prev) => prev ? { ...prev, title: data.title || undefined } : prev);
-      }
-    } catch (err) {
-      // 失败时把用户输入的新名字带在提示里：编辑框已关闭，不说明哪个
-      // 名字没保存，用户得重新想一遍刚才输了什么。
-      setError(`重命名会话失败，新名称「${title}」未保存，可重试：${err instanceof Error ? err.message : "未知错误"}`);
-    }
-  }, [session?.id, history, setHistory]);
+  // downloadArtifact / batchDownload / exportSession 已提取至 useDownloads；
+  // importSession / deleteSession / renameSession 已提取至 useSessionMutations。
 
   // editChart 及"打开预览时初始化编辑表单"的 useEffect 已提取至 useArtifactPreview。
   // 连接测试 testConnection / 保存设置 saveSettings 已随设置面板迁至 SettingsPanel。
@@ -584,56 +443,8 @@ function App() {
     };
   }, []);
 
-  function restoreCompletedAnalysis(latest: Session): boolean {
-    const savedResult = latest.last_result;
-    if (savedResult) {
-      // 前端 UI 不消费 trace 字段，恢复时丢弃以减小内存占用；
-      // 后端持久化时 trace 也已截断到最近 20 条，这里不再透传。
-      setResult({
-        response: savedResult.response,
-        artifacts: savedResult.artifacts || latest.artifacts || [],
-        dataset_profile: savedResult.dataset_profile || latest.profile,
-        plan: savedResult.plan || [],
-        completed_steps: savedResult.completed_steps || [],
-      });
-      setPlan(savedResult.plan || []);
-      setCompleted(savedResult.completed_steps || []);
-      return true;
-    }
-    const assistantMessage = [...(latest.chat || [])]
-      .reverse()
-      .find((item) => item.role === "assistant" && !!item.content);
-    if (!assistantMessage) return false;
-    setResult({
-      response: assistantMessage.content || "",
-      trace: [],
-      artifacts: latest.artifacts || [],
-      dataset_profile: latest.profile,
-      plan: [],
-      completed_steps: [],
-    });
-    setPlan([]);
-    setCompleted([]);
-    return true;
-  }
-
-  // 从 session.chat 恢复追问历史。chat 数组结构为
-  // [user(分析任务), assistant(分析报告), user(追问1), assistant(追问1回答), ...]，
-  // 跳过前两条（首轮分析对），后续的都是追问。
-  function restoreFollowUps(latest: Session) {
-    const chat = latest?.chat || [];
-    const tail = chat.length > 2 ? chat.slice(2) : [];
-    // 恢复完整字段：除 role/content 外，还保留 tools（工具调用 chip）、
-    // reasoning（思考过程）、usage（token 用量），让历史会话的追问回复
-    // 仍能展示这些信息，而非降级为纯文本。
-    setFollowUps(tail.map((item) => ({
-      role: item.role,
-      content: item.content || "",
-      tools: item.tools,
-      reasoning: item.reasoning,
-      usage: item.usage,
-    } as FollowUpMessage)));
-  }
+  // restoreCompletedAnalysis / restoreFollowUps 已提取至 utils/sessionRestore.ts
+  //（纯函数，selectSession 与 retryAnalysis 共用）。
 
   // 会话失效（404）时清空前端状态，引导用户回到上传界面。
   // Render 免费实例重启会清空 /tmp，session 数据不可恢复，与其让用户
@@ -706,7 +517,7 @@ function App() {
         // 用户主动取消轮询，不修改 error（stopAnalysis 已设过消息）。
         return;
       }
-      if (latest.analysis_status === "completed" && restoreCompletedAnalysis(latest)) {
+      if (latest.analysis_status === "completed" && restoreCompletedAnalysis(latest, { setResult, setPlan, setCompleted })) {
         setError("");
         setRetryOffer(null);
       } else if (ACTIVE_ANALYSIS_STATES.has(latest.analysis_status)) {
@@ -1063,125 +874,25 @@ function App() {
               </button>
             </section>
 
-            {/* task-box 常驻顶部：无论切到哪个 tab 都能直接发起新分析 */}
-            <div className={`task-box ${running ? "is-running" : ""}`}>
-              <div className="task-heading">
-                <div>
-                  <span className="section-kicker">分析任务</span>
-                  <h2>你想从数据中了解什么？</h2>
-                </div>
-                {running && (
-                  <span className="task-running-hint">
-                    <LoaderCircle className="spin" size={14} />
-                    {currentNodeTitle ? `正在：${currentNodeTitle}` : "正在分析"}
-                    {elapsedSeconds != null && ` · ${formatDuration(elapsedSeconds)}`}
-                  </span>
-                )}
-              </div>
-              <textarea
-                ref={taskInput}
-                value={task}
-                onChange={(event) => setTask(event.target.value)}
-                onKeyDown={(event) => {
-                  // Ctrl/Cmd+Enter 快捷提交：与几乎所有聊天/搜索框一致，
-                  // 避免用户输入完只能移动鼠标点按钮，破坏键盘操作流。
-                  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-                    event.preventDefault();
-                    if (!running && task.trim() && settings?.configured) startAnalysis();
-                  }
-                }}
-                placeholder="例如：比较各区域销售表现，解释异常波动并生成趋势图（⌘/Ctrl+Enter 运行）"
-                rows={3}
-              />
-              <div className="task-actions">
-                <div className="preset-row">
-                  {presets.map(({ title, detail, icon: Icon, task: presetTask }) => (
-                    <button type="button"
-                      key={title}
-                      title={settings?.configured ? detail : "请先在左下角配置 API Key"}
-                      onClick={() => {
-                        setTask(presetTask);
-                        window.setTimeout(() => taskInput.current?.focus(), 0);
-                      }}
-                      disabled={running || !settings?.configured}
-                    >
-                      <Icon size={14} />{title}
-                    </button>
-                  ))}
-                </div>
-                {/* 任务输入提示 + 操作按钮分组：提示紧贴按钮左侧，
-                    明确告知 Enter 换行、⌘/Ctrl+Enter 运行的键位约定 */}
-                <div className="task-box-footer">
-                  <small className="input-hint">Enter 换行 · ⌘/Ctrl+Enter 运行分析</small>
-                  {running ? (
-                    <button type="button" className="cancel-button" onClick={stopAnalysis} disabled={stopping}>
-                      <Square size={13} fill="currentColor" />{stopping ? "停止中…" : "停止分析"}
-                    </button>
-                  ) : (
-                    <>
-                      <button type="button" className="plan-review-button" onClick={() => startAnalysis(task, null, true)} disabled={!task.trim() || !settings?.configured || !session} title="先生成计划，审阅后再执行">
-                        <ListChecks size={15} />
-                        审阅计划
-                      </button>
-                      {/* ClickSpark + StarBorder：点击"运行分析"时品牌色火花迸发，
-                          给最重要的操作一个明确的启动反馈（火花层不拦截点击） */}
-                      <ClickSpark sparkColor="#5b5bd6" sparkCount={10} sparkLength={16}>
-                        <StarBorder disabled={!task.trim() || !settings?.configured}>
-                          <button type="button" className="run-button" onClick={() => startAnalysis()} disabled={!task.trim() || !settings?.configured}>
-                            <Play size={15} fill="currentColor" />运行分析
-                          </button>
-                        </StarBorder>
-                      </ClickSpark>
-                    </>
-                  )}
-                </div>
-              </div>
-            </div>
+            {/* task-box 常驻顶部：无论切到哪个 tab 都能直接发起新分析（提取至 TaskBox） */}
+            <TaskBox
+              task={task}
+              running={running}
+              stopping={stopping}
+              configured={!!settings?.configured}
+              hasSession={!!session}
+              currentNodeTitle={currentNodeTitle}
+              elapsedSeconds={elapsedSeconds}
+              onTaskChange={setTask}
+              onRun={() => startAnalysis()}
+              onRunPlanReview={() => startAnalysis(task, null, true)}
+              onStop={stopAnalysis}
+              taskInputRef={taskInput}
+            />
             {!settings?.configured && <p className="composer-note">请先在左侧配置 DeepSeek API Key。</p>}
 
-            {/* tabs 紧贴 task-box 下方：切换分析/数据/产物三个视图 */}
-            {/* ARIA tablist 语义：roving tabindex + 左右箭头切换，屏幕阅读器可正确识别 */}
-            <nav className="tabs" role="tablist" aria-label="工作区视图">
-              <button type="button"
-                id="tab-analysis"
-                role="tab"
-                aria-selected={activeTab === "analysis"}
-                aria-controls="tabpanel-analysis"
-                tabIndex={activeTab === "analysis" ? 0 : -1}
-                className={activeTab === "analysis" ? "active" : ""}
-                onClick={() => setActiveTab("analysis")}
-                onKeyDown={(e) => {
-                  if (e.key === "ArrowRight") { e.preventDefault(); document.getElementById("tab-data")?.focus(); }
-                  else if (e.key === "ArrowLeft") { e.preventDefault(); document.getElementById("tab-artifacts")?.focus(); }
-                }}
-              ><BarChart3 size={15} />分析</button>
-              <button type="button"
-                id="tab-data"
-                role="tab"
-                aria-selected={activeTab === "data"}
-                aria-controls="tabpanel-data"
-                tabIndex={activeTab === "data" ? 0 : -1}
-                className={activeTab === "data" ? "active" : ""}
-                onClick={() => setActiveTab("data")}
-                onKeyDown={(e) => {
-                  if (e.key === "ArrowRight") { e.preventDefault(); document.getElementById("tab-artifacts")?.focus(); }
-                  else if (e.key === "ArrowLeft") { e.preventDefault(); document.getElementById("tab-analysis")?.focus(); }
-                }}
-              ><Table2 size={15} />数据</button>
-              <button type="button"
-                id="tab-artifacts"
-                role="tab"
-                aria-selected={activeTab === "artifacts"}
-                aria-controls="tabpanel-artifacts"
-                tabIndex={activeTab === "artifacts" ? 0 : -1}
-                className={activeTab === "artifacts" ? "active" : ""}
-                onClick={() => setActiveTab("artifacts")}
-                onKeyDown={(e) => {
-                  if (e.key === "ArrowRight") { e.preventDefault(); document.getElementById("tab-analysis")?.focus(); }
-                  else if (e.key === "ArrowLeft") { e.preventDefault(); document.getElementById("tab-data")?.focus(); }
-                }}
-              ><FileSpreadsheet size={15} />产物 <span>{session.artifacts?.length || 0}</span></button>
-            </nav>
+            {/* tabs 紧贴 task-box 下方：切换分析/数据/产物三个视图（提取至 WorkspaceTabs） */}
+            <WorkspaceTabs activeTab={activeTab} artifactCount={session.artifacts?.length || 0} onSelectTab={setActiveTab} />
 
             {activeTab === "analysis" && (
               <div className="analysis-grid tab-content-enter" key="tab-analysis" id="tabpanel-analysis" role="tabpanel" aria-labelledby="tab-analysis" tabIndex={0}>
