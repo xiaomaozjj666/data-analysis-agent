@@ -306,6 +306,10 @@ const EChartThumb = React.memo(function EChartThumb({ previewUrl, alt }: EChartT
   // 主题随 data-theme 变化响应：迷你图颜色在渲染时按主题取色，
   // 切换主题后重渲染（容器 CSS 背景即时变化，画布文字需同步）。
   const [theme, setTheme] = useState(() => document.documentElement.dataset.theme === "dark");
+  // 已拉取并清洗过的 option 缓存：主题切换只重渲染，不重新发起网络
+  // 请求——产物网格几十张卡同时换肤时，避免几十个重复 echarts-json
+  // 请求（首卡之后的渲染全部走本地缓存）。
+  const optionRef = useRef<Record<string, unknown> | null>(null);
 
   useEffect(() => {
     const observer = new MutationObserver(() => {
@@ -322,16 +326,25 @@ const EChartThumb = React.memo(function EChartThumb({ previewUrl, alt }: EChartT
 
     (async () => {
       try {
-        const jsonUrl = previewUrl.replace(/\/preview$/, "/echarts-json");
-        const response = await fetch(`${API_URL}${jsonUrl}`, { headers: requestHeaders() });
-        if (!response.ok) throw new Error(`echarts-json ${response.status}`);
-        const raw = (await response.json()) as unknown;
-        const cleaned = stripFunctions(raw) as Record<string, unknown> | undefined;
+        if (!optionRef.current) {
+          const jsonUrl = previewUrl.replace(/\/preview$/, "/echarts-json");
+          const response = await fetch(`${API_URL}${jsonUrl}`, { headers: requestHeaders() });
+          if (!response.ok) throw new Error(`echarts-json ${response.status}`);
+          const raw = (await response.json()) as unknown;
+          const cleaned = stripFunctions(raw) as Record<string, unknown> | undefined;
+          if (disposed) return;
+          if (cleaned) optionRef.current = cleaned;
+        }
+        const cleaned = optionRef.current;
         if (disposed || !cleaned) return;
+        // simplifyForThumb 会原地改写 series 嵌套对象（markPoint 缩放、
+        // 柱顶数值标签烘焙成静态文本），从缓存二次渲染前必须深拷贝，
+        // 避免对已转换的数据形态重复改写。
+        const source = structuredClone(cleaned);
         // 3D 系列（scatter3D 等）需要 echarts-gl 扩展，懒加载后同样
         // 能在卡片内渲染迷你 3D 视图。
-        const needsGl = hasGlSeries(cleaned);
-        const simplify = simplifyForThumb(cleaned, theme);
+        const needsGl = hasGlSeries(source);
+        const simplify = simplifyForThumb(source, theme);
         stripDenseLabels(simplify);
         // 等两帧让容器的 aspect-ratio 布局稳定后再初始化，避免 ECharts
         // 按错误尺寸初绘导致坐标轴错位/顶部被裁。

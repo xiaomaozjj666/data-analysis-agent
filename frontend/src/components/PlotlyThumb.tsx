@@ -174,8 +174,7 @@ const PlotlyThumb = React.memo(function PlotlyThumb({ previewUrl, fallbackSrc, a
         const { data, layout } = simplifyPlotlyForThumb(figure, theme);
         if (renderedRef.current) {
           // 主题切换：保留数据与交互状态，仅更新主题色
-          const { data: d, layout: l } = simplifyPlotlyForThumb(figure, theme);
-          await Plotly.react(renderedRef.current, d, l, PLOTLY_CONFIG);
+          await Plotly.react(renderedRef.current, data, layout, PLOTLY_CONFIG);
         } else {
           await Plotly.newPlot(el, data, layout, PLOTLY_CONFIG);
           renderedRef.current = el;
