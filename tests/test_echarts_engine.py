@@ -1152,3 +1152,92 @@ def test_render_echarts_falls_back_to_cdn_without_bundles(tmp_path, monkeypatch)
     assert ECHARTS_CDN_URL in html_text
     assert ECHARTS_GL_CDN_URL in html_text
 
+
+
+# === 大数据 HTML 嵌入降采样：交互 HTML 抽样渲染，完整数据保留在 JSON 产物 ===
+
+
+def test_echarts_embed_sampling_big_scatter(tmp_path):
+    """6 万行散点：HTML 按上限抽样 + 声明注记，.echarts.json 保留全量。"""
+    rng = np.random.default_rng(7)
+    n = 60_000
+    df = pd.DataFrame({"x": rng.uniform(0, 100, n), "y": rng.normal(0, 1, n)})
+    ws = _make_workspace(tmp_path, df)
+    tools = {t.name: t for t in build_tools(ws)}
+    with patch.object(DataWorkspace, "ensure_echarts_bundle", return_value=_mock_bundle(tmp_path)):
+        result = json.loads(tools["create_visualization"].invoke({
+            "chart_type": "scatter", "x": "x", "y": "y", "chart_engine": "echarts",
+        }))
+    sampling = result["sampling"]
+    assert sampling["applied"] is True
+    assert sampling["original_points"] > 50_000
+    assert sampling["embedded_points"] <= 50_000
+    # 完整数据保留在 JSON 产物
+    full_option = json.loads(Path(result["echarts_json"]).read_text(encoding="utf-8"))
+    assert len(full_option["series"][0]["data"]) == sampling["original_points"]
+    # HTML 是抽样副本：体积明显小于全量 JSON，且带抽样声明
+    html_text = Path(result["html"]).read_text(encoding="utf-8")
+    assert "等距抽样" in html_text
+    assert Path(result["html"]).stat().st_size < Path(result["echarts_json"]).stat().st_size
+
+
+def test_echarts_embed_sampling_category_axis_alignment():
+    """折线（类目轴）抽样：轴与全部系列同一步长，data[i] 仍对应 categories[i]。"""
+    from data_agent.chart_sampling import sample_echarts_option_for_embed
+
+    n = 120
+    option = {
+        "xAxis": [{"type": "category", "data": [f"c{i}" for i in range(n)]}],
+        "series": [
+            {"type": "line", "data": [i * 2 for i in range(n)]},
+            {"type": "line", "data": [i * 3 for i in range(n)]},
+        ],
+    }
+    sampled, before, after = sample_echarts_option_for_embed(option, max_points=50)
+    assert before == n
+    axis = sampled["xAxis"][0]["data"]
+    assert len(axis) == after <= 50
+    for series in sampled["series"]:
+        assert len(series["data"]) == len(axis)
+    # 对齐性数值验证：series[0] 的第 k 个值 = 2 × 原始下标，原始下标可由
+    # 轴名还原（c0, c2, c4, ...）
+    idx = [int(name[1:]) for name in axis]
+    assert [v for v in sampled["series"][0]["data"]] == [i * 2 for i in idx]
+    assert [v for v in sampled["series"][1]["data"]] == [i * 3 for i in idx]
+    # 原始 option 不被修改
+    assert len(option["xAxis"][0]["data"]) == n
+    assert len(option["series"][0]["data"]) == n
+
+
+def test_echarts_embed_sampling_small_chart_untouched(workspace, sample_df):
+    """小数据图表不触发嵌入抽样（响应无 sampling 字段，HTML 全量渲染）。"""
+    tools = {t.name: t for t in build_tools(workspace)}
+    result = json.loads(tools["create_visualization"].invoke({
+        "chart_type": "scatter", "x": "sales", "y": "profit", "chart_engine": "echarts",
+    }))
+    assert "sampling" not in result
+
+
+def test_plotly_embed_sampling_big_scatter(tmp_path):
+    """6 万行 Plotly 散点：HTML 抽样渲染 + 注记，.plotly.json 保留全量。"""
+    rng = np.random.default_rng(7)
+    n = 60_000
+    df = pd.DataFrame({"x": rng.uniform(0, 100, n), "y": rng.normal(0, 1, n)})
+    ws = _make_workspace(tmp_path, df)
+    tools = {t.name: t for t in build_tools(ws)}
+    with patch.object(DataWorkspace, "ensure_plotly_bundle", return_value=_mock_bundle(tmp_path)):
+        result = json.loads(tools["create_visualization"].invoke({
+            "chart_type": "scatter", "x": "x", "y": "y",
+        }))
+    sampling = result["sampling"]
+    assert sampling["applied"] is True
+    assert sampling["embedded_points"] <= 50_000
+    # 全量 figure 保留在 JSON 产物（typed-array 编码，解码后验证点数）
+    from data_agent.chart_sampling import _decode_plotly_typed_arrays
+
+    fig = _decode_plotly_typed_arrays(json.loads(Path(result["plotly_json"]).read_text(encoding="utf-8")))
+    x_values = fig["data"][0]["x"]
+    assert len(x_values) >= 50_000
+    # HTML 是抽样副本且带声明
+    html_text = Path(result["html"]).read_text(encoding="utf-8")
+    assert "等距抽样" in html_text

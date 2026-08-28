@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { API_URL } from "../constants";
 import { pickChartIcon } from "../constants";
 import { requestHeaders } from "../utils/api";
+import useInView from "../hooks/useInView";
 
 interface EChartThumbProps {
   /** 图表 preview_url（/api/sessions/{sid}/artifacts/{name}/preview），
@@ -301,13 +302,15 @@ function stripDenseLabels(option: Record<string, unknown>): void {
 // 懒加载 echarts → SVG 渲染到浅色画布（与 Plotly PNG 缩略图的米白底
 // 一致）。失败（无数据文件/损坏）时回退占位。
 const EChartThumb = React.memo(function EChartThumb({ previewUrl, alt }: EChartThumbProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
+  // 容器同时承担可见性观测：进入视口才拉取数据并初始化图表，离开视口
+  // dispose 释放实例（重新进入时用缓存的 option 重渲染，不再发请求）。
+  const { ref: containerRef, inView } = useInView<HTMLDivElement>("240px");
   const [failed, setFailed] = useState(false);
   // 主题随 data-theme 变化响应：迷你图颜色在渲染时按主题取色，
   // 切换主题后重渲染（容器 CSS 背景即时变化，画布文字需同步）。
   const [theme, setTheme] = useState(() => document.documentElement.dataset.theme === "dark");
-  // 已拉取并清洗过的 option 缓存：主题切换只重渲染，不重新发起网络
-  // 请求——产物网格几十张卡同时换肤时，避免几十个重复 echarts-json
+  // 已拉取并清洗过的 option 缓存：主题切换/滚出视口后的重渲染不再发起
+  // 网络请求——产物网格几十张卡同时换肤时，避免几十个重复 echarts-json
   // 请求（首卡之后的渲染全部走本地缓存）。
   const optionRef = useRef<Record<string, unknown> | null>(null);
 
@@ -326,6 +329,15 @@ const EChartThumb = React.memo(function EChartThumb({ previewUrl, alt }: EChartT
 
     (async () => {
       try {
+        // 出视口：释放实例，把常驻图表数压到"可见数"。缓存的 option
+        // 保留，重新进入视口时本 effect 会重建。
+        if (!inView) {
+          void import("echarts").then((echarts) => {
+            const el = containerRef.current;
+            if (el) echarts.getInstanceByDom(el)?.dispose();
+          }).catch(() => {});
+          return;
+        }
         if (!optionRef.current) {
           const jsonUrl = previewUrl.replace(/\/preview$/, "/echarts-json");
           const response = await fetch(`${API_URL}${jsonUrl}`, { headers: requestHeaders() });
@@ -351,7 +363,10 @@ const EChartThumb = React.memo(function EChartThumb({ previewUrl, alt }: EChartT
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         const echarts = await import("echarts");
         if (needsGl) await import("echarts-gl");
-        if (disposed || !containerRef.current) return;
+        if (disposed || !inView || !containerRef.current) return;
+        // 防御性清理：快进快出时上一次的异步 dispose 可能尚未完成，
+        // 直接 init 到带实例的 DOM 会抛错
+        echarts.getInstanceByDom(containerRef.current)?.dispose();
         const instance = echarts.init(containerRef.current, undefined, {
           renderer: needsGl ? "canvas" : "svg",
         });
@@ -371,7 +386,7 @@ const EChartThumb = React.memo(function EChartThumb({ previewUrl, alt }: EChartT
       observer?.disconnect();
       chart?.dispose();
     };
-  }, [previewUrl, theme]);
+  }, [previewUrl, theme, inView, containerRef]);
 
   if (failed) {
     const { Icon } = pickChartIcon(alt);

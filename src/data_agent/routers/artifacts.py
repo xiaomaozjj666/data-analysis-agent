@@ -15,10 +15,10 @@ re-export 以兼容测试（如 ``test_echarts_engine.test_echarts_api_preview_i
 from __future__ import annotations
 
 import json
-import math
 import os
 import re
 import threading
+from collections import OrderedDict
 from email.utils import formatdate
 from pathlib import Path
 from typing import Any
@@ -405,118 +405,52 @@ def _inject_modebar_i18n(html_text: str) -> str:
     return html_text
 
 
-#: 迷你图数据上限：产物卡片的缩略图只需要"看得出分布形状"，全量点云
-#: 会让 JSON 体积和渲染成本随数据行数线性暴涨（30 万行散点的
-#: .echarts.json 实测约 11.7MB、Plotly 约 3.3MB）。等距抽样到该上限，
-#: 形状保留且卡片渲染恒定 O(1)。
-_THUMB_MAX_POINTS = 2500
-
-
-def _sample_echarts_option_for_thumb(option: dict[str, Any], max_points: int = _THUMB_MAX_POINTS) -> None:
-    """就地抽样 ECharts option 的散点系列，供迷你图渲染。
-
-    只处理 ``type=="scatter"`` 系列：折线/柱状/直方图数据量由类别或
-    bin 数决定（天然很小），热力图的格子抽样会产生缺格破图，散点矩阵
-    与 3D 散点在生成阶段已采样。等距步进抽样（data[::k]），保留
-    整体分布形状与两端特征。
-    """
-    if not isinstance(option, dict):
-        return
-    series = option.get("series")
-    if not isinstance(series, list):
-        return
-    for item in series:
-        if not isinstance(item, dict) or item.get("type") != "scatter":
-            continue
-        data = item.get("data")
-        if not isinstance(data, list) or len(data) <= max_points:
-            continue
-        step = math.ceil(len(data) / max_points)
-        item["data"] = data[::step]
-
-
-#: 按点一维数组的图型（轨迹数据是"每行一个点"的长数组）；矩阵型
-#: （heatmap 的 z 是二维网格）与类别型（bar 的 x/y 是类别维度）排除。
-_PLOTLY_SAMPLE_TRACE_TYPES = {
-    "scatter", "scattergl", "scatter3d", "scatterternary", "scatterpolar",
-    "scatterpolargl", "line", "box", "violin",
-}
-
-
-def _decode_plotly_typed_arrays(value: Any) -> Any:
-    """递归解码 Plotly typed-array 序列化，返回普通 Python list。
-
-    plotly.py 的 ``fig.to_json()`` 默认把 numpy 数组压缩成
-    ``{"dtype": "f4", "bdata": "<base64>"}``（30 万行散点的 x/y 都是
-    这种形式，直接当 dict 处理无法统计/抽样）。解码后用标准 JSON
-    数组返回，等距抽样与 json.dumps 都按普通列表工作；
-    plotly.js 对普通数组同样支持。
-    """
-    if isinstance(value, dict):
-        dtype = value.get("dtype")
-        bdata = value.get("bdata")
-        if (
-            isinstance(dtype, str)
-            and isinstance(bdata, str)
-            and set(value) == {"dtype", "bdata"}
-            and dtype != "object"
-        ):
-            try:
-                import base64
-
-                import numpy as np
-
-                return np.frombuffer(base64.b64decode(bdata), dtype=np.dtype(dtype)).tolist()
-            except Exception:
-                return value
-        return {key: _decode_plotly_typed_arrays(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_decode_plotly_typed_arrays(item) for item in value]
-    return value
-
-
-def _sample_plotly_figure_for_thumb(figure: dict[str, Any], max_points: int = _THUMB_MAX_POINTS) -> None:
-    """就地抽样 Plotly figure 的按点数据数组，供迷你图渲染。
-
-    每个 trace 先取所有数组字段的最大长度 n（x/y/z/text/customdata/
-    marker.color 等），n 超过上限时统一按同一等距步长抽样——同一下标
-    规则保证 x、y、颜色、悬浮文本一致，不会错位。只处理按点图型；
-    heatmap（z 矩阵）/pie/sunburst 等非按点图型不动。
-    """
-    if not isinstance(figure, dict):
-        return
-    data = figure.get("data")
-    if not isinstance(data, list):
-        return
-    for trace in data:
-        if not isinstance(trace, dict) or trace.get("type") not in _PLOTLY_SAMPLE_TRACE_TYPES:
-            continue
-        n = 0
-        for value in trace.values():
-            if isinstance(value, list) and len(value) > n:
-                n = len(value)
-        if n <= max_points:
-            continue
-        step = math.ceil(n / max_points)
-
-        def _sample(value: Any, _n: int = n, _step: int = step) -> Any:
-            # 递归抽样：散点的 marker.color/marker.size 等嵌套按点数组
-            # 与 x/y 同一步长，保证颜色/大小/悬浮文本不错位。
-            # 默认参数绑定循环变量（ruff B023）。
-            if isinstance(value, list):
-                return value[::_step] if len(value) == _n else value
-            if isinstance(value, dict):
-                return {key: _sample(item, _n, _step) for key, item in value.items()}
-            return value
-
-        for key, value in list(trace.items()):
-            trace[key] = _sample(value)
+#: 迷你图数据上限与抽样器：已迁至 ``data_agent.chart_sampling``（迷你图
+#: 与大数据图表的 HTML 嵌入降采样共用同一套逻辑），此处 re-export 保持
+#: ``routers.artifacts._THUMB_MAX_POINTS`` 等既有引用路径可用。
+from data_agent.chart_sampling import (  # noqa: F401
+    _THUMB_MAX_POINTS,
+    _decode_plotly_typed_arrays,
+    _sample_echarts_option_for_thumb,
+    _sample_plotly_figure_for_thumb,
+)
 
 
 def _preview_etag(path: Path) -> str:
     """基于文件 mtime + size 生成 ETag，文件重写即失效。"""
     st = path.stat()
     return f'"{int(st.st_mtime)}:{st.st_size}"'
+
+
+#: 预览文档准备结果缓存：preview 每次命中 200 都要重读产物文件、跑三段
+#: 注入修复链、内联 ~4.8MB 图表库（几十 MB 字符串拼接），热路径上纯属
+#: 重复劳动。按（路径, mtime_ns, size）缓存准备完成的文档，文件重写即
+#: 自然失配。只缓存中小文档（大数据图表的嵌入降采样后本就 ≤ 数 MB），
+#: 防止内存膨胀；ETag 仍基于磁盘文件，缓存不影响新鲜度语义。
+_PREVIEW_PREPARED_CACHE_MAX = 4
+_PREVIEW_PREPARED_CACHE_SKIP_BYTES = 24 * 1024 * 1024
+_prepared_previews: OrderedDict[tuple[str, int, int], str] = OrderedDict()
+
+
+def _get_prepared_preview(path: Path) -> str | None:
+    """命中返回准备好的文档文本，未命中返回 None。"""
+    st = path.stat()
+    key = (str(path), st.st_mtime_ns, st.st_size)
+    cached = _prepared_previews.get(key)
+    if cached is not None:
+        _prepared_previews.move_to_end(key)
+    return cached
+
+
+def _put_prepared_preview(path: Path, html_text: str) -> None:
+    st = path.stat()
+    if st.st_size > _PREVIEW_PREPARED_CACHE_SKIP_BYTES:
+        return
+    key = (str(path), st.st_mtime_ns, st.st_size)
+    _prepared_previews[key] = html_text
+    _prepared_previews.move_to_end(key)
+    while len(_prepared_previews) > _PREVIEW_PREPARED_CACHE_MAX:
+        _prepared_previews.popitem(last=False)
 
 
 @router.get("/api/sessions/{session_id}/dashboard")
@@ -551,6 +485,19 @@ def preview_artifact(session_id: str, filename: str, request: Request) -> Respon
     # 被重写（如重新生成图表）缓存立即失效、拿到最新内容，永不滞留旧版乱码。
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304, headers={"ETag": etag})
+    # 准备结果缓存命中：文件未变时直接复用上次注入/修复完成的文档，
+    # 省去重读文件 + 三段注入 + 内联 bundle 的重复开销。
+    cached_html = _get_prepared_preview(path)
+    if cached_html is not None:
+        return Response(
+            content=cached_html,
+            media_type="text/html",
+            headers={
+                "Cache-Control": "private, no-store",
+                "ETag": etag,
+                "Last-Modified": formatdate(path.stat().st_mtime, usegmt=True),
+            },
+        )
     # 旧版生成器（<2026-08）的三个问题统一修复后再内联 bundle：
     # 1) to_html 脚本块闭合标签被误转义导致预览空白；
     # 2) 暗色脚本 relayout 键带 'layout.' 前缀被 Plotly v3 静默忽略；
@@ -568,6 +515,7 @@ def preview_artifact(session_id: str, filename: str, request: Request) -> Respon
     html_text = _inline_echarts_gl_bundle(record, html_text)
     html_text = _inline_echarts_bundle(record, html_text)
     html_text = _harden_preview_document(html_text)
+    _put_prepared_preview(path, html_text)
     return Response(
         content=html_text,
         media_type="text/html",
