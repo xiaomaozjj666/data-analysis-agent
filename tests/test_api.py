@@ -1479,6 +1479,30 @@ def test_preview_non_html_returns_415(tmp_path, monkeypatch):
     assert response.status_code == 415
 
 
+def test_preview_served_with_gzip(tmp_path, monkeypatch):
+    """大体积预览响应必须走 gzip 传输。
+
+    preview 端点在服务时内联完整图表库（plotly.min.js ~4.8MB），预览首次
+    打开的传输体积全靠 GZipMiddleware 压掉（实测 4.8MB → ~19KB，压缩比
+    ~250 倍）。若有人移除/绕过 GZip 中间件，大数据图表的首次预览会从
+    秒级退化到分钟级，这里锁住行为。
+    """
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = _create_chart_session(client)
+    chart = _first_chart_artifact(client, session_id)
+    response = client.get(
+        f"/api/sessions/{session_id}/artifacts/{chart['name']}/preview",
+        headers={"Accept-Encoding": "gzip"},
+    )
+    assert response.status_code == 200
+    assert response.headers.get("content-encoding") == "gzip"
+    assert "Accept-Encoding" in (response.headers.get("vary") or "")
+    # 响应体经 httpx 自动解压后应还原为完整自包含文档（内联图表库）
+    assert len(response.content) > 1_000_000
+    assert "plotly" in response.text or "echarts" in response.text
+
+
 def test_edit_chart_returns_404_for_missing_chart(tmp_path, monkeypatch):
     """PUT edit 不存在的图表应返回 404。"""
     _isolate_runtime(tmp_path, monkeypatch)

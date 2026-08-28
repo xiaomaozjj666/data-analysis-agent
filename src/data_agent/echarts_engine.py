@@ -1727,7 +1727,14 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
         tooltip: { backgroundColor: tooltipBg, borderColor: axisColor, textStyle: { color: textColor } }
       };
       try {
-        var cur = chart.getOption() || {};
+        // 换肤状态源：首次 applyTheme（尚未改过任何颜色）用 getOption 固化
+        // 一份「原始亮色快照」，后续换肤从快照重算。getOption 会深拷贝整个
+        // option（30 万点散点的 series 数据几十 MB），每次换肤都调一次是
+        // 无谓的大额开销。快照是初始亮色态，双向换肤语义不变：亮→暗走
+        // LP→DP 色表映射；暗→亮时色表（DP→LP）匹配不到快照里的亮色，
+        // swapColor 原样返回，等效于直接回落亮色原值。
+        if (!chart.__themeSnapshot) chart.__themeSnapshot = chart.getOption() || {};
+        var cur = chart.__themeSnapshot;
         if (cur.xAxis && cur.xAxis.length) update.xAxis = cur.xAxis.map(function() { return axisUpdate(); });
         if (cur.yAxis && cur.yAxis.length) update.yAxis = cur.yAxis.map(function() { return axisUpdate(); });
         if (cur.parallelAxis && cur.parallelAxis.length) update.parallelAxis = cur.parallelAxis.map(function() { return axisUpdate(); });
@@ -1835,6 +1842,14 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
             if (s.type === 'scatter' && s.name === '\u5747\u503c') {
               m.itemStyle = { color: isDark ? '#1a1b1e' : '#ffffff',
                               borderColor: isDark ? '#e8eaed' : '#1a1d29', borderWidth: 1.5 };
+            }
+            if (s.type === 'scatter') {
+              // 快照是初始态，而 datazoom 自适应点径会实时改 symbolSize /
+              // itemStyle.opacity——从快照写回会覆盖现场（缩放到 9px 后切
+              // 主题被打回初值）。从 update 里剥掉，setOption 合并保留现场。
+              // symbolSize 为函数（size 维度）时同样剥掉：省略即不动现场。
+              delete m.symbolSize;
+              if (m.itemStyle) delete m.itemStyle.opacity;
             }
             if (!dataMapped) delete m.data;
             return m;
