@@ -37,7 +37,11 @@ from scipy import stats
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
-from data_agent.chart_sampling import _EMBED_MAX_POINTS, sample_plotly_figure_for_embed, sampling_note
+from data_agent.chart_sampling import (
+    _EMBED_MAX_POINTS,
+    sample_plotly_figure_for_embed,
+    sampling_note,
+)
 from data_agent.serialization import json_text
 from data_agent.workspace import DataWorkspace, _atomic_write_text
 

@@ -27,6 +27,12 @@ from urllib.parse import quote
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 
+from data_agent.chart_sampling import (  # noqa: F401
+    _THUMB_MAX_POINTS,
+    _decode_plotly_typed_arrays,
+    _sample_echarts_option_for_thumb,
+    _sample_plotly_figure_for_thumb,
+)
 from data_agent.registry import ChartEditRequest, SessionRecord, _artifact_file
 from data_agent.tools import _PLOTLY_DARK_MODE_SCRIPT
 from data_agent.tools.builder import _PLOTLY_GL_REFRESH_SCRIPT, _render_plotly_html
@@ -403,17 +409,6 @@ def _inject_modebar_i18n(html_text: str) -> str:
             count=1,
         )
     return html_text
-
-
-#: 迷你图数据上限与抽样器：已迁至 ``data_agent.chart_sampling``（迷你图
-#: 与大数据图表的 HTML 嵌入降采样共用同一套逻辑），此处 re-export 保持
-#: ``routers.artifacts._THUMB_MAX_POINTS`` 等既有引用路径可用。
-from data_agent.chart_sampling import (  # noqa: F401
-    _THUMB_MAX_POINTS,
-    _decode_plotly_typed_arrays,
-    _sample_echarts_option_for_thumb,
-    _sample_plotly_figure_for_thumb,
-)
 
 
 def _preview_etag(path: Path) -> str:
