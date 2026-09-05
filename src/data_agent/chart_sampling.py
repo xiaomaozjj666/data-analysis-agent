@@ -60,17 +60,18 @@ def _sample_echarts_option_for_thumb(option: dict[str, Any], max_points: int = _
 def sample_echarts_option_for_embed(
     option: dict[str, Any], max_points: int = _EMBED_MAX_POINTS
 ) -> tuple[dict[str, Any], int, int]:
-    """大数据图表的 HTML 嵌入降采样（等距步进），返回 (抽样副本, 原始点数, 抽样后点数)。
+    """大数据图表的 HTML 嵌入降采样（等距步进），返回 (抽样副本, 原始行数, 抽样后行数)。
 
     与迷你图抽样不同，这里必须保持「类目轴 ↔ 系列数据」的对齐：
     - 类目轴（line/area 的 x）：xAxis.data 与对齐系列用同一步长抽样，
-      data[i] 仍对应 categories[i]；散点（数值轴 [x, y, ...] 点对）
-      逐系列抽样，天然对齐；
-    - 柱状图类目数受语义护栏约束（高基数被拒），跟随轴步长即可；
+      data[i] 仍对应 categories[i]；
+    - 数值轴散点（[x, y, ...] 点对）：逐系列抽样点对，天然对齐——
+      总预算按系列数分摊（多系列各自独立套上限会突破承诺总量）；
     - markPoint（max/min）/markLine（average）由 ECharts 按抽样后的
       数据现算，无需迁移。
 
-    原始 option 不被修改；点数取「类目轴长度与最长系列长度」的较大者。
+    行数口径：类目轴图取轴长度，散点取各系列点数之和。原始 option
+    不被修改。
     """
     sampled = copy.deepcopy(option)
     series = sampled.get("series") if isinstance(sampled, dict) else None
@@ -84,18 +85,19 @@ def sample_echarts_option_for_embed(
             if isinstance(item, dict) and isinstance(item.get("data"), list)
         ]
 
-    before = max(_series_lens(series) or [0])
     axes = sampled.get("xAxis") if isinstance(sampled, dict) else None
     cat_axis = None
     if isinstance(axes, list) and axes and isinstance(axes[0], dict) and axes[0].get("type") == "category":
         cat_axis = axes[0]
     axis_step = 0
+    axis_before = 0
     if cat_axis and isinstance(cat_axis.get("data"), list):
-        before = max(before, len(cat_axis["data"]))
-        if len(cat_axis["data"]) > max_points:
-            axis_step = math.ceil(len(cat_axis["data"]) / max_points)
+        axis_before = len(cat_axis["data"])
+        if axis_before > max_points:
+            axis_step = math.ceil(axis_before / max_points)
             cat_axis["data"] = cat_axis["data"][::axis_step]
 
+    before = axis_before
     if isinstance(series, list):
         for item in series:
             if not isinstance(item, dict):
@@ -109,12 +111,29 @@ def sample_echarts_option_for_embed(
                 if axis_step > 1:
                     item["data"] = data[::axis_step]
             elif stype == "scatter":
-                if len(data) > max_points:
-                    step = math.ceil(len(data) / max_points)
-                    item["data"] = data[::step]
-    after = max(_series_lens(series) or [0])
-    if cat_axis and isinstance(cat_axis.get("data"), list):
-        after = max(after, len(cat_axis["data"]))
+                continue  # 散点系列在下方按总预算分摊抽样
+
+    scatter_items = [
+        item
+        for item in (series if isinstance(series, list) else [])
+        if isinstance(item, dict) and item.get("type") == "scatter" and isinstance(item.get("data"), list)
+    ]
+    if scatter_items and not cat_axis:
+        before = sum(len(item["data"]) for item in scatter_items)
+        total = before
+        if total > max_points:
+            per_cap = max(2000, max_points // len(scatter_items))
+            for item in scatter_items:
+                data = item["data"]
+                if len(data) > per_cap:
+                    item["data"] = data[:: math.ceil(len(data) / per_cap)]
+
+    after = len(cat_axis["data"]) if cat_axis and isinstance(cat_axis.get("data"), list) else 0
+    if scatter_items and not cat_axis:
+        after = sum(len(item["data"]) for item in scatter_items)
+    if before == 0:
+        before = max(_series_lens(series) or [0])
+        after = max(_series_lens(series) or [0])
     return sampled, before, after
 
 
@@ -199,28 +218,33 @@ def _sample_plotly_figure_for_thumb(figure: dict[str, Any], max_points: int = _T
 def sample_plotly_figure_for_embed(
     figure: dict[str, Any], max_points: int = _EMBED_MAX_POINTS
 ) -> tuple[dict[str, Any], int, int]:
-    """大数据图表的 HTML 嵌入降采样，返回 (抽样副本, 原始点数, 抽样后点数)。
+    """大数据图表的 HTML 嵌入降采样，返回 (抽样副本, 原始总点数, 抽样后总点数)。
 
     ``figure`` 通常是 ``json.loads(fig.to_json())`` 的产物（含 numpy
     typed-array 编码）。解码会重建全部 dict/list，因此抽样就地修改
     不会影响传入的原始结构——完整数据由调用方保留在 ``.plotly.json``
     产物中。
+
+    预算按 trace 总量分摊：多系列（如自动配色的 3~8 个分组）时若各自
+    独立套用上限，总点数会突破承诺（3 系列 × 5 万 = 15 万），这里先数
+    出按点图型的 trace 数，把总预算均分到每个 trace（下限 2000 保形状）。
     """
     decoded = _decode_plotly_typed_arrays(figure)
 
-    def _max_points_per_trace(fig: dict[str, Any]) -> int:
-        best = 0
-        for trace in fig.get("data") or []:
-            if not isinstance(trace, dict) or trace.get("type") not in _PLOTLY_SAMPLE_TRACE_TYPES:
-                continue
-            n = max((len(value) for value in trace.values() if isinstance(value, list)), default=0)
-            best = max(best, n)
-        return best
+    def _trace_arrays(trace: dict[str, Any]) -> int:
+        return max((len(value) for value in trace.values() if isinstance(value, list)), default=0)
 
-    before = _max_points_per_trace(decoded)
-    _sample_plotly_figure_for_thumb(decoded, max_points)
-    after = _max_points_per_trace(decoded)
-    return decoded, before, after
+    traces = [
+        trace
+        for trace in (decoded.get("data") or [])
+        if isinstance(trace, dict) and trace.get("type") in _PLOTLY_SAMPLE_TRACE_TYPES
+    ]
+    total_before = sum(_trace_arrays(trace) for trace in traces)
+    if traces and total_before > max_points:
+        per_trace_cap = max(2000, max_points // len(traces))
+        _sample_plotly_figure_for_thumb(decoded, per_trace_cap)
+    after = sum(_trace_arrays(trace) for trace in traces)
+    return decoded, total_before, after
 
 
 def sampling_note(engine: str, original: int, embedded: int) -> str:

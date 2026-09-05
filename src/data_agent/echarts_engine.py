@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 
 from data_agent.tools._helpers import _human_column_label as _build_axis_label
-from data_agent.tools._helpers import _nice_ticks
+from data_agent.tools._helpers import _nice_ticks, _scatter_structure
 from data_agent.tools.builder import _CHART_COLORS
 from data_agent.workspace import (
     ECHARTS_CDN_URL,
@@ -787,6 +787,57 @@ def _echarts_line(
     return base
 
 
+def _append_structure_annotations(
+    base: dict[str, Any], df: pd.DataFrame, *, x: str, y: str, target: dict[str, Any],
+) -> None:
+    """给散点主系列追加结构注记：OLS 趋势线 + 双轴均值象限线。
+
+    大点云没有视觉锚点就是一堵"点墙"（实测用户反馈眼花缭乱）：趋势线
+    给出整体方向，均值参考线把画面切成四象限，r 值量化关系强度——
+    Tableau / 专业报表的标配做法。markLine 坐标基于全量数据计算（比
+    HTML 嵌入的抽样点更精确），与既有 IQR 边界线合并而非覆盖。
+    """
+    if not (x and y and x in df.columns and y in df.columns):
+        return
+    pair = df[[x, y]].apply(pd.to_numeric, errors="coerce").dropna()
+    if pair.empty:
+        return
+    structure = _scatter_structure(pair[x].astype(float).tolist(), pair[y].astype(float).tolist())
+    mark_items: list[dict[str, Any]] = []
+    trend = structure.get("trend")
+    r_value = structure.get("r")
+    if trend:
+        x0, y0, x1, y1 = trend
+        trend_label = f"趋势 r={r_value:.2f}" if r_value is not None else "趋势线"
+        mark_items.append([
+            {"coord": [x0, y0], "lineStyle": {"color": "#E15759", "width": 2.5},
+             "label": {"formatter": trend_label, "position": "insideEndTop",
+                       "color": "#E15759", "fontSize": 11, "fontWeight": 600}},
+            {"coord": [x1, y1]},
+        ])
+    mean_x, mean_y = structure.get("mean_x"), structure.get("mean_y")
+    if mean_x is not None:
+        mark_items.append({
+            "xAxis": mean_x,
+            "lineStyle": {"color": "#9aa0a6", "width": 1.2, "type": "dashed", "opacity": 0.9},
+            "label": {"formatter": f"x 均值 {_format_number(mean_x)}", "position": "insideEndTop",
+                      "color": "#9aa0a6", "fontSize": 10},
+        })
+    if mean_y is not None:
+        mark_items.append({
+            "yAxis": mean_y,
+            "lineStyle": {"color": "#9aa0a6", "width": 1.2, "type": "dashed", "opacity": 0.9},
+            "label": {"formatter": f"y 均值 {_format_number(mean_y)}", "position": "insideEndRight",
+                      "color": "#9aa0a6", "fontSize": 10},
+        })
+    if not mark_items:
+        return
+    existing = target.setdefault(
+        "markLine", {"silent": True, "symbol": "none", "label": {"color": "#6b7280", "fontSize": 11}},
+    )
+    existing.setdefault("data", []).extend(mark_items)
+
+
 def _echarts_scatter(
     df: pd.DataFrame, *, x: str, y: str | None, color: str | None,
     size: str | None, title: str,
@@ -853,6 +904,8 @@ def _echarts_scatter(
                 "emphasis": {"scale": 1.4, "itemStyle": {"opacity": 1, "shadowBlur": 10}},
             })
         base["legend"]["data"] = [str(item) for item in color_levels]
+        # 结构注记挂主系列：趋势线 + 均值象限线（全量数据计算，跨组全局参考）
+        _append_structure_annotations(base, df, x=x, y=y, target=series[0])
         base["series"] = series
     else:
         data_cols = [x, y] + ([size] if size and size in df.columns else [])
@@ -932,6 +985,9 @@ def _echarts_scatter(
             base["title"]["subtext"] = (
                 f"{x_label} × {y_label} · IQR 检出 {n_outliers} 个离群点（红色标出）"
             )
+        # 结构注记挂主系列：趋势线 + 均值象限线（与离群边界线分属不同系列，
+        # 点击图例隐藏离群点时结构参考线仍在）
+        _append_structure_annotations(base, df, x=x, y=y, target=series[0])
         base["series"] = series
 
     return base

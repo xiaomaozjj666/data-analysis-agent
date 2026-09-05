@@ -25,6 +25,16 @@ class ControllableIO {
   }
 }
 
+class SilentIO {
+  // 模拟"IO 存在但宿主从不派发回调"的环境（被遮挡/后台 webview）
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+  takeRecords() {
+    return [];
+  }
+}
+
 // Probe：把 ref 真正挂到 DOM 上（ref.current 为 null 时 hook 不观测），
 // 并把最新 inView 暴露给断言。
 let latest = false;
@@ -35,6 +45,7 @@ function Probe() {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   ControllableIO.instances = [];
   latest = false;
@@ -55,6 +66,15 @@ describe("useInView", () => {
   it("IntersectionObserver 不可用时降级为立即可见", () => {
     vi.stubGlobal("IntersectionObserver", undefined);
     render(<Probe />);
+    expect(latest).toBe(true);
+  });
+
+  it("IO 静默不派发回调时超时兜底为可见并停止观测", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("IntersectionObserver", SilentIO as unknown as typeof IntersectionObserver);
+    render(<Probe />);
+    expect(latest).toBe(false);
+    act(() => vi.advanceTimersByTime(1600));
     expect(latest).toBe(true);
   });
 });

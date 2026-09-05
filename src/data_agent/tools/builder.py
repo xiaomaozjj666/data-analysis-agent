@@ -52,7 +52,7 @@ from ._cleaning import (
     _parse_numeric_columns,
     _trim_string_columns,
 )
-from ._helpers import _human_column_label, _nice_ticks, _plotly_axis_tickformat
+from ._helpers import _human_column_label, _nice_ticks, _plotly_axis_tickformat, _scatter_structure
 from ._sandbox import build_run_python_code
 from .charts import (
     _BOOLEAN_VALUE_LABELS,
@@ -906,6 +906,11 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         extreme values and adds readable main/full viewport controls without changing the data;
         use scale_mode="full" only when the user explicitly wants the uncompressed raw scale.
         export_png is best-effort and needs Chrome.
+
+        散点图可读性增强（双引擎一致）：自动叠加 OLS 趋势线（标注 r 值）与
+        双轴均值象限参考线，给大点云提供视觉锚点；chart_type="auto" 选出
+        散点且未指定 color 时，自动挑选一个低基数分类列（2~8 个取值）作为
+        颜色维度（响应中 auto_color 字段回显）。
         """
         # LLM 偶发在 title 里输出 HTML 实体（如 p&lt;0.001），先还原成
         # 纯文本；模板层渲染时会统一再做一次 escape，不会引入 XSS，
@@ -947,6 +952,27 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                 non_null = _raw_df[x].dropna() if x else pd.Series(dtype=object)
                 if len(non_null) > non_null.nunique():
                     aggregation = "sum"
+
+        _auto_color_applied = False
+        # 自动配色（Tableau 式默认行为）：auto 选出散点图且未指定 color 时，
+        # 自动挑一个低基数分类列（2~8 个取值）作为颜色维度。大点云单一
+        # 颜色毫无区分度（实测用户反馈"不能就一种颜色"），数据里有现成
+        # 的分组维度时必须利用；显式传 chart_type/color 时不干预。
+        if was_auto and chart_type == "scatter" and not color and not z and x and y:
+            for candidate in _raw_df.columns:
+                if candidate in (x, y):
+                    continue
+                candidate_col = _raw_df[candidate]
+                if pd.api.types.is_numeric_dtype(candidate_col) or pd.api.types.is_datetime64_any_dtype(candidate_col):
+                    continue
+                try:
+                    n_unique = int(candidate_col.nunique(dropna=True))
+                except Exception:
+                    continue
+                if 2 <= n_unique <= 8:
+                    color = candidate
+                    _auto_color_applied = True
+                    break
 
         _has_bool = any(
             col and col in _raw_df.columns and pd.api.types.is_bool_dtype(_raw_df[col])
@@ -1221,6 +1247,46 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                 small = {"size": 3.5, "opacity": 0.5, "line": {"width": 0.2, "color": "white"}}
                 fig.update_traces(marker=small, selector={"type": "scatter"})
                 fig.update_traces(marker=small, selector={"type": "scattergl"})
+            # 结构注记（Tableau 式视觉锚点）：OLS 趋势线 + 双轴均值象限线。
+            # 大点云没有锚点就是一堵"点墙"（实测用户反馈眼花缭乱）。
+            # 趋势线用 SVG Scatter 追加（与 scattergl 混合渲染，线在点上层
+            # 保持清晰）；坐标基于全量数据，比嵌入抽样更精确。
+            if x and y and x in df.columns and y in df.columns:
+                pair_df = df[[x, y]].apply(pd.to_numeric, errors="coerce").dropna()
+                structure = (
+                    _scatter_structure(pair_df[x].astype(float).tolist(), pair_df[y].astype(float).tolist())
+                    if len(pair_df) >= 3
+                    else None
+                )
+                if structure:
+                    import plotly.graph_objects as go
+
+                    trend = structure.get("trend")
+                    r_value = structure.get("r")
+                    if trend:
+                        trend_name = f"趋势线 r={r_value:.2f}" if r_value is not None else "趋势线"
+                        fig.add_trace(go.Scatter(
+                            x=[trend[0], trend[2]], y=[trend[1], trend[3]],
+                            mode="lines", name=trend_name,
+                            line={"color": "#E15759", "width": 2.5},
+                            hoverinfo="skip",
+                        ))
+                    if structure.get("mean_y") is not None:
+                        fig.add_hline(
+                            y=structure["mean_y"], line_dash="dash",
+                            line_color="#9aa0a6", line_width=1.2,
+                            annotation_text=f"y 均值 {structure['mean_y']:,.1f}",
+                            annotation_position="top right",
+                            annotation_font={"size": 10, "color": "#6b7280"},
+                        )
+                    if structure.get("mean_x") is not None:
+                        fig.add_vline(
+                            x=structure["mean_x"], line_dash="dash",
+                            line_color="#9aa0a6", line_width=1.2,
+                            annotation_text=f"x 均值 {structure['mean_x']:,.1f}",
+                            annotation_position="top right",
+                            annotation_font={"size": 10, "color": "#6b7280"},
+                        )
         if color:
             fig.update_layout(legend_title_text=_human_column_label(color))
         html_path = workspace.artifacts_dir / f"{stem}.html"
@@ -1332,6 +1398,8 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         }
         if sampling_info is not None:
             response["sampling"] = sampling_info
+        if _auto_color_applied and color:
+            response["auto_color"] = color
         if export_png:
             png_path = workspace.artifacts_dir / f"{stem}.png"
             try:

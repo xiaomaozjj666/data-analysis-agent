@@ -256,9 +256,11 @@ def test_visualizations_keep_extreme_values_but_default_to_readable_scale(tmp_pa
     assert scatter.layout.xaxis.range[1] < 20
     assert scatter.layout.yaxis.range[1] < 10_000
     # The real point remains in the base traces and is only outside the default viewport.
+    # 趋势线注记 trace 除外：OLS 端点外推可略超极值点的 y（数学上正确）。
     assert max(
         float(value)
         for trace in scatter.data
+        if not (isinstance(trace.name, str) and trace.name.startswith("趋势线"))
         for value in plotly_values(trace.y)
     ) == 2_990_001
 
@@ -1332,13 +1334,19 @@ def test_plotly_large_scatter_switches_to_webgl(tmp_path):
     # plotly.py 把 numpy 数组写成 typed-array（{"dtype","bdata"}），解码验证点数
     import base64 as _b64
 
-    x = payload["data"][0]["x"]
-    if isinstance(x, dict):
-        arr = np.frombuffer(_b64.b64decode(x["bdata"]), dtype=np.dtype(x["dtype"]))
-    else:
-        arr = np.asarray(x)
-    # color 分组时每个 trace 只带本组数据（2 组 × 6000 = 12000）
-    assert arr.size * len(payload["data"]) == n
+    # color 分组时每个 trace 只带本组数据（2 组 × 6000 = 12000）。
+    # 只统计 markers 数据 trace：趋势线注记 trace（mode=lines）不计入。
+    group_traces = [t for t in payload["data"] if t.get("mode") in (None, "markers")]
+    total_points = 0
+    for trace in group_traces:
+        tx = trace["x"]
+        size = (
+            np.frombuffer(_b64.b64decode(tx["bdata"]), dtype=np.dtype(tx["dtype"])).size
+            if isinstance(tx, dict)
+            else np.asarray(tx).size
+        )
+        total_points += size
+    assert total_points == n
     html_text = Path(result["html"]).read_text(encoding="utf-8")
     assert "scattergl" in html_text
 
@@ -1815,3 +1823,77 @@ class TestChartPalette:
         html = (workspace.artifacts_dir / "柱状图_1.html").read_text(encoding="utf-8")
         assert "#4E79A7" in html
         assert '"colorway"' in html
+
+
+def test_plotly_scatter_structure_annotations(tmp_path):
+    """散点结构注记：OLS 趋势线 trace + 双轴均值虚线（Tableau 式视觉锚点）。
+
+    大点云没有视觉锚点就是一堵"点墙"（实测用户反馈眼花缭乱）。
+    """
+    rng = np.random.default_rng(11)
+    n = 500
+    sales_vals = rng.uniform(0, 5000, n)
+    df = pd.DataFrame({
+        "sales": sales_vals,
+        "profit": 100 + 0.2 * sales_vals + rng.normal(0, 50, n),
+    })
+    source = tmp_path / "scatter.csv"
+    df.to_csv(source, index=False)
+    ws = DataWorkspace(tmp_path / "runs", session_id="structure")
+    ws.load(source, copy_into_workspace=True)
+    tools = tool_map(ws)
+
+    result = json.loads(
+        tools["create_visualization"].invoke({"chart_type": "scatter", "x": "sales", "y": "profit"})
+    )
+    fig = json.loads(Path(result["plotly_json"]).read_text(encoding="utf-8"))
+    names = [t.get("name") for t in fig["data"]]
+    assert any(isinstance(nm, str) and nm.startswith("趋势线 r=") for nm in names)
+    trend_trace = next(t for t in fig["data"] if isinstance(t.get("name"), str) and t["name"].startswith("趋势线"))
+    assert trend_trace["mode"] == "lines"
+    # 强相关数据 r 应接近 1
+    assert float(trend_trace["name"].split("r=")[1]) > 0.9
+    # 双轴均值虚线：layout.shapes 两条 dashed
+    shapes = fig.get("layout", {}).get("shapes", [])
+    assert len(shapes) == 2
+    assert all(s["line"]["dash"] == "dash" for s in shapes)
+    assert any(s.get("x0") is not None and s.get("y0") is not None for s in shapes)
+
+
+def test_auto_scatter_picks_low_cardinality_color(tmp_path):
+    """auto 选出散点且未指定 color 时，自动挑低基数分类列作颜色维度。
+
+    实测用户反馈"大数据分析不能就一种颜色"：数据里有现成分组维度时
+    必须利用；显式 chart_type/color 不受影响；响应回显 auto_color。
+    """
+    rng = np.random.default_rng(13)
+    n = 800
+    df = pd.DataFrame({
+        "region": rng.choice(["East", "West", "South"], n),
+        "sales": rng.uniform(0, 5000, n),
+        "profit": rng.uniform(0, 1500, n),
+    })
+    source = tmp_path / "auto.csv"
+    df.to_csv(source, index=False)
+    ws = DataWorkspace(tmp_path / "runs", session_id="autocolor")
+    ws.load(source, copy_into_workspace=True)
+    tools = tool_map(ws)
+
+    # auto 路径：两数值列 + 未指定 color → 自动 region 配色
+    result = json.loads(
+        tools["create_visualization"].invoke({"chart_type": "auto", "x": "sales", "y": "profit"})
+    )
+    assert result["chart_type"] == "scatter"
+    assert result.get("auto_color") == "region"
+    fig = json.loads(Path(result["plotly_json"]).read_text(encoding="utf-8"))
+    names = [t.get("name") for t in fig["data"]]
+    assert set(names) >= {"East", "West", "South"}
+
+    # 显式 scatter（非 auto）：不自动配色，只有单系列 + 趋势线
+    result2 = json.loads(
+        tools["create_visualization"].invoke({"chart_type": "scatter", "x": "sales", "y": "profit"})
+    )
+    assert "auto_color" not in result2
+    fig2 = json.loads(Path(result2["plotly_json"]).read_text(encoding="utf-8"))
+    data_names = [t.get("name") for t in fig2["data"]]
+    assert "East" not in data_names
