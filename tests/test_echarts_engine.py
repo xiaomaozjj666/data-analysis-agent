@@ -1172,9 +1172,12 @@ def test_echarts_embed_sampling_big_scatter(tmp_path):
     assert sampling["applied"] is True
     assert sampling["original_points"] > 50_000
     assert sampling["embedded_points"] <= 50_000
-    # 完整数据保留在 JSON 产物
+    # 完整数据保留在 JSON 产物（主系列 + 离群系列点数和 == 原始行数）
     full_option = json.loads(Path(result["echarts_json"]).read_text(encoding="utf-8"))
-    assert len(full_option["series"][0]["data"]) == sampling["original_points"]
+    full_points = sum(
+        len(s["data"]) for s in full_option["series"] if s.get("type") == "scatter"
+    )
+    assert full_points == sampling["original_points"]
     # HTML 是抽样副本：体积明显小于全量 JSON，且带抽样声明
     html_text = Path(result["html"]).read_text(encoding="utf-8")
     assert "等距抽样" in html_text
@@ -1241,3 +1244,29 @@ def test_plotly_embed_sampling_big_scatter(tmp_path):
     # HTML 是抽样副本且带声明
     html_text = Path(result["html"]).read_text(encoding="utf-8")
     assert "等距抽样" in html_text
+
+
+def test_echarts_scatter_structure_annotations(workspace, sample_df):
+    """ECharts 散点结构注记：趋势线 + 双轴均值象限线挂主系列。
+
+    大点云没有视觉锚点就是一堵"点墙"（实测用户反馈眼花缭乱）。
+    markLine 与既有 IQR 边界线合并而非覆盖。
+    """
+    tools = {t.name: t for t in build_tools(workspace)}
+    result = json.loads(tools["create_visualization"].invoke({
+        "chart_type": "scatter", "x": "sales", "y": "profit", "chart_engine": "echarts",
+    }))
+    option = json.loads(Path(result["echarts_json"]).read_text(encoding="utf-8"))
+    main = option["series"][0]
+    mark_line = main.get("markLine", {})
+    data = mark_line.get("data", [])
+    formatters = [
+        (item[0].get("label", {}).get("formatter") if isinstance(item, list) else item.get("label", {}).get("formatter"))
+        for item in data
+    ]
+    assert any(f and f.startswith("趋势 r=") for f in formatters)
+    assert any(f and "x 均值" in f for f in formatters)
+    assert any(f and "y 均值" in f for f in formatters)
+    # 趋势线坐标为点对形式
+    trend_item = next(item for item in data if isinstance(item, list))
+    assert len(trend_item) == 2 and "coord" in trend_item[0]

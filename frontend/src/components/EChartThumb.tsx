@@ -296,6 +296,22 @@ function stripDenseLabels(option: Record<string, unknown>): void {
   }
 }
 
+// 等两帧让容器的 aspect-ratio 布局稳定后再初始化，避免 ECharts
+// 按错误尺寸初绘导致坐标轴错位/顶部被裁。rAF 在隐藏/被遮挡标签页里
+// 会被 Chromium 冻结（实测 visibility=hidden 时永不触发，缩略图永久
+// 空白），必须加超时兜底——宁可按当前布局初始化也不留白。
+const nextFrame = () =>
+  new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    requestAnimationFrame(() => requestAnimationFrame(finish));
+    setTimeout(finish, 200);
+  });
+
 // ECharts 产物卡片的内联迷你图：产物页无需点击即可预览图表内容。
 // 渲染策略：fetch 后端 echarts-json → 剥离函数字段 + 精简布局 →
 // 懒加载 echarts → SVG 渲染到浅色画布（与 Plotly PNG 缩略图的米白底
@@ -354,9 +370,7 @@ const EChartThumb = React.memo(function EChartThumb({ previewUrl, alt }: EChartT
         const needsGl = hasGlSeries(source);
         const simplify = simplifyForThumb(source, theme);
         stripDenseLabels(simplify);
-        // 等两帧让容器的 aspect-ratio 布局稳定后再初始化，避免 ECharts
-        // 按错误尺寸初绘导致坐标轴错位/顶部被裁。
-        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        await nextFrame();
         const echarts = await import("echarts");
         if (needsGl) await import("echarts-gl");
         if (disposed || !inView || !containerRef.current) return;
@@ -368,7 +382,9 @@ const EChartThumb = React.memo(function EChartThumb({ previewUrl, alt }: EChartT
         });
         instance.setOption(simplify);
         // 布局稳定后再强重绘一次，修复 init 与最终 CSS 尺寸不一致
+        // （rAF + 超时双保险：隐藏标签页里 rAF 冻结，超时保证执行）
         requestAnimationFrame(() => instance.resize());
+        setTimeout(() => instance.resize(), 300);
         chart = instance;
         observer = new ResizeObserver(() => instance.resize());
         observer.observe(containerRef.current);

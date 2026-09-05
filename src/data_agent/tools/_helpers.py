@@ -201,3 +201,52 @@ def _plotly_axis_tickformat(value_range: tuple[float, float]) -> str:
     if abs_max >= 0.001:
         return ".4f"
     return ".2e"
+
+
+def _scatter_structure(
+    x_values: list[float], y_values: list[float]
+) -> dict[str, float | None]:
+    """计算散点图的结构注记数据：OLS 趋势线端点、双轴均值、皮尔逊 r。
+
+    参考 Tableau/Plotly 专业实践——大点云需要"视觉锚点"才可读：趋势线
+    给出整体方向，均值参考线把画面切成四象限，r 值量化关系强度。
+    纯 numpy 计算，零新依赖，双引擎（Plotly/ECharts）共享。
+
+    返回::
+
+        {
+          "trend": [x0, y0, x1, y1] | None,  # 裁剪到数据范围的线段端点
+          "mean_x": float | None,
+          "mean_y": float | None,
+          "r": float | None,
+          "n": int,  # 参与计算的有效点数
+        }
+    """
+    import numpy as np
+
+    empty: dict[str, float | None] = {"trend": None, "mean_x": None, "mean_y": None, "r": None, "n": 0}
+    try:
+        if len(x_values) != len(y_values) or len(x_values) < 3:
+            return empty
+        x = np.asarray(x_values, dtype=float)
+        y = np.asarray(y_values, dtype=float)
+        mask = np.isfinite(x) & np.isfinite(y)
+        x, y = x[mask], y[mask]
+        n = int(len(x))
+        if n < 3:
+            return empty
+        mean_x = float(x.mean())
+        mean_y = float(y.mean())
+        # 常数列：无趋势可言，均值线仍有象限价值
+        if float(x.std()) == 0 or float(y.std()) == 0:
+            return {"trend": None, "mean_x": mean_x, "mean_y": mean_y, "r": None, "n": n}
+        slope, intercept = np.polyfit(x, y, 1)
+        x0, x1 = float(x.min()), float(x.max())
+        trend = [x0, float(slope * x0 + intercept), x1, float(slope * x1 + intercept)]
+        if float(x.std()) > 0 and float(y.std()) > 0:
+            r = float(np.corrcoef(x, y)[0, 1])
+        else:
+            r = None
+        return {"trend": trend, "mean_x": mean_x, "mean_y": mean_y, "r": r, "n": n}
+    except Exception:
+        return empty
