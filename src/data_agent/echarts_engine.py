@@ -890,7 +890,7 @@ def _echarts_scatter(
                 "name": str(level),
                 "type": "scatter",
                 "data": data,
-                # 超过阈值自动启用 large 模式：万级点量下浏览器仍能丝滑交互
+                # 超过阈值自动启用 large 模式：万级点量下浏览器仍能流畅交互
                 "large": True, "largeThreshold": 4000,
                 "symbolSize": _size_func(size, size_min, size_max) if size else base_symbol,
                 "itemStyle": {
