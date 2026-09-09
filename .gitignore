@@ -10,7 +10,6 @@ runs/
 _test_screenshots/
 .ruff_cache/
 .langgraph_api/
-.qoder/
 output/
 /dist/
 build/
@@ -19,7 +18,3 @@ frontend/node_modules/
 # 前端构建产物：由 `npm run build` / Dockerfile 前端阶段生成，运行时由
 # FastAPI 从磁盘静态托管，无需入库（避免每次改动产生哈希重命名的大 diff）。
 frontend/dist/
-
-
-# AI 工具工作目录（不入库）
-.workbuddy/
