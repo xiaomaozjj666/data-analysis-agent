@@ -138,14 +138,14 @@ def test_native_deepseek_model_preserves_thinking_configuration():
     settings = AgentSettings(
         provider="deepseek",
         api_key="test-key",
-        model="deepseek-v4-pro",
+        model="deepseek-flash",
         base_url="https://api.deepseek.com",
         thinking_enabled=True,
         reasoning_effort="high",
     )
     model = create_chat_model(settings)
     assert isinstance(model, ChatDeepSeek)
-    assert model.model_name == "deepseek-v4-pro"
+    assert model.model_name == "deepseek-flash"
     assert model.extra_body == {"thinking": {"type": "enabled"}}
     assert model.reasoning_effort == "high"
 
@@ -154,7 +154,7 @@ def test_native_deepseek_agent_binds_analysis_tools_without_network(workspace):
     settings = AgentSettings(
         provider="deepseek",
         api_key="test-key",
-        model="deepseek-v4-pro",
+        model="deepseek-flash",
         thinking_enabled=True,
         reasoning_effort="high",
         max_iterations=5,
