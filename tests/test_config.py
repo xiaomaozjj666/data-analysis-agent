@@ -17,7 +17,7 @@ def test_deepseek_is_default_provider(monkeypatch):
         monkeypatch.delenv(name, raising=False)
     settings = AgentSettings.from_env()
     assert settings.provider == "deepseek"
-    assert settings.model == "deepseek-v4-pro"
+    assert settings.model == "deepseek-flash"
     assert settings.base_url == DEEPSEEK_BASE_URL
     assert settings.thinking_enabled is True
 

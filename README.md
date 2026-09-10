@@ -119,7 +119,7 @@ data-agent analyze examples/sample_sales.csv --task "分析各区域销售趋势
 ```dotenv
 MODEL_PROVIDER=deepseek
 DEEPSEEK_API_KEY=<your-deepseek-api-key>
-DEEPSEEK_MODEL=deepseek-v4-pro
+DEEPSEEK_MODEL=deepseek-flash
 DEEPSEEK_THINKING=true
 DEEPSEEK_REASONING_EFFORT=high
 
