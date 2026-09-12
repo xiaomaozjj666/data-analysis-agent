@@ -55,7 +55,7 @@ flowchart LR
 - **计划-执行式分析流程**：每次分析先生成 2–6 个结构化步骤，每个步骤由 ReAct 执行器调用受控工具完成；重规划器根据真实工具结果删除无用步骤、补充后续分析，证据充分时提前结束，达到步骤上限时强制汇总，避免无限循环。
 - **受控数据工具集**（10 个内置工具）：数据检查、格式修复、安全清洗、非破坏性筛选视图、跨源合并、数据库查询、统计分析、图表生成、数据导出、受限 Python 沙箱。
   - 跨源合并带连接键校验与行数膨胀护栏：键不存在、键类型不一致导致一行都匹配不上、键不唯一导致行数被放大数倍，三种情况一律拒绝执行并说明原因；结果同时给出未匹配键数量与一对多放大警告，避免把扇出后的行数当作原始记录数。合并结果会成为新的活动数据集，行数基线同步重置。
-  - 数据库查询面向上传的 SQLite 文件：**只读**（连接以 `mode=ro` 打开，写入在驱动层即被拒绝），只接受 `SELECT` / `WITH` 语句；单条查询 5 秒墙钟预算（失控的跨表笛卡尔积会被中断并说明原因），结果上限 5000 行、500 列。空 `sql` 调用可一次拿到全库表结构与行数；传 `adopt=true` 可把查询结果接管为活动数据集，后续统计与图表直接在其上工作。
+  - 数据库查询面向两类数据源：上传的 **SQLite** 文件，以及环境变量 `DATA_AGENT_DATABASE_URL` 配置的 **PostgreSQL**（驱动按需安装：`pip install ".[postgres]"`）。**只读**（SQLite 以 `mode=ro` 打开、Postgres 在服务端设置 `default_transaction_read_only`，写入在驱动/服务端即被拒绝），只接受 `SELECT` / `WITH` 语句；单条查询 5 秒墙钟预算（SQLite 用 progress handler 中断、Postgres 用服务端 `statement_timeout`），结果上限 5000 行、500 列。空 `sql` 调用可一次拿到可用数据源与全库表结构；传 `adopt=true` 可把查询结果接管为活动数据集，后续统计与图表直接在其上工作。
   - 清洗带安全护栏：缺失值删除比例超过 50% 会拒绝执行，主数据行数始终不低于原始行数的 20%。
   - 统计方法覆盖描述统计、相关分析（含 Pearson p 值）、分组聚合、独立/配对 t 检验、ANOVA、卡方检验、线性回归（R² / RMSE / MAE）。
 - **指标口径登记（可选）**：在会话目录放置 `metrics.json`，或用 `DATA_AGENT_METRICS_PATH` 指定一份全局定义，登记指标的标准名称、别名、口径说明与算式；规划阶段会把相关定义注入提示词，避免同一指标在不同会话被各自定义为不同口径。未提供定义文件时该特性完全不生效，行为与原来一致。
@@ -135,6 +135,9 @@ APP_ACCESS_TOKEN=<your-access-token>
 
 # 可选：指标口径登记文件（登记后规划阶段会注入口径定义，防止跨会话口径漂移）
 DATA_AGENT_METRICS_PATH=<path-to-metrics.json>
+
+# 可选：PostgreSQL 数据源（配置后 query_database 可只读查询该库；驱动 pip install ".[postgres]"）
+DATA_AGENT_DATABASE_URL=postgresql://user:password@host:5432/dbname
 
 # 可选：Cloudflare R2 / S3 兼容持久化
 DATA_AGENT_STORAGE_BACKEND=s3

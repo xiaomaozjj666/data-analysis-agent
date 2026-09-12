@@ -89,3 +89,12 @@
 - **表名必须先收敛再拼接**：`PRAGMA table_info(<name>)` 的表名无法用占位符绑定，只能拼字符串，所以 `describe_table` 先把入参比对真实表列表，杜绝注入。
 - ⚠️ **与图表标识符护栏的相互作用**：把 `GROUP BY` 结果 `adopt` 成数据集后，分组列在结果里是"每行一个取值"，会命中 `_looks_like_id_column`（命名像 ID 且唯一率 ≥ 0.5）而被图表工具拒绝。**这是既有护栏在正常工作，不要为了数据库功能去放宽它**；需要画图时取行级结果（保留类别的多行重复），或在 SQL 里把分组列改名成非 ID 风格。
 - **前端扩展名清单必须与后端同步**：`App.tsx` 的 `accept` 与 `EmptyWorkspace.tsx` 的 `SUPPORTED_EXTENSIONS` 共同决定用户能选哪些文件。历史上它们只列了 7 种结构化格式，导致 README 宣称的 PDF/TXT/Word 在界面上根本选不到；现已与后端 13 种对齐。**改后端支持格式时，这两处一起改。**
+
+## Postgres 数据源（postgres_source.py）
+
+- **驱动是可选依赖**（`pip install ".[postgres]"`，dev 环境默认包含），模块内 try/except 导入；未安装时 `is_configured()` 为 False，`connect_readonly` 给出可操作的中文安装提示而不是裸 ImportError。**不要**把它挪进运行时依赖——只分析 CSV 的用户不该背一个编译版 libpq。
+- **只读在服务端，不在客户端**：连接后先 `autocommit=True` 执行 `SET default_transaction_read_only = on` 和 `SET statement_timeout`，再回读 `SHOW transaction_read_only` 确认生效（没生效就报错断开）。两个 SET 必须在 autocommit 下执行，否则落在事务里、事务结束就被回滚，保护等于没设。
+- **超时用服务端 `statement_timeout`**，与 SQLite 的 progress handler 是两套机制（SQLite 没有服务端超时）。Postgres 超时抛 `QueryCanceled`（SQLSTATE 57014），要 `rollback()` 清掉中止的事务再抛中文提示——只读事务里出错后不回滚，后续语句会继续报错。
+- 连接串走 `DATA_AGENT_DATABASE_URL` 环境变量，与 S3/R2 凭证同一约定，**不要**再引入 keyring（无头服务器没有后端，会失败）。
+- CI 用 GitHub Actions 的 **service container**（postgres:16 + 健康检查）跑真实集成测试；测试在连不上时**自动跳过而不是失败**，本地无 Docker 的环境不受影响。判断可用性要在 fixture 里真实连接一次，只看环境变量是不够的。
+- ⚠️ 测试要防 xdist 并发互踩：每个用例用唯一表名（`da_test_<uuid>`）并 try/finally 清理；建表/删表走独立的**可写**管理连接，被测的只读连接只负责查。
