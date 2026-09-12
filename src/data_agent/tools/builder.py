@@ -9,6 +9,7 @@
 - statistical_analysis: 描述统计、相关、分组、假设检验、回归
 - create_visualization: Plotly 交互式图表生成
 - join_datasets: 跨源合并（带键校验与扇出护栏）
+- query_database: SQLite 只读 SQL 查询（表结构发现 / 跨表 JOIN / 结果可接管为活动数据集）
 - export_data: 数据导出
 - run_python_code: 受限沙箱执行长尾 pandas 计算（实现在 ``_sandbox``）
 
@@ -44,6 +45,14 @@ from data_agent.chart_sampling import (
     sampling_note,
 )
 from data_agent.serialization import json_text
+from data_agent.sqlite_source import (
+    MAX_RESULT_ROWS,
+    connect_readonly,
+    resolve_session_source,
+    run_select,
+    schema_summary,
+    validate_select,
+)
 from data_agent.workspace import DataWorkspace, _atomic_write_text
 
 from ._cleaning import (
@@ -488,7 +497,7 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         workspace: 当前分析会话的数据工作区。
 
     Returns:
-        9 个 BaseTool 实例的列表。
+        10 个 BaseTool 实例的列表。
     """
 
     @tool
@@ -1500,12 +1509,98 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             }
         )
 
+    @tool
+    def query_database(sql: str = "", adopt: bool = False, limit: int = 200) -> str:
+        """Run a read-only SQL query against the SQLite database of this session.
+
+        Call it with an empty sql first to get the schema of every table (names, row
+        counts and columns) — do that whenever you do not already know the tables.
+
+        Use this for anything a single flat table cannot express: joining several tables,
+        filtering with SQL, or computing an aggregate the statistics tool does not cover.
+        Prefer it over run_python_code, which only sees the active dataset.
+
+        Only SELECT / WITH statements are accepted. The database is opened in read-only
+        mode and writing statements (INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, PRAGMA,
+        ATTACH, ...) are rejected, so the file cannot be modified.
+
+        Set adopt=true to make the query result the new active dataset, after which the
+        statistics, charting, joining and export tools operate on it. Leave adopt=false
+        for inspection or a quick aggregate check.
+
+        Guards (always enforced regardless of parameters):
+          - SELECT / WITH only, and the file is opened read-only.
+          - 5 second wall-clock budget per query: a runaway cross join is interrupted and
+            reported instead of stalling the analysis.
+          - At most 5000 rows and 500 columns per result.
+        """
+        source = resolve_session_source(workspace.source_path, workspace.input_dir)
+        if source is None:
+            raise ValueError(
+                "本会话没有 SQLite 数据源，无法执行 SQL 查询。"
+                "本工具只能用于上传的 .db / .sqlite 文件；"
+                "若数据来自 CSV/Excel 等其他格式，请改用 inspect_data 与预定义工具。"
+            )
+        connection = connect_readonly(source)
+        try:
+            if not (sql or "").strip():
+                summary = schema_summary(connection)
+                return json_text(
+                    {
+                        "status": "ok",
+                        "source": source.name,
+                        "table_count": summary["table_count"],
+                        "tables": [
+                            {
+                                "table": item["table"],
+                                "row_count": item["row_count"],
+                                "columns": [
+                                    f"{column['name']}:{column['type'] or 'TEXT'}"
+                                    for column in item["columns"]
+                                ],
+                            }
+                            for item in summary["tables"]
+                        ],
+                        "message": (
+                            "先据此选择要查的表，再传 sql 查询；"
+                            "需要把结果作为新的活动数据集时传 adopt=true。"
+                        ),
+                    }
+                )
+            result = run_select(connection, validate_select(sql), limit=limit)
+            payload: dict[str, Any] = {
+                "status": "ok",
+                "source": source.name,
+                "columns": result["columns"],
+                "rows": result["rows"],
+                "row_count": result["row_count"],
+                "truncated": result["truncated"],
+            }
+            if result["truncated"]:
+                payload["note"] = (
+                    f"结果超过 {limit} 行已截断。需要完整数据时请先用聚合或过滤把结果收敛，"
+                    f"或提高 limit（上限 {MAX_RESULT_ROWS}）。"
+                )
+            if adopt:
+                frame = pd.DataFrame(result["rows"], columns=result["columns"])
+                # 查询结果成为新主数据：基线随之重置，后续清洗以它为新参照。
+                workspace.adopt_dataset(frame, reset_source_baseline=True)
+                payload["adopted"] = True
+                payload["rows_in_dataset"] = len(frame)
+                payload["output"] = workspace.save_dataframe(
+                    "db_query_result.csv", description="数据库查询结果"
+                )
+            return json_text(payload)
+        finally:
+            connection.close()
+
     return [
         inspect_data,
         repair_data_format,
         clean_data,
         transform_data,
         join_datasets,
+        query_database,
         statistical_analysis,
         create_visualization,
         export_data,

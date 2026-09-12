@@ -660,7 +660,7 @@ function App() {
             ref={fileInput}
             type="file"
             multiple
-            accept=".csv,.tsv,.xlsx,.xls,.json,.jsonl,.parquet"
+            accept=".csv,.tsv,.xlsx,.xls,.json,.jsonl,.parquet,.db,.sqlite,.sqlite3,.pdf,.txt,.docx"
             hidden
             onChange={(event) => {
               const files = event.target.files ? Array.from(event.target.files) : [];

@@ -18,8 +18,24 @@ interface EmptyWorkspaceProps {
   onCancelUpload?: () => void;
 }
 
-// 支持的文件扩展名，与 App.tsx 文件输入 accept 保持一致
-const SUPPORTED_EXTENSIONS = [".csv", ".tsv", ".xlsx", ".xls", ".json", ".jsonl", ".parquet"];
+// 支持的文件扩展名，需与后端 data_agent.workspace.SUPPORTED_EXTENSIONS 及
+// App.tsx 文件输入的 accept 保持一致：表格/文本/PDF/Word 之外还有 SQLite
+// （.db/.sqlite/.sqlite3，上传后默认载入行数最多的表）。
+const SUPPORTED_EXTENSIONS = [
+  ".csv",
+  ".tsv",
+  ".xlsx",
+  ".xls",
+  ".json",
+  ".jsonl",
+  ".parquet",
+  ".db",
+  ".sqlite",
+  ".sqlite3",
+  ".pdf",
+  ".txt",
+  ".docx",
+];
 function isSupportedFile(file: File): boolean {
   const name = file.name.toLowerCase();
   return SUPPORTED_EXTENSIONS.some((ext) => name.endsWith(ext));
