@@ -123,16 +123,24 @@ def test_write_is_rejected_by_the_server(pg):
 
     这里刻意绕过语句白名单、直接对连接执行写入：白名单挡的是"不该写的语句"，
     这条用例要证明的是——即便语句漏过了白名单，数据库本身也拒绝写入。
+    注意 Postgres 的校验顺序是先解析后执行：往一张不存在的表里 INSERT 会先报
+    UndefinedTable，所以必须先用管理连接把表建出来，再尝试写入。
     """
     import psycopg
 
     table = _table()
-    with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
-        pg.execute(f"CREATE TABLE {table} (a INT)")
-    with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
-        pg.execute(f"INSERT INTO {table} VALUES ('x', 1.0)")
-    # autocommit 下失败语句由服务端自行终止，连接仍可继续只读查询
-    assert run_select(pg, "SELECT 1 AS ok", limit=1)["rows"] == [[1]]
+    try:
+        # DDL 同样被只读事务拒绝
+        with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
+            pg.execute(f"CREATE TABLE {table} (a INT)")
+        _make_table(pg, table, rows=2)
+        with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
+            pg.execute(f"INSERT INTO {table} VALUES ('x', 1.0)")
+        # 关键：不仅报了错，数据也确实一个字节都没进去
+        after = run_select(pg, f"SELECT COUNT(*) AS n FROM {table}", limit=1)
+        assert after["rows"] == [[2]]
+    finally:
+        _drop_table(table)
 
 
 @requires_pg
@@ -142,7 +150,7 @@ def test_connection_does_not_stay_in_transaction_after_query(pg):
     一个停在事务里的只读连接会一直持有表锁与快照，阻塞别处的 DDL 与 VACUUM；
     修法是连接全程 autocommit，每条语句都是独立事务、查完即结束。
     """
-    from psycopg import TransactionStatus
+    from psycopg.pq import TransactionStatus
 
     run_select(pg, "SELECT 1 AS ok", limit=1)
     assert pg.info.transaction_status == TransactionStatus.IDLE
