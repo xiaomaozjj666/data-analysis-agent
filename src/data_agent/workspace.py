@@ -32,6 +32,7 @@ from uuid import uuid4
 import pandas as pd
 
 from data_agent.serialization import to_jsonable
+from data_agent.sqlite_source import SQLITE_EXTENSIONS, read_default_table
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +43,11 @@ logger = logging.getLogger(__name__)
 #: 支持的数据文件扩展名集合。
 #: 结构化表格：CSV/TSV/Excel/JSON/JSONL/Parquet
 #: 非结构化/半结构化：PDF（表格提取）、TXT（行式文本）、DOCX（Word 表格）
+#: 数据库：SQLite（默认载入行数最多的表，其余表由 query_database 工具查询）
 SUPPORTED_EXTENSIONS = {
     ".csv", ".tsv", ".xlsx", ".xls", ".json", ".jsonl", ".parquet",
     ".pdf", ".txt", ".docx",
-}
+} | set(SQLITE_EXTENSIONS)
 
 #: 共享 Plotly.js 束缚文件名，每个工作区只写一次，所有图表复用。
 PLOTLY_BUNDLE_NAME = "plotly.min.js"
@@ -408,6 +410,7 @@ class DataWorkspace:
         suffix = path.suffix.lower()
         if suffix not in SUPPORTED_EXTENSIONS:
             raise ValueError(f"不支持 {suffix} 文件。支持：{', '.join(sorted(SUPPORTED_EXTENSIONS))}")
+        warnings: list[str] = []
         try:
             if suffix in {".csv", ".tsv"}:
                 df = self._read_delimited(path, suffix)
@@ -428,12 +431,16 @@ class DataWorkspace:
                 df = self._read_text(path)
             elif suffix == ".docx":
                 df = self._read_docx(path)
+            elif suffix in SQLITE_EXTENSIONS:
+                # SQLite 走专门的只读通道，默认载入行数最多的表；选中了哪张表、
+                # 库中一共几张表都写进警告，避免用户误以为载入的是另一张主表。
+                df, sqlite_warnings = read_default_table(path)
+                warnings.extend(sqlite_warnings)
             else:  # pragma: no cover - 已被 SUPPORTED_EXTENSIONS 守护
                 raise ValueError(f"未实现的格式：{suffix}")
         except (pd.errors.ParserError, UnicodeDecodeError, ValueError) as exc:
             raise ValueError(f"文件格式无法解析：{exc}") from exc
 
-        warnings: list[str] = []
         if df.empty and len(df.columns) == 0:
             raise ValueError("数据文件为空或无法识别出列。")
         if len(df.columns) > _MAX_COLUMNS:

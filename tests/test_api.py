@@ -1609,6 +1609,54 @@ def test_thumbnail_returns_500_on_render_failure(tmp_path, monkeypatch):
     assert "缩略图生成失败" in response.json()["detail"]
 
 
+def test_create_session_accepts_sqlite_database(tmp_path, monkeypatch):
+    """上传 SQLite 文件建会话：活动数据集取自行数最多的表。
+
+    这是 SQLite 数据源的真实用户路径（上传 → 建会话 → 得到可分析的表格），
+    因此走完整 HTTP 接口而不是直接调 workspace。
+    """
+    import sqlite3
+
+    _isolate_runtime(tmp_path, monkeypatch)
+    db = tmp_path / "shop.db"
+    connection = sqlite3.connect(db)
+    try:
+        connection.execute("CREATE TABLE region (code TEXT, manager TEXT)")
+        connection.execute("INSERT INTO region VALUES ('east', '张三')")
+        connection.execute("CREATE TABLE orders (order_id INTEGER, code TEXT, amount REAL)")
+        connection.executemany(
+            "INSERT INTO orders VALUES (?, ?, ?)",
+            [(index, "east", float(index) * 10) for index in range(1, 6)],
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    client = TestClient(api.app)
+    response = client.post(
+        "/api/sessions",
+        files={"file": ("shop.db", db.read_bytes(), "application/octet-stream")},
+    )
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    assert payload["filename"] == "shop.db"
+    # orders（5 行）比 region（1 行）多，应被选为默认表
+    assert payload["profile"]["rows"] == 5
+    assert "order_id" in response.text
+
+
+def test_create_session_rejects_invalid_sqlite_database(tmp_path, monkeypatch):
+    """扩展名是 .db 但内容不是 SQLite 时，应返回 422 并说明原因。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    response = client.post(
+        "/api/sessions",
+        files={"file": ("fake.db", b"this is not a database", "application/octet-stream")},
+    )
+    assert response.status_code == 422
+    assert "SQLite" in response.json()["detail"]
+
+
 def test_create_session_rejects_empty_file(tmp_path, monkeypatch):
     """POST /api/sessions 上传空文件应返回 422。"""
     _isolate_runtime(tmp_path, monkeypatch)
