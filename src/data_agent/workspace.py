@@ -26,7 +26,7 @@ import threading
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from uuid import uuid4
 
 import pandas as pd
@@ -156,6 +156,26 @@ class Artifact:
             "path": str(self.path.resolve()),
             "description": self.description,
         }
+
+
+class WorkspaceSnapshot(NamedTuple):
+    """单步执行前的回滚点。
+
+    ``source_row_count`` 一并纳入快照：跨源合并会重置行数基线，若回滚只恢复
+    DataFrame 而不恢复基线，后续 clean_data 的 20% 安全下限就会以"已被回滚掉的
+    那张表"的规模计算，护栏在同一会话内失效。
+
+    Attributes:
+        dataframe: 快照时的活动数据集（浅拷贝，依赖 pandas 写时复制语义）。
+        files: 快照时 artifacts 目录中已存在的文件路径集合。
+        version: 快照时的 ``_df_version``，用于跳过多余的 DataFrame 还原。
+        source_row_count: 快照时的行数基线。
+    """
+
+    dataframe: pd.DataFrame
+    files: set[Path]
+    version: int
+    source_row_count: int
 
 
 class DataWorkspace:
@@ -360,6 +380,34 @@ class DataWorkspace:
             path = target.resolve()
 
         self.load_warnings = []
+        df, warnings = self._read_table(path)
+        self.load_warnings.extend(warnings)
+        # 通过 setter 赋值，确保 _profile_cache 被清除（虽然 load 是首次设置，
+        # 缓存此时为空，但走 setter 保持一致性，避免未来重构引入缓存失效 bug）。
+        self.dataframe = df
+        self._source_row_count = len(df)
+        self.source_path = path
+        return self.profile(sample_rows=5)
+
+    def _read_table(self, path: Path) -> tuple[pd.DataFrame, list[str]]:
+        """把数据文件解析为 DataFrame，不产生任何工作区状态变更。
+
+        ``load`` 与 ``read_source`` 共用此入口：前者把结果设为活动数据集，
+        后者只返回副本——跨源合并需要在不触碰主数据的前提下读取第二张表。
+
+        Args:
+            path: 已确认存在的文件路径。
+
+        Returns:
+            ``(DataFrame, 加载警告列表)``。警告由调用方决定记录还是忽略，
+            避免读取第二张表时把它的列名问题写进主数据的加载警告。
+
+        Raises:
+            ValueError: 扩展名不支持、解析失败、无有效列或列数超限。
+        """
+        suffix = path.suffix.lower()
+        if suffix not in SUPPORTED_EXTENSIONS:
+            raise ValueError(f"不支持 {suffix} 文件。支持：{', '.join(sorted(SUPPORTED_EXTENSIONS))}")
         try:
             if suffix in {".csv", ".tsv"}:
                 df = self._read_delimited(path, suffix)
@@ -385,6 +433,7 @@ class DataWorkspace:
         except (pd.errors.ParserError, UnicodeDecodeError, ValueError) as exc:
             raise ValueError(f"文件格式无法解析：{exc}") from exc
 
+        warnings: list[str] = []
         if df.empty and len(df.columns) == 0:
             raise ValueError("数据文件为空或无法识别出列。")
         if len(df.columns) > _MAX_COLUMNS:
@@ -400,13 +449,44 @@ class DataWorkspace:
                 seen[base] = seen.get(base, 0) + 1
                 normalized.append(base if seen[base] == 1 else f"{base}_{seen[base]}")
             df.columns = normalized
-            self.load_warnings.append("检测到重复列名，已自动加序号区分。")
-        # 通过 setter 赋值，确保 _profile_cache 被清除（虽然 load 是首次设置，
-        # 缓存此时为空，但走 setter 保持一致性，避免未来重构引入缓存失效 bug）。
-        self.dataframe = df
-        self._source_row_count = len(df)
-        self.source_path = path
-        return self.profile(sample_rows=5)
+            warnings.append("检测到重复列名，已自动加序号区分。")
+        return df, warnings
+
+    def read_source(self, path: str | Path) -> pd.DataFrame:
+        """读取一张数据表并返回，不改变活动数据集或其他工作区状态。
+
+        Args:
+            path: 数据文件路径。
+
+        Returns:
+            解析后的 DataFrame。
+
+        Raises:
+            FileNotFoundError: 文件不存在。
+            ValueError: 扩展名不支持或解析失败。
+        """
+        resolved = Path(path).expanduser().resolve()
+        if not resolved.is_file():
+            raise FileNotFoundError(f"数据文件不存在：{resolved}")
+        df, _warnings = self._read_table(resolved)
+        return df
+
+    def adopt_dataset(self, dataframe: pd.DataFrame, *, reset_source_baseline: bool = False) -> None:
+        """把一张新表设为活动数据集。
+
+        Args:
+            dataframe: 新的活动数据集。
+            reset_source_baseline: 是否同时重置 ``source_row_count`` 基线。
+
+        基线重置的必要性：跨源合并会显著改变行数规模。若沿用原始上传行数，
+        合并后行数远小于原始行数时，clean_data 的 20% 安全下限会基于旧基数
+        计算，连去重都会被拒绝；反之合并放大行数时下限又失去约束意义。
+        因此合并工具在护栏校验通过后显式重置基线，让后续清洗以合并结果为
+        新基准；调用方需自行保证重置发生在护栏之后。
+        """
+        self.dataframe = dataframe
+        if reset_source_baseline:
+            self._source_row_count = len(dataframe)
 
     @staticmethod
     def _sniff_encoding(path: Path) -> str:
@@ -895,13 +975,15 @@ class DataWorkspace:
         except Exception:
             return None
 
-    def snapshot_state(self) -> tuple[pd.DataFrame, set[Path], int]:
-        """Capture the active data and artifact files before one agent step.
+    def snapshot_state(self) -> WorkspaceSnapshot:
+        """Capture the active data, artifact files and the row baseline before one agent step.
 
-        Returns the DataFrame (with copy-on-write-safe shallow copy), the set
-        of existing artifact paths, and the current ``_df_version``.
-        ``restore_state`` uses the version to short-circuit restoration when
-        no DataFrame mutation occurred through the setter.
+        Returns a ``WorkspaceSnapshot`` carrying the DataFrame (copy-on-write-safe
+        shallow copy), the set of existing artifact paths, the current ``_df_version``
+        and the row baseline. ``restore_state`` uses the version to short-circuit
+        DataFrame restoration when no mutation occurred through the setter; the
+        baseline is always restored because it can be reset independently by
+        ``adopt_dataset`` (cross-source joins).
         """
         try:
             files = {
@@ -914,13 +996,21 @@ class DataWorkspace:
         # pandas >= 2.3 (enabled by default in 3.0) uses copy-on-write:
         # any modification to the live DataFrame triggers a CoW copy within
         # the modified column, so the shallow-copy reference remains intact.
-        return self.dataframe.copy(deep=False), files, self._df_version
+        return WorkspaceSnapshot(
+            dataframe=self.dataframe.copy(deep=False),
+            files=files,
+            version=self._df_version,
+            source_row_count=self._source_row_count,
+        )
 
-    def restore_state(self, snapshot: tuple[pd.DataFrame, set[Path], int]) -> None:
+    def restore_state(self, snapshot: WorkspaceSnapshot) -> None:
         """Rollback data mutations and files created by a failed agent step."""
-        dataframe, existing_files, snapshot_version = snapshot
+        dataframe, existing_files, snapshot_version, snapshot_source_rows = snapshot
         if self._df_version != snapshot_version:
             self.dataframe = dataframe
+        # 基线在无数据变更时也还原：adopt_dataset 会改基线，而一条被回滚的
+        # 合并步骤必须让基线同步回到合并前的规模。
+        self._source_row_count = snapshot_source_rows
         try:
             children = list(self.artifacts_dir.iterdir())
         except FileNotFoundError:

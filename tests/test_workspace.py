@@ -1141,9 +1141,10 @@ def test_snapshot_state_handles_missing_artifacts_dir(tmp_path):
     workspace = DataWorkspace(tmp_path / "runs", session_id="snap_missing")
     workspace.dataframe = pd.DataFrame({"a": [1, 2]})
     shutil.rmtree(workspace.artifacts_dir)
-    df, files, version = workspace.snapshot_state()
+    df, files, version, source_rows = workspace.snapshot_state()
     assert files == set()
     assert df is not None
+    assert source_rows == 0
 
 
 def test_restore_state_restores_dataframe_and_handles_missing_dir(tmp_path):

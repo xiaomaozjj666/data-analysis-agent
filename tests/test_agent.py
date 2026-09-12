@@ -167,6 +167,7 @@ def test_native_deepseek_agent_binds_analysis_tools_without_network(workspace):
         "repair_data_format",
         "clean_data",
         "transform_data",
+        "join_datasets",
         "statistical_analysis",
         "create_visualization",
         "export_data",

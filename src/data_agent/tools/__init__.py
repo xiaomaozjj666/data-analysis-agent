@@ -5,6 +5,7 @@
 - ``charts``: 图表生成辅助（聚合、标注、尺度控制、标题清理、文件名）。
 - ``_cleaning``: 数据清洗辅助（列名规范化、缺失值、离群值）。
 - ``_helpers``: 通用纯函数（列名可读化、数值紧凑格式化）。
+- ``_join``: 跨源合并辅助（来源解析、键校验、扇出护栏、匹配诊断）。
 
 本 ``__init__`` 重新导出原 ``tools.py`` 的全部模块级符号，保持后向兼容：
 ``from data_agent.tools import build_tools`` / ``_PLOTLY_DARK_MODE_SCRIPT``
@@ -21,6 +22,15 @@ from ._cleaning import (
     _trim_string_columns,
 )
 from ._helpers import _compact_number, _human_column_label
+from ._join import (
+    MAX_ROW_MULTIPLIER,
+    UNMATCHED_WARN_RATIO,
+    list_available_sources,
+    merge_datasets,
+    normalize_keys,
+    resolve_source,
+    validate_keys,
+)
 from .builder import (
     _AGGREGATION_LABELS,
     _CHART_COLORS,
@@ -70,6 +80,8 @@ __all__ = [
     "_SCATTER_MATRIX_MAX_DIMENSIONS",
     "_TRANSFORM_LIMIT_MAX",
     "_BOOLEAN_VALUE_LABELS",
+    "MAX_ROW_MULTIPLIER",
+    "UNMATCHED_WARN_RATIO",
     "_add_missing_combination_markers",
     "_aggregate_for_chart",
     "_annotate_extreme_values",
@@ -90,4 +102,9 @@ __all__ = [
     "_trace_axis_values",
     "_trim_string_columns",
     "build_tools",
+    "list_available_sources",
+    "merge_datasets",
+    "normalize_keys",
+    "resolve_source",
+    "validate_keys",
 ]

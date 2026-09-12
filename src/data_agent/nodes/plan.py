@@ -6,6 +6,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
+from data_agent.metrics import load_metrics_for_workspace, render_metric_context
 from data_agent.models import AnalysisPlan
 from data_agent.nodes.state import WorkflowState
 from data_agent.prompts import _PLAN_PROFILE_MAX_CHARS, _apply_query_constraints, _fallback_plan
@@ -33,8 +34,13 @@ def plan_analysis(agent: DataAnalysisAgent, state: WorkflowState) -> dict[str, A
         }
     agent._enter_node("plan_analysis", "正在规划分析步骤")
     profile_text = json.dumps(state["dataset_profile"], ensure_ascii=False)[:_PLAN_PROFILE_MAX_CHARS]
+    # 已登记的指标口径优先注入，避免模型现场发明同名指标的定义（跨会话漂移）。
+    # 没有定义文件时返回空串，提示词与既有行为一致。
+    metric_context = render_metric_context(
+        state["query"], load_metrics_for_workspace(agent.workspace.root)
+    )
     prompt = agent.prompts["plan_template"].format(
-        query=state["query"], profile_text=profile_text
+        query=state["query"], profile_text=profile_text, metric_context=metric_context
     )
     try:
         plan = agent.planner.invoke(prompt, config=agent._invoke_config())

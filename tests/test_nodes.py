@@ -8,6 +8,7 @@ test_agent.py. The LLM is always mocked — no real API calls are made.
 
 from __future__ import annotations
 
+import json
 import threading
 from typing import Any
 
@@ -220,6 +221,80 @@ def test_plan_analysis_generates_plan_from_llm_response(tmp_path):
     assert step["success_criteria"] == "返回数据概况"
     # remaining_steps mirrors plan for execute_step to consume.
     assert result["remaining_steps"] == result["plan"]
+
+
+def _minimal_plan() -> AnalysisPlan:
+    """AnalysisPlan 要求至少一步，这里给一个最小合法计划供规划类测试复用。"""
+    return AnalysisPlan(
+        objective="o",
+        steps=[
+            PlanStep(
+                id="inspect",
+                title="检查数据",
+                instruction="检查字段",
+                success_criteria="返回概况",
+            )
+        ],
+    )
+
+
+def test_plan_analysis_injects_registered_metric_definitions(tmp_path):
+    """会话登记了指标口径时，规划提示词必须带上定义，避免模型现场发明口径。"""
+    workspace = _make_workspace(tmp_path, "plan_metrics")
+    (workspace.root / "metrics.json").write_text(
+        json.dumps(
+            {
+                "metrics": [
+                    {
+                        "name": "净销售额",
+                        "aliases": ["净收入"],
+                        "description": "扣除退货后的销售额",
+                        "expression": "销售额 - 退货金额",
+                        "source_columns": ["sales"],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    planner = _MockRunnable(response=_minimal_plan())
+    agent = FakeAgent(workspace, planner=planner)
+    state = {"query": "分析净销售额趋势", "dataset_profile": {"rows": 6, "columns": 4}}
+
+    plan_analysis(agent, state)
+
+    prompt = planner.captured_inputs[0]
+    assert "净销售额" in prompt
+    assert "扣除退货后的销售额" in prompt
+    assert "销售额 - 退货金额" in prompt
+
+
+def test_plan_analysis_surfaces_malformed_metrics_file(tmp_path):
+    """定义文件写坏时必须报错，不能静默忽略掉用户登记的指标口径。"""
+    workspace = _make_workspace(tmp_path, "plan_metrics_bad")
+    (workspace.root / "metrics.json").write_text(
+        '{"metrics": [{"name": "净销售额"}]}', encoding="utf-8"
+    )
+    agent = FakeAgent(workspace, planner=_MockRunnable(response=_minimal_plan()))
+    state = {"query": "分析数据", "dataset_profile": {"rows": 6, "columns": 4}}
+
+    with pytest.raises(ValueError, match="缺少 description"):
+        plan_analysis(agent, state)
+
+
+def test_plan_analysis_without_metrics_file_keeps_prompt_unchanged(tmp_path):
+    """未登记指标时不得改变既有提示词行为。"""
+    workspace = _make_workspace(tmp_path, "plan_no_metrics")
+    planner = _MockRunnable(response=_minimal_plan())
+    agent = FakeAgent(workspace, planner=planner)
+    state = {"query": "分析数据", "dataset_profile": {"rows": 6, "columns": 4}}
+
+    plan_analysis(agent, state)
+
+    prompt = planner.captured_inputs[0]
+    assert "已登记的指标口径" not in prompt
+    assert "分析数据" in prompt
 
 
 def test_plan_analysis_falls_back_when_planner_fails(tmp_path):

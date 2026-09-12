@@ -47,3 +47,36 @@
 - `vite build` 首次会因清理 dist 失败：先 `rm -rf dist` 再 build。
 - 图表 iframe 主题联动用 postMessage 双向桥接（`useArtifactPreview` 的 `withThemeBridge`），避免 sandbox 跨域死代码。
 - 隐藏无图表的引擎筛选标签（`ArtifactCenter.tsx`）：仅渲染 `enginesPresent`，筛选后无图显示提示而非静默空白。
+
+## 新增受控工具需要同步的四处
+
+加一个工具不是改 `builder.py` 一处就完事，漏掉任何一处都会出问题：
+
+1. `tools/builder.py` 的 `build_tools`：定义闭包工具 + 加进返回列表（列表顺序即模型看到的顺序）。
+2. `tests/test_agent.py::test_deepseek_provider_*`：对工具名做**精确集合断言**，必须同步加入新名字。
+3. `README.md` 工具数量与清单（"受控数据工具集（N 个内置工具）"）。
+4. `prompts.py` 的系统提示词：不写引导模型就不会用新工具（会退回去手写 `run_python_code`）。
+5. 若新工具产生跨模块辅助函数，按现有约定放 `tools/_<name>.py`（纯函数）并在 `tools/__init__.py` 里 re-export。
+
+## 行数基线（source_row_count）与快照
+
+- `source_row_count` 是 `clean_data` 20% 安全下限的参照，只在 `load()` 时锚定原始上传行数。
+- 跨源合并会显著改变行数规模，所以 `join_datasets` 在护栏通过后调用 `adopt_dataset(reset_source_baseline=True)` 重置基线。**不重置会出现真实障碍**：主数据 10 行、合并后剩 1 行时，下限按旧基数算是 2 行，合并结果连去重都会被拒绝。
+- 因此快照必须覆盖基线：`snapshot_state()` 返回 `WorkspaceSnapshot(dataframe, files, version, source_row_count)`，`restore_state()` 无条件还原基线。只恢复 DataFrame 会让"合并步骤失败回滚"后基线仍停留在合并后的规模，护栏在同一会话内失效。
+- 改这个元组结构要同步 `tests/test_workspace.py::test_snapshot_state_handles_missing_artifacts_dir` 的解包。
+
+## 合并护栏的设计取向：不提供绕过参数
+
+`tools/_join.py` 的护栏全部由模块常量固定（`MAX_ROW_MULTIPLIER`、`UNMATCHED_WARN_RATIO`），没有"放宽阈值"的入参，与 `clean_data` 的护栏同策略。理由是这些护栏拦的是**不抛异常的静默错误**：
+
+- 键含空值 → 空值与空值不相等，这些行静默丢失；
+- 键类型不一致（`"1001"` vs `1001`）→ 一行都匹配不上，产出空表；
+- 键不唯一 → 笛卡尔放大，聚合指标随分母一起虚增数倍。
+
+注意 pandas 对"数值键与文本键合并"会自己抛英文错误并建议改用 `concat`，那不是用户想做的事；`merge_datasets` 捕获后换成"先 repair_data_format 统一格式"的中文引导。indicator 列名也要探测：源表自带 `_merge` 列时 pandas 会直接报错。
+
+## 指标口径登记（metrics.json）
+
+- 加载优先级：`DATA_AGENT_METRICS_PATH` 指向的全局文件 > 工作区根目录的 `metrics.json`；两者都没有则返回空列表，规划提示词退化成原来那样（`{metric_context}` 渲染为空串）。
+- 定义文件写坏时**直接报错**，不降级为忽略：静默跳过用户登记的口径会让分析用错定义却看起来一切正常，比失败代价大。错误消息带文件路径与 1 起算的条目序号，便于直接改 JSON。
+- 选择策略：与问题匹配的条目优先，其余按文件原顺序补足到 6 条。不能只注入命中项——像"分析这份销售数据"这种不点名指标的问题会完全看不到定义，那就失去了语义层的意义。
