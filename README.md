@@ -54,6 +54,7 @@ flowchart LR
 
 - **计划-执行式分析流程**：每次分析先生成 2–6 个结构化步骤，每个步骤由 ReAct 执行器调用受控工具完成；重规划器根据真实工具结果删除无用步骤、补充后续分析，证据充分时提前结束，达到步骤上限时强制汇总，避免无限循环。
 - **受控数据工具集**（10 个内置工具）：数据检查、格式修复、安全清洗、非破坏性筛选视图、跨源合并、数据库查询、统计分析、图表生成、数据导出、受限 Python 沙箱。
+- **MCP 数据面服务**：把会话发现、数据集载入、结构探查与只读 SQL 以 MCP 标准开放给其他 Agent，护栏同源、传输 stdio（详见"快速开始"）。
   - 跨源合并带连接键校验与行数膨胀护栏：键不存在、键类型不一致导致一行都匹配不上、键不唯一导致行数被放大数倍，三种情况一律拒绝执行并说明原因；结果同时给出未匹配键数量与一对多放大警告，避免把扇出后的行数当作原始记录数。合并结果会成为新的活动数据集，行数基线同步重置。
   - 数据库查询面向两类数据源：上传的 **SQLite** 文件，以及环境变量 `DATA_AGENT_DATABASE_URL` 配置的 **PostgreSQL**（驱动按需安装：`pip install ".[postgres]"`）。**只读**（SQLite 以 `mode=ro` 打开、Postgres 在服务端设置 `default_transaction_read_only`，写入在驱动/服务端即被拒绝），只接受 `SELECT` / `WITH` 语句；单条查询 5 秒墙钟预算（SQLite 用 progress handler 中断、Postgres 用服务端 `statement_timeout`），结果上限 5000 行、500 列。空 `sql` 调用可一次拿到可用数据源与全库表结构；传 `adopt=true` 可把查询结果接管为活动数据集，后续统计与图表直接在其上工作。
   - 清洗带安全护栏：缺失值删除比例超过 50% 会拒绝执行，主数据行数始终不低于原始行数的 20%。
@@ -115,6 +116,39 @@ data-agent analyze examples/sample_sales.csv --task "分析各区域销售趋势
 
 输出为 Markdown 格式分析报告，产物路径一并打印。
 
+### MCP 数据面服务（供其他 Agent 调用）
+
+把**受控的数据访问能力**以 MCP（Model Context Protocol）标准开放给 Claude Desktop、
+WorkBuddy 等任意 MCP 客户端：其他 Agent 拿到的是"安全的数据访问"，而不是一个
+无限制的代码沙箱——这是本项目差异化的直接延伸。
+
+```bash
+pip install ".[mcp]"        # 或开发环境 pip install -e ".[dev]"
+data-agent-mcp              # stdio 传输，供本地 MCP 客户端拉起
+```
+
+客户端配置示例（Claude Desktop / 通用 MCP 客户端）：
+
+```json
+{
+  "mcpServers": {
+    "data-analysis-agent": {
+      "command": "data-agent-mcp",
+      "env": { "DATA_AGENT_RUNS_DIR": "./runs" }
+    }
+  }
+}
+```
+
+开放 4 个工具：`list_sessions`（发现会话）、`open_dataset`（载入本地数据文件并建会话）、
+`inspect_data`（结构与预览）、`sql_query`（只读 SQL，支持会话内 SQLite 与
+`DATA_AGENT_DATABASE_URL` 配置的 PostgreSQL）。护栏与工作区内工具同源：只接受
+`SELECT`/`WITH`，写入在驱动或服务端被拒绝，结果上限 5000 行。
+
+边界说明：完整分析流程（LLM 规划-执行-报告）是分钟级长任务，仍走 HTTP API，
+不在 MCP 数据面内。传输为 stdio、由本地受信客户端拉起，**不要**把该服务挂到
+网络上对外提供；远程访问请使用带令牌与限流的 HTTP API。
+
 ## 配置
 
 复制 `.env.example` 为 `.env` 并填写（所有密钥均为占位符）：
@@ -161,6 +195,9 @@ src/data_agent/
   tools/             ReAct 工具集（检查/清洗/转换/合并/数据库/统计/可视化/导出/沙箱）
   metrics.py         指标口径登记（可选，规划阶段注入）
   sqlite_source.py   只读 SQLite 数据源（表发现 / 结构描述 / 受限查询）
+  postgres_source.py 只读 PostgreSQL 数据源（服务端只读 + statement_timeout）
+  sql_guard.py       驱动无关的只读 SQL 护栏（两个数据源共用）
+  mcp_server.py      MCP 数据面服务（stdio，供其他 Agent 调用）
   echarts_engine.py  ECharts 图表引擎（与 Plotly 引擎并列）
   deployment.py      LangSmith Agent Server 图入口
   storage.py         本地 / S3 兼容对象存储后端

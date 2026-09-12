@@ -49,11 +49,17 @@ dev = [
   "reportlab>=4,<6",
   # 本地开发环境默认包含 Postgres 驱动，CI 的 Postgres service 依赖它跑集成测试。
   "psycopg[binary]>=3.2,<4",
+  # 本地开发环境默认包含 MCP SDK，CI 依赖它做 MCP 服务的协议互操作测试。
+  "mcp>=1.2,<2",
 ]
 # 数据库查询工具的 Postgres 驱动：按需安装（pip install ".[postgres]"），
 # 未安装时 query_database 会给出可操作的中文提示而不是裸 ImportError。
 postgres = [
   "psycopg[binary]>=3.2,<4",
+]
+# MCP 数据面服务：按需安装（pip install ".[mcp]"）。
+mcp = [
+  "mcp>=1.2,<2",
 ]
 deploy = [
   "langgraph-cli[inmem]>=0.4,<1",
@@ -61,6 +67,7 @@ deploy = [
 
 [project.scripts]
 data-agent = "data_agent.cli:app"
+data-agent-mcp = "data_agent.mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

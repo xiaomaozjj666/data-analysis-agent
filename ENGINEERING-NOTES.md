@@ -98,3 +98,12 @@
 - 连接串走 `DATA_AGENT_DATABASE_URL` 环境变量，与 S3/R2 凭证同一约定，**不要**再引入 keyring（无头服务器没有后端，会失败）。
 - CI 用 GitHub Actions 的 **service container**（postgres:16 + 健康检查）跑真实集成测试；测试在连不上时**自动跳过而不是失败**，本地无 Docker 的环境不受影响。判断可用性要在 fixture 里真实连接一次，只看环境变量是不够的。
 - ⚠️ 测试要防 xdist 并发互踩：每个用例用唯一表名（`da_test_<uuid>`）并 try/finally 清理；建表/删表走独立的**可写**管理连接，被测的只读连接只负责查。
+
+## MCP 数据面服务（mcp_server.py）
+
+- **只开数据面，不开分析流程**：暴露 list_sessions / open_dataset / inspect_data / sql_query 四个工具。完整分析流程是分钟级 LLM 长任务，塞进 MCP 工具调用等于多一个有状态长任务入口，两条状态机没有收益——它走 HTTP API。开放面做粗是刻意的：给其他 Agent 的是"受控的数据访问"，不是内部工具原样透出。
+- **独立进程，不依附 FastAPI**：会话以 `runs/<id>/session.json` 落盘自描述，MCP 服务按同一 `DATA_AGENT_RUNS_DIR` 自建 `SessionRegistry` 即可读到 HTTP 服务创建的会话。不要 import `data_agent.api` 的单例——那会拖起整个应用装配。
+- **注册表的 `get()` 抛的是 fastapi 的 HTTPException**：MCP 工具层要把它转成 `ValueError`（带"用 list_sessions 查看"的指引），否则客户端看到的是 HTTP 语义的异常。
+- **测试走官方 SDK 的内存客户端**（`mcp.shared.memory.create_connected_server_and_client_session`），经真实协议（initialize/tools/list/tools/call）交互，任何io 运行时用 `anyio.run(scenario)` 包住即可，不需要 pytest-asyncio 插件。**必须断言错误契约**：工具抛异常要以 `isError=True` + 中文原因返回、且协议流不中断（出错后还能继续 list_tools）——这是 MCP 客户端的实际依赖行为。
+- MCP SDK 也是可选依赖（`extras mcp`，dev 默认包含）；未安装时 `create_server` 给中文提示。
+- **边界**：stdio 传输由本地受信客户端拉起，天然无网络暴露面；不要把它挂到网上——远程场景走带令牌与限流的 HTTP API。
