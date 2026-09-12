@@ -6,8 +6,9 @@
 
 > 落地进展：P0 三项均已实现并通过测试——指标口径登记（`metrics.py`）、跨源合并
 > （`tools/_join.py`）、数据库直连（`sqlite_source.py` 的 SQLite 文件源 +
-> `postgres_source.py` 的 PostgreSQL 数据源，CI 内以真实 service 验证）。
-> 尚余 MCP 对外暴露与 Snowflake/BigQuery 等其余数仓驱动，路径见第五节末尾。
+> `postgres_source.py` 的 PostgreSQL 数据源，CI 内以真实 service 验证）；
+> MCP 数据面服务（`mcp_server.py`，stdio，供其他 Agent 安全访问数据）也已落地，
+> 以官方 SDK 客户端做协议互操作测试。尚余 Snowflake/BigQuery 等其余数仓驱动。
 
 ---
 
@@ -151,7 +152,7 @@ Copilot in Excel 支持切换 Claude 与 GPT；Julius 支持 SQL/Python/R 与多
 
 | 严重度 | 不足 | 事实依据 |
 | --- | --- | --- |
-| 致命 → 大部分已补 | 无数据库/数仓直连，无 MCP 接入 | 已实现 SQLite 文件源与 PostgreSQL 数据源（`query_database`，只读 + 超时 + 行列护栏，CI 真实 service 验证）；MCP 对外暴露与 Snowflake/BigQuery 等其余驱动仍待做 |
+| 致命 → 已补 | 无数据库/数仓直连，无 MCP 接入 | 数据库直连：SQLite 文件源 + PostgreSQL 数据源（`query_database`，只读 + 超时 + 行列护栏，CI 真实 service 验证）；MCP：数据面服务已落地（stdio，协议互操作测试）。Snowflake/BigQuery 等其余驱动仍待做（需可验证手段） |
 | 致命 → 已补 | 无指标语义层，跨会话口径漂移 | 原状态：口径由 LLM 现推，无任何指标定义文件。现已实现 `metrics.json` 登记 + 规划阶段注入 |
 | 高 | 分析过程不可复用、不可调度 | 产物只有报告 + 图表，无 Notebook/流程抽象 |
 | 高 → 已补 | 跨文件 join 不是一等能力 | 原状态：`.merge()` 仅出现在 builder.py 的内部元数据拼接；`pd.concat` 仅用于单文件分块读取与同文件多表提取。现已实现受控的 `join_datasets`（键校验 + 扇出护栏 + 未匹配键诊断） |
@@ -240,11 +241,14 @@ P0-2 与 P0-3 属于"在既有架构里加一层"，改动封闭、可用现有�
    `default_transaction_read_only` 生效并回读确认；超时用服务端 `statement_timeout`；
    CI 以 postgres:16 service container 跑真实集成测试（连不上时自动跳过）。
 
-尚未做的两件事与前置条件：
+尚未做的与前置条件：
 
+- **MCP 对外暴露（数据面）已完成**：`mcp_server.py` 以 stdio 传输开放 4 个工具
+  （list_sessions / open_dataset / inspect_data / sql_query），把"受控的数据访问"
+  而不是内部工具原样透给其他 Agent；护栏与工作区内工具同源，测试用官方 SDK 的
+  内存客户端走真实协议。完整分析流程（分钟级 LLM 长任务）不进 MCP，仍走 HTTP API。
 - **其余数仓驱动**（Snowflake/BigQuery/Databricks）：沿 `postgres_source` 的模式即可，
   但需要真实凭证或模拟层才能验证——没有可验证手段就不该合入。
-- **MCP 对外暴露**：把既有工具集包装成 MCP server 供其他 Agent 调用。这一步不引入新依赖，但需要先定工具粒度与鉴权方式，避免把内部工具原样暴露出去。
 
 ---
 
