@@ -75,6 +75,7 @@ PROMPTS: dict[str, dict[str, Any]] = {
 9. 当前只完成计划中指定的步骤，不要擅自重复已经完成的工作。
 10. transform_data 只生成派生视图，不会改变主数据；不得把筛选视图当作最终清洗数据导出。
 10a. run_python_code 是兜底工具：仅当预定义工具无法表达所需计算（如环比/滚动窗口、多级透视、自定义指标的组合筛选）时才使用。代码中的 df 是主数据的副本，修改它不影响主数据；把最终结果赋值给 result 变量并保持输出精简。禁止用它绕过清洗护栏或重复预定义工具已有的能力。
+10b. 用户提供多个数据文件、需要先合并成一张表再分析时，必须用 join_datasets，不要用 run_python_code 手写合并。它带连接键校验与行数膨胀护栏：键不存在、键类型不一致导致一行都匹配不上、键不唯一导致行数被放大数倍，这三种情况都会拒绝执行并说明原因。不确定文件名时先用空 right_source 调用一次，取得本会话可用文件清单。合并结果会替换活动数据集，报告中必须引用工具返回的匹配情况（未匹配键数量）与放大警告，不得把放大后的行数当作原始记录数。
 
 分析深度要求：
 11. 统计分析时优先选择最能揭示数据特征的指标：分布形态（偏度/峰度）、离散程度、分位数而非仅仅均值。
@@ -89,9 +90,11 @@ PROMPTS: dict[str, dict[str, Any]] = {
 - 统计步骤要明确方法（如相关、回归、分组对比、分布检验）
 - 图表步骤要指定图表类型和展示维度，每张图必须回答一个具体分析问题；禁止对 ID/编号列、常量列作图，高基数类别列需聚焦头部 top_n；两数值列的关系图在存在第三个有业务意义的数值列时优先用三维散点（scatter_3d）
 - 避免重复步骤，每步应有独立价值
+- 需要合并多个数据文件时，单独安排一步用 join_datasets 完成合并并核对匹配情况，不要把它塞进统计步骤里顺带做
 
 用户目标：{query}
-数据概况：{profile_text}""",
+数据概况：{profile_text}
+{metric_context}""",
         "execution_template": """总目标：{objective}
 当前计划步骤：{step_title}
 具体任务：{step_instruction}
@@ -179,6 +182,7 @@ Working standards:
 9. Complete only the steps specified in the current plan; do not repeat work that is already done.
 10. transform_data only produces derived views and never alters the main data; do not export a filtered view as the final cleaned data.
 10a. run_python_code is the fallback tool: use it only when the predefined tools cannot express the required computation (e.g., period-over-period change, rolling windows, multi-level pivots, combined custom-metric filtering). Inside the code, df is a COPY of the main data, so modifying it never affects the main dataset; assign the final output to a variable named result and keep it concise. Never use it to bypass the cleaning guards or to duplicate what the predefined tools already provide.
+10b. When the user supplies several data files that must be combined into one table before analysis, use join_datasets instead of hand-writing the merge in run_python_code. It validates the join keys and guards against row explosion: it refuses and explains itself when the keys do not exist, when incompatible key types match nothing at all, and when non-unique keys would multiply the row count. When you are unsure of a file name, call it once with an empty right_source to list the data files available in this session. The merged result replaces the active dataset; the report must cite the tool's match diagnostics (unmatched key counts) and fan-out warnings, and must not present the inflated row count as the original record count.
 
 Analysis depth requirements:
 11. When running statistical analysis, prefer the metrics that best reveal the data's characteristics: distribution shape (skewness/kurtosis), dispersion, and quantiles rather than just the mean.
@@ -192,9 +196,11 @@ Step design principles:
 - Statistical steps should specify the method (e.g., correlation, regression, grouped comparison, distribution test)
 - Charting steps should specify the chart type and dimensions to display; every chart must answer a concrete analytical question — never chart identifier or constant columns, and focus high-cardinality categories with top_n; for relationships between two numeric columns, prefer a 3D scatter (scatter_3d) when a third business-meaningful numeric column exists
 - Avoid duplicate steps; each step should have independent value
+- When several data files must be combined, give the merge its own step using join_datasets and verify the match diagnostics there, rather than folding it into a statistics step
 
 User objective: {query}
-Data overview: {profile_text}""",
+Data overview: {profile_text}
+{metric_context}""",
         "execution_template": """Overall objective: {objective}
 Current plan step: {step_title}
 Specific task: {step_instruction}

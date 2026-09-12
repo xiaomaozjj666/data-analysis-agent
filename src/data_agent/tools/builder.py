@@ -8,6 +8,7 @@
 - transform_data: 非破坏性筛选/排序视图
 - statistical_analysis: 描述统计、相关、分组、假设检验、回归
 - create_visualization: Plotly 交互式图表生成
+- join_datasets: 跨源合并（带键校验与扇出护栏）
 - export_data: 数据导出
 - run_python_code: 受限沙箱执行长尾 pandas 计算（实现在 ``_sandbox``）
 
@@ -53,6 +54,13 @@ from ._cleaning import (
     _trim_string_columns,
 )
 from ._helpers import _human_column_label, _nice_ticks, _plotly_axis_tickformat, _scatter_structure
+from ._join import (
+    list_available_sources,
+    merge_datasets,
+    normalize_keys,
+    resolve_source,
+    validate_keys,
+)
 from ._sandbox import build_run_python_code
 from .charts import (
     _BOOLEAN_VALUE_LABELS,
@@ -480,7 +488,7 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         workspace: 当前分析会话的数据工作区。
 
     Returns:
-        8 个 BaseTool 实例的列表。
+        9 个 BaseTool 实例的列表。
     """
 
     @tool
@@ -1417,11 +1425,87 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         path = workspace.save_dataframe(f"{safe_stem}.{format}")
         return json_text({"status": "ok", "rows": len(workspace.dataframe), "output": path})
 
+    @tool
+    def join_datasets(
+        right_source: str,
+        left_on: list[str] | None = None,
+        right_on: list[str] | None = None,
+        how: Literal["inner", "left", "right", "outer"] = "inner",
+    ) -> str:
+        """Merge another data file of this session into the active dataset.
+
+        Use this when the analysis needs columns that live in a second uploaded file
+        (for example joining monthly sales with a region mapping table, or stacking
+        quarterly sheets into one annual table) instead of writing ad-hoc pandas code.
+
+        Call it with an empty right_source to get the list of data files available in
+        this session — do that first when you are unsure of the exact file name.
+
+        right_source is a file name or a path relative to this session; a bare name
+        resolves against the uploads directory, and artifacts/<name> also works.
+        Absolute paths and ".." traversal are rejected.
+        left_on and right_on are the join keys; omit right_on when both sides use the
+        same key names. how selects inner / left / right / outer.
+
+        The merged result replaces the active dataset, and its row count becomes the
+        new baseline for the cleaning guards.
+
+        Guards (always enforced regardless of parameters):
+          - Join keys must exist on both sides; the error lists the available columns.
+          - An empty result is refused: it almost always means the key types or key
+            value spaces are incompatible, and handing back an empty table is worse
+            than failing loudly.
+          - The result may not exceed 5x the larger input table. Exceeding that means
+            the keys are not unique and the join is fanning out, which silently
+            inflates every aggregate downstream.
+        """
+        if not (right_source or "").strip():
+            return json_text(
+                {
+                    "status": "needs_input",
+                    "available_sources": list_available_sources(
+                        workspace.root, (workspace.input_dir, workspace.artifacts_dir)
+                    ),
+                    "message": "请从 available_sources 中选择要合并的文件名，再次调用本工具。",
+                }
+            )
+        if not left_on:
+            raise ValueError("left_on 不能为空，请指定主数据的连接键列。")
+        source_path = resolve_source(
+            workspace.root, (workspace.input_dir, workspace.artifacts_dir), right_source
+        )
+        left_frame = workspace.dataframe
+        right_frame = workspace.read_source(source_path)
+        left_keys, right_keys = normalize_keys(left_on, right_on)
+        validate_keys(left_frame, right_frame, left_keys, right_keys)
+        merged, diagnostics = merge_datasets(left_frame, right_frame, left_keys, right_keys, how)
+        # 护栏全部通过后才接管数据集：被拒绝的合并不留下任何状态变更。
+        workspace.adopt_dataset(merged.reset_index(drop=True), reset_source_baseline=True)
+        output = workspace.save_dataframe(
+            "joined_data.csv", description=f"跨源合并结果（{source_path.name}）"
+        )
+        return json_text(
+            {
+                "status": "ok",
+                "source": source_path.name,
+                "how": how,
+                "left_on": left_keys,
+                "right_on": right_keys,
+                **diagnostics,
+                "output": output,
+                "note": (
+                    "合并结果已成为新的活动数据集，行数基线同步重置，"
+                    "后续 clean_data 的安全下限以合并结果为准。"
+                ),
+            }
+        )
+
     return [
         inspect_data,
         repair_data_format,
         clean_data,
         transform_data,
+        join_datasets,
         statistical_analysis,
         create_visualization,
         export_data,
