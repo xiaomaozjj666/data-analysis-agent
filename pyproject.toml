@@ -47,6 +47,13 @@ dev = [
   # test_e2e_data_types.py::test_pdf_file_load 用 reportlab 生成真实 PDF 文件；
   # 不在运行时依赖里，仅测试需要。
   "reportlab>=4,<6",
+  # 本地开发环境默认包含 Postgres 驱动，CI 的 Postgres service 依赖它跑集成测试。
+  "psycopg[binary]>=3.2,<4",
+]
+# 数据库查询工具的 Postgres 驱动：按需安装（pip install ".[postgres]"），
+# 未安装时 query_database 会给出可操作的中文提示而不是裸 ImportError。
+postgres = [
+  "psycopg[binary]>=3.2,<4",
 ]
 deploy = [
   "langgraph-cli[inmem]>=0.4,<1",

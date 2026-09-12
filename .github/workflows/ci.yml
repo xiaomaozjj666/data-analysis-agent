@@ -13,6 +13,22 @@ jobs:
   backend:
     name: Backend (ruff + pytest)
     runs-on: ubuntu-latest
+    # Postgres service：让 query_database 的 Postgres 驱动在 CI 里跑真实集成测试，
+    # 而不是只测"没装驱动时报错"这一条降级路径。测试自身在连不上时自动跳过，
+    # 本地无 Docker 的环境不受影响。
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: analytics
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v5
 
@@ -38,8 +54,10 @@ jobs:
         # 注意：不要用 -n auto——本机多核会瞬时拉起过多 worker 触发 OpenBLAS
         # 内存分配失败（见 test_registry_import_rejects_zero_concurrency 子进程），
         # 固定 4 路既匹配 CI runner 规格也避免本地/CI 行为漂移。
+        # DATA_AGENT_DATABASE_URL 指向上面的 service，Postgres 集成测试据此连接。
         env:
           DATA_AGENT_SKIP_KALEIDO: "1"
+          DATA_AGENT_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/analytics
         run: python -m pytest -n 4
 
   frontend:

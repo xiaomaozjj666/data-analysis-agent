@@ -39,20 +39,14 @@ from scipy import stats
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
+from data_agent import postgres_source, sqlite_source
 from data_agent.chart_sampling import (
     _EMBED_MAX_POINTS,
     sample_plotly_figure_for_embed,
     sampling_note,
 )
 from data_agent.serialization import json_text
-from data_agent.sqlite_source import (
-    MAX_RESULT_ROWS,
-    connect_readonly,
-    resolve_session_source,
-    run_select,
-    schema_summary,
-    validate_select,
-)
+from data_agent.sql_guard import MAX_RESULT_ROWS
 from data_agent.workspace import DataWorkspace, _atomic_write_text
 
 from ._cleaning import (
@@ -1510,45 +1504,73 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         )
 
     @tool
-    def query_database(sql: str = "", adopt: bool = False, limit: int = 200) -> str:
-        """Run a read-only SQL query against the SQLite database of this session.
+    def query_database(
+        sql: str = "",
+        adopt: bool = False,
+        limit: int = 200,
+        source: Literal["session", "postgres"] = "session",
+    ) -> str:
+        """Run a read-only SQL query against one of this session's relational sources.
 
-        Call it with an empty sql first to get the schema of every table (names, row
-        counts and columns) — do that whenever you do not already know the tables.
+        Call it with an empty sql first to get every table's schema (names, row counts
+        and columns) plus the list of available sources — do that before writing SQL.
+
+        source selects the target:
+          - "session": the uploaded .db / .sqlite file of this session.
+          - "postgres": the warehouse configured through the DATA_AGENT_DATABASE_URL
+            environment variable.
 
         Use this for anything a single flat table cannot express: joining several tables,
         filtering with SQL, or computing an aggregate the statistics tool does not cover.
         Prefer it over run_python_code, which only sees the active dataset.
 
-        Only SELECT / WITH statements are accepted. The database is opened in read-only
-        mode and writing statements (INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, PRAGMA,
-        ATTACH, ...) are rejected, so the file cannot be modified.
+        Only SELECT / WITH statements are accepted. Sources are opened read-only at the
+        driver level (SQLite mode=ro, Postgres default_transaction_read_only) and writing
+        statements (INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, PRAGMA, ATTACH, ...) are
+        rejected, so nothing can be modified.
 
         Set adopt=true to make the query result the new active dataset, after which the
         statistics, charting, joining and export tools operate on it. Leave adopt=false
         for inspection or a quick aggregate check.
 
         Guards (always enforced regardless of parameters):
-          - SELECT / WITH only, and the file is opened read-only.
-          - 5 second wall-clock budget per query: a runaway cross join is interrupted and
-            reported instead of stalling the analysis.
+          - SELECT / WITH only; the connection itself is read-only.
+          - 5 second wall-clock budget per query: SQLite interrupts the statement via its
+            progress handler, Postgres via statement_timeout.
           - At most 5000 rows and 500 columns per result.
         """
-        source = resolve_session_source(workspace.source_path, workspace.input_dir)
-        if source is None:
+        if source == "postgres":
+            driver = postgres_source
+            connection = driver.connect_readonly()
+            source_label = "postgres（环境变量配置的连接）"
+        elif source == "session":
+            database_path = sqlite_source.resolve_session_source(workspace.source_path, workspace.input_dir)
+            if database_path is None:
+                available = ["postgres"] if postgres_source.is_configured() else []
+                raise ValueError(
+                    "本会话没有 SQLite 数据源（source=\"session\" 需要 .db/.sqlite 文件）。"
+                    + (
+                        f"环境变量已配置 PostgreSQL，请改用 source=\"postgres\"。可用数据源：{'、'.join(available)}。"
+                        if available
+                        else "也可以改用 inspect_data 与预定义工具处理当前数据集。"
+                    )
+                )
+            driver = sqlite_source
+            connection = driver.connect_readonly(database_path)
+            source_label = database_path.name
+        else:
             raise ValueError(
-                "本会话没有 SQLite 数据源，无法执行 SQL 查询。"
-                "本工具只能用于上传的 .db / .sqlite 文件；"
-                "若数据来自 CSV/Excel 等其他格式，请改用 inspect_data 与预定义工具。"
+                f"未知的 source「{source}」。可用值：session（会话内 SQLite 文件）、"
+                "postgres（由 DATA_AGENT_DATABASE_URL 配置的连接）。"
             )
-        connection = connect_readonly(source)
         try:
             if not (sql or "").strip():
-                summary = schema_summary(connection)
+                summary = driver.schema_summary(connection)
                 return json_text(
                     {
                         "status": "ok",
-                        "source": source.name,
+                        "source": source_label,
+                        "source_kind": source,
                         "table_count": summary["table_count"],
                         "tables": [
                             {
@@ -1567,10 +1589,11 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                         ),
                     }
                 )
-            result = run_select(connection, validate_select(sql), limit=limit)
+            result = driver.run_select(connection, sql, limit=limit)
             payload: dict[str, Any] = {
                 "status": "ok",
-                "source": source.name,
+                "source": source_label,
+                "source_kind": source,
                 "columns": result["columns"],
                 "rows": result["rows"],
                 "row_count": result["row_count"],

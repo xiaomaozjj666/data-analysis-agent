@@ -28,6 +28,25 @@ from typing import Any
 
 import pandas as pd
 
+from data_agent.sql_guard import (
+    MAX_RESULT_COLUMNS as MAX_RESULT_COLUMNS,
+)
+from data_agent.sql_guard import (
+    MAX_RESULT_ROWS as MAX_RESULT_ROWS,
+)
+from data_agent.sql_guard import (
+    collect_rows,
+)
+from data_agent.sql_guard import (
+    quote_identifier as _quote_identifier,
+)
+from data_agent.sql_guard import (
+    to_json_safe as to_json_safe,
+)
+from data_agent.sql_guard import (
+    validate_select as validate_select,
+)
+
 #: 视为 SQLite 数据源的扩展名。
 SQLITE_EXTENSIONS: frozenset[str] = frozenset({".db", ".sqlite", ".sqlite3"})
 
@@ -37,12 +56,6 @@ QUERY_TIME_BUDGET_MS = 5_000
 #: progress handler 的回调间隔（虚拟指令数）。太小会拖慢查询，太大则超时不准。
 _PROGRESS_CHECK_INTERVAL = 1_000
 
-#: 单条查询返回的最大行数（硬上限，工具的 limit 参数只能更小）。
-MAX_RESULT_ROWS = 5_000
-
-#: 单条查询返回的最大列数。
-MAX_RESULT_COLUMNS = 500
-
 #: 默认表选举时最多统计多少张表的行数。逐表 COUNT(*) 在表很多时开销可观，
 #: 超出部分不参与选举（会在警告里说明）。
 _DEFAULT_TABLE_SCAN_LIMIT = 20
@@ -50,29 +63,6 @@ _DEFAULT_TABLE_SCAN_LIMIT = 20
 #: 表选举与结构概览里逐表 COUNT(*) 的预算。这些只是"看一眼结构"，不该拖慢
 #: 上传：最坏 20 张表 × 500ms = 10s 封顶，而不是按查询预算的 5s/表 放大到 100s。
 _ROW_COUNT_BUDGET_MS = 500
-
-#: 允许作为查询起点的语句前缀（小写比较）。只读意图的显式白名单。
-_ALLOWED_STATEMENT_PREFIXES: tuple[str, ...] = ("select", "with")
-
-#: 明确拒绝的语句前缀，命中时给出针对性的错误说明而不是笼统的"不支持"。
-_FORBIDDEN_STATEMENTS: dict[str, str] = {
-    "insert": "INSERT 会写入数据库",
-    "update": "UPDATE 会修改数据库内容",
-    "delete": "DELETE 会删除数据",
-    "drop": "DROP 会删除表或索引",
-    "alter": "ALTER 会修改表结构",
-    "create": "CREATE 会新建对象",
-    "replace": "REPLACE 会覆盖数据",
-    "truncate": "TRUNCATE 会清空表",
-    "attach": "ATTACH 可以打开数据库之外的任意文件",
-    "detach": "DETACH 会改变连接状态",
-    "pragma": "PRAGMA 的部分选项会写入数据库",
-    "vacuum": "VACUUM 会重写数据库文件",
-    "reindex": "REINDEX 会重建索引",
-    "begin": "事务控制语句不允许使用",
-    "commit": "事务控制语句不允许使用",
-    "rollback": "事务控制语句不允许使用",
-}
 
 
 def connect_readonly(path: str | Path) -> sqlite3.Connection:
@@ -110,11 +100,6 @@ def connect_readonly(path: str | Path) -> sqlite3.Connection:
             "请确认上传的是 .db/.sqlite 文件，而不是改了扩展名的其他格式。"
         ) from exc
     return connection
-
-
-def _quote_identifier(name: str) -> str:
-    """把标识符包成双引号形式，内部双引号翻倍转义。"""
-    return '"' + name.replace('"', '""') + '"'
 
 
 def list_tables(connection: sqlite3.Connection) -> list[str]:
@@ -195,39 +180,6 @@ def pick_default_table(connection: sqlite3.Connection) -> str:
     return best_table
 
 
-def validate_select(sql: str) -> str:
-    """校验语句是只读查询，返回去掉首尾空白与结尾分号的语句。
-
-    Raises:
-        ValueError: 语句为空、以被禁止的关键字开头，或不是查询语句。
-    """
-    statement = (sql or "").strip().rstrip(";").strip()
-    if not statement:
-        raise ValueError("sql 不能为空；留空调用本工具可先获取库内表结构。")
-    first_word = statement.lower().split(None, 1)[0]
-    if first_word in _FORBIDDEN_STATEMENTS:
-        raise ValueError(
-            f"只允许只读查询：{_FORBIDDEN_STATEMENTS[first_word]}，本工具不能执行 {first_word.upper()}。"
-            "如需把查询结果变成新的活动数据集，请改用 adopt=true。"
-        )
-    if first_word not in _ALLOWED_STATEMENT_PREFIXES:
-        # 注释开头的语句也走这里：首词会是 "--" 或 "/*"，同样不在白名单内。
-        raise ValueError(
-            f"只允许 SELECT 或 WITH 开头的查询语句，收到的是「{first_word.upper()}」。"
-        )
-    return statement
-
-
-def to_json_safe(value: Any) -> Any:
-    """把 SQLite 返回值转成可 JSON 序列化的形式。"""
-    if isinstance(value, (bytes, bytearray, memoryview)):
-        # BLOB 直接塞进 JSON 会变成不可读的乱码；给出长度占位更便于判断。
-        return f"<blob:{len(bytes(value))} bytes>"
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
-    return str(value)
-
-
 def run_select(
     connection: sqlite3.Connection,
     sql: str,
@@ -239,7 +191,7 @@ def run_select(
 
     Args:
         connection: 只读连接。
-        sql: 已通过 ``validate_select`` 的查询语句。
+        sql: 查询语句，内部先做只读校验。
         limit: 返回行数上限，内部再夹到 ``MAX_RESULT_ROWS``。
         budget_ms: 墙钟预算，超时中断查询。
 
@@ -247,22 +199,13 @@ def run_select(
         ``{"columns": [...], "rows": [[...]], "row_count": n, "truncated": bool}``。
 
     Raises:
-        ValueError: 查询超时、列数超限或 SQL 执行失败（错误信息已中文化）。
+        ValueError: 查询超时、列数超限、语句非只读或 SQL 执行失败（已中文化）。
     """
-    capped = max(1, min(int(limit), MAX_RESULT_ROWS))
+    statement = validate_select(sql)
     with _query_deadline(connection, budget_ms):
         try:
-            cursor = connection.execute(sql)
-            description = cursor.description or []
-            if len(description) > MAX_RESULT_COLUMNS:
-                raise ValueError(
-                    f"查询返回 {len(description)} 列，超过 {MAX_RESULT_COLUMNS} 列上限。"
-                    "请显式选择需要的列，避免 SELECT * 带来用不上的宽表。"
-                )
-            columns = [str(item[0]) for item in description]
-            fetched = cursor.fetchmany(capped)
-            truncated = cursor.fetchone() is not None
-            rows = [[to_json_safe(value) for value in row] for row in fetched]
+            cursor = connection.execute(statement)
+            result = collect_rows(cursor, limit)
         except sqlite3.OperationalError as exc:
             if "interrupted" in str(exc).lower():
                 raise ValueError(
@@ -273,7 +216,7 @@ def run_select(
             raise ValueError(f"SQL 执行失败：{exc}") from exc
         except sqlite3.DatabaseError as exc:
             raise ValueError(f"SQL 执行失败：{exc}") from exc
-    return {"columns": columns, "rows": rows, "row_count": len(rows), "truncated": truncated}
+    return result
 
 
 def schema_summary(connection: sqlite3.Connection) -> dict[str, Any]:
