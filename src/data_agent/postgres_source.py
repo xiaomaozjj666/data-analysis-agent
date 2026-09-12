@@ -74,9 +74,12 @@ def resolve_dsn() -> str:
 def connect_readonly(dsn: str | None = None, budget_ms: int = QUERY_TIME_BUDGET_MS) -> Any:
     """建立只读连接并配置查询预算。
 
-    只读通过 ``default_transaction_read_only`` 在服务端生效，并且回读确认——
-    如果这个会话属性没设置成功，说明连接已被限制（如云数据库的只读副本策略），
-    必须报错而不是带着不确定的权限继续。
+    连接全程保持 **autocommit**：每条语句都是独立事务，查完即结束。这一点很关键——
+    psycopg 默认非 autocommit，首条语句就会开启事务且直到显式提交才结束；一个只做
+    SELECT 的连接若停在事务里（idle in transaction），会一直持有表锁与快照，阻塞
+    别处的 DDL 与 VACUUM。只读通过 ``default_transaction_read_only`` 在服务端生效，
+    并且回读确认——如果这个会话属性没设置成功，说明连接已被限制（如云数据库的
+    只读副本策略），必须报错而不是带着不确定的权限继续。
 
     Args:
         dsn: 连接串；缺省时读取 :data:`DATABASE_URL_ENV`。
@@ -89,23 +92,19 @@ def connect_readonly(dsn: str | None = None, budget_ms: int = QUERY_TIME_BUDGET_
         raise ValueError(_INSTALL_HINT)
     target = (dsn or resolve_dsn()).strip()
     connection = psycopg.connect(target)
-    try:
-        # SET 必须在 autocommit 下执行：否则它们落在事务里，事务结束就被回滚，
-        # "只读 + 超时"两项保护对一个不知情的调用者来说等于没设。
-        connection.autocommit = True
-        connection.execute(f"SET statement_timeout = {int(budget_ms)}")
-        connection.execute("SET default_transaction_read_only = on")
-        confirmed = connection.execute("SHOW transaction_read_only").fetchone()
-        if not confirmed or str(confirmed[0]).lower() != "on":
-            raise ValueError(
-                "无法把本连接设置为只读（transaction_read_only 未生效），已中止连接。"
-                "请确认账号具备设置会话参数的权限。"
-            )
-        connection.execute("SET search_path = public")
-        connection.autocommit = False
-    except Exception:
+    # autocommit 必须在最前面打开：下面的 SET 依赖它才能立即持久化到会话，
+    # 否则落在事务里，一回滚就被撤销，超时保护随之失效。
+    connection.autocommit = True
+    connection.execute(f"SET statement_timeout = {int(budget_ms)}")
+    connection.execute("SET default_transaction_read_only = on")
+    confirmed = connection.execute("SHOW transaction_read_only").fetchone()
+    if not confirmed or str(confirmed[0]).lower() != "on":
         connection.close()
-        raise
+        raise ValueError(
+            "无法把本连接设置为只读（transaction_read_only 未生效），已中止连接。"
+            "请确认账号具备设置会话参数的权限。"
+        )
+    connection.execute("SET search_path = public")
     return connection
 
 
@@ -133,7 +132,7 @@ def describe_table(connection: Any, table: str, schema: str = "public") -> list[
         (schema, table),
     ).fetchall()
     return [
-        {"name": str(row[0]), "type": str(row[1] or ""), "not_null": row[1] is not None and str(row[2]) == "NO"}
+        {"name": str(row[0]), "type": str(row[1] or ""), "not_null": str(row[2]).upper() == "NO"}
         for row in rows
     ]
 
@@ -145,21 +144,25 @@ def count_rows(connection: Any, table: str, schema: str = "public", budget_ms: i
         row = connection.execute(f"SELECT COUNT(*) FROM {quote_identifier(table)}").fetchone()
         return int(row[0]) if row else -1
     except psycopg.errors.QueryCanceled:  # type: ignore[union-attr]
-        connection.rollback()
+        # autocommit 下失败语句已由服务端自行终止，无需（也无法）回滚事务。
         return -1
 
 
 def schema_summary(connection: Any, schema: str = "public") -> dict[str, Any]:
     """汇总所有表的结构，供工具在发现模式（sql 留空）下返回。"""
-    described: list[dict[str, Any]] = []
-    for table in list_tables(connection, schema):
-        described.append(
-            {
-                "table": table,
-                "row_count": count_rows(connection, table, schema),
-                "columns": describe_table(connection, table, schema),
-            }
-        )
+    tables = list_tables(connection, schema)
+    # count_rows 会把超时收紧到 500ms；结构查询用回常规预算，避免大目录下
+    # information_schema 查询被误杀。
+    counts = {table: count_rows(connection, table, schema) for table in tables}
+    connection.execute(f"SET statement_timeout = {int(QUERY_TIME_BUDGET_MS)}")
+    described = [
+        {
+            "table": table,
+            "row_count": counts[table],
+            "columns": describe_table(connection, table, schema),
+        }
+        for table in tables
+    ]
     return {"table_count": len(described), "tables": described}
 
 
@@ -177,22 +180,20 @@ def run_select(
     """
     statement = validate_select(sql)
     try:
-        # 超时按调用入参收紧：连接级默认值可能被同会话的其他调用改过。
+        # 超时按调用入参收紧；autocommit 下 SET 立即持久化到本连接会话，
+        # 而工具的连接生命周期就是单次调用，因此不会污染后续查询。
         connection.execute(f"SET statement_timeout = {int(budget_ms)}")
         cursor = connection.execute(statement)
         return collect_rows(cursor, limit)
     except psycopg.errors.QueryCanceled as exc:  # type: ignore[union-attr]
-        connection.rollback()
         raise ValueError(
             f"查询超过 {budget_ms / 1000:g} 秒预算已被数据库取消。"
             "通常是跨表笛卡尔积或缺少过滤条件导致；请补上 WHERE、先用聚合把数据收敛，"
             "或改用带索引的列做连接。"
         ) from exc
     except psycopg.errors.ReadOnlySqlTransaction as exc:  # type: ignore[union-attr]
-        connection.rollback()
         raise ValueError("连接处于只读事务，写入语句已被数据库拒绝。") from exc
     except psycopg.Error as exc:  # type: ignore[union-attr]
-        connection.rollback()
         raise ValueError(f"SQL 执行失败：{exc}") from exc
 
 

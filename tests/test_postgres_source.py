@@ -119,10 +119,35 @@ def test_missing_driver_reports_install_hint(monkeypatch):
 
 @requires_pg
 def test_write_is_rejected_by_the_server(pg):
-    """只读由 default_transaction_read_only 保证，写入必须被数据库拒绝。"""
+    """只读由服务端 default_transaction_read_only 保证。
+
+    这里刻意绕过语句白名单、直接对连接执行写入：白名单挡的是"不该写的语句"，
+    这条用例要证明的是——即便语句漏过了白名单，数据库本身也拒绝写入。
+    """
+    import psycopg
+
     table = _table()
-    with pytest.raises(ValueError, match="只读事务"):
-        run_select(pg, f"INSERT INTO {table} VALUES ('x', 1)", limit=10)
+    with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
+        pg.execute(f"CREATE TABLE {table} (a INT)")
+    with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
+        pg.execute(f"INSERT INTO {table} VALUES ('x', 1.0)")
+    # autocommit 下失败语句由服务端自行终止，连接仍可继续只读查询
+    assert run_select(pg, "SELECT 1 AS ok", limit=1)["rows"] == [[1]]
+
+
+@requires_pg
+def test_connection_does_not_stay_in_transaction_after_query(pg):
+    """回归测试：查询结束后连接不得停留在事务里（idle in transaction）。
+
+    一个停在事务里的只读连接会一直持有表锁与快照，阻塞别处的 DDL 与 VACUUM；
+    修法是连接全程 autocommit，每条语句都是独立事务、查完即结束。
+    """
+    from psycopg import TransactionStatus
+
+    run_select(pg, "SELECT 1 AS ok", limit=1)
+    assert pg.info.transaction_status == TransactionStatus.IDLE
+    run_select(pg, "SELECT 2 AS ok", limit=1)
+    assert pg.info.transaction_status == TransactionStatus.IDLE
 
 
 @requires_pg
