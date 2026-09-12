@@ -4,9 +4,10 @@
 调研对象：WorkBuddy（腾讯）、Trae SOLO（字节跳动）、ChatGPT Advanced Data Analysis（OpenAI）、Julius AI、Copilot in Excel / Power BI Copilot（微软）、Tableau Agent & Pulse / FineBI（BI 侧）
 被评估对象：本项目 data-analysis-agent（下文简称"本项目"）
 
-> 落地进展：P0-2（指标口径登记）、P0-3（跨源合并）与 P0-1 的第一步均已实现并通过测试，
-> 对应 `src/data_agent/metrics.py`、`src/data_agent/tools/_join.py` 与 `src/data_agent/sqlite_source.py`；
-> P0-1 尚余网络型数仓驱动与 MCP 对外暴露，推进路径见第五节末尾。
+> 落地进展：P0 三项均已实现并通过测试——指标口径登记（`metrics.py`）、跨源合并
+> （`tools/_join.py`）、数据库直连（`sqlite_source.py` 的 SQLite 文件源 +
+> `postgres_source.py` 的 PostgreSQL 数据源，CI 内以真实 service 验证）。
+> 尚余 MCP 对外暴露与 Snowflake/BigQuery 等其余数仓驱动，路径见第五节末尾。
 
 ---
 
@@ -150,7 +151,7 @@ Copilot in Excel 支持切换 Claude 与 GPT；Julius 支持 SQL/Python/R 与多
 
 | 严重度 | 不足 | 事实依据 |
 | --- | --- | --- |
-| 致命 → 部分已补 | 无数据库/数仓直连，无 MCP 接入 | 已实现 SQLite 只读数据源与 `query_database` 工具（stdlib 零新依赖，含只读/超时/行列护栏）；网络型数仓驱动（Postgres/Snowflake 等）与 MCP 对外暴露仍待做 |
+| 致命 → 大部分已补 | 无数据库/数仓直连，无 MCP 接入 | 已实现 SQLite 文件源与 PostgreSQL 数据源（`query_database`，只读 + 超时 + 行列护栏，CI 真实 service 验证）；MCP 对外暴露与 Snowflake/BigQuery 等其余驱动仍待做 |
 | 致命 → 已补 | 无指标语义层，跨会话口径漂移 | 原状态：口径由 LLM 现推，无任何指标定义文件。现已实现 `metrics.json` 登记 + 规划阶段注入 |
 | 高 | 分析过程不可复用、不可调度 | 产物只有报告 + 图表，无 Notebook/流程抽象 |
 | 高 → 已补 | 跨文件 join 不是一等能力 | 原状态：`.merge()` 仅出现在 builder.py 的内部元数据拼接；`pd.concat` 仅用于单文件分块读取与同文件多表提取。现已实现受控的 `join_datasets`（键校验 + 扇出护栏 + 未匹配键诊断） |
@@ -230,11 +231,19 @@ P0-2 与 P0-3 属于"在既有架构里加一层"，改动封闭、可用现有�
 2. **凭证归属。** 数据库连接串放哪：跟当前 API Key 一样进操作系统凭据库，还是走管理员集中配置？前者适合个人自托管，后者适合团队部署，两条路的接口设计不同。
 3. **权限模型的起点。** 参考架构要求专用只读角色、行数上限、查询超时、SQL 审计；这套东西一旦落地就必须同时想清楚"谁来配、配错了怎么发现"，否则会变成一个新的运维黑洞。
 
-因此 P0-1 的第一步按"先把工具层与护栏定型"来做，**已完成**：`sqlite_source.py` 用零依赖后端把只读访问、语句白名单、查询超时、行列上限、表结构发现全部实现并有真实测试覆盖，`query_database` 工具随之定型。这一步的价值在于——后续接入 Postgres/Snowflake 时，要做的只是换一个连接实现与补一份驱动依赖，护栏与工具面不需要重写，而且每一层都已有测试在守。
+因此 P0-1 按"先定型工具层与护栏，再接驱动"的节奏推进，两步都已完成：
+
+1. **工具层与护栏**（SQLite 后端先行）：`sqlite_source.py` 实现只读访问、语句白名单、
+   查询超时、行列上限、表结构发现；共享护栏抽到 `sql_guard.py` 供两个驱动共用。
+2. **PostgreSQL 驱动**：`postgres_source.py` + `query_database` 的 `source` 参数。
+   凭证走环境变量 `DATA_AGENT_DATABASE_URL`（与 S3/R2 凭证同一约定）；只读在服务端
+   `default_transaction_read_only` 生效并回读确认；超时用服务端 `statement_timeout`；
+   CI 以 postgres:16 service container 跑真实集成测试（连不上时自动跳过）。
 
 尚未做的两件事与前置条件：
 
-- **网络型数仓驱动**：需要一个明确的目标数据库（决定装哪个驱动），以及 CI 里的可连实例（GitHub Actions 的 service container 可以解决 Postgres；Snowflake/BigQuery 则需要真实凭证或模拟层）。本地验证同样需要一个可连的库。
+- **其余数仓驱动**（Snowflake/BigQuery/Databricks）：沿 `postgres_source` 的模式即可，
+  但需要真实凭证或模拟层才能验证——没有可验证手段就不该合入。
 - **MCP 对外暴露**：把既有工具集包装成 MCP server 供其他 Agent 调用。这一步不引入新依赖，但需要先定工具粒度与鉴权方式，避免把内部工具原样暴露出去。
 
 ---
