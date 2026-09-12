@@ -416,8 +416,11 @@ class SessionRegistry:
     def list_recent(self, limit: int = 30) -> list[dict[str, Any]]:
         """Return metadata of recent sessions for the history sidebar.
 
-        扫描 runs_dir 下所有 ``api_*`` 子目录的 session.json，按 created_at
-        降序返回。优先复用内存中已 restore 的 SessionRecord，避免每次都
+        扫描 runs_dir 下所有含 ``session.json`` 的子目录，按 created_at
+        降序返回。**不能按目录名前缀过滤**（历史上只认 ``api_``，导致 CLI、
+        MCP 与部署入口创建的会话在重启后从历史里消失）——会话的判据是
+        manifest 存在，不是目录名。
+        优先复用内存中已 restore 的 SessionRecord，避免每次都
         反序列化 manifest；对未在内存中的会话仅读取 manifest 字段，不
         恢复 DataFrame/checkpoint，保持列表接口轻量。
 
@@ -450,7 +453,7 @@ class SessionRegistry:
             disk_session_ids: list[str] = []
             if self.runs_dir.is_dir():
                 for entry in self.runs_dir.iterdir():
-                    if entry.is_dir() and entry.name.startswith("api_"):
+                    if entry.is_dir() and (entry / "session.json").is_file():
                         disk_session_ids.append(entry.name)
         # 锁外读 manifest：几十个 JSON 文件的 I/O 不再阻塞 get/create。
         seen_ids = set(in_memory.keys())

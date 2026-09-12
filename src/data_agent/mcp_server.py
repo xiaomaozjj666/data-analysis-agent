@@ -96,10 +96,11 @@ def create_server(settings: AgentSettings | None = None) -> Any:
 
     @mcp.tool()
     def list_sessions(limit: int = 20) -> str:
-        """List recent analysis sessions with id, filename and row count.
+        """List recent analysis sessions with id, filename, title and status.
 
         Call this first when you do not know which sessions exist. The id returned
-        here is what the other tools take as session_id.
+        here is what the other tools take as session_id. Row counts are not part
+        of this listing; use inspect_data for a session's shape.
         """
         capped = max(1, min(int(limit), 100))
         sessions = registry.list_recent(limit=capped)

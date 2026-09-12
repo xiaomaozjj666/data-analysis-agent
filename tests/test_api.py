@@ -8,6 +8,7 @@ import threading
 import zipfile
 from collections import deque
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from conftest import _skip_kaleido
@@ -219,6 +220,30 @@ def test_session_manifest_can_restore_persistent_workspace(tmp_path):
     assert restored.chat == [{"role": "user", "content": "检查数据"}]
     assert restored.analysis_status == "completed"
     assert restored.workspace.artifacts[0]["description"] == "清洗或变换后的数据集"
+
+
+def test_list_recent_includes_non_api_session_prefixes_after_restart(tmp_path):
+    """历史列表不能按目录名前缀过滤会话。
+
+    回归背景：list_recent 曾经只扫描 `api_*` 目录，导致 CLI（cli_）、MCP（mcp_）
+    与部署入口（deploy_）创建的会话在进程重启（内存态丢失、只剩磁盘扫描）后
+    从历史里消失。会话的判据是 manifest 存在，不是目录名。
+    """
+    prefix_session_ids: list[str] = []
+    for prefix in ("cli_", "mcp_", "deploy_"):
+        workspace = DataWorkspace(tmp_path / "runs", session_id=f"{prefix}{uuid4().hex[:8]}")
+        source = workspace.save_upload("sales.csv", b"region,sales\nEast,100\n")
+        workspace.load(source)
+        first = api.SessionRegistry(tmp_path / "runs", max_sessions=10, ttl_hours=24)
+        session_id, record = first.create(workspace)
+        first.persist(session_id, record)
+        prefix_session_ids.append(session_id)
+
+    # 全新注册表实例 = 模拟进程重启后磁盘扫描路径
+    restarted = api.SessionRegistry(tmp_path / "runs", max_sessions=10, ttl_hours=24)
+    listed_ids = {item["id"] for item in restarted.list_recent(limit=50)}
+    for session_id in prefix_session_ids:
+        assert session_id in listed_ids, f"{session_id} 应出现在历史列表中"
 
 
 def test_artifact_payload_is_curated_and_chart_preview_is_standalone(tmp_path, monkeypatch):
