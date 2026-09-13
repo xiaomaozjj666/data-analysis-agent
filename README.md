@@ -60,7 +60,7 @@ flowchart LR
   - 清洗带安全护栏：缺失值删除比例超过 50% 会拒绝执行，主数据行数始终不低于原始行数的 20%。
   - 统计方法覆盖描述统计、相关分析（含 Pearson p 值）、分组聚合、独立/配对 t 检验、ANOVA、卡方检验、线性回归（R² / RMSE / MAE）。
 - **指标口径登记（可选）**：在会话目录放置 `metrics.json`，或用 `DATA_AGENT_METRICS_PATH` 指定一份全局定义，登记指标的标准名称、别名、口径说明与算式；规划阶段会把相关定义注入提示词，避免同一指标在不同会话被各自定义为不同口径。未提供定义文件时该特性完全不生效，行为与原来一致。
-- **双图表引擎**（Plotly + ECharts）：共享同一套数据准备逻辑，支持折线、柱状、散点（含 3D）、直方图、箱线图、小提琴图、饼图、热力图、相关热力图、散点矩阵、旭日图、矩形树图；自动选图、极端值自动检测与主体尺度/全量视图切换、暗色主题联动、PNG 导出、数据驱动的白话解读。
+- **双图表引擎**（Plotly + ECharts）：共享同一套数据准备逻辑，支持折线、柱状、面积图、散点（含 3D）、直方图、箱线图、小提琴图、饼图、热力图、相关热力图、散点矩阵、旭日图、矩形树图；自动选图、散点图自动叠加 OLS 趋势线（标注 r 值）与双轴均值象限参考线、极端值自动检测与主体尺度/全量视图切换、暗色主题联动、PNG 导出、数据驱动的白话解读。
 - **多格式数据接入**：CSV / TSV / Excel / JSON / JSONL / Parquet、SQLite（`.db` / `.sqlite` / `.sqlite3`，上传后默认载入行数最多的表，其余表由数据库查询工具访问），以及 PDF 表格提取、TXT、Word 表格；自动探测编码（UTF-8 / GB18030）与分隔符，大文件分块流式读取，数值列自动降级数据类型以节省内存。
 - **全流程 Web 工作台**：文件上传（含进度与取消）、数据概览指标、分析任务与预设模板、计划审阅/批准、实时步骤与工具调用进度（SSE + 15 秒心跳）、随时取消分析、报告生成后的多轮追问、产物中心（预览/对比/PNG/批量下载）、历史会话（重命名/删除/导出 ZIP/导入）、命令面板与快捷键、深浅主题、移动端适配。
 - **断点续跑与自动恢复**：分析中断后可从已完成的步骤继续，无需重跑；前端支持 SSE 断线自动恢复与一键重试。
@@ -96,9 +96,9 @@ flowchart LR
 ```powershell
 # 后端
 python -m venv .venv
-.\venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 Copy-Item .env.example .env   # 编辑填入 DEEPSEEK_API_KEY
-.\venv\Scripts\python.exe -m uvicorn data_agent.api:app --host 127.0.0.1 --port 8000
+.\.venv\Scripts\python.exe -m uvicorn data_agent.api:app --host 127.0.0.1 --port 8000
 
 # 前端（另开终端）
 cd frontend
@@ -218,8 +218,8 @@ tests/               pytest 测试
 ## 质量检查
 
 ```powershell
-.\venv\Scripts\python.exe -m pytest -n 4   # 后端测试（默认并行 4 路；不调用真实 LLM，不产生费用）
-.\venv\Scripts\python.exe -m ruff check .  # 后端代码检查
+.\.venv\Scripts\python.exe -m pytest -n 4   # 后端测试（默认并行 4 路；不调用真实 LLM，不产生费用）
+.\.venv\Scripts\python.exe -m ruff check .  # 后端代码检查
 cd frontend && npm run typecheck            # 前端 TypeScript 类型检查
 cd frontend && npm test                     # 前端单元/组件测试
 cd frontend && npm run build                # 前端生产构建
