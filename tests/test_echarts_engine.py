@@ -589,6 +589,35 @@ def test_echarts_scatter_3d_uses_gl(workspace, sample_df):
     assert "echarts-gl" in html
 
 
+def test_echarts_scatter_3d_reports_sampling_and_keeps_small_groups(tmp_path):
+    """30 万行 3D 散点：抽样到 3000 点必须在图上写明，且小组不被抽空。
+
+    3D 云的抽样此前是静默的（用户以为看的是全量），且整体 df.sample 在分组
+    极不平衡时会把小组合并成零星几个点。
+    """
+    rng = np.random.default_rng(9)
+    rows = 60_000
+    frame = pd.DataFrame({
+        "x": rng.normal(0, 1, rows),
+        "y": rng.normal(0, 1, rows),
+        "z": rng.normal(0, 1, rows),
+        "group": np.where(rng.random(rows) < 0.999, "大组", "小组"),
+    })
+    workspace = _make_workspace(tmp_path, frame)
+    tools = {t.name: t for t in build_tools(workspace)}
+    result = json.loads(tools["create_visualization"].invoke({
+        "chart_type": "scatter_3d", "x": "x", "y": "y", "z": "z", "color": "group",
+        "chart_engine": "echarts",
+    }))
+    option = json.loads(Path(result["echarts_json"]).read_text(encoding="utf-8"))
+    subtext = option["title"]["subtext"]
+    assert "已抽样" in subtext and "60,000" in subtext
+    points = {series["name"]: len(series["data"]) for series in option["series"]}
+    assert sum(points.values()) <= 3000  # 预算是硬上限：3D 云超了会卡渲染
+    # 小组（0.1% ≈ 60 条）必须完整保留，不能被抽样抹掉
+    assert points.get("小组", 0) == int((frame["group"] == "小组").sum())
+
+
 def test_echarts_scatter_3d_degrades_without_z(workspace, sample_df):
     """缺失 z 轴时 3D 散点降级为 2D 并标注。"""
     tools = {t.name: t for t in build_tools(workspace)}

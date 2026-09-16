@@ -17,6 +17,35 @@
 
 - `/preview` 等需鉴权端点：token 在 `.env` 的 `APP_ACCESS_TOKEN`，请求头 `X-App-Token`。
 
+## 大数据图表的可读性（密度视图 · 服务端聚合 · LTTB）
+
+**问题**：30 万行散点按"每点一个标记"渲染时，同一像素叠几十个半透明点，alpha 迅速饱和成一团灰噪声——品类色互相覆盖、密度差异被抹平（用户实测反馈"所有的点和数据都堆在一起，根本看不出来什么"）。直方图/箱线图更隐蔽：形状由分布决定，但 px 会把**全部原始数值**塞进 HTML 交给浏览器现算，30 万行时 HTML 3.2MB / 5.2MB，产物卡缩略图甚至渲染不出来。
+
+**做法**（业界通行：datashader 光栅化、2D 直方图、seaborn jointplot）：
+
+- `data_agent/density.py` 只做纯 numpy 聚合与文案，Plotly 与 ECharts 渲染**同一份网格与同一套档位色板**——不要让两个引擎各自算分箱，否则同一份数据两张图不一致。
+- 散点 ≥ 2 万行（`DENSITY_MIN_POINTS`）自动切换：网格单格约 7px、记录数按 1-2-5 系列分 5~7 档着色、零记录格**完全透明**（datashader 同样规定 0 值不参与着色，不能拿背景色冒充数据）。有分组时**按组拆分面**（颜色只表达密度、类别用分面表达）；无分组时 jointplot 布局（主图 + 顶部/右侧边缘直方图，两侧必须与主图共用同一组 bin edges 才对得齐）。
+- **聚集判定要先扣掉统计涨落**：均匀随机点云的"最密格"只是采样噪声，`noise_peak_ratio ≈ 1 + sqrt(2·ln N / λ)` 给出纯随机能造出的峰均比上限，低于门槛就直说"分布比较均匀"，不硬报热点。
+- 极端值走"主体尺度"时网格不覆盖范围外数据，条数写在图上与解读里；**不要**再挂"全量视图"按钮（切过去只会看到角落一小块）。
+- 直方图 ≥ 5 万行走服务端分箱（纵轴仍是真实记录数）、箱线图走服务端五数概括（`go.Box(q1=…, median=…, q3=…, lowerfence=…, upperfence=…)`）、小提琴图按组分层抽样、3D 散点按组分层抽样且把"已抽样 N/M 点"写在副标题上。实测 HTML：直方图 3.2MB→24KB、箱线图 5.2MB→22KB、ECharts 散点 11MB→214KB。
+- 折线/面积在数值轴上走 LTTB（`chart_sampling._lttb_indices`）保峰；等距步进会把落在两个保留点之间的尖峰整段丢掉。类别轴仍按轴步长抽样（必须与 `xAxis.data` 对齐，不能按 LTTB 重排）。
+
+**踩过的坑（复现成本很高，别再踩）**：
+
+1. **plotly.js 会静默丢弃整条色标**：档位色标首尾不是正好 `0.0` / `1.0` 时直接回退成内置彩虹色（不报错、不告警）。相邻档用**完全相同**的边界位置（plotly 接受重复位置），不要用 `end - 1e-6` 这类近似值——末档就不落在 1.0 上了。
+2. **共享 coloraxis 会被模板色板覆盖**：heatmap 在 plotly.js 里默认绑到 `coloraxis`，而 plotly.py 默认模板的 `layout.colorscale` 会按"是否跨零"自动挑 sequential/diverging 盖掉自定义色板。结论：档位色标写在 **trace** 上（`colorscale` + `zmin/zmax`），不要走 layout coloraxis。
+3. **暗色脚本必须遍历全部子图轴**：分面/边缘直方图的轴是 `xaxis2/xaxis3/…`，只改 `xaxis/yaxis` 会在深色底上留下刺眼的浅色网格线；标题字体色是显式写死的深色，也要一起换。
+4. **`df[[x, y]]` 在同名列上返回的是 DataFrame**：`pair[x].tolist()` 直接 `AttributeError`；取列一律用 `iloc[:, 0] / iloc[:, 1]`（x 与 y 填同一列就会踩到）。
+5. **预计算统计量的 `go.Box` 必须显式给 `x=[组名]`**：每条轨迹只有 1 个"样本"，不给 x 时所有箱体会叠在同一个刻度上。
+6. **图表编辑端点不能盲写 `marker.color`**：heatmap 没有 `marker` 属性，`go.Figure` 校验抛 ValueError（用户看到 500 和一句看不懂的报错）。按 `_MARKER_TRACE_TYPES` 白名单应用；图内存在"颜色即数据"的图型（heatmap / contour / histogram2d / image / splom）时改色返回 422 并解释原因——**不要部分生效**（密度图还叠着"最外围记录"散点，改一半会让用户以为已经改好了）。改标题要用**合并**而不是替换 `layout.title`，否则字号/对齐样式被一并抹掉。
+7. **NO_PROXY 里的 `[::1]` 会让 httpx 直接不可用**：httpx 0.28 把 `[::1]` 当成"主机 + 端口"，构造客户端即抛 `InvalidURL: Invalid port: ':1]'`，于是所有模型调用失败、报错完全看不出跟代理有关。`config.sanitize_no_proxy_env()` 在 `AgentSettings.from_env()` 里清掉带方括号的条目，`tests/conftest.py` 调用同一函数（本机启动器会注入该变量，CI 不会）。
+
+**验证方式**（单测之外必须做的）：
+
+- 生成 30 万行**有结构**的数据（分类别不同分布 + 少量极端值），在真实应用里看缩略图与预览：`runs/api_bigtest0001` 就是为此保留的演示会话。注意 `session.json` 只有 `registry.create()` 会写——只生成 HTML 的话历史列表里看不到这个会话。
+- 悬浮读格子：tooltip 应给出"销售额 689 ~ 722 / 利润 295~300 / 记录数 16（占 0.01%）"。分箱区间必须作为 `customdata` 显式带上——Plotly 的 heatmap hover 本身没有区间字段。
+- 缩放：热力图缩放是栅格拉伸（不是 datashader 那种随缩放的动态重分箱），hover 仍准；这是有意取舍，别当 bug 去"修"。
+
 ## 图表预览链路
 
 - 图表为 ECharts/Plotly 内联 HTML，存于 `runs/<session>/artifacts/*.html`，由后端 `/preview` 注入 CSP + 内联 echarts bundle 后返回。

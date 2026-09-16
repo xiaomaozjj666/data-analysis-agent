@@ -2221,6 +2221,48 @@ def _echarts_heatmap(
     }
 
 
+def _stratified_3d_sample(
+    df: pd.DataFrame, color: str | None, rows: int,
+) -> tuple[pd.DataFrame, int]:
+    """3D 散点的分层抽样：按分组配额抽样，返回 (抽样结果, 抽样后行数)。
+
+    分配策略（保证总数不超过 ``rows``，且小组不被抹掉）：
+    1. 每组先拿"下限 100 与组大小中的较小者"——分组极不平衡时整体
+       ``df.sample`` 会让小组合并成零星几个点，"这类没有数据"的错觉比抽样
+       本身更糟，因此小组合部保留；
+    2. 剩余额度按各组"还能贡献多少"的比例分配，整取余数不补，因此总和
+       不会超过预算（3D 云超预算会直接卡渲染）。
+    """
+    if len(df) <= rows:
+        return df, len(df)
+    if not color or color not in df.columns:
+        sampled = df.sample(n=rows, random_state=42)
+        return sampled, len(sampled)
+    groups = [(level, chunk) for level, chunk in df.groupby(color, observed=True, dropna=True)]
+    if not groups:
+        sampled = df.sample(n=rows, random_state=42)
+        return sampled, len(sampled)
+
+    floor = 100
+    chunks = [chunk for _, chunk in groups]
+    quotas = [min(len(chunk), floor) for chunk in chunks]
+    remaining = rows - sum(quotas)
+    if remaining > 0:
+        space = [len(chunk) - quota for chunk, quota in zip(chunks, quotas, strict=True)]
+        total_space = sum(space)
+        if total_space > 0:
+            for index, spare in enumerate(space):
+                quotas[index] += int(remaining * spare / total_space)
+
+    pieces = [
+        chunk.sample(n=min(quota, len(chunk)), random_state=42)
+        for chunk, quota in zip(chunks, quotas, strict=True)
+        if quota > 0
+    ]
+    sampled = pd.concat(pieces) if pieces else df.head(rows)
+    return sampled, len(sampled)
+
+
 def _echarts_scatter3d(
     df: pd.DataFrame, *, x: str, y: str, z: str, color: str | None,
     size: str | None, title: str,
@@ -2270,12 +2312,14 @@ def _echarts_scatter3d(
         return _rows_data(sub, [x, y, z] + ([size] if has_size else []))
 
     levels = list(pd.unique(df[color].dropna())) if color and color in df.columns else []
-    # 3D 散点降采样：echarts-gl 的 scatter3D 在万点以上明显卡顿，
-    # 5 万点几乎不可用。均匀抽样到 _SCATTER3D_MAX_POINTS 行，
-    # 保留分布特征同时保证交互流畅。与 2D 散点的 large 模式、SPLOM
-    # 的 400 行抽样形成一致的降采样策略。
+    # 3D 散点降采样：echarts-gl 的 scatter3D 在万点以上明显卡顿，5 万点几乎
+    # 不可用。抽样到 _SCATTER3D_MAX_POINTS 行，保留分布特征同时保证交互流畅。
+    # 按分组分层分配配额（而不是整体 df.sample）：着色分组若极不平衡，
+    # 整体抽样会把小组合并成几个点，观众会误以为"这类没有数据"。
     _SCATTER3D_MAX_POINTS = 3000
-    sampled_df = df.sample(n=min(len(df), _SCATTER3D_MAX_POINTS), random_state=42) if len(df) > _SCATTER3D_MAX_POINTS else df
+    sampled_df, sampled_rows = _stratified_3d_sample(
+        df, color if levels else None, _SCATTER3D_MAX_POINTS
+    )
     groups = ([(str(lv), sampled_df[sampled_df[color] == lv], _series_color(idx)) for idx, lv in enumerate(levels)]
               if levels else [("样本", sampled_df, _ECHARTS_PALETTE[0])])
     series = [{
@@ -2288,7 +2332,10 @@ def _echarts_scatter3d(
 
     base: dict[str, Any] = {
         "title": {**_ECHARTS_BASE_TITLE, "text": title,
-                  "subtext": f"{x_label} × {y_label} × {z_label}（拖拽旋转 · 滚轮缩放）"},
+                  # 抽样事实写在副标题上：3D 云从 3000 个点看不出"这只是全量的
+                  # 百分之一"，不写清楚用户会以为看的是全部记录。
+                  "subtext": f"{x_label} × {y_label} × {z_label}（拖拽旋转 · 滚轮缩放）"
+                             + (f" · 已抽样 {sampled_rows:,}/{len(df):,} 点" if sampled_rows < len(df) else "")},
         "tooltip": {**_ECHARTS_BASE_TOOLTIP, "trigger": "item", "formatter": tooltip_fmt},
         # 3D 场景下 dataZoom 框选/还原/重置只对直角坐标系生效，保留会变成
         # 点了没反应的死按钮，故工具栏仅保留 PNG 导出。

@@ -1452,7 +1452,11 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             if x and y and x in df.columns and y in df.columns:
                 pair_df = df[[x, y]].apply(pd.to_numeric, errors="coerce").dropna()
                 structure = (
-                    _scatter_structure(pair_df[x].astype(float).tolist(), pair_df[y].astype(float).tolist())
+                    # 按位置取列：x 与 y 同名时 pair_df[x] 是两列的 DataFrame
+                    _scatter_structure(
+                        pair_df.iloc[:, 0].astype(float).tolist(),
+                        pair_df.iloc[:, 1].astype(float).tolist(),
+                    )
                     if len(pair_df) >= 3
                     else None
                 )
@@ -1517,17 +1521,31 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             )
             if stat_agg is not None:
                 interpretation += _stat_agg_note(stat_agg)
+            if (
+                chart_type == "scatter"
+                and density_view is None
+                and x and y and should_use_density(len(df))
+            ):
+                # 密度视图只适用于"数值 × 数值"（阈值与密度视图一致：本该走
+                # 密度的那批数据，因为横轴是类别而退回逐点渲染）。这里不擅自
+                # 换图型（用户明确要的是散点），但必须说清楚并给出建议。
+                interpretation += (
+                    "\n\n提示：这张散点的横轴不是数值列，无法聚合成密度网格，"
+                    "几十万个点会互相覆盖成一团深色。查看各类别的分布建议改用"
+                    "箱线图 / 小提琴图，或把数值列放到横轴上重新生成（会自动切换密度视图）。"
+                )
         # 全量 figure 序列化一次复用：完整数据写入 .plotly.json 产物，
         # 大数据时也作为嵌入降采样的输入源。抽样决策必须在解读块构建
         # 之前完成——抽样声明要追加进解读文本一起渲染。
         fig_json_text = fig.to_json()
         html_fig = fig
         sampling_info: dict[str, Any] | None = None
-        # 大数据 HTML 嵌入降采样：散点/折线超过嵌入上限时，交互 HTML
-        # 按等距抽样渲染（5 万点以上视觉上已是密度饱和，HTML 体积、
-        # 传输、iframe 解析、tab 内存却随点数线性增长）。完整数据不丢：
-        # 全量 figure 仍写入 .plotly.json 产物。
-        if chart_type in {"scatter", "line"} and len(df) > _EMBED_MAX_POINTS and density_view is None:
+        # 大数据 HTML 嵌入降采样：散点/折线/3D 散点超过嵌入上限时，交互 HTML
+        # 按抽样渲染（5 万点以上视觉上已是密度饱和，HTML 体积、传输、iframe
+        # 解析、tab 内存却随点数线性增长）。完整数据不丢：全量 figure 仍写入
+        # .plotly.json 产物。3D 散点（scatter3d 走 gl3d）此前不在名单里，
+        # 30 万行时 HTML 要带 90 万个数字，是个漏掉的口子。
+        if chart_type in {"scatter", "scatter_3d", "line"} and len(df) > _EMBED_MAX_POINTS and density_view is None:
             sampled_dict, original_pts, embedded_pts = sample_plotly_figure_for_embed(
                 json.loads(fig_json_text), _EMBED_MAX_POINTS
             )

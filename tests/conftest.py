@@ -23,6 +23,20 @@ def _skip_kaleido() -> bool:
     return bool(os.environ.get("DATA_AGENT_SKIP_KALEIDO")) or bool(os.environ.get("CI"))
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _sanitize_proxy_environment():
+    """清掉 NO_PROXY 里非法的 ``[::1]`` 条目，否则本机测试会假红。
+
+    某些启动器会把 ``[::1]`` 追加进 ``NO_PROXY``；httpx 解析它会抛
+    ``InvalidURL: Invalid port: ':1]'``，于是所有"真实构造 httpx 客户端"的
+    测试（ChatOpenAI / ChatDeepSeek）都会失败，而 CI 上并不存在这个环境变量。
+    与运行时代码共用同一个清理函数，避免测试和线上行为分叉。
+    """
+    from data_agent.config import sanitize_no_proxy_env
+
+    sanitize_no_proxy_env()
+
+
 @pytest.fixture()
 def workspace(tmp_path):
     data = pd.DataFrame(

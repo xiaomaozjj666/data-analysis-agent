@@ -27,6 +27,36 @@ DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 #: 支持的模型提供商集合。
 SUPPORTED_PROVIDERS = {"deepseek", "openai"}
 
+#: httpx/OpenAI SDK 会读取的"不走代理"环境变量名（大小写两种写法都常见）。
+_NO_PROXY_ENV_KEYS = ("NO_PROXY", "no_proxy")
+
+
+def sanitize_no_proxy_env() -> list[str]:
+    """剔除 ``NO_PROXY`` 里格式非法的条目，返回被剔除的条目。
+
+    背景（2026-09-16 实测）：某些启动器会把 ``[::1]``（带方括号的 IPv6 回环）
+    追加进 ``NO_PROXY``。``NO_PROXY`` 的语法里方括号不是合法写法（正确写法就是
+    ``::1``），而 httpx 0.28 解析到 ``[::1]`` 时会把它当成"主机 + 端口"，
+    直接抛 ``InvalidURL: Invalid port: ':1]'``——**只要构造 httpx 客户端就失败**，
+    于是 DeepSeek/OpenAI 模型一创建就炸，报错还完全看不出跟代理有关。
+
+    这里只在启动时做一次轻量清理：丢掉带方括号的条目，其余原样保留。不修改
+    任何代理服务器配置，也不影响合法条目（``localhost``、``127.0.0.1``、``::1``、
+    ``*.internal`` 等一律不动）。
+    """
+    removed: list[str] = []
+    for key in _NO_PROXY_ENV_KEYS:
+        raw = os.getenv(key)
+        if not raw:
+            continue
+        entries = [item.strip() for item in raw.split(",")]
+        kept = [item for item in entries if item and not (item.startswith("[") and item.endswith("]"))]
+        dropped = [item for item in entries if item and item.startswith("[") and item.endswith("]")]
+        if dropped:
+            removed.extend(dropped)
+            os.environ[key] = ",".join(kept)
+    return removed
+
 
 @dataclass(slots=True)
 class AgentSettings:
@@ -94,6 +124,9 @@ class AgentSettings:
             填充完毕的 AgentSettings 实例（未验证，需调用 validate_for_model）。
         """
         load_dotenv(env_file)
+        # 先清理非法的 NO_PROXY 条目：否则 httpx 客户端构造阶段就会抛
+        # InvalidURL（见 sanitize_no_proxy_env 的说明），后面所有模型调用都不可用。
+        sanitize_no_proxy_env()
         selected_provider = (provider or os.getenv("MODEL_PROVIDER", "deepseek")).strip().lower()
         if selected_provider == "deepseek":
             api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()

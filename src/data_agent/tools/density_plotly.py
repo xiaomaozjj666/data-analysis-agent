@@ -110,7 +110,10 @@ def panel_structure(df: pd.DataFrame, *, x: str, y: str, color: str | None,
     pair = subset[[x, y]].apply(pd.to_numeric, errors="coerce").dropna()
     if len(pair) < 3:
         return None
-    return _scatter_structure(pair[x].astype(float).tolist(), pair[y].astype(float).tolist())
+    # 按位置取列：x 与 y 同名时 pair[x] 会返回两列的 DataFrame（踩过）
+    return _scatter_structure(
+        pair.iloc[:, 0].astype(float).tolist(), pair.iloc[:, 1].astype(float).tolist()
+    )
 
 
 def _panel_title(panel: Any, structure: dict[str, Any] | None) -> str:
@@ -298,7 +301,7 @@ def _add_anchors(fig: go.Figure, df: pd.DataFrame, *, panel: Any,
     if len(pair) < 10:
         return
     xs, ys = extreme_points(
-        pair[x].to_numpy(dtype=float), pair[y].to_numpy(dtype=float),
+        pair.iloc[:, 0].to_numpy(dtype=float), pair.iloc[:, 1].to_numpy(dtype=float),
         x_range=view.x_range, y_range=view.y_range, top=DENSITY_EXTREME_POINTS,
     )
     if len(xs) == 0:  # pragma: no cover - 网格存在即至少有一个视口内记录
