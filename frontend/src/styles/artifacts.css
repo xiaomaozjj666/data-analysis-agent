@@ -72,7 +72,9 @@
 
 /* 引擎徽章：浮于缩略图左上角，区分 Plotly / ECharts */
 .engine-badge { position: absolute; top: 8px; left: 8px; z-index: 2; padding: 2px 8px; background: rgba(255, 255, 255, 0.92); border: 1px solid var(--border-default); border-radius: var(--radius-sm); color: var(--accent-fg); font-size: var(--text-xs); font-weight: 600; letter-spacing: 0.02em; backdrop-filter: blur(4px); pointer-events: none; }
-[data-theme="dark"] .engine-badge { background: rgba(28, 36, 51, 0.92); }
+/* 暗色下徽章底色压到近黑：原 rgba(28,36,51,.92) 上品牌色小字只有 4.44:1，
+   差一点点不到 AA（11px 属小字，需 4.5:1）；底色压深后升到 5.2:1。 */
+[data-theme="dark"] .engine-badge { background: rgba(19, 20, 21, 0.92); }
 
 /* 批量选择 checkbox：浮于缩略图右上角 */
 .chart-card-checkbox { position: absolute; top: 8px; right: 8px; z-index: 2; width: 16px; height: 16px; accent-color: var(--accent-fg); cursor: pointer; }

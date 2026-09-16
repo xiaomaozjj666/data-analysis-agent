@@ -627,14 +627,15 @@ def sampling_note(engine: str, original: int, embedded: int) -> str:
     """抽样声明文案：写入图表解读区，让抽样事实对用户可见。
 
     文案按"抽样规则"而不是"本次实际走了哪条分支"描述（本函数拿不到
-    分支信息）：散点是等距抽样，折线/面积在数值轴上走 LTTB 保峰——
-    两种说法在大图上都成立，不会对用户谎报。
+    分支信息）：散点是等距抽样，折线/面积按 LTTB 保峰（数值轴与类目轴
+    都是——类目轴的折线共享一组 LTTB 下标同时裁轴与系列）——两种说法在
+    大图上都成立，不会对用户谎报。
     """
     if embedded >= original:
         return ""
     return (
         f"\n\n注：数据量较大（{original:,} 行），为让预览秒开，图表降采样至 "
-        f"{embedded:,} 点渲染（散点等距抽样；折线/面积在数值轴上按 LTTB 保峰）；"
+        f"{embedded:,} 点渲染（散点等距抽样；折线/面积按 LTTB 保峰）；"
         f"完整数据保留在同名 {'Plotly' if engine == 'plotly' else 'ECharts'} "
         "JSON 产物中，可随时下载查看。"
     )

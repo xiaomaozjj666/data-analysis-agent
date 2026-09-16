@@ -1069,6 +1069,9 @@ _DENSITY_FACET_PANEL_SIZE = (560.0, 468.0)
 #: 每个面板叠加的"最外围原始记录"数量上限（与 Plotly 分支一致）。
 _DENSITY_EXTREME_POINTS = 120
 
+#: "放大看具体记录"用的分层抽样点数（默认隐藏，点图例才叠加；与 Plotly 分支同值）。
+_DENSITY_DETAIL_POINTS = 6_000
+
 #: 趋势线与面板标题里相关系数的显示门槛：弱相关（|r| < 0.25）画线只添噪声。
 _DENSITY_TREND_MIN_R = 0.25
 
@@ -1533,6 +1536,56 @@ def _density_extreme_series(
     }
 
 
+def _density_detail_series(
+    df: pd.DataFrame, *, x: str, y: str, color: str | None, view: DensityView,
+    x_label: str, y_label: str,
+) -> dict[str, Any] | None:
+    """密度图的"放大看原始记录"图层（与 Plotly 分支同名同义）。
+
+    ECharts 没有图内按钮，改用**原生图例开关**：series 进 legend.data，
+    并在 legend.selected 里默认设为 false —— 用户点图例即显示/隐藏，
+    不依赖任何自定义 JS（注入脚本与单文件下载都照常可用）。
+
+    与 Plotly 一样只给单面板布局加：分面图上一整层点会落到错误面板。
+    """
+    from data_agent.density import format_number, sample_detail_points
+
+    pair = df[[x, y]].apply(pd.to_numeric, errors="coerce")
+    groups = df[color].tolist() if color and color in df.columns else None
+    xs, ys = sample_detail_points(
+        pair.iloc[:, 0].to_numpy(dtype=float),
+        pair.iloc[:, 1].to_numpy(dtype=float),
+        x_range=view.x_range, y_range=view.y_range, groups=groups,
+        top=_DENSITY_DETAIL_POINTS,
+    )
+    if xs.size == 0:
+        return None
+    x_label_js = json.dumps(x_label, ensure_ascii=False)
+    y_label_js = json.dumps(y_label, ensure_ascii=False)
+    data = [[float(xv), float(yv)]
+            for xv, yv in zip(_round_significant(xs), _round_significant(ys), strict=True)]
+    return {
+        "name": f"抽样原始点（{format_number(xs.size)} 条）",
+        "type": "scatter",
+        "xAxisIndex": 0,
+        "yAxisIndex": 0,
+        "data": data,
+        "symbolSize": 4,
+        "z": 6,
+        "itemStyle": {"color": "rgba(74,111,165,0.55)"},
+        "emphasis": {"scale": 1.8, "itemStyle": {"opacity": 1, "shadowBlur": 8}},
+        "tooltip": {"formatter": _JsFunction(
+            "function(p){" + _DENSITY_NUMBER_JS +
+            "var v=p.value;"
+            "return '<div style=\"font-weight:600;margin-bottom:6px;\">抽样原始点</div>'"
+            f"+'<span style=\"color:var(--tt-muted,#6b7280);\">'+{x_label_js}+'：</span><b>'+_dn(v[0])+'</b><br/>'"
+            f"+'<span style=\"color:var(--tt-muted,#6b7280);\">'+{y_label_js}+'：</span><b>'+_dn(v[1])+'</b><br/>'"
+            "+'<span style=\"color:var(--tt-muted,#6b7280);font-size:11px;\">分层抽样，用于放大后查看具体记录</span>';"
+            "}"
+        )},
+    }
+
+
 def _density_marginal_series(
     grid: DensityGrid, *, bar_color: str, x_label: str, y_label: str,
 ) -> list[dict[str, Any]]:
@@ -1833,6 +1886,17 @@ def _echarts_scatter_density(
     legend = {**_ECHARTS_BASE_LEGEND, "top": "13.5%", "right": 24}
     if has_extremes:
         legend["data"] = ["最外围记录"]
+    detail_series = None
+    if not faceted:
+        # 细节图层只在单面板布局出现（分面图一层点会落到错误面板）；
+        # 默认隐藏，靠图例开关，与 Plotly 的图内按钮同一语义。
+        detail_series = _density_detail_series(
+            df, x=x, y=y, color=color, view=view, x_label=x_label, y_label=y_label,
+        )
+        if detail_series is not None:
+            legend["data"] = (legend.get("data") or []) + [detail_series["name"]]
+            legend["selected"] = {detail_series["name"]: False}
+            series.append(detail_series)
 
     data_zoom: list[dict[str, Any]] = []
     if faceted:
@@ -1915,6 +1979,14 @@ def _density_interpretation(
         "颜色越深表示该区域记录越密集（色标给出每格记录数区间）；"
         "滚轮可放大局部，悬浮查看每格覆盖范围与记录数。"
     )
+    if not view.is_faceted:
+        # 与 Plotly 分支同一句话：ECharts 用图例开关（点图例里的名字显示/隐藏），
+        # 不说清楚没人会知道那层点是可以打开的。
+        parts.append(
+            f"放大后若想看具体记录，点图例中的「抽样原始点（"
+            f"{format_number(_DENSITY_DETAIL_POINTS)} 条）」即可叠加显示"
+            "（完整数据在同名 JSON 产物里）。"
+        )
     return "".join(parts)
 
 

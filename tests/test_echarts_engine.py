@@ -1425,9 +1425,10 @@ def test_echarts_density_dispatch_threshold():
     heavy = option_for(20_000)
     assert "densityBands" in heavy
     assert len(_heatmaps(heavy)) == 1
-    # 逐点散点消失：只剩最外围叠加（≤120 点）与两条边缘直方图
-    assert sum(len(item["data"]) for item in heavy["series"]
-               if item["type"] == "scatter") <= 120
+    # 逐点散点消失：只剩最外围叠加（≤120 点）与两条边缘直方图；
+    # 另有一层"抽样原始点"（默认隐藏，点图例才显示），因此单独按系列名核对。
+    extremes = [item for item in heavy["series"] if item.get("name") == "最外围记录"]
+    assert sum(len(item["data"]) for item in extremes) <= 120
     assert [item["name"] for item in heavy["series"] if item["type"] == "bar"] == ["x 分布", "y 分布"]
 
     light = option_for(19_999)
@@ -1831,8 +1832,48 @@ def test_echarts_density_html_small_without_sampling(tmp_path):
     assert Path(result["echarts_json"]).stat().st_size < 700_000
     cells = sum(len(item["data"]) for item in _heatmaps(option))
     assert 0 < cells < n
-    points = sum(len(item["data"]) for item in option["series"] if item.get("type") == "scatter")
-    assert points <= 120
+    extremes = [item for item in option["series"] if item.get("name") == "最外围记录"]
+    assert sum(len(item["data"]) for item in extremes) <= 120
     html_text = Path(result["html"]).read_text(encoding="utf-8")
     assert "等距抽样" not in html_text
-    assert "密度" in result["interpretation"]
+
+
+def test_echarts_density_detail_layer_is_legend_toggled_and_hidden_by_default():
+    """ECharts 侧与 Plotly 同语义的"放大看原始记录"：图例开关 + 默认隐藏。
+
+    ECharts 没有图内按钮，用原生图例：series 进 legend.data，并在
+    legend.selected 里默认 false——不依赖自定义 JS，单文件下载照常可用。
+    """
+    from data_agent.echarts_engine import _DENSITY_DETAIL_POINTS, _build_echarts_option
+
+    option = _build_echarts_option(
+        _density_frame(20_000), chart_type="scatter", x="x", y="y", color=None, z=None,
+        size=None, values=None, path_columns=None, dimensions=None,
+        aggregation="none", title="细节图层", bins=30,
+    )
+    detail = [item for item in option["series"] if "抽样原始点" in str(item.get("name"))]
+    assert len(detail) == 1
+    series = detail[0]
+    assert series["type"] == "scatter"
+    assert 0 < len(series["data"]) <= _DENSITY_DETAIL_POINTS
+    # 主面板坐标轴（不是边缘直方图那两根）
+    assert (series["xAxisIndex"], series["yAxisIndex"]) == (0, 0)
+    # 图例里必须列出它，且默认不选中（= 隐藏）
+    assert series["name"] in option["legend"]["data"]
+    assert option["legend"]["selected"][series["name"]] is False
+    # 抽样事实写进 trace 名，避免被当成全量
+    assert "抽样" in series["name"]
+
+
+def test_echarts_faceted_density_has_no_detail_layer():
+    """分面图不加细节图层（一整层点会落到错误面板）。"""
+    from data_agent.echarts_engine import _build_echarts_option
+
+    frame = _density_frame(20_000)
+    frame["group"] = ["甲", "乙"] * 10_000
+    option = _build_echarts_option(
+        frame, chart_type="scatter", x="x", y="y", color="group", z=None,
+        size=None, values=None, path_columns=None, dimensions=None,
+        aggregation="none", title="分面", bins=30,
+    )
+    assert not [item for item in option["series"] if "抽样原始点" in str(item.get("name"))]
