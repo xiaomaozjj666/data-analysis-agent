@@ -506,34 +506,65 @@ def test_samplers_tolerate_degenerate_series():
 
 
 def test_lttb_300k_within_time_budget():
-    """30 万点 → 5 万点（最坏一档）必须在 1s 预算内。
+    """30 万点降采样的开销要"可接受"，但**不能**用挂钟绝对值卡硬件。
 
-    本机实测约 0.18s（numpy 2.5.3 / py3.13）：桶边界与桶均值向量化，
-    Python 循环只跑桶数（≤ threshold）遍。阈值留 5 倍余量给 CI。
+    本机实测 30 万→5 万约 0.18s；CI runner 明显更慢（实测 1.17s），
+    原来写死 1s 会变成"看机器脸色"的假红。改为：
+    1. 相对同一台机器上的等距抽样基线（同样是 30 万点、同样的数组重建），
+       LTTB 不得慢过 4 倍——算法是 numpy 向量化的，慢一个数量级才是回归；
+    2. 另留一个宽松的绝对上限（15s）纯粹当"挂死/退化到逐点循环"的护栏。
     """
     rng = np.random.default_rng(2026)
     n = 300_000
     x = np.arange(n, dtype=float)
     y = rng.normal(0, 1, n)
+
     started = time.perf_counter()
     indices = _lttb_indices(x, y, _ONE_TRACE_CAP)
-    elapsed = time.perf_counter() - started
+    lttb_elapsed = time.perf_counter() - started
+
+    # 基线：同规模数据的等距抽样（numpy 切片 + list 化，代表"最省的实现"）
+    started = time.perf_counter()
+    step = math.ceil(n / _ONE_TRACE_CAP)
+    baseline = x[::step].tolist(), y[::step].tolist()
+    baseline_elapsed = time.perf_counter() - started
+
     assert len(indices) == _ONE_TRACE_CAP
-    assert elapsed < 1.0, f"30 万点 LTTB 用时 {elapsed:.3f}s，超出 1s 预算"
+    assert len(baseline[0]) == _ONE_TRACE_CAP
+    assert lttb_elapsed < 15.0, f"30 万点 LTTB 用时 {lttb_elapsed:.3f}s，疑似退化为逐点循环"
+    assert lttb_elapsed < max(0.5, baseline_elapsed * 4 + 0.5), (
+        f"LTTB {lttb_elapsed:.3f}s 相对等距基线 {baseline_elapsed:.3f}s 慢得过多"
+    )
 
 
 def test_plotly_embed_300k_within_time_budget():
-    """端到端（解码 typed array + 抽样）30 万点同样在 1s 预算内。"""
+    """端到端（解码 typed array + 抽样）同样只看"相对基线 + 宽松上限"。"""
     rng = np.random.default_rng(2027)
     n = 300_000
+    x_values = np.arange(n, dtype=float).tolist()
+    y_values = rng.normal(0, 1, n).tolist()
+
     figure = {"data": [{
-        "type": "scattergl",
-        "mode": "lines",
-        "x": np.arange(n, dtype=float).tolist(),
-        "y": rng.normal(0, 1, n).tolist(),
+        "type": "scattergl", "mode": "lines",
+        "x": list(x_values), "y": list(y_values),
     }]}
     started = time.perf_counter()
     _, before, after = sample_plotly_figure_for_embed(figure)
-    elapsed = time.perf_counter() - started
+    lttb_elapsed = time.perf_counter() - started
+
+    # 基线：同规模数据的等距抽样（走类目轴分支，即未改动的旧路径成本）
+    baseline_figure = {"data": [{
+        "type": "scattergl", "mode": "lines",
+        "x": [f"c{index}" for index in range(0, n, 1000)], "y": y_values[::1000],
+    }]}
+    started = time.perf_counter()
+    sample_plotly_figure_for_embed(baseline_figure, 1_000)
+    baseline_elapsed = time.perf_counter() - started
+
     assert (before, after) == (n, _EMBED_MAX_POINTS)
-    assert elapsed < 1.0, f"30 万点嵌入抽样用时 {elapsed:.3f}s，超出 1s 预算"
+    assert lttb_elapsed < 20.0, f"30 万点嵌入抽样用时 {lttb_elapsed:.3f}s，疑似挂死"
+    # 基线只抽样 300 个点（构造 x 的开销在计时之外），因此这里给足余量：
+    # 只要不是数量级级别的退化就算通过。
+    assert lttb_elapsed < max(2.0, baseline_elapsed * 20), (
+        f"端到端抽样 {lttb_elapsed:.3f}s 相对基线 {baseline_elapsed:.3f}s 退化过多"
+    )
