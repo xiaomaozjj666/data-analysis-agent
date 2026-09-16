@@ -430,6 +430,13 @@ _PLOTLY_DARK_MODE_SCRIPT = """<script>
       update[key + '.gridcolor'] = isDark ? '#2a3445' : '#E5ECE9';
       update[key + '.zerolinecolor'] = isDark ? '#3a4458' : '#C9D5D1';
     });
+    // 图内按钮（主体尺度/全量视图、显示抽样原始点）是显式写死的浅色底 + 深色字，
+    // 暗色主题下会变成一块白斑；逐组跟着主题换底色/字色/描边。
+    (plotEl.layout.updatemenus || []).forEach(function(_, index) {
+      update['updatemenus[' + index + '].bgcolor'] = isDark ? '#1f2733' : '#FFFFFF';
+      update['updatemenus[' + index + '].bordercolor'] = isDark ? '#2a3445' : '#CBD5D1';
+      update['updatemenus[' + index + '].font.color'] = isDark ? '#c9cfd9' : '#245C55';
+    });
     Plotly.relayout(plotEl, update);
     // 密度视图（大数据散点聚合）的档位色板随主题切换：浅色主题下低档是
     // 近白浅蓝、暗色主题下低档是深蓝——同一颜色在两种主题下必须代表同一

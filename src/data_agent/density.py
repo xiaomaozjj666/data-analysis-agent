@@ -541,6 +541,81 @@ def build_density_view(
     )
 
 
+def sample_detail_points(
+    x_values: np.ndarray,
+    y_values: np.ndarray,
+    *,
+    x_range: tuple[float, float],
+    y_range: tuple[float, float],
+    groups: Sequence[Any] | None = None,
+    top: int = 6000,
+) -> tuple[np.ndarray, np.ndarray]:
+    """为"放大看具体记录"准备一份分层抽样点（默认隐藏，用户点按钮才显示）。
+
+    密度图在深度放大时是栅格拉伸：格子变大、看不出单条记录。业界做法是
+    在缩放后重新聚合（datashader 的动态重分箱），但那需要按视口回服务端重算，
+    下载下来的单文件 HTML 就会失效。这里用更务实的替代：**随图带一份分层
+    抽样点**，用户想看细节时一键叠加——文案里明确标注是抽样、条数写清，
+    完整数据仍在同名 JSON 产物里。
+
+    抽样按分组配额（每组至少 100 条，不足则全取），避免着色分组极不平衡时
+    小组合并成零星几个点被误读成"这类没有数据"。
+    """
+    x = np.asarray(x_values, dtype=float)
+    y = np.asarray(y_values, dtype=float)
+    empty = (np.array([]), np.array([]))
+    if x.shape != y.shape or x.size == 0:
+        return empty
+    inside = (x >= x_range[0]) & (x <= x_range[1]) & (y >= y_range[0]) & (y <= y_range[1])
+    labels = None
+    if groups is not None:
+        labels = np.asarray(list(groups), dtype=object)
+        if labels.shape != x.shape:
+            labels = None
+    x, y = x[inside], y[inside]
+    if labels is not None:
+        labels = labels[inside]
+    if x.size == 0:
+        return empty
+    if x.size <= top:
+        return x, y
+
+    if labels is None:
+        index = np.linspace(0, x.size - 1, top).round().astype(int)
+        return x[index], y[index]
+
+    selected: list[np.ndarray] = []
+    text = labels.astype(str)
+    levels = np.unique(text)
+    floor = min(100, max(1, top // max(1, len(levels))))
+    quotas: list[int] = []
+    sizes: list[int] = []
+    for level in levels:
+        mask = text == level
+        sizes.append(int(mask.sum()))
+        quotas.append(min(sizes[-1], floor))
+    remaining = top - sum(quotas)
+    if remaining > 0:
+        space = [size - quota for size, quota in zip(sizes, quotas, strict=True)]
+        total_space = sum(space)
+        if total_space > 0:
+            for position, spare in enumerate(space):
+                quotas[position] += int(remaining * spare / total_space)
+    for level, quota in zip(levels, quotas, strict=True):
+        if quota <= 0:
+            continue
+        positions = np.flatnonzero(text == level)
+        if positions.size <= quota:
+            selected.append(positions)
+            continue
+        picked = np.linspace(0, positions.size - 1, quota).round().astype(int)
+        selected.append(positions[picked])
+    if not selected:
+        return empty
+    index = np.sort(np.concatenate(selected))
+    return x[index], y[index]
+
+
 def extreme_points(
     x_values: np.ndarray,
     y_values: np.ndarray,

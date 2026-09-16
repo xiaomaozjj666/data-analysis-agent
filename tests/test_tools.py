@@ -1993,9 +1993,13 @@ def test_density_view_reports_rows_outside_robust_scale(tmp_path):
     assert result["density_view"]["rows_outside_view"] > 0
     html = Path(result["html"]).read_text(encoding="utf-8")
     assert "视图外" in html
-    # 网格没有覆盖范围外的数据，因此不能给"全量视图"按钮（切过去是空的）
+    # 网格没有覆盖范围外的数据，因此不能给"全量视图"这类改轴范围的按钮
+    # （切过去只看得到角落一小块）。允许存在"显示抽样原始点"这种 restyle 开关。
     figure = json.loads(Path(result["plotly_json"]).read_text(encoding="utf-8"))
-    assert "updatemenus" not in figure["layout"]
+    for menu in figure["layout"].get("updatemenus") or []:
+        for button in menu.get("buttons", []):
+            assert button.get("method") != "relayout", "密度图不应出现改轴范围的按钮"
+            assert "range" not in json.dumps(button.get("args"), ensure_ascii=False)
 
 
 def test_small_scatter_keeps_point_rendering(tmp_path):

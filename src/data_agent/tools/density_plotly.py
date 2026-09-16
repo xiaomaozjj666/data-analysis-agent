@@ -58,6 +58,11 @@ DENSITY_EXTREME_POINTS = 120
 #: 分面趋势线的显示门槛：弱相关（|r| < 0.25）时线没有解读价值，反成噪声。
 DENSITY_TREND_MIN_R = 0.25
 
+#: "放大看具体记录"用的分层抽样点数（默认隐藏，用户点按钮才叠加）。
+#: 6,000 点约 120KB JSON：既能在放大后看出单点分布，又不至于把
+#: "几百 KB 的密度图"重新变回 MB 级点云。
+DENSITY_DETAIL_POINTS = 6_000
+
 
 def _round_sig(values: np.ndarray, sig: int = 6) -> np.ndarray:
     """按有效位数取整（压缩 hover 用 customdata 的 JSON 体积）。"""
@@ -218,6 +223,8 @@ def density_figure(
     if not faceted:
         _add_marginals(fig, panels[0].grid, colors=colors)
         _add_structure(fig, structures[0], row=2, col=1)
+        _add_detail_layer(fig, df, view=view, x=x, y=y, color=color,
+                          x_format=x_format, y_format=y_format)
 
     _apply_axis_titles(fig, positions=positions, faceted=faceted,
                        x_label=x_label, y_label=y_label)
@@ -441,8 +448,61 @@ def density_interpretation(
             parts.append(panels)
     parts.append("颜色深浅表示每格记录数的多少（色标给出各档区间，格子越深越密），"
                  "空格表示该范围没有记录；滚轮可放大局部，鼠标悬浮查看每格覆盖的"
-                 "数值范围与记录数。")
+                 "数值范围与记录数。"
+                 f"放大后若想看具体记录，可点图右上角「显示抽样原始点」叠加 "
+                 f"{format_number(DENSITY_DETAIL_POINTS)} 条分层抽样的原始点"
+                 "（完整数据在同名 JSON 产物里）。")
     return "".join(parts)
+
+
+def _add_detail_layer(fig: go.Figure, df: pd.DataFrame, *, view: DensityView,
+                      x: str, y: str, color: str | None,
+                      x_format: str, y_format: str) -> None:
+    """叠一层"默认隐藏的分层抽样原始点"，配右上角按钮手动开关。
+
+    密度图深度放大时是栅格拉伸，看不清单条记录；真正按视口重算（datashader
+    的动态重分箱）要回服务端，下载下来的单文件 HTML 就失效了。这里改为随图
+    带一份抽样点：默认隐藏（不破坏密度读数），需要时一键显示，trace 名字里
+    写明是抽样与条数，避免被当成全量。
+    """
+    from ..density import format_number, sample_detail_points
+
+    groups = df[color].tolist() if color and color in df.columns else None
+    pair = df[[x, y]].apply(pd.to_numeric, errors="coerce")
+    xs, ys = sample_detail_points(
+        pair.iloc[:, 0].to_numpy(dtype=float),
+        pair.iloc[:, 1].to_numpy(dtype=float),
+        x_range=view.x_range, y_range=view.y_range, groups=groups,
+        top=DENSITY_DETAIL_POINTS,
+    )
+    if xs.size == 0:
+        return
+    index = len(fig.data)
+    # row/col 必须显式给：jointplot 布局的第一格是顶部边缘直方图，
+    # 不指定子图就会把抽样点画到那条窄条里（实测踩到）。
+    fig.add_trace(go.Scattergl(
+        x=xs, y=ys, mode="markers", visible=False,
+        name=f"抽样原始点（{format_number(xs.size)} 条）",
+        marker={"size": 4, "color": "rgba(74, 111, 165, 0.55)", "line": {"width": 0}},
+        hovertemplate=(
+            f"{_hl(x)}: %{{x:{x_format}}}<br>{_hl(y)}: %{{y:{y_format}}}"
+            "<extra>抽样原始点</extra>"
+        ),
+    ), row=2, col=1)
+    fig.update_layout(updatemenus=[{
+        "type": "buttons",
+        "direction": "right",
+        "x": 1, "xanchor": "right", "y": 1.045, "yanchor": "bottom",
+        "showactive": False, "active": -1,
+        "bgcolor": "#FFFFFF", "bordercolor": "#CBD5D1",
+        "font": {"size": 12, "color": "#245C55"},
+        "buttons": [
+            {"label": "显示抽样原始点", "method": "restyle",
+             "args": [{"visible": True}, [index]]},
+            {"label": "只看密度图", "method": "restyle",
+             "args": [{"visible": False}, [index]]},
+        ],
+    }])
 
 
 def finalize_density_layout(fig: go.Figure, view: DensityView) -> None:
