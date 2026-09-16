@@ -61,6 +61,59 @@ ECHARTS_CDN_URL = "https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.j
 ECHARTS_GL_BUNDLE_NAME = "echarts-gl.min.js"
 ECHARTS_GL_CDN_URL = "https://cdn.jsdelivr.net/npm/echarts-gl@2.0.9/dist/echarts-gl.min.js"
 
+#: CDN bundle 的机器级共享缓存目录名（位于 runs 根目录下）。
+#: 这些文件对所有会话完全相同，没必要每个会话各下一次——实测每个新会话的
+#: 首张 ECharts 图要多等约 6 秒，纯粹是重复下载同一个 1MB 文件。
+_BUNDLE_CACHE_DIRNAME = "_bundles"
+#: 小于该字节数视为损坏/半截下载（CDN 出错页），需要重新拉取。
+MIN_BUNDLE_BYTES = 1024
+
+_bundle_lock = threading.Lock()
+
+
+def shared_bundle_path(root: Path, name: str) -> Path:
+    """共享缓存里某个 bundle 的路径（不保证存在）。"""
+    directory = Path(os.environ.get("DATA_AGENT_BUNDLE_CACHE_DIR") or (root / _BUNDLE_CACHE_DIRNAME))
+    return directory / name
+
+
+def warm_bundles(root: Path, names: tuple[tuple[str, str], ...] | None = None) -> dict[str, bool]:
+    """预下载 CDN bundle 到共享缓存（供服务启动时后台调用）。
+
+    返回 ``{文件名: 是否可用}``。任何失败都只记为 False——离线时图表会按原
+    逻辑 fallback 到 CDN 直引，不能因为预热失败影响启动。
+    """
+    targets = names or ((ECHARTS_BUNDLE_NAME, ECHARTS_CDN_URL),
+                        (ECHARTS_GL_BUNDLE_NAME, ECHARTS_GL_CDN_URL))
+    result: dict[str, bool] = {}
+    for name, url in targets:
+        path = shared_bundle_path(root, name)
+        if not (path.exists() and path.stat().st_size > MIN_BUNDLE_BYTES):
+            _download_bundle(url, path)
+        result[name] = path.exists() and path.stat().st_size > MIN_BUNDLE_BYTES
+    return result
+
+
+def _download_bundle(url: str, target: Path) -> bool:
+    """下载 bundle 到共享缓存（先写临时文件再原子替换，避免半截文件被复用）。"""
+    import urllib.request
+
+    with _bundle_lock:
+        if target.exists() and target.stat().st_size > MIN_BUNDLE_BYTES:
+            return True
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with urllib.request.urlopen(url, timeout=20) as response:  # noqa: S310
+                content = response.read()
+            if not content or len(content) < MIN_BUNDLE_BYTES:
+                return False
+            temporary = target.with_suffix(target.suffix + ".part")
+            temporary.write_bytes(content)
+            temporary.replace(target)
+            return True
+        except Exception:
+            return False
+
 #: 活动 DataFrame 的 checkpoint 文件名，用于重启后恢复。
 WORKSPACE_STATE_NAME = "workspace_state.parquet"
 
@@ -945,42 +998,41 @@ class DataWorkspace:
         直接引用（在线场景可用，离线场景报错）。与 plotly bundle 同目录
         共存，互不冲突。
         """
-        import urllib.request
+        return self._ensure_cdn_bundle(ECHARTS_BUNDLE_NAME, ECHARTS_CDN_URL)
 
-        bundle = (self.artifacts_dir / ECHARTS_BUNDLE_NAME).resolve()
-        if bundle.exists() and bundle.stat().st_size > 0:
+    def _ensure_cdn_bundle(self, name: str, url: str) -> Path | None:
+        """CDN bundle 的两级缓存：机器级共享缓存 → 会话 artifacts 目录。
+
+        为什么不是每个会话各下一次：实测**每个新会话的首张 ECharts 图要多等
+        ~6 秒**（1MB bundle 走 CDN），而这份文件对所有会话完全一样。现在下载
+        只发生一次（存到 runs 根下的 ``_bundles``），各会话用硬链接/复制引用；
+        服务启动时还会后台预热一次（见 api.lifespan），用户请求基本不再等待。
+        离线且无缓存时返回 None，调用方按原逻辑 fallback 到 CDN 引用。
+        """
+        shared = shared_bundle_path(self.root, name)
+        if not (shared.exists() and shared.stat().st_size > MIN_BUNDLE_BYTES):
+            _download_bundle(url, shared)
+        bundle = (self.artifacts_dir / name).resolve()
+        if shared.exists() and shared.stat().st_size > MIN_BUNDLE_BYTES:
+            if not (bundle.exists() and bundle.stat().st_size == shared.stat().st_size):
+                try:
+                    # 硬链接省磁盘；跨盘/不支持时退回复制
+                    if bundle.exists():
+                        bundle.unlink()
+                    os.link(shared, bundle)
+                except OSError:
+                    shutil.copyfile(shared, bundle)
             return bundle
-        try:
-            with urllib.request.urlopen(ECHARTS_CDN_URL, timeout=15) as response:  # noqa: S310
-                content = response.read()
-            if not content or len(content) < 1024:
-                return None
-            bundle.write_bytes(content)
-            return bundle
-        except Exception:
-            # 离线 / 网络受限场景：返回 None，调用方走 CDN 直引 fallback。
-            return None
+        return bundle if bundle.exists() and bundle.stat().st_size > 0 else None
 
     def ensure_echarts_gl_bundle(self) -> Path | None:
         """按需下载 echarts-gl 扩展 bundle，仅 3D 图表首次生成时触发。
 
-        与 ``ensure_echarts_bundle`` 同策略：首次从 CDN 下载到 artifacts_dir
-        后复用；失败返回 None，调用方 fallback 到 CDN URL 直引。
+        与 ``ensure_echarts_bundle`` 同策略：走机器级共享缓存（首次从 CDN
+        下载一次，各会话硬链接引用，服务启动时后台预热），失败返回 None，
+        调用方 fallback 到 CDN URL 直引。
         """
-        import urllib.request
-
-        bundle = (self.artifacts_dir / ECHARTS_GL_BUNDLE_NAME).resolve()
-        if bundle.exists() and bundle.stat().st_size > 0:
-            return bundle
-        try:
-            with urllib.request.urlopen(ECHARTS_GL_CDN_URL, timeout=20) as response:  # noqa: S310
-                content = response.read()
-            if not content or len(content) < 1024:
-                return None
-            bundle.write_bytes(content)
-            return bundle
-        except Exception:
-            return None
+        return self._ensure_cdn_bundle(ECHARTS_GL_BUNDLE_NAME, ECHARTS_GL_CDN_URL)
 
     def snapshot_state(self) -> WorkspaceSnapshot:
         """Capture the active data, artifact files and the row baseline before one agent step.

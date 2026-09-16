@@ -3351,6 +3351,7 @@ def _render_echarts(
     stem: str,
     chart_type_source: str = "explicit",
     scale_mode: str = "auto",
+    export_png: bool = False,
 ) -> dict[str, Any]:
     """ECharts 渲染主入口：生成 option、HTML、解读文本，返回 response dict。"""
     from data_agent.chart_sampling import (
@@ -3472,4 +3473,14 @@ def _render_echarts(
         }
     if sampling_info is not None:
         result["sampling"] = sampling_info
+    if export_png:
+        # ECharts 的服务端 PNG 需要 Node + 无头浏览器渲染 canvas，本项目的
+        # 服务端只有 kaleido（Plotly 专用）。此前 export_png 在这条分支上被
+        # 静默丢弃——调用方以为拿到了 PNG，实际什么都没有。改为显式告知，
+        # 并指出浏览器内的两条导出路径（图内工具栏 / 预览模态的 PNG 按钮）。
+        result["png_warning"] = (
+            "ECharts 图表不支持服务端 PNG 导出（服务端 PNG 渲染依赖 kaleido，仅 Plotly 可用）；"
+            "请在图表内使用「导出 PNG」工具栏按钮，或在预览模态点「PNG」按钮（均为浏览器内导出，"
+            "分辨率与当前主题一致）。HTML 与 JSON 产物已正常生成。"
+        )
     return result

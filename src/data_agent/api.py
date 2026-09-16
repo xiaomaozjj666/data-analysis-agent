@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio  # noqa: F401 — 测试通过 data_agent.api.asyncio.wait_for 打补丁
 import logging
+import threading
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -92,6 +93,30 @@ app = FastAPI(
     version="2.0.0",
     description="Plan-and-Execute + ReAct data analysis service",
 )
+
+
+@app.on_event("startup")
+def _warm_chart_bundles() -> None:
+    """后台预热 CDN 图表 bundle（echarts / echarts-gl）。
+
+    不预热的话，**每个新会话的首张 ECharts 图要多等约 6 秒**——那是 1MB 的
+    bundle 走 CDN 的下载时间，而这份文件对所有会话都一样。放到后台线程里
+    预热一次，用户请求基本不再为它等待；失败只是记日志（离线时图表会按
+    原逻辑 fallback 到 CDN 直引），绝不影响启动。
+    """
+    from data_agent.workspace import warm_bundles  # noqa: PLC0415
+
+    def _warm() -> None:
+        try:
+            # registry 已在模块顶部导入（测试会对它打补丁），这里不要再 import 一次
+            ready = warm_bundles(registry.runs_dir)
+            logging.getLogger("data_agent.api").info("图表 bundle 预热完成: %s", ready)
+        except Exception:  # pragma: no cover - 预热失败不影响任何功能
+            logging.getLogger("data_agent.api").warning(
+                "图表 bundle 预热失败（不影响生成，届时按需下载）", exc_info=True,
+            )
+
+    threading.Thread(target=_warm, name="warm-chart-bundles", daemon=True).start()
 
 setup_middleware(app)
 register_error_handlers(app)

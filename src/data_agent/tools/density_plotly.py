@@ -250,7 +250,9 @@ def density_figure(
         fig.add_annotation(
             # 右下角：底部中央是 x 轴标题、左侧是 y 轴标题，只有右下角是空的
             # （放左下角时实测与"销售额"轴标题叠在一起）。
-            xref="paper", yref="paper", x=1.0, y=-0.045,
+            # （放左下角时实测与"销售额"轴标题叠在一起；窄屏 414px 下 y=-0.045
+            # 又会压到居中的轴标题上，因此再往下让一行，落在轴标题与图例之间。）
+            xref="paper", yref="paper", x=1.0, y=-0.10,
             xanchor="right", yanchor="top", showarrow=False, align="right",
             text=(f"视图外 {view.dropped_rows:,} 条记录超出主体尺度（未计入密度网格）；"
                   "悬浮/下载 JSON 可查看全量数据"),

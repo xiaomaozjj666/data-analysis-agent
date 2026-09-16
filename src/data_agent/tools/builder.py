@@ -1217,6 +1217,7 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                 aggregation=aggregation, title=title, bins=bins,
                 display_title=display_title, stem=stem,
                 chart_type_source="auto" if was_auto else "explicit",
+                export_png=export_png,
             ))
         # === Plotly 原有渲染逻辑（默认分支，保持不变）===
         # Plotly title 支持 HTML 子集，需 escape 防止 LLM 输出注入 <b>/<i> 等标签
