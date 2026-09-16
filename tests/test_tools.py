@@ -1897,3 +1897,145 @@ def test_auto_scatter_picks_low_cardinality_color(tmp_path):
     fig2 = json.loads(Path(result2["plotly_json"]).read_text(encoding="utf-8"))
     data_names = [t.get("name") for t in fig2["data"]]
     assert "East" not in data_names
+
+
+# ---------------------------------------------------------------------------
+# 大数据散点 → 密度视图（几十万点逐点渲染会糊成一团，见 data_agent/density.py）
+# ---------------------------------------------------------------------------
+
+
+def _density_fixture(tmp_path, rows: int, *, with_outliers: bool = False) -> DataWorkspace:
+    rng = np.random.default_rng(2026)
+    categories = np.array(["电子产品", "家具", "食品", "办公用品"])
+    picks = categories[rng.integers(0, 4, rows)]
+    sales = rng.gamma(2.6, 210.0, rows)
+    profit = sales * 0.18 + rng.normal(0, 40, rows)
+    if with_outliers:
+        # 极端值：只有几十条，但足以把量程拉大一个数量级（触发主体尺度）
+        spike = rng.choice(rows, size=40, replace=False)
+        sales[spike] = rng.uniform(9_000, 12_000, spike.size)
+        profit[spike] = rng.uniform(4_000, 6_000, spike.size)
+    frame = pd.DataFrame(
+        {"category": picks, "sales": np.round(sales, 2), "profit": np.round(profit, 2)}
+    )
+    source = tmp_path / f"density_{rows}.csv"
+    frame.to_csv(source, index=False)
+    ws = DataWorkspace(tmp_path / "runs", session_id=f"density_{rows}_{with_outliers}")
+    ws.load(source, copy_into_workspace=True)
+    return ws
+
+
+def test_huge_scatter_renders_density_grid_instead_of_point_cloud(tmp_path):
+    """>=2 万行散点必须走密度视图：服务端聚合成网格，浏览器不再收几十万个点。
+
+    逐点渲染的旧行为是"同一像素叠几十个半透明点 → alpha 饱和成灰噪声"，
+    用户实测反馈"所有的点和数据都堆在一起，根本看不出来什么"。
+    """
+    ws = _density_fixture(tmp_path, 25_000)
+    result = json.loads(
+        tool_map(ws)["create_visualization"].invoke(
+            {"chart_type": "scatter", "x": "sales", "y": "profit", "color": "category"}
+        )
+    )
+    assert result["status"] == "ok"
+    density = result["density_view"]
+    assert density["applied"] is True
+    assert len(density["panels"]) == 4
+    assert density["rows_used"] == 25_000
+    assert density["rows_outside_view"] == 0
+    assert density["bands"][0] == "1"
+
+    figure = json.loads(Path(result["plotly_json"]).read_text(encoding="utf-8"))
+    types = [trace["type"] for trace in figure["data"]]
+    assert "heatmap" in types
+    assert "scatter" not in types and "scattergl" not in types
+    heatmaps = [trace for trace in figure["data"] if trace["type"] == "heatmap"]
+    assert len(heatmaps) == 4
+    for trace in heatmaps:
+        # 档位色标：首尾必须正好落在 0/1（否则 plotly.js 静默丢弃整条色标）
+        assert trace["colorscale"][0][0] == 0
+        assert trace["colorscale"][-1][0] == 1
+        assert trace["zmin"] == -0.5
+        assert trace["hoverongaps"] is False
+        assert "记录数" in trace["hovertemplate"]
+    # 零记录格是空格（透明），不能填 0 参与着色
+    first_z = np.asarray(plotly_values(heatmaps[0]["z"]), dtype=float)
+    assert np.isnan(first_z).any()
+    assert not np.isnan(first_z).all()
+
+    meta = figure["layout"]["meta"]["density_view"]
+    assert meta["colorscales"]["light"] != meta["colorscales"]["dark"]
+    assert meta["colorscales"]["light"][-1][0] == 1
+
+    # 面板标题带记录数、占比与相关系数；且不再有"抽样"字段（密度是精确聚合）
+    titles = [str(item.get("text", "")) for item in figure["layout"]["annotations"]]
+    assert any("电子产品" in title and "条" in title for title in titles)
+    assert "sampling" not in result
+
+    html = Path(result["html"]).read_text(encoding="utf-8")
+    assert "密度面板" in html          # 解读文案解释颜色读什么
+    # 色标标题/刻度（HTML 里 "/" 会被 JSON 编码成 \u002f，因此断言图对象）
+    assert heatmaps[0]["colorbar"]["title"]["text"] == "记录数/格"
+    assert heatmaps[0]["colorbar"]["ticktext"][0] == "1"
+    assert result["plotly_json"] in density["full_data_json"]
+
+
+def test_density_view_reports_rows_outside_robust_scale(tmp_path):
+    """极端值把量程拉大时按主体尺度聚合，被排除的条数必须在图上与解读里说明。"""
+    ws = _density_fixture(tmp_path, 25_000, with_outliers=True)
+    result = json.loads(
+        tool_map(ws)["create_visualization"].invoke(
+            {"chart_type": "scatter", "x": "sales", "y": "profit"}
+        )
+    )
+    assert result["scale_mode"] == "robust"
+    assert result["extreme_points"] > 0
+    assert result["density_view"]["rows_outside_view"] > 0
+    html = Path(result["html"]).read_text(encoding="utf-8")
+    assert "视图外" in html
+    # 网格没有覆盖范围外的数据，因此不能给"全量视图"按钮（切过去是空的）
+    figure = json.loads(Path(result["plotly_json"]).read_text(encoding="utf-8"))
+    assert "updatemenus" not in figure["layout"]
+
+
+def test_small_scatter_keeps_point_rendering(tmp_path):
+    """阈值以下不受影响：仍然是逐点散点（密度图对小数据没有信息增益）。"""
+    ws = _density_fixture(tmp_path, 500)
+    result = json.loads(
+        tool_map(ws)["create_visualization"].invoke(
+            {"chart_type": "scatter", "x": "sales", "y": "profit", "color": "category"}
+        )
+    )
+    assert "density_view" not in result
+    figure = json.loads(Path(result["plotly_json"]).read_text(encoding="utf-8"))
+    assert {trace["type"] for trace in figure["data"]} == {"scatter"}
+
+
+def test_huge_scatter_without_color_gets_marginals_and_structure_lines(tmp_path):
+    """无分组的大数据散点：jointplot 布局（主图 + 边缘直方图）+ 趋势线/均值线。"""
+    ws = _density_fixture(tmp_path, 22_000)
+    result = json.loads(
+        tool_map(ws)["create_visualization"].invoke(
+            {"chart_type": "scatter", "x": "sales", "y": "profit"}
+        )
+    )
+    figure = json.loads(Path(result["plotly_json"]).read_text(encoding="utf-8"))
+    types = [trace["type"] for trace in figure["data"]]
+    assert types.count("heatmap") == 1
+    # 顶部 x 边缘直方图 + 右侧 y 边缘直方图（与主图同分箱）
+    assert types.count("bar") == 2
+    names = {trace.get("name") for trace in figure["data"]}
+    assert {"x 分布", "y 分布", "趋势线 r=0.53"} <= names or any(
+        str(name).startswith("趋势线") for name in names
+    )
+    assert any(str(name) == "最外围记录" for name in names)
+
+
+def test_plotly_dark_script_swaps_density_colorscale_and_all_axes():
+    """暗色脚本必须覆盖全部子图坐标轴并切换档位色板（多子图曾留白网格线）。"""
+    from data_agent.tools.builder import _PLOTLY_DARK_MODE_SCRIPT
+
+    assert "density_view" in _PLOTLY_DARK_MODE_SCRIPT
+    assert "colorscales" in _PLOTLY_DARK_MODE_SCRIPT
+    assert "[xy]axis[0-9]*" in _PLOTLY_DARK_MODE_SCRIPT
+    assert "title.font.color" in _PLOTLY_DARK_MODE_SCRIPT

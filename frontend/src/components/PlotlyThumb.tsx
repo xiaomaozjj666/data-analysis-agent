@@ -3,6 +3,13 @@ import { pickChartIcon } from "../constants";
 import { fetchJsonWithTimeout } from "../utils/api";
 import useInView from "../hooks/useInView";
 import AuthImage from "./AuthImage";
+import {
+  asRecord,
+  isAxisKey,
+  pickColorscale,
+  readPlotlyColorscales,
+  type DensityColorscale,
+} from "./densityThumb";
 
 interface PlotlyThumbProps {
   /** 图表 preview_url，用于推导 plotly-json 地址与点击预览回调。 */
@@ -54,11 +61,51 @@ const PLOTLY_CONFIG = {
   locale: "zh-CN",
 };
 
+// 密度视图（≥2 万行散点聚合成的分档热力图）的 trace 精简。
+//
+// 全尺寸密度图的色标（colorbar）占了右侧近三分之一宽度、刻度文字在
+// 209×131 里全部挤成一团；去掉后剩下的就是"一块小热力图"。颜色不再靠
+// 色标解释（缩略图本来也读不清图例），而是把档位色标换到 trace.colorscale：
+// 浅/暗两套色板随图带过来（见 data_agent/density.py 的 colorscales），
+// 同一颜色在两种主题下始终代表同一档记录数。
+// z / zmin / zmax / customdata / hovertemplate / hoverongaps 全部保留——
+// 悬停仍能读出这一格覆盖的数值区间、记录数与占比。
+function densityTraces(data: unknown[], colorscale: DensityColorscale | null): unknown[] {
+  // 损坏的产物里 data 可能不是数组：原样交回，让上游的失败回退（静态缩略图）接管
+  if (!Array.isArray(data)) return data;
+  return data.map((trace) => {
+    const record = asRecord(trace);
+    if (!record) return trace;
+    const copy: Record<string, unknown> = { ...record };
+    delete copy.colorbar;
+    // 色标由 showscale 控制：每个 trace 都关掉（分面图只有第一个带色标）
+    copy.showscale = false;
+    if (record.type === "heatmap" && colorscale) copy.colorscale = colorscale;
+    return copy;
+  });
+}
+
+// 密度图的坐标轴：缩略图里刻度文字、轴名与网格线都压在格子上，读图只剩
+// "哪里颜色深"。全部去掉（面板标题、峰值标注、均值参考线已在
+// layout.annotations / layout.shapes 里整体删除）。
+function densityAxis(axis: Record<string, unknown>, fontColor: string): Record<string, unknown> {
+  const copy: Record<string, unknown> = { ...axis };
+  delete copy.title;
+  copy.showticklabels = false;
+  copy.ticks = "";
+  copy.showgrid = false;
+  copy.zeroline = false;
+  copy.tickfont = { ...(asRecord(copy.tickfont) ?? {}), size: 8, color: fontColor };
+  return copy;
+}
+
 // 全尺寸 figure 直接塞进 209×131 迷你卡：标题/图例/轴名挤占绘图区、
 // 文字与缩略图卡片尺寸不匹配。精简：去标题/图例/轴名，画布与文字
 // 随主题着色（深色主题下与 ECharts 迷你图保持一致），保留全部 trace
 // 数据——plotly.js 原地渲染后鼠标悬停即可查看数据点（与 ECharts
 // 卡片体验对齐，替代原来无法交互的静态 PNG）。
+// 密度图另有一套精简（见下面的 density 分支）：它没有可读的轴，多出来的
+// 只有标注、色标与分面轴，全部去掉才留得下热量分布本身。
 export function simplifyPlotlyForThumb(
   figure: FigureShape,
   isDark: boolean,
@@ -73,7 +120,21 @@ export function simplifyPlotlyForThumb(
   // gl 画布背景色需重渲染，卡片内没有该修复链）；卡片点击本来就是
   // 打开完整交互图。dragmode=false 禁用拖拽缩放层。
   layout.dragmode = false;
-  layout.margin = { l: 38, r: 6, t: 6, b: 22 };
+  // meta.density_view 是密度视图的标记（后端 density_figure 写入）；存在即
+  // 按密度图精简，色标结构损坏也只影响换色，不影响精简本身。
+  const densityScales = readPlotlyColorscales(srcLayout);
+  const density = densityScales !== null;
+  const densityColorscale = densityScales ? pickColorscale(densityScales, isDark) : null;
+  if (density) {
+    // 分面面板标题、"最密 N 条"峰值标注与均值参考线（annotations），峰值框 /
+    // 趋势线 / 均值线（shapes）在缩略图里都是压在格子上的文字与线框。
+    delete layout.annotations;
+    delete layout.shapes;
+    // 轴刻度与轴名全部隐掉，留着边距只是浪费 131px 的绘图区
+    layout.margin = { l: 2, r: 2, t: 2, b: 2 };
+  } else {
+    layout.margin = { l: 38, r: 6, t: 6, b: 22 };
+  }
   layout.paper_bgcolor = theme.paper;
   layout.plot_bgcolor = theme.paper;
   layout.font = {
@@ -86,7 +147,10 @@ export function simplifyPlotlyForThumb(
     bordercolor: theme.grid,
     font: { color: theme.hoverFont },
   };
-  for (const key of ["xaxis", "yaxis", "zaxis"]) {
+  // 密度图要覆盖全部子图轴（分面是 xaxis2/yaxis2 …，边缘直方图还有 xaxis3），
+  // 普通图维持原来只认三根主轴的行为。
+  const axisKeys = density ? Object.keys(layout).filter(isAxisKey) : ["xaxis", "yaxis", "zaxis"];
+  for (const key of axisKeys) {
     const axis = layout[key];
     if (axis && typeof axis === "object") {
       const copy: Record<string, unknown> = { ...(axis as Record<string, unknown>) };
@@ -98,7 +162,7 @@ export function simplifyPlotlyForThumb(
         size: 9,
         color: theme.font,
       };
-      layout[key] = copy;
+      layout[key] = density ? densityAxis(copy, theme.font) : copy;
     }
   }
   // 3D 场景：把 scene.<axis> 的轴名/刻度字号一并缩到迷你尺寸
@@ -120,7 +184,9 @@ export function simplifyPlotlyForThumb(
     }
     layout.scene = sceneCopy;
   }
-  return { data: figure.data ?? [], layout };
+  // 密度图要重建 trace（去色标 + 换档位色标），普通图原样返回 trace 数组
+  const data = figure.data ?? [];
+  return { data: density ? densityTraces(data, densityColorscale) : data, layout };
 }
 
 // Plotly 卡片的内联交互迷你图：卡片的静态 PNG 缩略图（kaleido 渲染）

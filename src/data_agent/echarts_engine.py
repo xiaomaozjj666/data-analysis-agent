@@ -21,8 +21,23 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from data_agent.density import (
+    DensityGrid,
+    DensityPanel,
+    DensityView,
+    band_label,
+    band_legend,
+    build_density_view,
+    clip_segment,
+    density_note,
+    extreme_points,
+    format_number,
+    hotspot_sentence,
+    panels_sentence,
+    should_use_density,
+)
 from data_agent.tools._helpers import _human_column_label as _build_axis_label
-from data_agent.tools._helpers import _nice_ticks, _scatter_structure
+from data_agent.tools._helpers import _nice_axis_formatter, _nice_ticks, _scatter_structure
 from data_agent.tools.builder import _CHART_COLORS
 from data_agent.workspace import (
     ECHARTS_CDN_URL,
@@ -284,13 +299,15 @@ def _auto_interpret(
     color: str | None,
     aggregation: str,
     title: str | None,
+    density_view: DensityView | None = None,
 ) -> str:
     """基于聚合结果生成一段业务白话解读。
 
     解读策略：
     - bar/line/area：找最高最低、计算极差与均值比、识别拐点（最大环比变化）
     - pie：找占比最高与最低的类别，给出结构判断
-    - scatter：识别相关性方向、离群点
+    - scatter：识别相关性方向、离群点；超大数据走密度视图时换成密度编码说明
+      （见 ``density_view`` 参数——逐点解读对聚合后的网格不成立）
     - heatmap/correlation：识别最强正/负相关对
     - box/violin：对比中位数差异与离群点
     - 其他：给通用描述
@@ -299,7 +316,8 @@ def _auto_interpret(
     """
     try:
         return _interpret_impl(df, chart_type=chart_type, x=x, y=y, color=color,
-                               aggregation=aggregation, title=title)
+                               aggregation=aggregation, title=title,
+                               density_view=density_view)
     except Exception:
         # 解读失败不影响图表生成，返回空字符串让前端不渲染解读区。
         return ""
@@ -314,6 +332,7 @@ def _interpret_impl(
     color: str | None,
     aggregation: str,
     title: str | None,
+    density_view: DensityView | None = None,
 ) -> str:
     title_text = title or f"{_build_axis_label(x) or ''}与{_build_axis_label(y) or ''}分布"
     if chart_type in {"bar", "line", "area"} and x and y and len(df) > 0:
@@ -321,6 +340,9 @@ def _interpret_impl(
                                 color=color, aggregation=aggregation, title=title_text)
     if chart_type == "pie" and x and len(df) > 0:
         return _interpret_pie(df, x=x, title=title_text)
+    if chart_type == "scatter" and density_view is not None and x and y and len(df) > 0:
+        return _density_interpretation(df, view=density_view, x=x, y=y,
+                                       color=color, title=title_text)
     if chart_type in {"scatter", "scatter_3d"} and x and y and len(df) > 0:
         return _interpret_scatter(df, x=x, y=y, title=title_text,
                                   is_3d=chart_type == "scatter_3d")
@@ -1029,6 +1051,871 @@ def _scatter_tooltip_formatter(x_label: str, y_label: str, size: str | None):
         "return html;"
         "}"
     )
+
+
+# === 大数据散点 → 密度视图（与 Plotly 分支共享 data_agent.density 的同一份网格）===
+# 为什么存在：30 万行散点按"每点一个标记"渲染时，同一像素叠几十个半透明点，
+# alpha 迅速饱和成一团灰噪声——品类色互相覆盖、密度差异被抹平（用户实测反馈
+# "所有的点和数据都堆在一起，根本看不出来什么"）。改为服务端聚合成网格、用
+# **分档颜色**表达每格记录数（datashader / 2D 直方图 / seaborn jointplot 的
+# 通行做法），浏览器只收到一万多个格子，HTML 从 12MB 降到几百 KB，且密度是
+# 精确的（不像抽样那样只是近似）。
+
+#: 密度面板的设计像素尺寸：网格数跟着面板大小走，保证每格在任何布局下都
+#: 接近正方形（与 Plotly 分支同一口径，双引擎的网格与档位完全一致）。
+_DENSITY_PANEL_SIZE = (1080.0, 560.0)
+_DENSITY_FACET_PANEL_SIZE = (560.0, 468.0)
+
+#: 每个面板叠加的"最外围原始记录"数量上限（与 Plotly 分支一致）。
+_DENSITY_EXTREME_POINTS = 120
+
+#: 趋势线与面板标题里相关系数的显示门槛：弱相关（|r| < 0.25）画线只添噪声。
+_DENSITY_TREND_MIN_R = 0.25
+
+#: 密度图的强调色（峰值框 / 趋势线 / 最外围记录，与 Plotly 分支同色）。
+_DENSITY_ACCENT = "#E15759"
+
+#: 单面板布局（jointplot：主密度面板 + 顶部 x 分布 + 右侧 y 分布），百分比定位。
+#: 百分比跟着容器缩放，缩略图（209×131）与预览模态（1400×850）用同一套几何。
+_DENSITY_SINGLE_LAYOUT = {
+    "left": 7.0,        # 留给 y 轴刻度与轴名
+    "right": 2.5,
+    "top": 14.0,        # 主标题 + 副标题
+    "bottom": 14.0,     # x 轴刻度 + 轴名 + 档位色标
+    "hist": 9.0,        # 边缘直方图厚度
+    "hist_gap": 1.5,    # 边缘直方图与主面板的间隙
+    "hist_width": 8.5,  # 右侧 y 分布宽度
+}
+
+#: 分面布局（2 列或 3 列）：面板标题写在每块面板上方，行间距要同时容下
+#: 上一行的 x 刻度与下一行的面板标题。
+_DENSITY_FACET_LAYOUT = {
+    "left": 7.0, "right": 2.5, "top": 13.5, "bottom": 13.0,
+    "gap_x": 3.2, "gap_y": 9.0, "title": 2.8,
+}
+
+#: 悬浮提示里的数字格式化（JS）：与类目标签/数值轴 formatter 同一口径
+#: （万/亿优先，其余按有效位取整），避免 tooltip 出现 1234.5678901 这种尾巴。
+_DENSITY_NUMBER_JS = (
+    "var _dn=function(v){if(v===null||v===undefined||isNaN(v))return '—';var a=Math.abs(v);"
+    "if(a>=100000000)return Number((v/100000000).toFixed(2))+'亿';"
+    "if(a>=10000)return Number((v/10000).toFixed(2))+'万';"
+    "return Number(v.toFixed(4)).toLocaleString();};"
+)
+
+
+def _round_significant(values: np.ndarray, sig: int = 6) -> np.ndarray:
+    """按有效位数取整（压缩 hover 数据里的分箱边界）。
+
+    格子数据要带 x0/x1/y0/y1 四个边界（ECharts 的 heatmap 拿不到分箱区间，
+    必须随数据项带过去），6 位有效数字足以还原区间，却能把 JSON 体积压掉
+    三成——一万多个格子的 option 体积是这次改造的核心指标之一。
+    """
+    array = np.asarray(values, dtype=float)
+    if array.size == 0:
+        return array
+    with np.errstate(divide="ignore", invalid="ignore"):
+        exponent = np.floor(np.log10(np.abs(array)))
+        factor = np.power(10.0, sig - 1 - exponent)
+        rounded = np.round(array * factor) / factor
+    return np.where(np.isfinite(rounded), rounded, array)
+
+
+def _snap_edges(edges: np.ndarray) -> np.ndarray:
+    """把浮点噪声级的分箱边界归零。
+
+    ``np.linspace`` 造出来的边界在跨零点时会留下 -100 + k×5.97… 的残差
+    （实测 -2.00e-07），轴标签与悬浮提示会显示成 "-2.00e-07" 这种刺眼的值。
+    判定阈值取格宽的百万分之一：真实的非零边界远大于它，只有数值噪声会被
+    归零（窄区间数据的小数值不受影响）。
+    """
+    values = np.asarray(edges, dtype=float)
+    if values.size < 2:
+        return values
+    width = float(np.median(np.abs(np.diff(values))))
+    if not math.isfinite(width) or width <= 0:
+        return values
+    return np.where(np.abs(values) < width * 1e-6, 0.0, values)
+
+
+def _bin_labels(edges: np.ndarray) -> list[str]:
+    """分箱边界 → 类目轴短标签（"1.2万" / "1,200"）。
+
+    ECharts 的 heatmap 两个维度都必须是类目轴，连续数值必须先在 Python 侧
+    格式化成短标签；这里复用 ``_nice_axis_formatter``——它是本文件数值轴 JS
+    formatter 的 Python 孪生实现，保证密度图的类目标签与其它图的数值刻度
+    同一口径（万/亿优先）。154 个格子挨着排时紧凑格式可能撞车（100.0 与
+    100.6 都写成 "101"），检测到大量重复就按格宽补足小数位。
+    """
+    values = _snap_edges(np.asarray(edges, dtype=float))
+    if values.size < 2:
+        return []
+    labels = [_nice_axis_formatter(float(value)) for value in values[:-1]]
+    if len(set(labels)) >= max(2, int(len(labels) * 0.6)):
+        return labels
+    widths = np.abs(np.diff(values))
+    width = float(np.median(widths)) if widths.size else 0.0
+    if not math.isfinite(width) or width <= 0:
+        return labels
+    digits = max(0, min(6, int(math.ceil(-math.log10(width))) + 1))
+    precise = [f"{float(value):,.{digits}f}" for value in values[:-1]]
+    return precise if len(set(precise)) > len(set(labels)) else labels
+
+
+def _bin_index(value: float, edges: np.ndarray, *, nearest: bool = False) -> int:
+    """数值 → 类目下标（默认取所属格子，``nearest=True`` 取最近的格子中心）。
+
+    ECharts 的类目轴只接受整数下标：实测 ``convertToPixel(3.5)`` 与 ``(4)``
+    返回同一像素，小数坐标会被取整。因此密度图上一切"按数值定位"的东西
+    （最外围记录、趋势线、均值参考线）都必须先映射成格子下标，单点定位
+    精度是半格（约 3px），在 1080px 宽的面板上与原始坐标不可区分。
+    """
+    if edges.size < 2 or not math.isfinite(value):
+        return 0
+    low, high = float(edges[0]), float(edges[-1])
+    width = (high - low) / (edges.size - 1)
+    if width <= 0:
+        return 0
+    position = (value - low) / width
+    index = int(round(position - 0.5)) if nearest else int(math.floor(position))
+    return max(0, min(edges.size - 2, index))
+
+
+def _within_range(value: Any, bounds: tuple[float, float]) -> bool:
+    """数值是否落在可视范围内（用于决定"这条参考线画不画"）。"""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(number) and bounds[0] <= number <= bounds[1]
+
+
+def _axis_label_interval(count: int, target: int) -> int:
+    """类目轴刻度抽稀步长（ECharts 的 interval 是"每隔 N 个类目显示一个"）。
+
+    154×80 的网格逐个显示标签必然糊成一团：主面板留 ~14 个、分面留 ~6 个，
+    精确区间由悬浮提示给出。
+    """
+    if count <= target:
+        return 0
+    return max(0, int(math.ceil(count / target)) - 1)
+
+
+def _density_view_for(
+    df: pd.DataFrame,
+    *,
+    chart_type: str,
+    x: str | None,
+    y: str | None,
+    color: str | None,
+    scale_mode: str = "auto",
+) -> tuple[DensityView | None, dict[str, Any] | None]:
+    """超大数据散点 → 密度视图；返回 ``(view, scale_details)``，不适用时 ``(None, None)``。
+
+    触发条件与 Plotly 分支严格一致：scatter 图型、x/y 都是数值列、行数达到
+    ``should_use_density`` 阈值。``scale_mode="auto"`` 时对极端值做"主体尺度"
+    判定（与 ``charts._severe_axis_compression`` 同一函数）：少数离群点把
+    坐标轴拉大后主体点云会被压成一条线，超出范围的记录不计入网格——条数
+    写进解读文案，不静默丢数据。
+    """
+    if chart_type != "scatter" or not (x and y and x in df.columns and y in df.columns):
+        return None, None
+    if not should_use_density(len(df)):
+        return None, None
+    if not (pd.api.types.is_numeric_dtype(df[x]) and pd.api.types.is_numeric_dtype(df[y])):
+        return None, None
+    x_values = pd.to_numeric(df[x], errors="coerce").to_numpy(dtype=float)
+    y_values = pd.to_numeric(df[y], errors="coerce").to_numpy(dtype=float)
+    finite = np.isfinite(x_values) & np.isfinite(y_values)
+    if int(finite.sum()) < 2:
+        return None, None
+
+    x_guard = y_guard = None
+    if scale_mode != "full":
+        # 延迟导入：charts 依赖 plotly，而本模块在无 plotly 的预览链路上也要能导入。
+        from data_agent.tools.charts import _severe_axis_compression
+
+        x_guard = _severe_axis_compression(x_values[finite].tolist())
+        y_guard = _severe_axis_compression(y_values[finite].tolist())
+
+    groups = df[color].tolist() if color and color in df.columns else None
+    faceted = bool(groups is not None and df[color].nunique(dropna=True) > 1)
+    # 分面后面板变窄，网格同步变少，保证每格在屏幕上仍接近正方形。
+    view = build_density_view(
+        x_values,
+        y_values,
+        groups=groups,
+        panel_size=_DENSITY_FACET_PANEL_SIZE if faceted else _DENSITY_PANEL_SIZE,
+        x_range=(x_guard["lower"], x_guard["upper"]) if x_guard else None,
+        y_range=(y_guard["lower"], y_guard["upper"]) if y_guard else None,
+    )
+    if view is None:
+        return None, None
+
+    axis_ranges: dict[str, list[float]] = {}
+    if x_guard:
+        axis_ranges["x"] = [x_guard["lower"], x_guard["upper"]]
+    if y_guard:
+        axis_ranges["y"] = [y_guard["lower"], y_guard["upper"]]
+    scale_details = {
+        "scale_mode": "robust" if axis_ranges else "full",
+        "extreme_points": max(
+            x_guard["extreme_count"] if x_guard else 0,
+            y_guard["extreme_count"] if y_guard else 0,
+        ),
+        "axis_ranges": axis_ranges,
+    }
+    return view, scale_details
+
+
+def _density_panel_structure(
+    df: pd.DataFrame, *, x: str, y: str, color: str | None, panel: DensityPanel,
+) -> dict[str, Any] | None:
+    """某个密度面板对应原始记录的结构注记（趋势线端点、均值、皮尔逊 r）。
+
+    与 Plotly 分支的 ``density_plotly.panel_structure`` 同口径：按面板覆盖的
+    原始分组取值筛行（"其他 N 类"面板会覆盖多个取值），保证两个引擎画出的
+    趋势线与标题里的 r 完全一致。
+    """
+    if x not in df.columns or y not in df.columns:
+        return None
+    subset = df
+    if color and color in df.columns and panel.levels:
+        subset = df[df[color].astype(str).isin(list(panel.levels))]
+    pair = subset[[x, y]].apply(pd.to_numeric, errors="coerce").dropna()
+    if len(pair) < 3:
+        return None
+    return _scatter_structure(pair[x].astype(float).tolist(), pair[y].astype(float).tolist())
+
+
+def _density_panel_title(panel: DensityPanel, structure: dict[str, Any] | None) -> str:
+    """面板标题：``分组 · 1,234 条（40%）· r=0.62``（弱相关不写 r）。"""
+    name = panel.name if len(panel.name) <= 14 else panel.name[:13] + "…"
+    text = f"{name} · {panel.grid.total:,} 条（{panel.share * 100:.0f}%）"
+    r_value = structure.get("r") if structure else None
+    if r_value is not None and abs(float(r_value)) >= _DENSITY_TREND_MIN_R:
+        text += f" · r={float(r_value):.2f}"
+    return text
+
+
+def _density_category_axis(
+    edges: np.ndarray, *, grid_index: int, show_labels: bool, interval: int = 0,
+    name: str | None = None, name_gap: float | None = None,
+) -> dict[str, Any]:
+    """密度图类目轴：类目就是分箱（边界格式化成短标签）。
+
+    ECharts 的 heatmap 要求两个维度都是类目轴（否则报 "Rectangular coordinate
+    must have two categories to use it"），所以"连续的数值轴"这一步被搬到了
+    Python 侧。刻度只在面板外圈显示（共享轴的内圈重复刻度是噪声），inner
+    面板留空防拥挤。
+    """
+    axis: dict[str, Any] = {
+        "type": "category",
+        "gridIndex": grid_index,
+        "data": _bin_labels(edges),
+        "boundaryGap": True,
+        "axisTick": {"show": False},
+        "axisLine": {"show": show_labels, "lineStyle": {"color": _ECHARTS_GRID_COLOR}},
+        "splitLine": {"show": False},
+        "axisLabel": {
+            "show": show_labels,
+            "interval": interval,
+            "hideOverlap": True,
+            "color": _ECHARTS_TEXT_SECONDARY,
+            "fontSize": 11,
+        },
+    }
+    if name:
+        axis["name"] = name
+        axis["nameLocation"] = "middle"
+        axis["nameTextStyle"] = dict(_ECHARTS_BASE_AXIS["nameTextStyle"])
+        if name_gap is not None:
+            axis["nameGap"] = name_gap
+    return axis
+
+
+def _density_marginal_value_axis(grid_index: int) -> dict[str, Any]:
+    """边缘直方图的数值轴：只负责柱长，刻度/网格/轴线全部隐藏。
+
+    与 Plotly 分支的收尾样式一致（边缘面板去掉刻度与网格线）：柱长与主面板
+    对齐才是信息，刻度数值是噪声。
+    """
+    return {
+        "type": "value",
+        "gridIndex": grid_index,
+        "min": 0,
+        "scale": False,
+        "axisLine": {"show": False},
+        "axisTick": {"show": False},
+        "axisLabel": {"show": False},
+        "splitLine": {"show": False},
+    }
+
+
+def _density_cells(grid: DensityGrid) -> list[Any]:
+    """密度格子 → ECharts heatmap 数据项 ``[xIndex, yIndex, 记录数, x0, x1, y0, y1]``。
+
+    数据项自带分箱区间，悬浮提示不必再回查任何映射表（ECharts 的 heatmap
+    hover 只给行列下标与值）。零记录格**完全不发数据项**（datashader 同样
+    规定 0 值不参与着色）：网格背景透出来，"点云覆盖到哪"才读得出来，同时
+    把 12k 格的体积压到实际非空格数量级。
+
+    峰值格（仅当该面板确有聚集时）带 itemStyle 描边与 ``最密 N 条`` 标签：
+    数据项级描边正好贴住那一格，并随 dataZoom 一起缩放——markArea 用类目
+    坐标画不出来（同一个下标两角是零面积矩形，实测渲染为空）。
+    """
+    counts = grid.counts
+    if counts.size == 0 or grid.total <= 0:
+        return []
+    ny, nx = counts.shape
+    x_edges = _round_significant(_snap_edges(grid.x_edges))
+    y_edges = _round_significant(_snap_edges(grid.y_edges))
+    peak_flat = int(np.argmax(counts)) if grid.has_clusters else -1
+    peak_y, peak_x = divmod(peak_flat, nx) if peak_flat >= 0 else (-1, -1)
+    cells: list[Any] = []
+    for row_index in range(ny):
+        row = counts[row_index]
+        for column in np.nonzero(row)[0]:
+            x_index = int(column)
+            count = int(row[x_index])
+            value = [
+                x_index, row_index, count,
+                float(x_edges[x_index]), float(x_edges[x_index + 1]),
+                float(y_edges[row_index]), float(y_edges[row_index + 1]),
+            ]
+            if row_index == peak_y and x_index == peak_x:
+                cells.append({
+                    "value": value,
+                    "itemStyle": {
+                        "borderColor": _DENSITY_ACCENT, "borderWidth": 1.5,
+                        "shadowBlur": 6, "shadowColor": "rgba(225,87,89,0.55)",
+                    },
+                    # 标签底/字色固定（白底 + 深红字，与 Plotly 分支的注记同款），
+                    # 两种主题下都清晰，因此显式给 color；暗色脚本只翻"亮色深格
+                    # 白字"那一种约定（见 _ECHARTS_DARK_MODE_SCRIPT）。
+                    "label": {
+                        "show": True, "position": "top", "distance": 4,
+                        "fontSize": 10, "fontWeight": 600, "color": "#B23A3C",
+                        "backgroundColor": "rgba(255,255,255,0.86)",
+                        "borderColor": _DENSITY_ACCENT, "borderWidth": 1,
+                        "borderRadius": 3, "padding": [2, 5],
+                        "formatter": f"最密 {format_number(count)} 条",
+                    },
+                })
+            else:
+                cells.append(value)
+    return cells
+
+
+def _density_trend_series(
+    grid: DensityGrid, structure: dict[str, Any] | None, *, axis_index: int,
+    x_range: tuple[float, float], y_range: tuple[float, float],
+    min_r: float | None = None,
+) -> dict[str, Any] | None:
+    """面板趋势线：逐格给出趋势线的 y 位置（类目轴只接受整数下标）。
+
+    ECharts 的类目轴会把小数坐标取整，所以不能用两个端点画斜线，而是按每
+    一列的预测值取最近的一格连成折线——纵向误差恒在半格（约 3px）以内，
+    视觉上与 Plotly 的直线一致。
+
+    **必须先裁剪到可视范围**（``clip_segment``，与 Plotly 分支同一实现）：
+    趋势端点按面板数据的 min/max 算，而坐标轴用的是共享的"主体尺度"范围，
+    不裁剪的话超出画布的那一段会被类目下标夹到最上一格，在面板顶部横着铺
+    一整条线，读起来像"平趋势"（实测截图可见）。裁剪后完全落在范围外时
+    返回 ``None``（不画线），与 Plotly 分支"skip the line"一致。
+
+    ``min_r`` 给分面用：弱相关（|r| < 0.25）的斜线没有解读价值；整体布局
+    不设门槛（与 Plotly 的 ``_add_structure`` 一致，只要拟合出趋势就画）。
+    """
+    if not structure:
+        return None
+    trend = structure.get("trend")
+    if not trend:
+        return None
+    r_value = structure.get("r")
+    if min_r is not None and (r_value is None or abs(float(r_value)) < min_r):
+        return None
+    clipped = clip_segment(trend, x_range=x_range, y_range=y_range)
+    if clipped is None:
+        return None
+    x0, y0, x1, y1 = (float(value) for value in clipped)
+    if not all(math.isfinite(value) for value in (x0, y0, x1, y1)) or x1 <= x0:
+        return None
+    slope = (y1 - y0) / (x1 - x0)
+    edges_x, edges_y = grid.x_edges, grid.y_edges
+    nx = grid.counts.shape[1]
+    data: list[int | None] = []
+    for index in range(nx):
+        center = (float(edges_x[index]) + float(edges_x[index + 1])) / 2.0
+        if center < x0 or center > x1:
+            data.append(None)
+            continue
+        data.append(_bin_index(y0 + slope * (center - x0), edges_y, nearest=True))
+    if sum(item is not None for item in data) < 2:
+        # 裁剪后只剩不到两格（极陡的线）：折线画不出来，不如不画
+        return None
+    return {
+        "name": "趋势线",
+        "type": "line",
+        "xAxisIndex": axis_index,
+        "yAxisIndex": axis_index,
+        "data": data,
+        "showSymbol": False,
+        "symbol": "none",
+        "connectNulls": False,
+        "silent": True,
+        "legendHoverLink": False,
+        "z": 6,
+        "lineStyle": {"color": _DENSITY_ACCENT, "width": 2.5, "opacity": 0.95},
+        "tooltip": {"show": False},
+    }
+
+
+def _density_extreme_series(
+    df: pd.DataFrame, *, x: str, y: str, color: str | None, panel: DensityPanel,
+    view: DensityView, axis_index: int, x_label: str, y_label: str,
+) -> dict[str, Any] | None:
+    """最外围原始记录（原始点叠加层）。
+
+    密度视图按定义丢掉了单点身份（datashader 的 inspection reductions 正是
+    为此存在）：把最外围的少数真实记录以原始点叠加回来，既保住"个别极端
+    记录长什么样"，又不会重新把画面糊掉。数据项 ``[xIndex, yIndex, 原始x,
+    原始y]``——前两位定位到所属格子的中心（类目轴只能整数定位），后两位让
+    hover 显示真实数值而不是格子中心。
+    """
+    if x not in df.columns or y not in df.columns:
+        return None
+    subset = df
+    if color and color in df.columns and panel.levels:
+        subset = df[df[color].astype(str).isin(list(panel.levels))]
+    pair = subset[[x, y]].apply(pd.to_numeric, errors="coerce").dropna()
+    if len(pair) < 10:
+        return None
+    raw_x, raw_y = extreme_points(
+        pair[x].to_numpy(dtype=float), pair[y].to_numpy(dtype=float),
+        x_range=view.x_range, y_range=view.y_range, top=_DENSITY_EXTREME_POINTS,
+    )
+    if len(raw_x) == 0:
+        return None
+    grid = panel.grid
+    rounded_x = _round_significant(raw_x)
+    rounded_y = _round_significant(raw_y)
+    data = [
+        [_bin_index(float(x_value), grid.x_edges), _bin_index(float(y_value), grid.y_edges),
+         float(x_value), float(y_value)]
+        for x_value, y_value in zip(rounded_x, rounded_y, strict=True)
+    ]
+    x_label_js = json.dumps(x_label, ensure_ascii=False)
+    y_label_js = json.dumps(y_label, ensure_ascii=False)
+    return {
+        "name": "最外围记录",
+        "type": "scatter",
+        "xAxisIndex": axis_index,
+        "yAxisIndex": axis_index,
+        "data": data,
+        "symbolSize": 5,
+        "z": 8,
+        "itemStyle": {
+            "color": "rgba(225,87,89,0.85)",
+            "borderColor": "rgba(255,255,255,0.9)",
+            "borderWidth": 0.8,
+        },
+        "emphasis": {"scale": 1.6, "itemStyle": {"opacity": 1, "shadowBlur": 8}},
+        "tooltip": {"formatter": _JsFunction(
+            "function(p){" + _DENSITY_NUMBER_JS +
+            "var v=p.value;"
+            "return '<div style=\"font-weight:600;margin-bottom:6px;\">最外围记录（原始点）</div>'"
+            f"+'<span style=\"color:var(--tt-muted,#6b7280);\">'+{x_label_js}+'：</span><b>'+_dn(v[2])+'</b><br/>'"
+            f"+'<span style=\"color:var(--tt-muted,#6b7280);\">'+{y_label_js}+'：</span><b>'+_dn(v[3])+'</b><br/>'"
+            "+'<span style=\"color:var(--tt-muted,#6b7280);font-size:11px;\">红点定位在所属网格中心，数值为原始记录</span>';"
+            "}"
+        )},
+    }
+
+
+def _density_marginal_series(
+    grid: DensityGrid, *, bar_color: str, x_label: str, y_label: str,
+) -> list[dict[str, Any]]:
+    """单面板的边缘分布（顶部 x 直方图 + 右侧 y 直方图）。
+
+    分箱与主面板完全一致（直接复用网格的行列求和），因此每根柱子与主面板的
+    每一列/行严格对齐——用户能把"分布形状"与"密度图"对上，这是 jointplot
+    布局最核心的价值。柱色取 ``_CHART_COLORS[4]``，与 Plotly 分支同色。
+    """
+    def formatter(label: str) -> _JsFunction:
+        # 列名来自 CSV 表头，用 json.dumps 转义后作为 JS 字符串字面量拼入，
+        # 防止列名里的引号/尖括号破坏函数体（与 _scatter_tooltip_formatter 一致）。
+        label_js = json.dumps(label, ensure_ascii=False)
+        return _JsFunction(
+            "function(p){" + _DENSITY_NUMBER_JS +
+            "return '<div style=\"font-weight:600;margin-bottom:6px;\">'+p.seriesName+'</div>'"
+            "+'<span style=\"color:var(--tt-muted,#6b7280);\">'+" + label_js
+            + "+'：</span><b>'+_dn(p.name)+'</b><br/>'"
+            "+'<span style=\"color:var(--tt-muted,#6b7280);\">记录数：</span><b>'+Number(p.value).toLocaleString()+'</b>';"
+            "}"
+        )
+
+    x_marginal, y_marginal = grid.marginal_x(), grid.marginal_y()
+    return [
+        {
+            "name": "x 分布", "type": "bar", "xAxisIndex": 1, "yAxisIndex": 1,
+            "data": [int(value) for value in x_marginal],
+            # 类目轴 band 即分箱：柱宽 100% + 类目间隙 0 才能与热力图逐格对齐
+            "barWidth": "100%", "barCategoryGap": "0%", "z": 3,
+            "itemStyle": {"color": bar_color, "opacity": 0.9},
+            "tooltip": {"formatter": formatter(x_label)},
+        },
+        {
+            "name": "y 分布", "type": "bar", "xAxisIndex": 2, "yAxisIndex": 2,
+            "data": [int(value) for value in y_marginal],
+            "barWidth": "100%", "barCategoryGap": "0%", "z": 3,
+            "itemStyle": {"color": bar_color, "opacity": 0.9},
+            "tooltip": {"formatter": formatter(y_label)},
+        },
+    ]
+
+
+def _density_tooltip_formatter(x_label: str, y_label: str) -> _JsFunction:
+    """密度格子的悬浮提示：分箱区间 + 记录数（数据项自带边界，无需回查）。"""
+    x_label_js = json.dumps(x_label, ensure_ascii=False)
+    y_label_js = json.dumps(y_label, ensure_ascii=False)
+    return _JsFunction(
+        "function(p){" + _DENSITY_NUMBER_JS +
+        "var v=p.value;if(!v||v.length<7)return '';"
+        "return '<div style=\"font-weight:600;margin-bottom:6px;\">'+p.seriesName+'</div>'"
+        f"+'<span style=\"color:var(--tt-muted,#6b7280);\">'+{x_label_js}+'：</span><b>'+_dn(v[3])+' ~ '+_dn(v[4])+'</b><br/>'"
+        f"+'<span style=\"color:var(--tt-muted,#6b7280);\">'+{y_label_js}+'：</span><b>'+_dn(v[5])+' ~ '+_dn(v[6])+'</b><br/>'"
+        "+'<span style=\"color:var(--tt-muted,#6b7280);\">记录数：</span><b>'+Number(v[2]).toLocaleString()+'</b>';"
+        "}"
+    )
+
+
+def _density_visual_map(
+    bands: list[tuple[int, int | None]], colors: list[str], series_indexes: list[int],
+) -> dict[str, Any]:
+    """档位色标（piecewise）：一个 visualMap 就是全部面板共用的颜色键。
+
+    为什么用分档（classed）而不是连续渐变：记录数天然跨数量级（密集格上千、
+    边缘格只有一两条），线性映射会把非密集区全压成一个颜色。图例直接标出每
+    档的记录数区间，用户不需要理解"对数色标"就能读懂深浅。
+    ``selectedMode: False``：这是颜色键不是筛选器，点某档不应把其它档的格子
+    藏起来（与 Plotly 的 colorbar 行为一致）。
+    """
+    pieces: list[dict[str, Any]] = []
+    for index, band in enumerate(bands):
+        low, high = band
+        piece: dict[str, Any] = {"label": band_label(band), "color": colors[index]}
+        if high is None:
+            piece["min"] = low
+        elif high <= low:
+            piece["value"] = low
+        else:
+            piece["min"] = low
+            piece["max"] = high
+        pieces.append(piece)
+    return {
+        "type": "piecewise",
+        "dimension": 2,
+        "seriesIndex": series_indexes,
+        "pieces": pieces,
+        "orient": "horizontal",
+        "left": "center",
+        "bottom": 8,
+        "itemWidth": 14,
+        "itemHeight": 12,
+        "itemGap": 8,
+        "selectedMode": False,
+        "textStyle": {"color": _ECHARTS_TEXT_SECONDARY, "fontSize": 11},
+    }
+
+
+def _echarts_scatter_density(
+    df: pd.DataFrame, *, x: str, y: str, color: str | None, title: str, view: DensityView,
+) -> dict[str, Any]:
+    """超大数据散点 → 分档密度热力图（与 Plotly 分支同一份网格与档位色板）。
+
+    两种布局（与 Plotly 分支一致）：
+    - 无颜色分组：主密度面板 + 顶部/右侧边缘直方图（jointplot 布局），叠加
+      整体趋势线、均值参考线与最外围原始记录；
+    - 有颜色分组（≤6 类）：每类一个密度面板、共享同一套档位色标，面板标题
+      给出记录数、占比与相关系数（颜色只表达密度，类别用分面表达）。
+
+    ECharts 特有的三处取舍（都源于"heatmap 只认类目轴"）：
+    1. 连续数值先离散成格子，轴刻度只是"读到大概位置"，精确区间在 tooltip；
+    2. 按数值定位的结构锚点（峰值框除外）先映射成格子下标，单点精度半格；
+    3. 峰值框用数据项级 itemStyle 描边（贴住那一格、随缩放移动），
+       markArea 的类目坐标两角同下标会渲染成零面积。
+    """
+    x_label = _build_axis_label(x)
+    y_label = _build_axis_label(y)
+    color_label = _build_axis_label(color) if color else None
+    panels = list(view.panels)
+    bands = view.bands
+    light_bands = band_legend(bands, view.band_colors())
+    dark_bands = band_legend(bands, view.band_colors(dark=True))
+    faceted = view.is_faceted
+    structures = [
+        _density_panel_structure(df, x=x, y=y, color=color, panel=panel) for panel in panels
+    ]
+
+    grids: list[dict[str, Any]] = []
+    x_axes: list[dict[str, Any]] = []
+    y_axes: list[dict[str, Any]] = []
+    series: list[dict[str, Any]] = []
+    heatmap_indexes: list[int] = []
+    panel_titles: list[dict[str, Any]] = []
+    has_extremes = False
+
+    def add_panel(panel: DensityPanel, structure: dict[str, Any] | None,
+                  grid_index: int, *, trend_min_r: float | None) -> None:
+        """一个密度面板 = 热力图 + （可选）趋势线 + （可选）最外围记录。
+
+        ``trend_min_r`` 为 ``None`` 时不设相关系数门槛（整体布局），给数值时
+        只画 |r| 达标的趋势线（分面）。
+        """
+        nonlocal has_extremes
+        heatmap_indexes.append(len(series))
+        series.append({
+            "name": panel.name or f"{y_label}密度",
+            "type": "heatmap",
+            "xAxisIndex": grid_index,
+            "yAxisIndex": grid_index,
+            "data": _density_cells(panel.grid),
+            # 无描边：格子紧贴铺满，零记录格自然透出背景（点云覆盖范围才是信息）
+            "itemStyle": {"borderWidth": 0},
+            "label": {"show": False},
+            "emphasis": {"itemStyle": {
+                "borderColor": _DENSITY_ACCENT, "borderWidth": 1.5,
+                "shadowBlur": 8, "shadowColor": "rgba(0,0,0,0.25)",
+            }},
+        })
+        trend_series = _density_trend_series(
+            panel.grid, structure, axis_index=grid_index,
+            x_range=view.x_range, y_range=view.y_range, min_r=trend_min_r,
+        )
+        if trend_series is not None:
+            series.append(trend_series)
+        extreme_series = _density_extreme_series(
+            df, x=x, y=y, color=color, panel=panel, view=view, axis_index=grid_index,
+            x_label=x_label, y_label=y_label,
+        )
+        if extreme_series is not None:
+            has_extremes = True
+            series.append(extreme_series)
+
+    if faceted:
+        count = len(panels)
+        cols = 2 if count in (2, 4) else 3
+        rows = int(math.ceil(count / cols))
+        layout = _DENSITY_FACET_LAYOUT
+        usable_w = 100.0 - layout["left"] - layout["right"]
+        usable_h = 100.0 - layout["top"] - layout["bottom"]
+        cell_w = (usable_w - layout["gap_x"] * (cols - 1)) / cols
+        block_h = (usable_h - layout["gap_y"] * (rows - 1)) / rows
+        panel_h = block_h - layout["title"]
+        x_interval = _axis_label_interval(view.bin_shape[0], 6)
+        y_interval = _axis_label_interval(view.bin_shape[1], 5)
+        for index, panel in enumerate(panels):
+            row, col = divmod(index, cols)
+            left = layout["left"] + col * (cell_w + layout["gap_x"])
+            top = layout["top"] + row * (block_h + layout["gap_y"])
+            grids.append({
+                "left": f"{left:.2f}%", "top": f"{top + layout['title']:.2f}%",
+                "width": f"{cell_w:.2f}%", "height": f"{panel_h:.2f}%",
+                "containLabel": False,
+            })
+            # 共享轴：只有最下一行写 x 刻度、最左一列写 y 刻度，内圈重复刻度是噪声；
+            # 轴名改由副标题统一交代（分面格子小，轴名会挤掉数据）。
+            x_axes.append(_density_category_axis(
+                panel.grid.x_edges, grid_index=index, show_labels=row == rows - 1,
+                interval=x_interval,
+            ))
+            y_axes.append(_density_category_axis(
+                panel.grid.y_edges, grid_index=index, show_labels=col == 0,
+                interval=y_interval,
+            ))
+            panel_titles.append({
+                "text": _density_panel_title(panel, structures[index]),
+                "left": f"{left:.2f}%", "top": f"{top:.2f}%",
+                "textStyle": {"fontSize": 12, "fontWeight": 600, "color": "#245C55"},
+            })
+            add_panel(panel, structures[index], index, trend_min_r=_DENSITY_TREND_MIN_R)
+    else:
+        layout = _DENSITY_SINGLE_LAYOUT
+        panel = panels[0]
+        structure = structures[0]
+        main_left = layout["left"]
+        main_width = 100.0 - layout["left"] - layout["right"] - layout["hist_width"] - layout["hist_gap"]
+        main_top = layout["top"] + layout["hist"] + layout["hist_gap"]
+        main_height = 100.0 - main_top - layout["bottom"]
+        hist_left = main_left + main_width + layout["hist_gap"]
+        grids.append({
+            "left": f"{main_left:.2f}%", "top": f"{main_top:.2f}%",
+            "width": f"{main_width:.2f}%", "height": f"{main_height:.2f}%",
+            "containLabel": False,
+        })
+        grids.append({
+            "left": f"{main_left:.2f}%", "top": f"{layout['top']:.2f}%",
+            "width": f"{main_width:.2f}%", "height": f"{layout['hist']:.2f}%",
+            "containLabel": False,
+        })
+        grids.append({
+            "left": f"{hist_left:.2f}%", "top": f"{main_top:.2f}%",
+            "width": f"{layout['hist_width']:.2f}%", "height": f"{main_height:.2f}%",
+            "containLabel": False,
+        })
+        x_axes.append(_density_category_axis(
+            panel.grid.x_edges, grid_index=0, show_labels=True,
+            interval=_axis_label_interval(view.bin_shape[0], 14),
+            name=x_label, name_gap=34,
+        ))
+        y_axes.append(_density_category_axis(
+            panel.grid.y_edges, grid_index=0, show_labels=True,
+            interval=_axis_label_interval(view.bin_shape[1], 8),
+            name=y_label, name_gap=54,
+        ))
+        x_axes.append(_density_category_axis(
+            panel.grid.x_edges, grid_index=1, show_labels=False,
+        ))
+        y_axes.append(_density_marginal_value_axis(1))
+        x_axes.append(_density_marginal_value_axis(2))
+        y_axes.append(_density_category_axis(
+            panel.grid.y_edges, grid_index=2, show_labels=False,
+        ))
+        add_panel(panel, structure, 0, trend_min_r=None)
+        # 整体布局保留均值参考线（分面格子太小，画进去只会变成噪声）。
+        # 坐标同样要换算成类目下标：markLine 的 xAxis/yAxis 在类目轴上按
+        # "类目下标"解释，直接给原始数值会落到轴外而不显示。均值落在可视
+        # 范围外时直接不画——类目下标会被夹到边界格上，反而画出一条位置
+        # 错误的线（Plotly 的 add_vline/add_hline 在范围外同样不可见）。
+        mark_items: list[dict[str, Any]] = []
+        mean_x = structure.get("mean_x") if structure else None
+        mean_y = structure.get("mean_y") if structure else None
+        if mean_x is not None and _within_range(mean_x, view.x_range):
+            mark_items.append({
+                "xAxis": _bin_index(float(mean_x), panel.grid.x_edges, nearest=True),
+                "lineStyle": {"color": "#9aa0a6", "width": 1.2, "type": "dashed", "opacity": 0.9},
+                "label": {"formatter": f"x 均值 {_format_number(mean_x)}",
+                          "position": "insideEndTop", "color": "#9aa0a6", "fontSize": 10},
+            })
+        if mean_y is not None and _within_range(mean_y, view.y_range):
+            mark_items.append({
+                "yAxis": _bin_index(float(mean_y), panel.grid.y_edges, nearest=True),
+                "lineStyle": {"color": "#9aa0a6", "width": 1.2, "type": "dashed", "opacity": 0.9},
+                "label": {"formatter": f"y 均值 {_format_number(mean_y)}",
+                          "position": "insideEndRight", "color": "#9aa0a6", "fontSize": 10},
+            })
+        if mark_items:
+            series[heatmap_indexes[0]]["markLine"] = {
+                "silent": True, "symbol": "none",
+                "label": {"color": _ECHARTS_TEXT_SECONDARY, "fontSize": 10},
+                "data": mark_items,
+            }
+        series.extend(_density_marginal_series(
+            panel.grid, bar_color=_series_color(4), x_label=x_label, y_label=y_label,
+        ))
+
+    if faceted:
+        subtext = (
+            f"{x_label} × {y_label} · 按{color_label or '分组'}拆成 {len(panels)} 个密度面板"
+            f" · {view.bin_label} 网格"
+        )
+    else:
+        only = f" · {panels[0].name}" if panels[0].name else ""
+        subtext = (
+            f"{x_label} × {y_label} · {view.bin_label} 密度网格"
+            f" · {view.total:,} 条记录{only}"
+        )
+    titles: Any = [{**_ECHARTS_BASE_TITLE, "text": title, "subtext": subtext}]
+    if faceted:
+        titles.extend(panel_titles)
+
+    legend = {**_ECHARTS_BASE_LEGEND, "top": "13.5%", "right": 24}
+    if has_extremes:
+        legend["data"] = ["最外围记录"]
+
+    data_zoom: list[dict[str, Any]] = []
+    if faceted:
+        indexes = list(range(len(panels)))
+        data_zoom.append({"type": "inside", "xAxisIndex": indexes, "filterMode": "none"})
+        data_zoom.append({"type": "inside", "yAxisIndex": indexes, "filterMode": "none"})
+    else:
+        data_zoom.append({"type": "inside", "xAxisIndex": [0, 1], "filterMode": "none"})
+        data_zoom.append({"type": "inside", "yAxisIndex": [0, 2], "filterMode": "none"})
+
+    option: dict[str, Any] = {
+        "title": titles if faceted else titles[0],
+        "tooltip": {
+            **_ECHARTS_BASE_TOOLTIP, "trigger": "item",
+            "formatter": _density_tooltip_formatter(x_label, y_label),
+        },
+        "legend": legend,
+        "grid": grids,
+        "xAxis": x_axes,
+        "yAxis": y_axes,
+        # 一个 visualMap 就是所有面板共用的颜色键（分面共享同一套档位才能横向比较）
+        "visualMap": _density_visual_map(bands, view.band_colors(), heatmap_indexes),
+        "toolbox": {**_ECHARTS_BASE_TOOLBOX},
+        "color": _ECHARTS_PALETTE,
+        # 网格图不需要入场动画：dataZoom 重排一万多个格子时动画只会带来闪烁
+        "animation": False,
+        "series": series,
+        "dataZoom": data_zoom,
+        # 顶层非标准键：亮/暗两套档位色板随图带过去，供注入的换肤脚本与前端
+        # 缩略图整组切换（同一颜色在两种主题下必须代表同一档记录数）。
+        "densityBands": {"light": light_bands, "dark": dark_bands},
+    }
+    if not faceted:
+        # 主面板与边缘直方图的分箱一一对应，联动十字线让"这一列的分布"对上"哪一根柱子"
+        option["axisPointer"] = {
+            "link": [{"xAxisIndex": [0, 1]}, {"yAxisIndex": [0, 2]}],
+            "label": {"backgroundColor": _ECHARTS_TEXT_SECONDARY},
+        }
+    return option
+
+
+def _density_interpretation(
+    df: pd.DataFrame, *, view: DensityView, x: str, y: str, color: str | None, title: str,
+) -> str:
+    """密度视图的白话解读：讲清"颜色读什么"＋把算出来的锚点写成业务句子。
+
+    点云图原本的解读（"滚轮缩放可查看密集区域，框选可隔离离群点"）对密度图
+    不成立——没有可框选的离散点，颜色也不表示数值大小。这里改成：相关性一句
+    话 + 密度编码说明 + 最密集区域 + 分面差异 + 正确的交互提示，与 Plotly
+    分支的 ``density_plotly.density_interpretation`` 同口径。
+    """
+    x_label = _build_axis_label(x)
+    y_label = _build_axis_label(y)
+    color_label = _build_axis_label(color) if color else None
+    pair = df[[x, y]].apply(pd.to_numeric, errors="coerce").dropna()
+    structure = (
+        _scatter_structure(pair[x].astype(float).tolist(), pair[y].astype(float).tolist())
+        if len(pair) >= 3 else None
+    )
+    r_value = structure.get("r") if structure else None
+    parts: list[str] = []
+    if r_value is not None:
+        direction = "正向" if r_value > 0 else "反向"
+        strength = "强" if abs(r_value) > 0.7 else "中等" if abs(r_value) > 0.4 else "弱"
+        parts.append(
+            f"「{title}」共 {view.rows_used:,} 条记录，呈{direction}{strength}相关"
+            f"（r={r_value:.2f}）。"
+        )
+    else:
+        parts.append(f"「{title}」共 {view.rows_used:,} 条记录")
+    parts.append(density_note(view, color_label=color_label))
+    hotspot = hotspot_sentence(view, x_label, y_label)
+    if hotspot:
+        parts.append(hotspot)
+    if color_label:
+        panels = panels_sentence(view, color_label)
+        if panels:
+            parts.append(panels)
+    parts.append(
+        "颜色越深表示该区域记录越密集（色标给出每格记录数区间）；"
+        "滚轮可放大局部，悬浮查看每格覆盖范围与记录数。"
+    )
+    return "".join(parts)
 
 
 def _echarts_pie(
@@ -1791,6 +2678,23 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
         // swapColor 原样返回，等效于直接回落亮色原值。
         if (!chart.__themeSnapshot) chart.__themeSnapshot = chart.getOption() || {};
         var cur = chart.__themeSnapshot;
+        // title 可能是数组（分面密度图：首个是主标题，其余是各面板标题）：
+        // 逐项带上原文重发（不依赖 setOption 对组件数组的按项合并语义），
+        // 主标题跟主题字色、面板标题保持固定的青绿强调色在暗底上提亮。
+        // 单标题仍走上面的对象写法，既有行为完全不变。
+        if (cur.title && cur.title.length > 1) {
+          update.title = cur.title.map(function(t, i) {
+            var item = {};
+            for (var tk in t) {
+              if (Object.prototype.hasOwnProperty.call(t, tk)) item[tk] = t[tk];
+            }
+            item.textStyle = i === 0
+              ? { color: textColor }
+              : { color: isDark ? '#8fd3cc' : '#245C55' };
+            if (i === 0) item.subtextStyle = { color: labelColor };
+            return item;
+          });
+        }
         if (cur.xAxis && cur.xAxis.length) update.xAxis = cur.xAxis.map(function() { return axisUpdate(); });
         if (cur.yAxis && cur.yAxis.length) update.yAxis = cur.yAxis.map(function() { return axisUpdate(); });
         if (cur.parallelAxis && cur.parallelAxis.length) update.parallelAxis = cur.parallelAxis.map(function() { return axisUpdate(); });
@@ -1822,6 +2726,11 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
         // visualMap：除文字色外，暗色下替换色板——浅色端（相关性中点 #F7F7F7、
         // 顺序色低端 #EDF3F9）在暗底上刺眼；首次运行时缓存浅色原值供切回。
         // 发散色板（>3 段）中点换暗底色，两端降饱和抬亮度。
+        // 密度图的档位色板（piecewise）不走 inRange：颜色在 pieces[i].color 上，
+        // 必须整组换成 densityBands 的另一套，才能保证同一颜色在两种主题下代表
+        // 同一档记录数（Tableau 明/暗色板同理）。逐项带上原始 min/max/label，
+        // 不依赖 setOption 对数组的按项合并语义。
+        var densityBands = cur.densityBands || chart.__densityBands || null;
         if (cur.visualMap && cur.visualMap.length) {
           if (!chart.__vmLightRange) {
             chart.__vmLightRange = cur.visualMap.map(function(v) {
@@ -1838,6 +2747,19 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
                     ? ['#6FA3DC', '#4C79A9', '#3c4654', '#2a2b2f', '#52383e', '#A0525E', '#E0787F']
                     : ['#262b33', '#3A6386', '#4E8FC7'])
                 : light };
+            }
+            if (densityBands) {
+              var want = isDark ? densityBands.dark : densityBands.light;
+              if (want && want.length && v.pieces && v.pieces.length) {
+                upd.pieces = v.pieces.map(function(piece, j) {
+                  var copy = {};
+                  for (var pk in piece) {
+                    if (Object.prototype.hasOwnProperty.call(piece, pk)) copy[pk] = piece[pk];
+                  }
+                  if (want[j] && want[j].color) copy.color = want[j].color;
+                  return copy;
+                });
+              }
             }
             return upd;
           });
@@ -1884,11 +2806,29 @@ _ECHARTS_DARK_MODE_SCRIPT = """<script>
               m.label = m.label || {};
               m.label.color = isDark ? '#e8eaed' : '#1a1d29';
               // 数据项级预置白字（亮色深格）：暗色色板极值格反转为亮色，
-              // 同步翻成深字保证强相关/高值格可读，切回亮色还原白字
+              // 同步翻成深字保证强相关/高值格可读，切回亮色还原白字。
+              // 复制整项再改色：label 里可能还有 show/formatter/position
+              // （密度图的"最密 N 条"峰值标签），只回写 {value,label} 会
+              // 把这些字段一起丢掉，峰值标注切主题后就消失了。
               if (Array.isArray(s.data)) {
                 m.data = s.data.map(function(d) {
                   if (d && d.label && d.label.color) {
-                    return { value: d.value, label: { color: isDark ? '#16324a' : '#ffffff' } };
+                    var copy = {};
+                    for (var dk in d) {
+                      if (Object.prototype.hasOwnProperty.call(d, dk)) copy[dk] = d[dk];
+                    }
+                    var label = {};
+                    for (var lk in d.label) {
+                      if (Object.prototype.hasOwnProperty.call(d.label, lk)) label[lk] = d.label[lk];
+                    }
+                    // 只翻"亮色深格白字"这一种约定（相关性热力图的数据项级预置
+                    // 白字）；密度图峰值标签自带白底深红字（两种主题都可读），
+                    // 颜色必须原样保留，否则会被翻成白/深蓝压在白色标签底上。
+                    if (String(d.label.color).toLowerCase() === '#ffffff') {
+                      label.color = isDark ? '#16324a' : '#ffffff';
+                    }
+                    copy.label = label;
+                    return copy;
                   }
                   return d;
                 });
@@ -2111,6 +3051,9 @@ _ECHARTS_HTML_TEMPLATE = """<!doctype html>
   }}
   window.addEventListener('resize', function(){{ chart.resize(); }});
   // 主题切换：监听 prefers-color-scheme（暂只渲染浅色，预留深色扩展点）
+  // 密度图的档位色板挂在顶层非标准键 densityBands 上：getOption() 不保证
+  // 保留非标准键，这里顺手挂到实例上供换肤脚本取用（非密度图无此键，跳过）。
+  if (option.densityBands) chart.__densityBands = option.densityBands;
   window.__echartsInstance = chart;
 }})();
 </script>
@@ -2215,8 +3158,15 @@ def _build_echarts_option(
     aggregation: str,
     title: str,
     bins: int,
+    density_view: DensityView | None = None,
+    scale_mode: str = "auto",
 ) -> dict[str, Any]:
-    """根据 chart_type 分派到对应的 ECharts option 生成器。"""
+    """根据 chart_type 分派到对应的 ECharts option 生成器。
+
+    ``density_view`` 由 ``_render_echarts`` 预先算好（解读文案也要用同一份
+    视图，避免重复聚合）；直接调用本函数时按同一条件自行判定，保证
+    "超大数据散点走密度视图"这一分派在两条入口上完全一致。
+    """
     if chart_type == "bar":
         return _echarts_bar(df, x=x, y=y, color=color, aggregation=aggregation, title=title)
     if chart_type == "line":
@@ -2224,6 +3174,12 @@ def _build_echarts_option(
     if chart_type == "area":
         return _echarts_line(df, x=x, y=y, color=color, aggregation=aggregation, title=title, area=True)
     if chart_type == "scatter":
+        view = density_view
+        if view is None:
+            view, _ = _density_view_for(df, chart_type=chart_type, x=x, y=y, color=color,
+                                        scale_mode=scale_mode)
+        if view is not None:
+            return _echarts_scatter_density(df, x=x, y=y, color=color, title=title, view=view)
         return _echarts_scatter(df, x=x, y=y, color=color, size=size, title=title)
     if chart_type == "scatter_3d":
         if x and y and z and z in df.columns and pd.api.types.is_numeric_dtype(df[z]):
@@ -2275,6 +3231,7 @@ def _render_echarts(
     display_title: str,
     stem: str,
     chart_type_source: str = "explicit",
+    scale_mode: str = "auto",
 ) -> dict[str, Any]:
     """ECharts 渲染主入口：生成 option、HTML、解读文本，返回 response dict。"""
     from data_agent.chart_sampling import (
@@ -2283,26 +3240,37 @@ def _render_echarts(
         sampling_note,
     )
 
+    # 超大数据散点先聚合成分面密度视图：option 与解读文案共用同一份聚合结果
+    # （重复聚合 30 万行是白跑）。scale_mode="auto" 时对极端值给"主体尺度"。
+    density_view, density_scale = _density_view_for(
+        df, chart_type=chart_type, x=x, y=y, color=color, scale_mode=scale_mode,
+    )
+
     # 生成 ECharts option
     option = _build_echarts_option(
         df, chart_type=chart_type, x=x, y=y, color=color, z=z, size=size,
         values=values, path_columns=path_columns, dimensions=dimensions,
         aggregation=aggregation, title=display_title, bins=bins,
+        density_view=density_view, scale_mode=scale_mode,
     )
 
-    # 自动白话解读
+    # 自动白话解读（密度图走密度编码说明，见 _density_interpretation）
     interpretation = _auto_interpret(
         df, chart_type=chart_type, x=x, y=y, color=color,
         aggregation=aggregation, title=display_title,
+        density_view=density_view,
     )
 
     # 大数据 HTML 嵌入降采样：散点/折线超过嵌入上限时，交互 HTML 按等距
     # 抽样渲染（5 万点以上视觉密度已饱和，HTML 体积/传输/解析/内存随点数
     # 线性增长——30 万行 ECharts 散点 HTML 约 12MB）。完整 option 不丢：
     # .echarts.json 产物仍写全量数据（也是损坏恢复链的数据源）。
+    # 密度图跳过降采样：它已经没有逐点数据（聚合后只有一万多个格子），
+    # 抽样器只会按类目轴长度误判成"抽样了 154 个点"并破坏热力图。
     html_option = option
     sampling_info: dict[str, Any] | None = None
-    if chart_type in {"scatter", "scatter_3d", "line", "area"} and len(df) > _EMBED_MAX_POINTS:
+    if (density_view is None and chart_type in {"scatter", "scatter_3d", "line", "area"}
+            and len(df) > _EMBED_MAX_POINTS):
         html_option, original_pts, embedded_pts = sample_echarts_option_for_embed(
             option, _EMBED_MAX_POINTS
         )
@@ -2365,9 +3333,24 @@ def _render_echarts(
             "total_combinations": len(df),
             "missing_count": 0,
         },
-        "scale_mode": "auto",
-        "scale_details": {"scale_mode": "auto", "extreme_points": []},
+        "scale_mode": density_scale["scale_mode"] if density_scale else "auto",
+        # 字段与 Plotly 分支的 _apply_outlier_scale_controls 完全一致：
+        # 极端值走"主体尺度"时，坐标轴范围随响应一起返回，调用方不必猜。
+        "scale_details": density_scale or {"scale_mode": "auto", "extreme_points": []},
     }
+    if density_view is not None:
+        # 渲染方式对调用方（Agent/前端）可见：密度视图不是抽样，是精确聚合，
+        # 因此既没有 sampling 字段，也不需要"完整数据在 JSON 里"的免责声明；
+        # 网格覆盖范围与面板构成在这里说清楚（与 Plotly 分支同结构）。
+        result["density_view"] = {
+            "applied": True,
+            "bins": density_view.bin_label,
+            "panels": [panel.name for panel in density_view.panels],
+            "bands": [band_label(band) for band in density_view.bands],
+            "rows_used": density_view.rows_used,
+            "rows_outside_view": density_view.dropped_rows,
+            "full_data_json": str(json_path),
+        }
     if sampling_info is not None:
         result["sampling"] = sampling_info
     return result

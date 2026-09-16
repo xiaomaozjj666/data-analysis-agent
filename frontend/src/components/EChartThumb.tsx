@@ -2,6 +2,13 @@ import React, { useEffect, useRef, useState } from "react";
 import { pickChartIcon } from "../constants";
 import { fetchJsonWithTimeout } from "../utils/api";
 import useInView from "../hooks/useInView";
+import {
+  asRecord,
+  pickBands,
+  readDensityBands,
+  type DensityBand,
+  type DensityBands,
+} from "./densityThumb";
 
 interface EChartThumbProps {
   /** 图表 preview_url（/api/sessions/{sid}/artifacts/{name}/preview），
@@ -107,6 +114,178 @@ function formatCompact(value: number): string {
   return String(Number(value.toFixed(2)));
 }
 
+// === 密度视图（≥2 万行散点聚合成的分档热力图）===
+// 语义见 src/data_agent/density.py：颜色按 1-2-5 系列分档表达每格记录数，
+// 浅/暗两套档位色板随产物一起带过来（顶层非标准键 densityBands）。
+// 缩略图只做两件事：① 整组换成当前主题的档位色（同一颜色在两种主题下必须
+// 代表同一档记录数）；② 去掉轴文字/分隔线/档位图例——209×131 里它们全压在
+// 格子上，"一块小热力图"才是缩略图该有的样子。densityBands 缺失或损坏时
+// readDensityBands 返回 null，整个函数退回普通图表行为。
+
+// 档位 → visualMap piece：只用于 pieces 缺失/损坏时的兜底重建（后端 pieces
+// 自带 min/max，这里按档位边界补，语义一致——档位边界都是整数记录数）。
+function bandPiece(band: DensityBand): Record<string, unknown> {
+  const piece: Record<string, unknown> = { color: band.color };
+  if (band.label) piece.label = band.label;
+  if (band.low !== null) piece.min = band.low;
+  if (band.high !== null) piece.max = band.high;
+  return piece;
+}
+
+// pieces 是密度格子的唯一色源（图例隐藏后仍负责着色）：整组换成当前主题的
+// 档位色，min/max/label 等结构原样保留。优先按 label 匹配（顺序被后端调过也
+// 能对上），退回下标；两处都拿不到就保留原色。
+function swapPieceColors(pieces: unknown[], palette: DensityBand[]): unknown[] {
+  const byLabel = new Map(palette.map((band) => [band.label, band.color]));
+  return pieces.map((piece, index) => {
+    const record = asRecord(piece);
+    if (!record) return piece;
+    const matched = typeof record.label === "string" ? byLabel.get(record.label) : undefined;
+    return { ...record, color: matched ?? palette[index]?.color ?? record.color };
+  });
+}
+
+function densityVisualMap(source: unknown, bands: DensityBands, isDark: boolean): unknown {
+  const palette = pickBands(bands, isDark);
+  if (source === undefined || source === null) {
+    // 没有 visualMap：档位色板是密度的唯一色源，补一套隐藏的分档映射
+    // （否则 ECharts 退回默认色板，深浅不再代表记录数）
+    return palette ? { show: false, type: "piecewise", pieces: palette.map(bandPiece) } : source;
+  }
+  const isList = Array.isArray(source);
+  const updated = (isList ? source : [source]).map((entry, index) => {
+    const record = asRecord(entry);
+    if (!record) return entry;
+    // 档位图例（分档色块 + 滑条）在迷你卡里会盖住半个绘图区
+    const copy: Record<string, unknown> = { ...record, show: false };
+    if (index > 0 || !palette) return copy;
+    const inRange = asRecord(copy.inRange);
+    if (Array.isArray(copy.pieces)) {
+      copy.pieces = swapPieceColors(copy.pieces, palette);
+    } else if (inRange) {
+      copy.inRange = { ...inRange, color: palette.map((band) => band.color) };
+    } else {
+      copy.type = "piecewise";
+      copy.pieces = palette.map(bandPiece);
+    }
+    return copy;
+  });
+  return isList ? updated : updated[0];
+}
+
+// 密度图的轴只负责定位格子：轴名、刻度文字、轴线与分隔线在缩略图里都压在
+// 格子上。分面 / 边缘分布会有多组轴（xAxis、yAxis 数组按 gridIndex 对应各自
+// 的 grid），逐个按同一规则处理。
+// splitArea 是类目轴交替底纹（普通热力图用它读行列），它在**零记录格**后面
+// 画出来会冒充数据（密度图的空格必须是透明的，见 density.py），一并关掉。
+function densityAxis(axis: unknown): unknown {
+  if (!axis || typeof axis !== "object") return axis;
+  const copy: Record<string, unknown> = { ...(axis as Record<string, unknown>) };
+  copy.name = "";
+  delete copy.nameTextStyle;
+  for (const key of ["axisLabel", "axisLine", "axisTick", "splitLine", "splitArea"]) {
+    copy[key] = { ...(asRecord(copy[key]) ?? {}), show: false };
+  }
+  return copy;
+}
+
+// 多 grids（边缘分布 / 分面）保留原始几何：series 用 gridIndex 引用各自的
+// 网格，换成单个 grid 会让所有面板叠在第一个网格上。只把**数值型（px）**内边距
+// 收小——图例与轴名已隐藏，大图里的那些留白在 209×131 卡里只会挤掉数据；
+// 百分比写法是多面板的比例布局，原样保留。
+const DENSITY_GRID_INSET = 8;
+const DENSITY_GRID_TIGHT = { left: 4, right: 4, top: 4, bottom: 4, containLabel: false };
+
+function densityGrids(grid: unknown): unknown {
+  const adjust = (entry: unknown): unknown => {
+    const record = asRecord(entry);
+    if (!record) return { ...DENSITY_GRID_TIGHT };
+    const copy: Record<string, unknown> = { ...record, containLabel: false };
+    for (const key of ["left", "right", "top", "bottom"]) {
+      const value = record[key];
+      if (typeof value === "number" && Number.isFinite(value)) {
+        copy[key] = Math.min(value, DENSITY_GRID_INSET);
+      }
+    }
+    return copy;
+  };
+  if (Array.isArray(grid)) return grid.map(adjust);
+  const record = asRecord(grid);
+  return record ? adjust(record) : { ...DENSITY_GRID_TIGHT };
+}
+
+// 密度图的锚点注记（与 Plotly 侧删掉的 layout.annotations / layout.shapes 对位）。
+//
+// 实测产物（api_bigtest0001 的散点图_3.echarts.json）里它们**不是** markPoint/
+// markLine，而是两种更隐蔽的形态：
+//   ① 每个热力图系列恰有一个"对象型"数据项，带 itemStyle（#E15759 红框 + 阴影）
+//      与 label（"最密 10,104 条" 红字白底框）。per-item 的 label 会盖过 series
+//      级的 label.show=false，所以 209×131 里四个分面各顶一个红框文字，整张缩略图
+//      被读成"红框"而不是密度图；
+//   ② 每面板一条趋势线，是 silent（legendHoverLink:false、tooltip.show:false）的
+//      line 系列——非交互，属锚点注记而非数据系列。
+// markPoint/markLine/graphic 一并兜底清理（其他后端版本可能这么存）。
+// 只对密度选项生效：普通图表（含 correlation_heatmap）的标注必须逐字不变。
+function stripDensityOverlays(option: Record<string, unknown>): void {
+  delete option.graphic;
+  if (!Array.isArray(option.series)) return;
+  const kept: unknown[] = [];
+  // 抽掉趋势线会改变后续系列的下标，而 visualMap 是按**下标**绑定系列的
+  // （实测产物：seriesIndex [0,3,6,9] 指四个热力图）。不重映射的话，后两个
+  // 热力图会掉出档位色板、退回全局调色板（橙/红大色块）——比注记更糟。
+  const indexMap = new Map<number, number>();
+  option.series.forEach((item, index) => {
+    const series = asRecord(item);
+    let keptItem: unknown = item;
+    if (series) {
+      // 非交互的趋势线是锚点注记：整条系列不再进入迷你图
+      if (series.type === "line" && (series.silent === true || series.legendHoverLink === false)) return;
+      const copy: Record<string, unknown> = { ...series };
+      delete copy.markPoint;
+      delete copy.markLine;
+      if (copy.type === "heatmap" && Array.isArray(copy.data)) {
+        // 峰值格只留 value（数据本体）；红框与"最密 N 条"文字去掉
+        copy.data = copy.data.map((cell) => {
+          const record = asRecord(cell);
+          if (!record) return cell;
+          const trimmed: Record<string, unknown> = { ...record };
+          delete trimmed.label;
+          delete trimmed.itemStyle;
+          return trimmed;
+        });
+      }
+      keptItem = copy;
+    }
+    indexMap.set(index, kept.length);
+    kept.push(keptItem);
+  });
+  option.series = kept;
+  option.visualMap = remapVisualMapSeries(option.visualMap, indexMap);
+}
+
+// 按系列重映射后的下标改写 visualMap.seriesIndex（数组或单值；被删掉的系列
+// 不再保留引用）。其余字段（piecewise 的 pieces / dimension / selectedMode…）
+// 原样保留——pieces 是格子颜色的唯一来源。返回改写后的结构（不就地改写入参）。
+function remapVisualMapSeries(visualMap: unknown, indexMap: Map<number, number>): unknown {
+  const remap = (value: unknown): number | undefined =>
+    typeof value === "number" && Number.isFinite(value) ? indexMap.get(value) : undefined;
+  const rewrite = (entry: unknown): unknown => {
+    const record = asRecord(entry);
+    if (!record || record.seriesIndex === undefined) return entry;
+    const copy: Record<string, unknown> = { ...record };
+    if (Array.isArray(copy.seriesIndex)) {
+      copy.seriesIndex = copy.seriesIndex.map(remap).filter((value) => value !== undefined);
+    } else {
+      const mapped = remap(copy.seriesIndex);
+      if (mapped === undefined) delete copy.seriesIndex;
+      else copy.seriesIndex = mapped;
+    }
+    return copy;
+  };
+  if (Array.isArray(visualMap)) return visualMap.map(rewrite);
+  return visualMap === undefined ? visualMap : rewrite(visualMap);
+}
+
 // 大图 option 直接塞进 140px 迷你会让图例/标题/坐标轴挤压重叠、文字
 // 错乱。渲染迷你图前精简：删标题/图例/交互组件/轴标题，放大绘图区，
 // 坐标文字用默认深色（画布是浅色底，无论原图深浅主题都可读）。
@@ -127,12 +306,23 @@ function simplifyForThumb(option: Record<string, unknown>, isDark: boolean): Rec
   const textColor = isDark ? "#9aa0a6" : "#5f6368";
   const axisColor = isDark ? "#4a4b50" : "#c7ccd4";
 
+  // 密度视图（大数据散点）走独立分支：档位色板、轴与 grids 的处理都与普通
+  // 图表不同，且必须是"整组换色"而不是按亮度提亮（见上方 density 区块）。
+  const densityBands = readDensityBands(output);
+  const density = densityBands !== null;
+
   // 热力图：color 映射完全来自 visualMap，直接删除会让所有格子
   // 退化成同一个色块（global 色板第一色）。保留精简 visualMap
   // （隐藏滑条、只留 inRange），暗色画布下把深色端提亮保证对比度。
   // 热力图 tooltip 剥离 formatter 后默认展示原始数组 [x,y,v]，
   // 比没有更糟糕，故不保留；点进完整交互图可读。
-  if (hasSeriesType(output, "heatmap")) {
+  if (density) {
+    // 与普通热力图同理：formatter 剥离后 hover 只剩原始数组，不如不给
+    delete output.tooltip;
+    // 峰值红框/"最密 N 条"、分面趋势线与 graphic 注记在迷你卡里盖过密度本身
+    stripDensityOverlays(output);
+    output.visualMap = densityVisualMap(output.visualMap, densityBands, isDark);
+  } else if (hasSeriesType(output, "heatmap")) {
     delete output.tooltip;
     const sourceVm = (output.visualMap ?? {}) as Record<string, unknown>;
     const sourceColors = (
@@ -173,10 +363,13 @@ function simplifyForThumb(option: Record<string, unknown>, isDark: boolean): Rec
     }
     return a;
   };
-  if (Array.isArray(output.xAxis)) output.xAxis = output.xAxis.map(ax);
-  else if (output.xAxis) output.xAxis = ax(output.xAxis);
-  if (Array.isArray(output.yAxis)) output.yAxis = output.yAxis.map(ax);
-  else if (output.yAxis) output.yAxis = ax(output.yAxis);
+  // 密度图没有可读的轴（分箱坐标在 209×131 里读不出数值），轴名/刻度/分隔线
+  // 一律去掉，只留格子的颜色分布
+  const axisMapper = density ? densityAxis : ax;
+  if (Array.isArray(output.xAxis)) output.xAxis = output.xAxis.map(axisMapper);
+  else if (output.xAxis) output.xAxis = axisMapper(output.xAxis);
+  if (Array.isArray(output.yAxis)) output.yAxis = output.yAxis.map(axisMapper);
+  else if (output.yAxis) output.yAxis = axisMapper(output.yAxis);
 
   // 3D 轴（xAxis3D 等）：轴名（销售额/利润/数量）与轴刻度在 209×131
   // 小卡里重叠成文字团，一并删除；刻度字号降到 8
@@ -242,8 +435,12 @@ function simplifyForThumb(option: Record<string, unknown>, isDark: boolean): Rec
   }
 
   // 绘图区占满容器：留少量边距 + 容纳轴标签（顶部多留一点，
-  // 避免柱状图/折线图顶部网格线贴边被卡片裁切）
-  output.grid = { left: 4, right: 10, top: gridTop, bottom: 6, containLabel: true };
+  // 避免柱状图/折线图顶部网格线贴边被卡片裁切）。
+  // 密度图例外：多 grids 的几何由后端按面板比例给出（series 用 gridIndex
+  // 引用），不能被单个 grid 覆盖，只收紧数值型内边距。
+  output.grid = density
+    ? densityGrids(output.grid)
+    : { left: 4, right: 10, top: gridTop, bottom: 6, containLabel: true };
   // 柱状图数值标签：预格式化静态文本（在 markPoint 数值提取之后，
   // 不能把数据项提前转成对象）
   bakeBarValueLabels(output);

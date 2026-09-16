@@ -45,6 +45,7 @@ from data_agent.chart_sampling import (
     sample_plotly_figure_for_embed,
     sampling_note,
 )
+from data_agent.density import band_label, build_density_view, should_use_density
 from data_agent.serialization import json_text
 from data_agent.sql_guard import MAX_RESULT_ROWS
 from data_agent.workspace import DataWorkspace, _atomic_write_text
@@ -70,6 +71,8 @@ from .charts import (
     _HAS_RECORDS_COLUMN,
     _HOVER_TEXT_COLUMN,
     _SAMPLE_COUNT_COLUMN,
+    STAT_AGG_THRESHOLD,
+    VIOLIN_SAMPLE_ROWS,
     _add_missing_combination_markers,
     _aggregate_for_chart,
     _annotate_extreme_values,
@@ -81,8 +84,12 @@ from .charts import (
     _localize_boolean_categories,
     _numeric_columns,
     _plotly_auto_interpret,
+    _plotly_binned_histogram,
+    _plotly_box_from_stats,
+    _severe_axis_compression,
     _validate_chart_semantics,
 )
+from .density_plotly import density_figure, density_interpretation, finalize_density_layout
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +138,115 @@ def _plotly_webgl_if_large(fig: Any, df: pd.DataFrame, chart_type: str) -> Any:
     if chart_type in {"scatter", "line"} and len(df) > _PLOTLY_WEBGL_THRESHOLD:
         return _as_scattergl(fig)
     return fig
+
+
+def _stat_agg_note(stat_agg: dict[str, Any]) -> str:
+    """统计图服务端聚合的说明文案（让"渲染方式变了"对用户可见）。"""
+    total = int(stat_agg.get("total", 0))
+    if stat_agg.get("kind") == "box":
+        outliers = int(stat_agg.get("outliers", 0))
+        share = outliers / total * 100 if total else 0.0
+        return (
+            f"\n\n注：数据量较大（{total:,} 条），箱体与须线按全量数据的五数概括"
+            f"（下四分位/中位数/上四分位）与 1.5 倍四分位距直接计算绘制，"
+            f"共检出 {outliers:,} 条须线外记录（{share:.1f}%）未逐点绘制。"
+            "原始数据未做任何裁剪。"
+        )
+    return (
+        f"\n\n注：数据量较大（{total:,} 条），直方图由服务端按全量数据分箱"
+        f"（{int(stat_agg.get('bins', 0))} 个区间）绘制，纵轴是真实记录数"
+        "而非抽样估计。"
+    )
+
+
+def _stratified_sample(df: pd.DataFrame, color: str | None, rows: int = VIOLIN_SAMPLE_ROWS) -> pd.DataFrame:
+    """按分组列分层抽样（每组配额与其占比成正比）。
+
+    小提琴图的形状来自核密度，两万个样本与三十万样本画出的小提琴几乎重合；
+    但直接 `df.sample` 在极不平衡的分组下会把小组合并成一根细线，因此按组
+    分配配额（每组至少 200 行，保证形状可辨）。
+    """
+    if len(df) <= rows:
+        return df
+    if not color or color not in df.columns:
+        return df.sample(n=rows, random_state=42)
+    groups = df.groupby(color, observed=True, dropna=True)
+    quota = {level: max(200, int(round(rows * len(chunk) / len(df))))
+             for level, chunk in groups}
+    pieces = [chunk.sample(n=min(quota[level], len(chunk)), random_state=42)
+              for level, chunk in groups]
+    if not pieces:
+        return df.sample(n=rows, random_state=42)
+    return pd.concat(pieces)
+
+
+def _density_view_for(
+    df: pd.DataFrame,
+    *,
+    x: str,
+    y: str,
+    color: str | None,
+    scale_mode: str,
+) -> tuple[Any, dict[str, Any] | None]:
+    """超大数据散点 → 密度视图；返回 ``(view, scale_details)``，不适用时 ``(None, None)``。
+
+    为什么不再逐点渲染：30 万行散点按"每点一个标记"画出来是同一像素上叠
+    几十个半透明点，alpha 饱和成一团灰噪声——品类色互相覆盖、密度差异被
+    抹平（用户实测反馈"所有的点和数据都堆在一起，根本看不出来什么"）。
+    改为服务端聚合成网格 + 分档颜色表达记录数（datashader / 2D 直方图 /
+    seaborn jointplot 的通行做法），并在有颜色分组时拆成分面密度图。
+
+    ``scale_details`` 的字段与 ``_apply_outlier_scale_controls`` 完全一致，
+    保证响应结构不因渲染方式切换而变化：极端值仍走"主体尺度"，超出范围
+    的记录不计入网格（条数写进解读文案，不静默丢数据）。
+    """
+    if not (x and y and x in df.columns and y in df.columns):
+        return None, None
+    if not should_use_density(len(df)):
+        return None, None
+    x_values = pd.to_numeric(df[x], errors="coerce")
+    y_values = pd.to_numeric(df[y], errors="coerce")
+    pair = pd.DataFrame({"x": x_values.to_numpy(), "y": y_values.to_numpy()}).dropna()
+    if len(pair) < 2:
+        return None, None
+
+    x_guard = y_guard = None
+    if scale_mode != "full":
+        x_guard = _severe_axis_compression(pair["x"].tolist())
+        y_guard = _severe_axis_compression(pair["y"].tolist())
+    groups = None
+    faceted = False
+    if color and color in df.columns:
+        groups = df[color].tolist()
+        faceted = df[color].nunique(dropna=True) > 1
+    # 分面后面板变窄，网格同步变少，保证每格在屏幕上仍接近正方形。
+    panel_size = (556.0, 452.0) if faceted else (1080.0, 560.0)
+    view = build_density_view(
+        x_values.to_numpy(dtype=float),
+        y_values.to_numpy(dtype=float),
+        groups=groups,
+        panel_size=panel_size,
+        x_range=(x_guard["lower"], x_guard["upper"]) if x_guard else None,
+        y_range=(y_guard["lower"], y_guard["upper"]) if y_guard else None,
+    )
+    if view is None:
+        return None, None
+
+    axis_ranges: dict[str, list[float]] = {}
+    if x_guard:
+        axis_ranges["x"] = [x_guard["lower"], x_guard["upper"]]
+    if y_guard:
+        axis_ranges["y"] = [y_guard["lower"], y_guard["upper"]]
+    extreme_points = max(
+        x_guard["extreme_count"] if x_guard else 0,
+        y_guard["extreme_count"] if y_guard else 0,
+    )
+    scale_details = {
+        "scale_mode": "robust" if axis_ranges else "full",
+        "extreme_points": extreme_points,
+        "axis_ranges": axis_ranges,
+    }
+    return view, scale_details
 
 #: 图表分类色板：Tableau 10 官方默认色板（数据可视化业界标准，明度
 #: 层级统一、色相分布均匀，白底/暗底均协调）。双引擎（Plotly /
@@ -301,14 +417,36 @@ _PLOTLY_DARK_MODE_SCRIPT = """<script>
       'paper_bgcolor': isDark ? '#1c2433' : '#fbfaf5',
       'plot_bgcolor': isDark ? '#1c2433' : '#fbfaf5',
       'font.color': isDark ? '#e6eaf0' : '#102a2a',
-      'xaxis.gridcolor': isDark ? '#2a3445' : '#E5ECE9',
-      'yaxis.gridcolor': isDark ? '#2a3445' : '#E5ECE9',
-      'xaxis.zerolinecolor': isDark ? '#3a4458' : '#C9D5D1',
-      'yaxis.zerolinecolor': isDark ? '#3a4458' : '#C9D5D1',
+      // 标题字体色是显式写死的深色（builder 统一样式），不改它的话暗色下
+      // 标题就是"深色字 + 深色底"，实测在密度图/多子图上直接看不见。
+      'title.font.color': isDark ? '#e6eaf0' : '#102a2a',
       'legend.bgcolor': isDark ? 'rgba(28, 36, 51, 0.85)' : 'rgba(255, 255, 255, 0.82)',
       'legend.bordercolor': isDark ? '#2a3445' : '#D9E1DE',
     };
+    // 多子图（散点矩阵、密度分面、边缘直方图）的坐标轴是 xaxis/xaxis2/xaxis3…
+    // 只改 xaxis/yaxis 会让其余子图保留浅色网格线，在深色底上出现刺眼白线。
+    Object.keys(plotEl.layout).forEach(function(key) {
+      if (!/^[xy]axis[0-9]*$/.test(key)) return;
+      update[key + '.gridcolor'] = isDark ? '#2a3445' : '#E5ECE9';
+      update[key + '.zerolinecolor'] = isDark ? '#3a4458' : '#C9D5D1';
+    });
     Plotly.relayout(plotEl, update);
+    // 密度视图（大数据散点聚合）的档位色板随主题切换：浅色主题下低档是
+    // 近白浅蓝、暗色主题下低档是深蓝——同一颜色在两种主题下必须代表同一
+    // 档记录数，所以两套色标由图对象带过来，这里只做替换不做重新分档。
+    // restyle 的 colorscale 必须包一层数组（值数组按 trace 展开），否则
+    // plotly.js 会把 [[pos, color], ...] 误读成"每个 trace 一个色标"。
+    var densityMeta = plotEl.layout && plotEl.layout.meta && plotEl.layout.meta.density_view;
+    if (densityMeta && densityMeta.colorscales) {
+      var bandScale = isDark ? densityMeta.colorscales.dark : densityMeta.colorscales.light;
+      var heatmapIndexes = [];
+      for (var i = 0; i < plotEl.data.length; i++) {
+        if (plotEl.data[i].type === 'heatmap') heatmapIndexes.push(i);
+      }
+      if (heatmapIndexes.length && bandScale) {
+        try { Plotly.restyle(plotEl, {'colorscale': [bandScale]}, heatmapIndexes); } catch (_) {}
+      }
+    }
     document.documentElement.style.background = isDark ? '#1c2433' : '#fbfaf5';
     document.body.style.background = isDark ? '#1c2433' : '#fbfaf5';
   }
@@ -1084,6 +1222,17 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             "labels": labels,
             "color_discrete_sequence": _CHART_COLORS,
         }
+        # 大数据散点 → 密度视图（见 data_agent/density.py）。聚合后的散点行数
+        # 通常很小，只有"每行一个点"的原始散点才会触发。
+        density_view = None
+        density_scale: dict[str, Any] | None = None
+        if chart_type == "scatter" and x and y:
+            density_view, density_scale = _density_view_for(
+                df, x=x, y=y, color=color, scale_mode=scale_mode,
+            )
+        # 统计图（直方图/箱线图）服务端聚合的元信息：只有这两个分支会赋值，
+        # 其余图型保持 None（下游据此决定是否追加说明与响应字段）。
+        stat_agg: dict[str, Any] | None = None
         if chart_type == "bar":
             # 预计算 hover 文本：对无记录 bar（reindex 产生的空白组合）显示
             # "无样本/无记录"，而非让 Plotly 把 y=NaN 格式化成 "nan"。
@@ -1114,17 +1263,49 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         elif chart_type == "area":
             fig = px.area(**common, x=x, y=y, color=color)
         elif chart_type == "scatter":
-            fig = px.scatter(**common, x=x, y=y, color=color, size=size, trendline=None)
+            if density_view is not None:
+                fig = density_figure(
+                    df, x=x, y=y, color=color, view=density_view,
+                    x_label=labels.get(x, _human_column_label(x)),
+                    y_label=labels.get(y, _human_column_label(y)),
+                    title=common["title"], colors=_CHART_COLORS,
+                )
+            else:
+                fig = px.scatter(**common, x=x, y=y, color=color, size=size, trendline=None)
         elif chart_type == "scatter_3d":
             if not x or not y or not z:
                 raise ValueError("scatter_3d 需要 x、y、z。")
             fig = px.scatter_3d(**common, x=x, y=y, z=z, color=color, size=size)
         elif chart_type == "histogram":
-            fig = px.histogram(**common, x=x, color=color, nbins=max(2, min(bins, 200)), marginal="box")
+            if len(df) > STAT_AGG_THRESHOLD:
+                # 大数据：服务端分箱，纵轴仍是真实记录数（不是抽样估计）
+                binned = _plotly_binned_histogram(
+                    df, x=x, bins=bins, colors=_CHART_COLORS, color=color,
+                    labels=labels, title=common["title"],
+                )
+                if binned is not None:
+                    fig, stat_agg = binned
+                    stat_agg["kind"] = "histogram"
+            if stat_agg is None:
+                fig = px.histogram(**common, x=x, color=color, nbins=max(2, min(bins, 200)), marginal="box")
         elif chart_type == "box":
-            fig = px.box(**common, x=x, y=y, color=color, points="outliers")
+            if len(df) > STAT_AGG_THRESHOLD and y:
+                stats_fig = _plotly_box_from_stats(
+                    df, x=x, y=y, colors=_CHART_COLORS, color=color,
+                    labels=labels, title=common["title"],
+                )
+                if stats_fig is not None:
+                    fig, stat_agg = stats_fig
+                    stat_agg["kind"] = "box"
+            if stat_agg is None:
+                fig = px.box(**common, x=x, y=y, color=color, points="outliers")
         elif chart_type == "violin":
-            fig = px.violin(**common, x=x, y=y, color=color, box=True, points="outliers")
+            violin_common = common
+            if len(df) > STAT_AGG_THRESHOLD:
+                # 小提琴的形状由核密度决定，分层抽样两万行与全量肉眼无差别；
+                # 逐样本点云才是 MB 级载荷的来源。
+                violin_common = {**common, "data_frame": _stratified_sample(df, color)}
+            fig = px.violin(**violin_common, x=x, y=y, color=color, box=True, points="outliers")
         elif chart_type == "pie":
             if not x:
                 raise ValueError("pie 需要 x 作为名称列。")
@@ -1163,9 +1344,15 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                 raise ValueError("treemap 需要 path_columns。")
             fig = px.treemap(**common, path=path_columns, values=values, color=color)
 
-        scale_details = _apply_outlier_scale_controls(fig, chart_type, scale_mode)
-        # 大数据切换 WebGL：SVG 下 30 万行散点/折线的完整预览渲染以分钟计
-        fig = _plotly_webgl_if_large(fig, df, chart_type)
+        if density_view is not None:
+            # 密度图：视口范围在聚合前已按"主体尺度"确定，网格只覆盖该范围，
+            # 不能再交给 _apply_outlier_scale_controls 追加"全量视图"按钮
+            #（网格没有覆盖范围外的数据，切过去只会看到角落一小块）。
+            scale_details = density_scale
+        else:
+            scale_details = _apply_outlier_scale_controls(fig, chart_type, scale_mode)
+            # 大数据切换 WebGL：SVG 下 30 万行散点/折线的完整预览渲染以分钟计
+            fig = _plotly_webgl_if_large(fig, df, chart_type)
         if chart_type == "bar" and aggregation != "none":
             _add_missing_combination_markers(
                 fig,
@@ -1246,7 +1433,7 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             if x and not pd.api.types.is_numeric_dtype(df[x]):
                 fig.update_xaxes(categoryorder="total descending")
             fig.update_layout(bargap=0.26, bargroupgap=0.08)
-        elif chart_type == "scatter":
+        elif chart_type == "scatter" and density_view is None:
             # 大数据时轨迹已被切换为 scattergl（WebGL），两个选择器都覆盖
             fig.update_traces(marker={"size": 9, "opacity": 0.82, "line": {"width": 0.7, "color": "white"}}, selector={"type": "scatter"})
             fig.update_traces(marker={"size": 9, "opacity": 0.82, "line": {"width": 0.7, "color": "white"}}, selector={"type": "scattergl"})
@@ -1300,14 +1487,36 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                         )
         if color:
             fig.update_layout(legend_title_text=_human_column_label(color))
+        if density_view is not None:
+            # 密度图收尾：清掉边缘直方图的网格/刻度，并为档位色标留出右边距
+            # （必须在上面通用布局样式之后调用，否则会被覆盖）。
+            finalize_density_layout(fig, density_view)
         html_path = workspace.artifacts_dir / f"{stem}.html"
         shared_plotly = workspace.ensure_plotly_bundle()
         relative_script = shared_plotly.relative_to(workspace.artifacts_dir).as_posix() if shared_plotly else None
-        # Plotly 白话解读：与 ECharts _auto_interpret 语义对齐
-        interpretation = _plotly_auto_interpret(
-            df, chart_type=chart_type, x=x, y=y, color=color,
-            aggregation=aggregation, title=display_title,
-        )
+        # Plotly 白话解读：与 ECharts _auto_interpret 语义对齐。密度图的解读
+        # 换了编码语义（颜色读记录数、没有可框选的离散点），单独生成。
+        if density_view is not None:
+            interpretation = density_interpretation(
+                df, view=density_view, x=x, y=y, color=color,
+                title=display_title,
+                x_label=labels.get(x, _human_column_label(x)),
+                y_label=labels.get(y, _human_column_label(y)),
+            )
+            if size:
+                # 密度视图用颜色表达每格记录数，逐点大小这个编码通道没有位置可放；
+                # 与其静默丢掉用户要求的维度，不如把这件事说清楚。
+                interpretation += (
+                    f"\n\n说明：密度视图按记录数着色，因此未使用「{_human_column_label(size)}」"
+                    "作为点的大小——几十万点上逐点大小无法辨认；该列仍保留在数据与 JSON 产物中。"
+                )
+        else:
+            interpretation = _plotly_auto_interpret(
+                df, chart_type=chart_type, x=x, y=y, color=color,
+                aggregation=aggregation, title=display_title,
+            )
+            if stat_agg is not None:
+                interpretation += _stat_agg_note(stat_agg)
         # 全量 figure 序列化一次复用：完整数据写入 .plotly.json 产物，
         # 大数据时也作为嵌入降采样的输入源。抽样决策必须在解读块构建
         # 之前完成——抽样声明要追加进解读文本一起渲染。
@@ -1318,7 +1527,7 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         # 按等距抽样渲染（5 万点以上视觉上已是密度饱和，HTML 体积、
         # 传输、iframe 解析、tab 内存却随点数线性增长）。完整数据不丢：
         # 全量 figure 仍写入 .plotly.json 产物。
-        if chart_type in {"scatter", "line"} and len(df) > _EMBED_MAX_POINTS:
+        if chart_type in {"scatter", "line"} and len(df) > _EMBED_MAX_POINTS and density_view is None:
             sampled_dict, original_pts, embedded_pts = sample_plotly_figure_for_embed(
                 json.loads(fig_json_text), _EMBED_MAX_POINTS
             )
@@ -1409,6 +1618,28 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         }
         if sampling_info is not None:
             response["sampling"] = sampling_info
+        if density_view is not None:
+            # 渲染方式对调用方（Agent/前端）可见：密度视图不是抽样，是精确
+            # 聚合，因此既没有 sampling 字段，也不需要"完整数据在 JSON 里"
+            # 的免责声明；网格覆盖范围与面板构成在这里说清楚。
+            response["density_view"] = {
+                "applied": True,
+                "bins": density_view.bin_label,
+                "panels": [panel.name for panel in density_view.panels],
+                "bands": [band_label(band) for band in density_view.bands],
+                "rows_used": density_view.rows_used,
+                "rows_outside_view": density_view.dropped_rows,
+                "full_data_json": str(workspace.artifacts_dir / f"{stem}.plotly.json"),
+            }
+        if stat_agg is not None:
+            response["stat_aggregation"] = {
+                "kind": stat_agg.get("kind"),
+                "rows_aggregated": int(stat_agg.get("total", 0)),
+            }
+            if stat_agg.get("kind") == "box":
+                response["stat_aggregation"]["outliers"] = int(stat_agg.get("outliers", 0))
+            else:
+                response["stat_aggregation"]["bins"] = int(stat_agg.get("bins", 0))
         if _auto_color_applied and color:
             response["auto_color"] = color
         if export_png:

@@ -1157,31 +1157,64 @@ def test_render_echarts_falls_back_to_cdn_without_bundles(tmp_path, monkeypatch)
 # === 大数据 HTML 嵌入降采样：交互 HTML 抽样渲染，完整数据保留在 JSON 产物 ===
 
 
-def test_echarts_embed_sampling_big_scatter(tmp_path):
-    """6 万行散点：HTML 按上限抽样 + 声明注记，.echarts.json 保留全量。"""
+def test_echarts_embed_sampling_big_line(tmp_path):
+    """6 万行折线：HTML 按上限抽样 + 声明注记，.echarts.json 保留全量。
+
+    回归背景：≥2 万行的**数值散点**自密度视图上线后不再逐点渲染、也不再抽样
+    （见 test_echarts_density_html_small_without_sampling），抽样路径由折线
+    （类目轴）继续覆盖；散点的嵌入抽样另由
+    test_echarts_embed_sampling_categorical_scatter 覆盖（x 非数值 → 无法聚合）。
+    """
     rng = np.random.default_rng(7)
     n = 60_000
-    df = pd.DataFrame({"x": rng.uniform(0, 100, n), "y": rng.normal(0, 1, n)})
+    df = pd.DataFrame({"t": [f"t{i:06d}" for i in range(n)], "y": rng.normal(0, 1, n)})
     ws = _make_workspace(tmp_path, df)
     tools = {t.name: t for t in build_tools(ws)}
     with patch.object(DataWorkspace, "ensure_echarts_bundle", return_value=_mock_bundle(tmp_path)):
         result = json.loads(tools["create_visualization"].invoke({
-            "chart_type": "scatter", "x": "x", "y": "y", "chart_engine": "echarts",
+            "chart_type": "line", "x": "t", "y": "y", "chart_engine": "echarts",
         }))
     sampling = result["sampling"]
     assert sampling["applied"] is True
     assert sampling["original_points"] > 50_000
     assert sampling["embedded_points"] <= 50_000
-    # 完整数据保留在 JSON 产物（主系列 + 离群系列点数和 == 原始行数）
+    # 完整数据保留在 JSON 产物（类目轴长度 == 原始行数）
+    full_option = json.loads(Path(result["echarts_json"]).read_text(encoding="utf-8"))
+    assert len(full_option["xAxis"][0]["data"]) == n
+    # HTML 是抽样副本：轴与系列同步抽稀，体积明显小于全量 JSON，且带抽样声明
+    html_text = Path(result["html"]).read_text(encoding="utf-8")
+    assert "等距抽样" in html_text
+    assert Path(result["html"]).stat().st_size < Path(result["echarts_json"]).stat().st_size
+
+
+def test_echarts_embed_sampling_categorical_scatter(tmp_path):
+    """6 万行散点但 x 是文本类别：聚合不成密度，退回逐点散点并继续抽样。
+
+    密度视图要求 x/y 都是数值列；x 非数值时 `_density_view_for` 返回 None，
+    此时仍走原来的"逐点 + 嵌入降采样"路径（这条回归保证大散点的兜底不被
+    密度改造顺手删掉）。
+    """
+    rng = np.random.default_rng(7)
+    n = 60_000
+    df = pd.DataFrame({
+        "segment": [["甲", "乙", "丙", "丁"][i % 4] for i in range(n)],
+        "y": rng.normal(0, 1, n),
+    })
+    ws = _make_workspace(tmp_path, df)
+    tools = {t.name: t for t in build_tools(ws)}
+    with patch.object(DataWorkspace, "ensure_echarts_bundle", return_value=_mock_bundle(tmp_path)):
+        result = json.loads(tools["create_visualization"].invoke({
+            "chart_type": "scatter", "x": "segment", "y": "y", "chart_engine": "echarts",
+        }))
+    assert "density_view" not in result
+    sampling = result["sampling"]
+    assert sampling["applied"] is True
+    assert sampling["embedded_points"] <= 50_000
     full_option = json.loads(Path(result["echarts_json"]).read_text(encoding="utf-8"))
     full_points = sum(
         len(s["data"]) for s in full_option["series"] if s.get("type") == "scatter"
     )
     assert full_points == sampling["original_points"]
-    # HTML 是抽样副本：体积明显小于全量 JSON，且带抽样声明
-    html_text = Path(result["html"]).read_text(encoding="utf-8")
-    assert "等距抽样" in html_text
-    assert Path(result["html"]).stat().st_size < Path(result["echarts_json"]).stat().st_size
 
 
 def test_echarts_embed_sampling_category_axis_alignment():
@@ -1221,16 +1254,20 @@ def test_echarts_embed_sampling_small_chart_untouched(workspace, sample_df):
     assert "sampling" not in result
 
 
-def test_plotly_embed_sampling_big_scatter(tmp_path):
-    """6 万行 Plotly 散点：HTML 抽样渲染 + 注记，.plotly.json 保留全量。"""
+def test_plotly_embed_sampling_big_line(tmp_path):
+    """6 万行 Plotly 折线：HTML 抽样渲染 + 注记，.plotly.json 保留全量。
+
+    回归背景：≥2 万行的数值散点改走密度视图后不再抽样（
+    test_plotly_density_view_replaces_scatter_sampling），抽样路径由折线覆盖。
+    """
     rng = np.random.default_rng(7)
     n = 60_000
-    df = pd.DataFrame({"x": rng.uniform(0, 100, n), "y": rng.normal(0, 1, n)})
+    df = pd.DataFrame({"t": [f"t{i:06d}" for i in range(n)], "v": rng.normal(0, 1, n)})
     ws = _make_workspace(tmp_path, df)
     tools = {t.name: t for t in build_tools(ws)}
     with patch.object(DataWorkspace, "ensure_plotly_bundle", return_value=_mock_bundle(tmp_path)):
         result = json.loads(tools["create_visualization"].invoke({
-            "chart_type": "scatter", "x": "x", "y": "y",
+            "chart_type": "line", "x": "t", "y": "v",
         }))
     sampling = result["sampling"]
     assert sampling["applied"] is True
@@ -1244,6 +1281,31 @@ def test_plotly_embed_sampling_big_scatter(tmp_path):
     # HTML 是抽样副本且带声明
     html_text = Path(result["html"]).read_text(encoding="utf-8")
     assert "等距抽样" in html_text
+
+
+def test_plotly_density_view_replaces_scatter_sampling(tmp_path):
+    """≥2 万行数值散点：Plotly 分支改为密度视图，响应带 density_view 且不抽样。
+
+    密度不是抽样（是精确聚合），因此既没有 sampling 字段，也不需要"完整数据
+    在 JSON 里"的免责声明——这条回归锁住响应结构，避免两条引擎的字段分裂。
+    """
+    rng = np.random.default_rng(7)
+    n = 25_000
+    df = pd.DataFrame({"x": rng.uniform(0, 100, n), "y": rng.normal(0, 1, n)})
+    ws = _make_workspace(tmp_path, df)
+    tools = {t.name: t for t in build_tools(ws)}
+    with patch.object(DataWorkspace, "ensure_plotly_bundle", return_value=_mock_bundle(tmp_path)):
+        result = json.loads(tools["create_visualization"].invoke({
+            "chart_type": "scatter", "x": "x", "y": "y",
+        }))
+    assert "sampling" not in result
+    density = result["density_view"]
+    assert density["applied"] is True
+    assert density["rows_used"] > 20_000
+    assert density["panels"] == [""]
+    # 网格是精确聚合：全量记录都参与（没有抽样丢点）
+    assert density["rows_outside_view"] == 0
+    assert density["bins"].endswith("×80")
 
 
 def test_echarts_scatter_structure_annotations(workspace, sample_df):
@@ -1270,3 +1332,478 @@ def test_echarts_scatter_structure_annotations(workspace, sample_df):
     # 趋势线坐标为点对形式
     trend_item = next(item for item in data if isinstance(item, list))
     assert len(trend_item) == 2 and "coord" in trend_item[0]
+
+
+# === 大数据散点 → 密度视图（ECharts 分支）===
+# 语义与 Plotly 分支（tools/density_plotly.py）一致：同一份网格、同一套 1-2-5
+# 档位、同一份浅/暗色板；差异只在渲染层——ECharts 的 heatmap 两个维度都必须是
+# 类目轴，所以连续数值先在 Python 侧离散成格子，一切"按数值定位"的锚点都要先
+# 换算成格子下标。
+
+
+def _density_frame(n: int = 24_000, *, color: bool = False, clusters: bool = True,
+                   seed: int = 11) -> pd.DataFrame:
+    """合成密度图数据：clusters=True 给带明显聚集的云，False 给均匀噪声。"""
+    rng = np.random.default_rng(seed)
+    if clusters:
+        x = rng.normal(0, 1, n)
+        y = x * 0.6 + rng.normal(0, 0.6, n)
+    else:
+        x = rng.uniform(0, 100, n)
+        y = rng.uniform(0, 100, n)
+    frame = pd.DataFrame({"x": x, "y": y})
+    if color:
+        frame["segment"] = np.where(np.arange(n) % 2 == 0, "甲", "乙")
+    return frame
+
+
+def _density_option(df: pd.DataFrame, *, x: str = "x", y: str = "y",
+                    color: str | None = None, title: str = "分布",
+                    scale_mode: str = "auto"):
+    """按引擎自身的分派条件生成 option，返回 (option, view, scale_details)。"""
+    from data_agent.echarts_engine import _build_echarts_option, _density_view_for
+
+    view, scale = _density_view_for(df, chart_type="scatter", x=x, y=y, color=color,
+                                    scale_mode=scale_mode)
+    assert view is not None, "该数据集应触发密度视图"
+    option = _build_echarts_option(
+        df, chart_type="scatter", x=x, y=y, color=color, z=None, size=None, values=None,
+        path_columns=None, dimensions=None, aggregation="none", title=title, bins=30,
+        density_view=view,
+    )
+    return option, view, scale
+
+
+def _heatmaps(option: dict) -> list[dict]:
+    return [item for item in option["series"] if item.get("type") == "heatmap"]
+
+
+def test_echarts_density_dispatch_threshold():
+    """阈值分派：2 万行及以上走密度视图，以下仍是逐点散点（同一个入口）。"""
+    from data_agent.density import should_use_density
+    from data_agent.echarts_engine import _build_echarts_option
+
+    def option_for(n: int) -> dict:
+        return _build_echarts_option(
+            _density_frame(n), chart_type="scatter", x="x", y="y", color=None, z=None,
+            size=None, values=None, path_columns=None, dimensions=None,
+            aggregation="none", title="阈值", bins=30,
+        )
+
+    assert should_use_density(20_000) is True
+    assert should_use_density(19_999) is False
+
+    heavy = option_for(20_000)
+    assert "densityBands" in heavy
+    assert len(_heatmaps(heavy)) == 1
+    # 逐点散点消失：只剩最外围叠加（≤120 点）与两条边缘直方图
+    assert sum(len(item["data"]) for item in heavy["series"]
+               if item["type"] == "scatter") <= 120
+    assert [item["name"] for item in heavy["series"] if item["type"] == "bar"] == ["x 分布", "y 分布"]
+
+    light = option_for(19_999)
+    assert "densityBands" not in light
+    assert _heatmaps(light) == []
+    assert any(item["type"] == "scatter" for item in light["series"])
+
+
+def test_echarts_density_bands_pieces_and_dark_palette():
+    """档位 → visualMap pieces（唯一色标 = 全部分面的颜色键）+ densityBands 双色板。"""
+    from data_agent.density import band_label
+
+    option, view, _ = _density_option(_density_frame(color=True), color="segment")
+    visual_map = option["visualMap"]
+    assert visual_map["type"] == "piecewise"
+    assert visual_map["dimension"] == 2
+    # 颜色键不是筛选器：点某档不应把其它档的格子藏起来（与 Plotly colorbar 一致）
+    assert visual_map["selectedMode"] is False
+    bands = view.bands
+    assert [piece["label"] for piece in visual_map["pieces"]] == [band_label(b) for b in bands]
+    assert [piece["color"] for piece in visual_map["pieces"]] == view.band_colors()
+    for piece, (low, high) in zip(visual_map["pieces"], bands, strict=True):
+        if high is None:
+            assert piece["min"] == low and "max" not in piece
+        elif high <= low:
+            assert piece["value"] == low
+        else:
+            assert (piece["min"], piece["max"]) == (low, high)
+    # 色标只作用于热力图系列：边缘直方图与最外围记录不参与记录数着色
+    heatmap_indexes = [i for i, s in enumerate(option["series"]) if s.get("type") == "heatmap"]
+    assert visual_map["seriesIndex"] == heatmap_indexes
+    # 亮/暗两套档位色随图带过去（换肤脚本与前端缩略图整组切换）
+    payload = option["densityBands"]
+    assert [item["color"] for item in payload["light"]] == view.band_colors()
+    assert [item["color"] for item in payload["dark"]] == view.band_colors(dark=True)
+    assert [item["label"] for item in payload["light"]] == [band_label(b) for b in bands]
+    assert all({"label", "low", "high", "color"} <= set(item) for item in payload["dark"])
+
+
+def test_echarts_density_zero_cells_omitted_and_category_axes():
+    """零记录格不发数据项（背景透出覆盖范围）；两个维度都是类目轴。"""
+    option, view, _ = _density_option(_density_frame())
+    grid = view.panels[0].grid
+    heatmap = _heatmaps(option)[0]
+    occupied = int(np.count_nonzero(grid.counts))
+    assert len(heatmap["data"]) == occupied
+    assert 0 < occupied < grid.counts.size  # 密度图一定有空格，否则不叫"聚集"
+    values = [item if isinstance(item, list) else item["value"] for item in heatmap["data"]]
+    assert min(value[2] for value in values) >= 1
+    assert max(value[2] for value in values) == grid.max_count
+    # 每个数据项自带分箱区间（tooltip 不回查任何映射表）
+    for value in values:
+        assert len(value) == 7
+        assert 0 <= value[0] < grid.counts.shape[1]
+        assert 0 <= value[1] < grid.counts.shape[0]
+        assert value[3] < value[4] and value[5] < value[6]
+    # 类目轴：ECharts heatmap 的硬约束（"must have two categories"）
+    assert option["xAxis"][0]["type"] == "category"
+    assert option["yAxis"][0]["type"] == "category"
+    assert len(option["xAxis"][0]["data"]) == view.bin_shape[0]
+    assert len(option["yAxis"][0]["data"]) == view.bin_shape[1]
+    # 150+ 个格子的轴必须抽稀刻度，否则标签糊成一团
+    assert option["xAxis"][0]["axisLabel"]["interval"] > 0
+    assert option["yAxis"][0]["axisLabel"]["interval"] > 0
+    assert all(label for label in option["xAxis"][0]["data"])
+
+
+def test_echarts_density_tooltip_carries_bin_ranges():
+    """tooltip formatter 直接读数据项里的分箱边界（v[3..6]）与记录数。"""
+    from data_agent.echarts_engine import _JsFunction
+
+    option, _, _ = _density_option(_density_frame(), title="tooltip")
+    formatter = option["tooltip"]["formatter"]
+    assert isinstance(formatter, _JsFunction)
+    assert "记录数" in formatter.code
+    for index in (3, 4, 5, 6):
+        assert f"v[{index}]" in formatter.code
+    # 列名以 JS 字符串字面量拼入（防列名里的引号破坏函数体）
+    assert json.dumps("x", ensure_ascii=False) in formatter.code
+    assert json.dumps("y", ensure_ascii=False) in formatter.code
+    # 边缘直方图与最外围记录各有自己的 formatter（趋势线不参与 hover）
+    bars = [item for item in option["series"] if item.get("type") == "bar"]
+    assert len(bars) == 2
+    assert all(isinstance(item["tooltip"]["formatter"], _JsFunction) for item in bars)
+    scatter = [item for item in option["series"] if item.get("type") == "scatter"]
+    assert all(isinstance(item["tooltip"]["formatter"], _JsFunction) for item in scatter)
+
+
+def test_echarts_density_single_panel_marginals():
+    """单面板：主热力图 + 顶部 x 分布 + 右侧 y 分布，逐格对齐 + 联动轴指针。"""
+    option, view, _ = _density_option(_density_frame())
+    assert len(option["grid"]) == 3
+    heatmap = _heatmaps(option)[0]
+    assert (heatmap["xAxisIndex"], heatmap["yAxisIndex"]) == (0, 0)
+    bars = [item for item in option["series"] if item.get("type") == "bar"]
+    assert [item["name"] for item in bars] == ["x 分布", "y 分布"]
+    x_bar, y_bar = bars
+    assert (x_bar["xAxisIndex"], x_bar["yAxisIndex"]) == (1, 1)
+    assert (y_bar["xAxisIndex"], y_bar["yAxisIndex"]) == (2, 2)
+    grid = view.panels[0].grid
+    assert x_bar["data"] == [int(value) for value in grid.marginal_x()]
+    assert y_bar["data"] == [int(value) for value in grid.marginal_y()]
+    # 柱宽 100% + 类目间隙 0：柱子与主面板的格子逐格对齐（jointplot 的核心价值）
+    assert x_bar["barWidth"] == "100%" and y_bar["barWidth"] == "100%"
+    assert option["xAxis"][1]["data"] == option["xAxis"][0]["data"]
+    assert option["yAxis"][2]["data"] == option["yAxis"][0]["data"]
+    assert option["xAxis"][2]["type"] == "value"
+    assert option["yAxis"][1]["type"] == "value"
+    assert option["axisPointer"]["link"] == [{"xAxisIndex": [0, 1]}, {"yAxisIndex": [0, 2]}]
+    # 轴名只在主面板写（边缘直方图共享同一分箱，标签是噪声）
+    assert option["xAxis"][0]["name"] == "x"
+    assert option["yAxis"][0]["name"] == "y"
+    assert "name" not in option["xAxis"][1]
+    # 均值参考线换算成类目下标（类目轴上直接给原始数值会落到轴外）
+    mark_data = heatmap["markLine"]["data"]
+    labels = [item["label"]["formatter"] for item in mark_data]
+    assert any("x 均值" in text for text in labels)
+    assert any("y 均值" in text for text in labels)
+    for item in mark_data:
+        assert isinstance(item.get("xAxis", item.get("yAxis")), int)
+
+
+def test_echarts_density_faceted_layout_shares_band_scale():
+    """有颜色分组：每类一个面板、共享一套档位色标，标题带记录数/占比/r。"""
+    option, view, _ = _density_option(_density_frame(color=True), color="segment", title="分面")
+    assert view.is_faceted
+    heatmaps = _heatmaps(option)
+    assert len(heatmaps) == len(view.panels) == 2
+    assert len(option["grid"]) == len(view.panels)
+    # 每个面板一组轴，gridIndex 与面板一一对应；两个维度仍是类目轴
+    assert [axis["gridIndex"] for axis in option["xAxis"]] == list(range(len(view.panels)))
+    assert [axis["gridIndex"] for axis in option["yAxis"]] == list(range(len(view.panels)))
+    assert all(axis["type"] == "category" for axis in option["xAxis"])
+    assert all(axis["type"] == "category" for axis in option["yAxis"])
+    # 共享轴：只有最左一列写 y 刻度（2 个面板同处最后一行，x 刻度都显示）
+    assert [axis["axisLabel"]["show"] for axis in option["yAxis"]] == [True, False]
+    assert all(axis["axisLabel"]["show"] for axis in option["xAxis"])
+    # 共享同一套档位（颜色含义跨面板一致才可横向比较）：只有一个 visualMap，
+    # 且只作用于热力图系列（面板间还夹着趋势线与最外围记录）
+    assert isinstance(option["visualMap"], dict)
+    heatmap_indexes = [i for i, item in enumerate(option["series"])
+                       if item.get("type") == "heatmap"]
+    assert option["visualMap"]["seriesIndex"] == heatmap_indexes
+    assert len(heatmap_indexes) == len(view.panels)
+    # 面板标题：分组 · N 条（占比%）· r=0.xx（合成数据 |r| ≈ 0.7 ≥ 0.25）
+    assert isinstance(option["title"], list)
+    assert len(option["title"]) == 1 + len(view.panels)
+    for item, panel in zip(option["title"][1:], view.panels, strict=True):
+        assert item["text"].startswith(panel.name)
+        assert f"{panel.grid.total:,} 条" in item["text"]
+        assert "（50%）" in item["text"]
+        assert "· r=" in item["text"]
+    # 面板趋势线：r 达标才画，线段长 = 面板的列数（类目轴逐格给 y 下标）
+    trend = [item for item in option["series"] if item.get("type") == "line"]
+    assert len(trend) == len(view.panels)
+    for line in trend:
+        assert len(line["data"]) == view.bin_shape[0]
+        assert line["xAxisIndex"] == line["yAxisIndex"]
+    # 最外围记录：每个面板一份（≤120 点）
+    extremes = [item for item in option["series"] if item.get("name") == "最外围记录"]
+    assert len(extremes) == len(view.panels)
+    assert all(len(item["data"]) <= 120 for item in extremes)
+    # 分面不画均值参考线（格子太小，画进去只会变成噪声）
+    assert "markLine" not in heatmaps[0]
+
+
+def test_echarts_density_peak_marker_only_with_real_clusters():
+    """最密格只在"确有聚集"时标注（均匀噪声的最密格只是采样涨落）。"""
+    clustered, view, _ = _density_option(_density_frame(clusters=True))
+    assert view.has_real_clusters
+    marked = [item for item in _heatmaps(clustered)[0]["data"] if isinstance(item, dict)]
+    assert len(marked) == 1
+    cell = marked[0]
+    assert cell["label"]["show"] is True and "最密" in cell["label"]["formatter"]
+    assert cell["itemStyle"]["borderColor"] == "#E15759"
+    # 标签自带白底深红字（与 Plotly 注记同款）：两种主题下都可读，因此显式给色
+    assert cell["label"]["color"] == "#B23A3C"
+    assert cell["label"]["backgroundColor"].startswith("rgba(255,255,255")
+    grid = view.panels[0].grid
+    flat = int(np.argmax(grid.counts))
+    assert (cell["value"][0], cell["value"][1]) == (
+        flat % grid.counts.shape[1], flat // grid.counts.shape[1],
+    )
+    assert cell["value"][2] == grid.max_count
+
+    uniform, view_uniform, _ = _density_option(_density_frame(clusters=False))
+    assert not view_uniform.has_real_clusters
+    assert all(isinstance(item, list) for item in _heatmaps(uniform)[0]["data"])
+
+
+def test_echarts_density_interpretation_and_no_point_cloud():
+    """解读换成密度语义（颜色读什么、锚点在哪），且不再逐点渲染。"""
+    from data_agent.density import density_note, hotspot_sentence, panels_sentence
+    from data_agent.echarts_engine import _auto_interpret
+
+    df = _density_frame(color=True)
+    option, view, _ = _density_option(df, color="segment", title="解读")
+    text = _auto_interpret(df, chart_type="scatter", x="x", y="y", color="segment",
+                           aggregation="none", title="解读", density_view=view)
+    assert "相关（r=" in text
+    # 三句锚点文案逐句来自 data_agent.density（与 Plotly 分支同一份口径）
+    assert density_note(view, color_label="segment") in text
+    assert hotspot_sentence(view, "x", "y") in text
+    assert panels_sentence(view, "segment") in text
+    assert "点云已按segment拆成 2 个密度面板" in text
+    assert "80×67 网格" in text  # 分面后的网格数
+    assert "颜色越深表示该区域记录越密集" in text
+    assert "滚轮可放大局部" in text
+    # 旧的点云提示对密度图不成立（没有可框选的离散点）
+    assert "滚轮缩放可查看密集区域" not in text
+    # 逐点散点已消失：只剩 ≤120 点的最外围叠加
+    bulk = [item for item in option["series"]
+            if item.get("type") == "scatter" and len(item["data"]) > 120]
+    assert bulk == []
+    cells = sum(len(item["data"]) for item in _heatmaps(option))
+    assert 0 < cells < len(df)
+    # 没有 density_view 时仍走原来的散点解读（非密度调用方不受影响）
+    plain = _auto_interpret(df, chart_type="scatter", x="x", y="y", color="segment",
+                            aggregation="none", title="解读")
+    assert "滚轮缩放可查看密集区域" in plain
+
+
+def test_echarts_density_caps_panels_at_six():
+    """颜色类别多于 6 个：按记录数取前 5 类 + "其他 N 类"面板，3 列 × 2 行。"""
+    rng = np.random.default_rng(5)
+    n = 24_000
+    df = pd.DataFrame({
+        "x": rng.normal(0, 1, n),
+        "y": rng.normal(0, 1, n),
+        "segment": [f"s{index % 9}" for index in range(n)],
+    })
+    option, view, _ = _density_option(df, color="segment")
+    assert len(view.panels) == 6
+    assert view.panels[-1].name.startswith("其他")
+    assert len(_heatmaps(option)) == len(option["grid"]) == 6
+    assert len(option["xAxis"]) == len(option["yAxis"]) == 6
+    assert option["title"][-1]["text"].startswith("其他")
+    # 3 列 × 2 行：只有 3 个不同的 left、2 个不同的 top
+    assert len({item["left"] for item in option["grid"]}) == 3
+    assert len({item["top"] for item in option["grid"]}) == 2
+    # 3 列布局下只有第一列有 y 刻度、最后一行（第 4-6 个面板）有 x 刻度
+    assert [axis["axisLabel"]["show"] for axis in option["yAxis"]] == [True, False, False] * 2
+    assert [axis["axisLabel"]["show"] for axis in option["xAxis"]] == [False] * 3 + [True] * 3
+
+
+def test_echarts_density_trend_clipped_to_view_range():
+    """趋势线必须裁剪到可视范围：超出画布的那段不能被"夹"到轴边界上。
+
+    回归背景：趋势端点按面板数据的 min/max 算，坐标轴却用主体尺度（极端记录
+    触发 ``_severe_axis_compression``）。不裁剪时超出范围的部分会被类目下标
+    夹到最上一格，在面板顶部横铺一整条线，读起来像"平趋势"（实测截图可见）。
+    裁剪用共享的 ``density.clip_segment``（与 Plotly 分支同一实现）。
+    """
+    rng = np.random.default_rng(9)
+    n = 24_000
+    x = rng.normal(0, 1, n)
+    y = 0.6 * x + rng.normal(0, 0.6, n)
+    # 30 个极端记录沿趋势线向两侧拉长：坐标轴被压到主体尺度，趋势端点远在其外
+    far = np.concatenate([np.linspace(-120, -90, 15), np.linspace(90, 120, 15)])
+    df = pd.DataFrame({
+        "x": np.concatenate([x, far]),
+        "y": np.concatenate([y, 0.6 * far]),
+    })
+    option, view, scale = _density_option(df)
+    assert scale["scale_mode"] == "robust"
+    assert "x" in scale["axis_ranges"]
+    ny = view.bin_shape[1]
+    trend = [item for item in option["series"] if item["type"] == "line"][0]
+    values = [value for value in trend["data"] if value is not None]
+    assert len(values) >= 2
+    # 老行为会把越界段钉在边界格上（出现 ny-1 或 0）；裁剪后这条斜线从左右两侧
+    # 进出可视框，纵向下标必须严格落在内部，且仍是一条看得出来的斜线
+    assert min(values) > 0 and max(values) < ny - 1
+    assert max(values) - min(values) >= ny // 4
+
+
+def test_echarts_density_trend_skipped_when_outside_view():
+    """整段趋势线落在可视范围外时不画（与 Plotly 分支的 skip 同行为）。"""
+    from data_agent.density import build_density_view
+    from data_agent.echarts_engine import _density_trend_series
+
+    df = _density_frame()
+    view = build_density_view(df["x"], df["y"])
+    grid = view.panels[0].grid
+    inside = {"trend": [-1.0, -1.0, 1.0, 1.0], "r": 0.9}
+    assert _density_trend_series(grid, inside, axis_index=0, x_range=view.x_range,
+                                 y_range=view.y_range) is not None
+    outside = {"trend": [50.0, 50.0, 60.0, 60.0], "r": 0.9}
+    assert _density_trend_series(grid, outside, axis_index=0, x_range=view.x_range,
+                                 y_range=view.y_range) is None
+    # 分面门槛：|r| 不足时不画
+    weak = {"trend": [-1.0, -1.0, 1.0, 1.0], "r": 0.1}
+    assert _density_trend_series(grid, weak, axis_index=0, x_range=view.x_range,
+                                 y_range=view.y_range, min_r=0.25) is None
+
+
+def test_echarts_density_facet_trend_requires_min_r():
+    """分面趋势线只在 |r| ≥ 0.25 时出现（弱相关的斜线只会被读成趋势）。"""
+    rng = np.random.default_rng(21)
+    n = 24_000
+    df = pd.DataFrame({
+        "x": rng.normal(0, 1, n),
+        "y": rng.normal(0, 1, n),  # 与 x 无关 → 每个面板 r ≈ 0
+        "segment": np.where(np.arange(n) % 2 == 0, "甲", "乙"),
+    })
+    option, view, _ = _density_option(df, color="segment")
+    assert len(_heatmaps(option)) == len(view.panels) == 2
+    assert [item for item in option["series"] if item["type"] == "line"] == []
+    assert all("· r=" not in item["text"] for item in option["title"][1:])
+
+
+def test_echarts_density_mean_lines_skip_out_of_range():
+    """均值参考线落在可视范围外时不画（夹到边界格上会画出一条位置错误的线）。"""
+    rng = np.random.default_rng(4)
+    n = 24_000
+    x = rng.normal(0, 1, n)
+    y = 0.6 * x + rng.normal(0, 0.6, n)
+    tail = 4_000  # 14% 的高利润长尾：均值被抬到 [-4, 4] 之外，但不足以取消主体尺度
+    df = pd.DataFrame({
+        "x": np.concatenate([x, rng.normal(0, 1, tail)]),
+        "y": np.concatenate([y, rng.uniform(30, 60, tail)]),
+    })
+    option, view, scale = _density_option(df)
+    assert scale["scale_mode"] == "robust"
+    assert scale["axis_ranges"]["y"] == [-4.0, 4.0]
+    mark_data = _heatmaps(option)[0]["markLine"]["data"]
+    labels = [item["label"]["formatter"] for item in mark_data]
+    assert any("x 均值" in text for text in labels)
+    assert not any("y 均值" in text for text in labels)
+
+
+def test_echarts_density_labels_snap_float_noise():
+    """跨零点的分箱边界会算出 -2e-07 这类浮点噪声，标签与悬浮提示必须显示 0。
+
+    实测：主体尺度范围 (-100.0000004, 300.0000004) 均分 80 格后，第 20 条
+    边界是 -2.0000002e-07，``_nice_axis_formatter`` 会把它写成 "-2.00e-07"
+    挂在 y 轴上（截图里一眼可见）。
+    """
+    from data_agent.echarts_engine import _bin_labels, _snap_edges
+
+    edges = np.linspace(-100.0000004, 300.0000004, 81)  # 与 nice ticks 的残留同形
+    noise = min(abs(float(value)) for value in edges)
+    assert 0 < noise < 1e-5  # 确实存在噪声级边界
+    labels = _bin_labels(edges)
+    assert "0" in labels
+    assert not any("e-" in label for label in labels)
+    # 真实的小数值不受影响（窄区间数据的边界远大于格宽的百万分之一）
+    assert float(_snap_edges(np.array([0.0, 1e-04, 2e-04]))[1]) == 1e-04
+    # 数据项里的分箱区间同样归零（悬浮提示不出现 -2e-07）
+    option, _, _ = _density_option(_density_frame())
+    values = [item if isinstance(item, list) else item["value"]
+              for item in _heatmaps(option)[0]["data"]]
+    assert all(abs(value[5]) == 0 or abs(value[5]) > 1e-5 for value in values)
+
+
+def test_echarts_density_dark_mode_swaps_band_colors():
+    """换肤脚本按 densityBands 整组换档位色，并保住峰值标签的其余字段。"""
+    from data_agent.echarts_engine import (
+        _ECHARTS_DARK_MODE_SCRIPT,
+        _ECHARTS_HTML_TEMPLATE,
+        _build_echarts_html,
+    )
+
+    script = _ECHARTS_DARK_MODE_SCRIPT
+    assert "densityBands" in script
+    assert "densityBands.dark" in script and "densityBands.light" in script
+    assert "upd.pieces" in script
+    # 峰值格的 item 级 label（show/formatter/position/白底深红字）不能被
+    # "深格白字翻转"丢掉：只翻 #ffffff 那一种约定，其余颜色原样保留
+    assert "copy.label = label" in script
+    assert "=== '#ffffff'" in script
+    # 非标准顶层键不保证被 getOption 保留：模板把色板挂到实例上兜底
+    assert "chart.__densityBands = option.densityBands" in _ECHARTS_HTML_TEMPLATE
+    html = _build_echarts_html(
+        title="t", option={"densityBands": {"light": [], "dark": []}},
+        script_src="echarts.min.js", interpretation="",
+    )
+    assert "densityBands" in html
+
+
+def test_echarts_density_html_small_without_sampling(tmp_path):
+    """≥2 万行数值散点：HTML 是密度图（几百 KB 量级），不做嵌入抽样。"""
+    rng = np.random.default_rng(3)
+    n = 25_000
+    df = pd.DataFrame({"x": rng.normal(0, 1, n), "y": rng.normal(0, 1, n)})
+    ws = _make_workspace(tmp_path, df)
+    tools = {t.name: t for t in build_tools(ws)}
+    with patch.object(DataWorkspace, "ensure_echarts_bundle", return_value=_mock_bundle(tmp_path)):
+        result = json.loads(tools["create_visualization"].invoke({
+            "chart_type": "scatter", "x": "x", "y": "y", "chart_engine": "echarts",
+        }))
+    assert "sampling" not in result
+    density = result["density_view"]
+    assert density["applied"] is True
+    assert density["panels"] == [""]
+    assert density["rows_used"] == n
+    assert result["scale_mode"] in {"full", "robust"}
+    option = json.loads(Path(result["echarts_json"]).read_text(encoding="utf-8"))
+    assert "densityBands" in option
+    # 逐点散点的 option 体积随行数线性增长（2.5 万行约 1MB+）；密度图只发格子
+    assert Path(result["echarts_json"]).stat().st_size < 700_000
+    cells = sum(len(item["data"]) for item in _heatmaps(option))
+    assert 0 < cells < n
+    points = sum(len(item["data"]) for item in option["series"] if item.get("type") == "scatter")
+    assert points <= 120
+    html_text = Path(result["html"]).read_text(encoding="utf-8")
+    assert "等距抽样" not in html_text
+    assert "密度" in result["interpretation"]
