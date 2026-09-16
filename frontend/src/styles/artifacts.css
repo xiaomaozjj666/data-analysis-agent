@@ -93,14 +93,14 @@
 .artifact-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 16px; }
 .artifact-controls button { height: 28px; padding: 0 12px; display: inline-flex; align-items: center; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--canvas-default); color: var(--fg-muted); font-size: var(--text-xs); font-weight: 600; cursor: pointer; transition: all var(--duration-fast) var(--ease-out); }
 .artifact-controls button:hover { border-color: var(--accent-fg); color: var(--accent-fg); background: var(--accent-subtle); }
-.artifact-controls button.active { border-color: var(--accent-fg); background: var(--accent-fg); color: #fff; }
+.artifact-controls button.active { border-color: var(--accent-fg); background: var(--accent-solid); color: #fff; }
 .artifact-controls select { height: 28px; padding: 0 8px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--canvas-default); color: var(--fg-default); font-size: var(--text-xs); cursor: pointer; transition: border-color var(--duration-fast) var(--ease-out); }
 .artifact-controls select:hover { border-color: var(--accent-fg); }
 .artifact-controls select:focus { outline: none; border-color: var(--accent-fg); box-shadow: 0 0 0 3px var(--accent-ring); }
 
 /* 批量下载按钮：选中后出现，accent 主色样式 */
-.batch-download-btn { height: 28px; margin-left: auto; padding: 0 14px; display: inline-flex; align-items: center; gap: 6px; border: none; border-radius: var(--radius-md); background: var(--accent-fg); color: #fff; font-size: var(--text-xs); font-weight: 600; cursor: pointer; transition: background var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-out); box-shadow: var(--shadow-xs); }
-.batch-download-btn:hover { background: var(--accent-hover); box-shadow: var(--shadow-sm); transform: translateY(-1px); }
+.batch-download-btn { height: 28px; margin-left: auto; padding: 0 14px; display: inline-flex; align-items: center; gap: 6px; border: none; border-radius: var(--radius-md); background: var(--accent-solid); color: #fff; font-size: var(--text-xs); font-weight: 600; cursor: pointer; transition: background var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-out); box-shadow: var(--shadow-xs); }
+.batch-download-btn:hover { background: var(--accent-solid-hover); box-shadow: var(--shadow-sm); transform: translateY(-1px); }
 .batch-download-btn:active { transform: translateY(0); }
 
 .artifact-files { padding-top: 32px; }

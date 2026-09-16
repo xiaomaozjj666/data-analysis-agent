@@ -152,7 +152,7 @@
   padding: 3px 8px;
   border: 0;
   border-radius: var(--radius-sm);
-  background: var(--accent-fg);
+  background: var(--accent-solid);
   color: #fff;
   font-size: var(--text-xs);
   font-weight: 600;
@@ -233,7 +233,7 @@
 .history-result { color: var(--accent-fg); font-weight: 600; }
 .history-time { color: var(--fg-subtle); }
 .history-count { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: var(--radius-full); background: var(--neutral-muted); color: var(--fg-muted); font-size: 10px; font-style: normal; font-weight: 600; flex: 0 0 auto; }
-.history-list li.is-active .history-count { background: var(--accent-fg); color: #fff; }
+.history-list li.is-active .history-count { background: var(--accent-solid); color: #fff; }
 
 /* 骨架屏：shimmer 渐变从左到右扫过 */
 .history-skeleton { padding: 4px 8px; }
@@ -326,7 +326,7 @@
   transform: scale(0.95);
 }
 .history-chip.is-active {
-  background: var(--accent-fg);
+  background: var(--accent-solid);
   color: #fff;
   border-color: var(--accent-fg);
 }

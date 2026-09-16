@@ -155,7 +155,7 @@
   align-items: center;
   justify-content: center;
   padding: 7px 18px;
-  background: var(--accent-fg);
+  background: var(--accent-solid);
   color: #fff;
   border: none;
   border-radius: var(--radius-sm);
@@ -164,7 +164,7 @@
   cursor: pointer;
   transition: background var(--duration-fast) var(--ease-out), opacity var(--duration-fast) var(--ease-out);
 }
-.chart-edit-panel button:hover:not(:disabled) { background: var(--accent-hover); }
+.chart-edit-panel button:hover:not(:disabled) { background: var(--accent-solid-hover); }
 .chart-edit-panel button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* ---------- 命令面板（Cmd+K）---------- */
@@ -255,7 +255,7 @@
   border-radius: 2px;
 }
 .command-item.is-active .command-item-text mark {
-  background: var(--accent-fg);
+  background: var(--accent-solid);
   color: #fff;
 }
 .command-item-kbd {

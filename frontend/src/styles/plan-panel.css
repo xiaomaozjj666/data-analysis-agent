@@ -152,11 +152,11 @@
   transition: background var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out), opacity var(--duration-fast) var(--ease-out);
 }
 .plan-approval-actions .approve-btn {
-  background: var(--accent-fg);
+  background: var(--accent-solid);
   color: #fff;
   border: none;
 }
-.plan-approval-actions .approve-btn:hover:not(:disabled) { background: var(--accent-hover); }
+.plan-approval-actions .approve-btn:hover:not(:disabled) { background: var(--accent-solid-hover); }
 .plan-approval-actions .approve-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .plan-approval-actions .cancel-btn {
   background: var(--canvas-default);

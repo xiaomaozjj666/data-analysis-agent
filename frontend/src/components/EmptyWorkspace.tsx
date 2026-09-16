@@ -105,9 +105,13 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
   // 整个工作区都可点击触发上传：点击空白区域等价于点击主按钮，
   // 让用户无需精准瞄准按钮即可发起分析。点击按钮自身时由按钮处理，
   // 这里通过 closest("button") 排除，避免重复弹出文件选择框。
+  // 另排除"正在选择文字"的点击：落地页文案是可选中的，用户拖选一句话
+  // 松开鼠标就弹系统文件框（而且系统框会打断选择）非常恼人。
   const handleSectionClick = useCallback((e: React.MouseEvent<HTMLElement>) => {
     if (uploading) return;
     if ((e.target as HTMLElement).closest("button")) return;
+    const selection = window.getSelection?.();
+    if (selection && selection.toString().trim().length > 0) return;
     onUpload();
   }, [onUpload, uploading]);
 
@@ -140,7 +144,10 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
       onClick={handleSectionClick}
       onKeyDown={handleSectionKeyDown}
     >
-      <Aurora className="empty-aurora-bg" colorPrimary="rgba(91, 91, 214, 0.25)" colorSecondary="rgba(139, 92, 246, 0.15)" colorTertiary="rgba(59, 130, 246, 0.12)" speed={0.7} blur={80} opacity={0.8} />
+      {/* 背景光晕交给 CSS 控制配色（empty-state.css 按主题给 --aurora-* ）：
+          组件内联写死颜色会让暗色主题拿到同一组高饱和值，实测在深底上糊成
+          一大片蓝紫、并盖住主文案的对比度。 */}
+      <Aurora className="empty-aurora-bg" speed={0.7} blur={90} />
       <DotField className="empty-grid-bg" dotRadius={2} dotSpacing={24} cursorRadius={460} bulgeStrength={88} gradientFrom="rgba(91, 91, 214, 0.32)" gradientTo="rgba(120, 120, 140, 0.22)" glowColor="transparent" />
       <div className="empty-copy">
         <span className="section-kicker">新建分析</span>

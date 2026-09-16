@@ -10,9 +10,28 @@
   opacity: 0.9;
   pointer-events: none;
 }
-/* Aurora 背景层：在 DotField 下方，提供柔和的极光光晕纵深感 */
+/* Aurora 背景层：在 DotField 下方，提供柔和的极光光晕纵深感。
+   配色在这里按主题给定（不放组件内联）：浅色主题用低饱和靛蓝做"提亮"，
+   暗色主题把 alpha 压到约一半，避免整块画布被蓝紫糊满、并与主文案抢对比度。 */
 .empty-aurora-bg {
   z-index: 0;
+  --aurora-primary: rgba(91, 91, 214, 0.20);
+  --aurora-secondary: rgba(139, 92, 246, 0.13);
+  --aurora-tertiary: rgba(59, 130, 246, 0.10);
+  --aurora-opacity: 0.85;
+}
+[data-theme="dark"] .empty-aurora-bg {
+  --aurora-primary: rgba(124, 124, 240, 0.11);
+  --aurora-secondary: rgba(139, 92, 246, 0.08);
+  --aurora-tertiary: rgba(59, 130, 246, 0.06);
+  --aurora-opacity: 0.75;
+}
+/* 边缘羽化：光斑是"容器 40~50% 大小 + 负偏移"的圆，容器 overflow:hidden 会
+   把圆切出一条直边（实测暗色主题下画面上方出现一条明显的水平硬边）。
+   用径向遮罩把四周渐隐掉，任何尺寸下都不会看到被切开的边。 */
+.empty-aurora-bg {
+  -webkit-mask-image: radial-gradient(120% 100% at 50% 42%, #000 0%, #000 46%, transparent 82%);
+  mask-image: radial-gradient(120% 100% at 50% 42%, #000 0%, #000 46%, transparent 82%);
 }
 .empty-workspace {
   position: relative;
@@ -28,15 +47,18 @@
   overflow: hidden;
   transition: background var(--duration) var(--ease-out);
   /* 鼠标跟随光斑：整个 section 都有效，radial-gradient 跟随 --mouse-x/y。
-     用带透明度的靛蓝晕染，白底/暗底均可见且克制（非彩色光圈）。 */
+     用带透明度的靛蓝晕染，白底/暗底均可见且克制（非彩色光圈）。
+     暗色底上浅靛蓝的 9% 几乎看不见，故用令牌给两种主题各一档透明度。 */
+  --empty-glow: rgba(91, 91, 214, 0.09);
   background: radial-gradient(
     480px circle at var(--mouse-x, 50%) var(--mouse-y, 50%),
-    rgba(91, 91, 214, 0.09),
+    var(--empty-glow),
     transparent 75%
   );
 }
+[data-theme="dark"] .empty-workspace { --empty-glow: rgba(124, 124, 240, 0.10); }
 /* hover 时保持光斑不覆盖（光斑已由 --mouse-x/y 控制） */
-.empty-workspace:hover { background: radial-gradient(480px circle at var(--mouse-x, 50%) var(--mouse-y, 50%), rgba(91, 91, 214, 0.09), transparent 75%); }
+.empty-workspace:hover { background: radial-gradient(480px circle at var(--mouse-x, 50%) var(--mouse-y, 50%), var(--empty-glow), transparent 75%); }
 .empty-workspace.is-drag-over {
   background: var(--accent-subtle);
   outline: 2px dashed var(--accent-fg);
@@ -70,19 +92,26 @@
 }
 
 /* 场景词轮播行：紧贴标题下方，比副标题更轻量；轮播词固定 4 字宽
-   左对齐，切换时不引起整行宽度跳动 */
+   左对齐，切换时不引起整行宽度跳动。
+   颜色必须用 --fg-muted：--fg-subtle 在浅色底只有 2.37:1、暗色底 3.05:1，
+   12px 正文属于"小字"，WCAG AA 要求 4.5:1（原先用小字+浅灰，实测不达标）。
+   层级差异靠字号（12px vs 副标题 14px）表达，不靠把字调淡。 */
 .empty-scene {
   margin: 0 0 14px !important;
   font-size: var(--text-sm) !important;
-  color: var(--fg-subtle) !important;
+  color: var(--fg-muted) !important;
 }
 .empty-scene .rotating-text {
   min-width: 4em;
   margin-left: 5px;
   justify-content: flex-start;
+  /* 轮播词用品牌色强调：浅色 5.4:1 / 暗色 5.9:1，两种主题都过 AA */
+  color: var(--accent-fg);
 }
 
-/* 支持格式徽章：纯装饰药丸，置于标题与拖拽提示之间，弱化呈现 */
+/* 支持格式徽章：纯装饰药丸，置于标题与拖拽提示之间，弱化呈现。
+   底色透明（用页面底）而不是 --canvas-subtle：11px 小字压在略深的灰底上
+   只有 4.43:1，差一点点就不过 AA；透明底 + 细边框既达标又更安静。 */
 .empty-formats {
   display: flex;
   flex-wrap: wrap;
@@ -97,7 +126,7 @@
   padding: 3px 9px;
   border: 1px solid var(--border-default);
   border-radius: var(--radius-full);
-  background: var(--canvas-subtle);
+  background: transparent;
   color: var(--fg-muted);
   font-size: var(--text-xs);
   font-weight: 500;

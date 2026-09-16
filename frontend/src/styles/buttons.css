@@ -7,13 +7,13 @@
   gap: 7px;
   border: 1px solid rgba(31, 35, 40, 0.12);
   border-radius: var(--radius-md);
-  background: var(--accent-fg);
+  background: var(--accent-solid);
   color: #fff;
   font-size: var(--text-sm);
   font-weight: 600;
   box-shadow: var(--shadow-xs);
 }
-.primary:hover, .run-button:hover, .save-button:hover { background: var(--accent-hover); box-shadow: var(--shadow-sm); }
+.primary:hover, .run-button:hover, .save-button:hover { background: var(--accent-solid-hover); box-shadow: var(--shadow-sm); }
 .primary:active, .run-button:active, .save-button:active { transform: translateY(1px); box-shadow: none; }
 .primary { height: 40px; padding: 0 18px; }
 .run-button { height: 34px; padding: 0 14px; flex: 0 0 auto; }
@@ -110,10 +110,12 @@
 .icon-button:hover, .artifact-download:hover { color: var(--accent-fg); border-color: var(--accent-fg); background: var(--accent-subtle); box-shadow: var(--shadow-xs); }
 .icon-button:active, .artifact-download:active { transform: translateY(1px); box-shadow: none; }
 
-/* 小标签：章节上方的英文 kicker / 侧栏分组标签 */
+/* 小标签：章节上方的英文 kicker / 侧栏分组标签。
+   颜色用 --fg-muted 而不是 --fg-subtle：后者在浅色底 2.37:1、暗色底 3.05:1，
+   11px 小字远达不到 WCAG AA 的 4.5:1；层级感靠字号与字距表达，不靠"调淡到看不清"。 */
 .sidebar-label, .section-kicker {
   display: block;
-  color: var(--fg-subtle);
+  color: var(--fg-muted);
   font-size: var(--text-xs);
   font-weight: 600;
   letter-spacing: 0.05em;

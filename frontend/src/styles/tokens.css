@@ -46,6 +46,13 @@
   --accent-hover: #4a4abf;    /* hover 加深 */
   --accent-subtle: #eeeef9;   /* 极淡靛蓝晕染 */
   --accent-ring: rgba(91, 91, 214, 0.15);
+  /* 实心强调填充（按钮/气泡/徽章等"白字压底"的场合）：
+     与 --accent-fg 分开是必要的——暗色主题会把 --accent-fg 提亮到 #7c7cf0
+     以保证"作为文字/图标"时的对比度，但同一个值当**背景**时白字只剩 3.5:1
+     （WCAG AA 正文需 4.5:1）。实心填充在两种主题下都取够深的靛蓝，
+     白字稳定在 5.4:1；暗色的 hover 提亮一档仍保持 4.7:1。 */
+  --accent-solid: #5b5bd6;
+  --accent-solid-hover: #4a4abf;
 
   /* 语义状态色：薄荷绿表示成功（更轻、更现代） */
   --success-fg: #0d9488;      /* 薄荷青 */
@@ -133,10 +140,14 @@
   --border-strong: #4a4b50;
 
   /* 品牌色：暗色下提亮一档，保持对比度 */
-  --accent-fg: #7c7cf0;       /* 暗色下更亮的靛蓝 */
+  --accent-fg: #7c7cf0;       /* 暗色下更亮的靛蓝（用于文字/图标/描边） */
   --accent-hover: #9a9af5;
   --accent-subtle: #1f1f3a;
   --accent-ring: rgba(124, 124, 240, 0.25);
+  /* 实心填充不跟着提亮：白字压在 #7c7cf0 上只有 3.5:1，达不到 AA。
+     保持与亮色同一档深靛蓝（白字 5.4:1），hover 提亮一档仍有 4.7:1。 */
+  --accent-solid: #5b5bd6;
+  --accent-solid-hover: #6565dd;
 
   /* 语义色：暗色下提亮 */
   --success-fg: #2dd4bf;

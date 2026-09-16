@@ -110,7 +110,7 @@ tbody tr:hover td { background: var(--accent-subtle); }
   min-width: 14px;
   height: 14px;
   border-radius: var(--radius-full);
-  background: var(--accent-fg);
+  background: var(--accent-solid);
   color: #fff;
   font-size: 9px;
   font-weight: 700;
