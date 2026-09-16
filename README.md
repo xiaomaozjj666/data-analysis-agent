@@ -44,10 +44,12 @@ flowchart LR
 
 ## 界面预览
 
-| 深色主题 · 分析工作区 | 产物中心 · 图表与数据文件 |
+| 起始页 · 拖拽上传与示例数据 | 分析工作区 · 数据概览与任务 |
 | :---: | :---: |
+| <img src="docs/screenshots/start-light.png" alt="起始页" width="100%" /> | <img src="docs/screenshots/overview-light.png" alt="数据分析工作台主界面（浅色主题）" width="100%" /> |
+| 深色主题 · 全流程工作台 | 产物中心 · 图表缩略图与下载 |
 | <img src="docs/screenshots/overview-dark.png" alt="深色主题主界面" width="100%" /> | <img src="docs/screenshots/artifacts-light.png" alt="产物中心" width="100%" /> |
-| 图表预览 · 中文工具栏与横向图例 | 数据预览 · 类型识别与列对齐 |
+| 图表预览 · 密度视图与细节图层 | 数据预览 · 类型识别与列对齐 |
 | <img src="docs/screenshots/preview-light.png" alt="图表预览模态" width="100%" /> | <img src="docs/screenshots/data-preview.png" alt="数据预览表格" width="100%" /> |
 
 ## 功能特性
