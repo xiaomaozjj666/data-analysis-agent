@@ -46,6 +46,26 @@ from data_agent.workspace import (
 
 router = APIRouter()
 
+#: 支持 ``marker.color`` 的 Plotly 轨迹类型——图表编辑的"改配色"只对它们生效。
+#: heatmap / histogram2d / histogram2dcontour / contour / image / splom 等按
+#: 数值着色的图型没有 marker 属性，盲写会让 `go.Figure` 校验抛 ValueError
+#: （实测：30 万行散点的密度图点"编辑→改色"直接 500，且报错信息无法理解）。
+_MARKER_TRACE_TYPES = frozenset({
+    "scatter", "scattergl", "scatter3d", "scatterpolar", "scatterpolargl",
+    "scatterternary", "scattergeo", "scattermapbox",
+    "bar", "histogram", "box", "violin", "pie", "funnel", "funnelarea",
+    "waterfall", "sunburst", "treemap", "icicle",
+})
+
+#: 用颜色表达"数值"的图型（密度图/热力图/等高线/图像）。它们的配色是数据编码，
+#: 不是装饰，改色等于换掉一种语义；只改其中少数 trace（例如密度图叠加的
+#: "最外围记录"散点）会造成"改了一半"的错觉，因此改色请求一律明确拒绝并说明，
+#: 而不是部分生效。
+_VALUE_SCALED_TRACE_TYPES = frozenset({
+    "heatmap", "heatmapgl", "histogram2d", "histogram2dcontour",
+    "contour", "contourcarpet", "image", "splom", "densitymapbox",
+})
+
 
 _PLOTLY_TAG_PATTERN = re.compile(
     r"<script\s+src=['\"]plotly\.min\.js['\"]\s*></script>",
@@ -701,15 +721,39 @@ def edit_chart(session_id: str, filename: str, request: ChartEditRequest) -> dic
             raise HTTPException(status_code=500, detail=f"图表数据读取失败：{exc}") from exc
 
         # 应用修改：title 写入 layout.title.text（保持 Plotly 标准结构）；
-        # color 应用到所有 trace 的 marker.color，无 marker 的 trace 自动创建。
+        # color 应用到支持 marker 的 trace——按数值着色的图型（heatmap /
+        # histogram2d / contour / image/splom 等）没有 marker 属性，盲写会让
+        # go.Figure 校验直接抛 ValueError（实测报 500 且错误信息用户看不懂）。
         if request.title is not None:
-            fig_dict.setdefault("layout", {})["title"] = {"text": request.title}
+            layout = fig_dict.setdefault("layout", {})
+            # 合并而不是整块替换：替换会丢掉标题原有的字号/对齐等样式字段。
+            existing_title = layout.get("title") if isinstance(layout.get("title"), dict) else {}
+            layout["title"] = {**existing_title, "text": request.title}
         if request.color is not None:
+            trace_types = {str(trace.get("type", "scatter"))
+                           for trace in fig_dict.get("data", [])}
+            if trace_types & _VALUE_SCALED_TRACE_TYPES:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "该图表按数值密集程度分档着色（密度图/热力图），颜色由记录数决定，"
+                        "不支持单独修改配色；可以修改标题，或在重新生成图表时指定分组列按类别着色。"
+                    ),
+                )
+            colored = 0
             for trace in fig_dict.get("data", []):
-                if "marker" in trace and isinstance(trace["marker"], dict):
+                if str(trace.get("type", "scatter")) not in _MARKER_TRACE_TYPES:
+                    continue
+                if isinstance(trace.get("marker"), dict):
                     trace["marker"]["color"] = request.color
                 else:
                     trace["marker"] = {"color": request.color}
+                colored += 1
+            if colored == 0:  # pragma: no cover - 非数值着色图型必然至少有一条 marker 轨迹
+                raise HTTPException(
+                    status_code=422,
+                    detail="该图表没有可修改颜色的数据系列。",
+                )
 
         # 重新生成 HTML：与 tools.py 保持一致的模板和转义逻辑，
         # 确保编辑后的图表预览/下载体验与原始生成一致。
