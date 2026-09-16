@@ -147,6 +147,17 @@ describe("PlotlyThumb.simplifyPlotlyForThumb", () => {
     expect((layout.hoverlabel as { bgcolor: string }).bgcolor).toBe("#10151f");
   });
 
+  it("普通图也去掉图内按钮（迷你图不是交互目标）", () => {
+    const figure = {
+      data: [{ type: "scatter", x: [1, 2, 3], y: [1, 2, 3], mode: "markers" }],
+      layout: {
+        updatemenus: [{ buttons: [{ label: "主体尺度", method: "relayout", args: [{}] }] }],
+      },
+    };
+    const { layout } = simplifyPlotlyForThumb(figure, false);
+    expect(layout.updatemenus).toBeUndefined();
+  });
+
   it("简化密度图：去标注与色标，保留热量网格与档位色标（浅色主题）", () => {
     const figure = densityFigureResponse();
     const { data, layout } = simplifyPlotlyForThumb(figure, false);
@@ -155,6 +166,8 @@ describe("PlotlyThumb.simplifyPlotlyForThumb", () => {
     // 面板标题 / "最密 N 条" / 均值参考线（annotations）、峰值框与趋势线（shapes）
     expect(layout.annotations).toBeUndefined();
     expect(layout.shapes).toBeUndefined();
+    // 图内按钮（显示抽样原始点 / 只看密度图）在迷你图里会浮在数据上遮住格子
+    expect(layout.updatemenus).toBeUndefined();
     // 色标（colorbar）在 209×131 里挤掉近三分之一宽度：每条 trace 都关掉
     for (const trace of traces) {
       expect(trace.showscale).toBe(false);

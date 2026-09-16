@@ -12,6 +12,10 @@
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
+    // 显式列出环境类型：一旦设置 types，TS 就不再自动包含 node_modules/@types 下
+    // 的全部包，所以仍然需要的两个都必须写上——node（对比度门禁测试读 tokens.css）、
+    // vite/client（打包器注入的 import.meta.* 等）。
+    "types": ["node", "vite/client"],
     "paths": { "@/*": ["./src/*"] }
   },
   "include": ["src"]
