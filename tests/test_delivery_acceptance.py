@@ -167,10 +167,26 @@ def test_agent_reports_budget_left_from_config(tmp_path):
     assert agent.analysis_budget_left() == pytest.approx(23.0, abs=1.0)
 
 
-def test_budget_config_is_validated(monkeypatch):
-    monkeypatch.setenv("AGENT_MAX_ANALYSIS_SECONDS", "0")
+def test_budget_config_is_validated():
+    """预算必须为正数——直接构造 settings 校验，不依赖环境变量/密钥。
+
+    最初写成 `from_env()` + monkeypatch，本地（.env 里有 Key）能过、CI（无 Key）
+    却先在"未配置 API Key"上抛错，正则不匹配而失败：测试不能依赖环境。
+    """
+    settings = AgentSettings(
+        api_key="k", provider="deepseek", model="deepseek-chat",
+        base_url="http://127.0.0.1:9", language="zh",
+        max_analysis_seconds=0,
+    )
     with pytest.raises(ValueError, match="AGENT_MAX_ANALYSIS_SECONDS"):
-        AgentSettings.from_env().validate_for_model()
+        settings.validate_for_model()
+
+    ok = AgentSettings(
+        api_key="k", provider="deepseek", model="deepseek-chat",
+        base_url="http://127.0.0.1:9", language="zh",
+        max_analysis_seconds=600,
+    )
+    ok.validate_for_model()  # 合法值不应抛错
 
 
 def test_analysis_result_json_is_serializable(tmp_path):
