@@ -679,6 +679,27 @@ def _visualization_engine(item: dict[str, str]) -> str:
     return ""
 
 
+#: 只含计数/样本量说明的括号注释（重试时同一张图会换个写法），去重键里忽略它。
+#: 判据：括号内去掉数字与标点后，剩下的只能是这些"计数词"，或干脆是空。
+_COUNT_ANNOTATION_WORDS = frozenset(
+    {"n", "样本", "样本数", "条", "行", "行数", "记录", "记录数", "个", "共", "总计", "合计",
+     "有效", "有效值", "缺失", "缺失值", "占", "占比", "百分比"}
+)
+_COUNT_ANNOTATION = re.compile(r"[（(]([^）)]*)[）)]")
+
+
+def _is_count_annotation(inner: str) -> bool:
+    stripped = re.sub(r"[\d\s.,%=/·、，。:\-—~]+", "", inner).strip().lower()
+    return not stripped or stripped in _COUNT_ANNOTATION_WORDS
+
+
+def _strip_count_annotations(description: str) -> str:
+    return _COUNT_ANNOTATION.sub(
+        lambda match: "" if _is_count_annotation(match.group(1)) else match.group(0),
+        description,
+    )
+
+
 def _curate_artifacts(artifacts: list[dict[str, str]]) -> list[dict[str, str]]:
     """Return a concise, user-facing result set instead of every intermediate file."""
     latest_visualizations: dict[str, dict[str, str]] = {}
@@ -690,7 +711,14 @@ def _curate_artifacts(artifacts: list[dict[str, str]]) -> list[dict[str, str]]:
         if kind == "chart_data":
             continue
         description = re.sub(r"\s+", " ", item.get("description", "").strip().lower())
-        semantic_title = re.split(r"[（(]", description, maxsplit=1)[0]
+        # 去重键：完整描述，但**去掉"样本量注释"式的括号**。
+        # 两类括号必须区别对待（否则不是合并过多就是显示过少）：
+        #   - "（n=2）" / "（样本=2）" / "（1325/1345）" 只是同一张图重画时的计数备注
+        #     → 去掉，重试才会合并；
+        #   - "（整体）" / "（按品类）" 是真正区分语义的限定词 → 必须保留，
+        #     否则一张 30 万行分面密度图会被另一张顶掉、在界面上凭空消失
+        #     （实测演示会话就是这样少了一张图）。
+        semantic_title = _strip_count_annotations(description)
         semantic_title = semantic_title.replace("相关系数", "相关").replace("相关性", "相关")
         key = re.sub(r"[^\w\u4e00-\u9fff]+", "", semantic_title)
         key = key or Path(item.get("name", "artifact")).stem.lower()

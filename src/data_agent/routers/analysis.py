@@ -218,6 +218,26 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
     record.set_running()
     record.current_task = request.task
 
+    # 并发槽与 run_lock 的释放必须**幂等**：worker 的 finally 与 SSE 生成器的
+    # finally 都可能走到释放逻辑（客户端在 worker.start() 前后断开的时序不同），
+    # 两次 release 会抛 "Semaphore released too many times"，把并发计数搞坏
+    # （之后的分析要么被误拒、要么超出并发上限）。实测在 CI 日志里刷出一堆
+    # 未捕获异常，就是这个竞态。
+    resources_released = threading.Event()
+
+    def _release_resources() -> None:
+        if resources_released.is_set():
+            return
+        resources_released.set()
+        try:
+            api.analysis_slots.release()
+        except ValueError:  # pragma: no cover - 双重释放已被上面的旗标挡住
+            logger.warning("analysis slot 重复释放（已忽略） session=%s", session_id)
+        try:
+            record.run_lock.release()
+        except RuntimeError:  # pragma: no cover - 同上
+            logger.warning("run_lock 重复释放（已忽略） session=%s", session_id)
+
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[tuple[str, Any] | None] = asyncio.Queue(maxsize=SSE_QUEUE_MAXSIZE)
 
@@ -329,8 +349,7 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
             # （进程关闭、ASGI worker 被 kill 等场景），若放在 release 之前，
             # 异常会跳过 release 导致 analysis_slots 和 run_lock 永久泄漏
             # —— max_concurrent_analyses=2 时泄漏 2 次后整个服务无法启动新分析。
-            api.analysis_slots.release()
-            record.run_lock.release()
+            _release_resources()
             # 发送哨兵值 None 通知 SSE 生成器结束循环。_safe_emit 内部已处理
             # RuntimeError（loop 关闭）和 QueueFull，无需再 try/except。
             _safe_emit(loop, queue, None)
@@ -402,14 +421,7 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
                 with record._status_lock:
                     if record._analysis_status == "running":
                         record._analysis_status = "failed"
-                try:
-                    api.analysis_slots.release()
-                except ValueError:
-                    pass
-                try:
-                    record.run_lock.release()
-                except RuntimeError:
-                    pass
+                _release_resources()
                 try:
                     api.registry.persist(session_id, record)
                 except Exception:
