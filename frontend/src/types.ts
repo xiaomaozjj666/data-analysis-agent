@@ -155,8 +155,11 @@ export interface Settings {
   configured: boolean;
   thinking_enabled: boolean;
   reasoning_effort: string;
+  // 执行预算（只读信息，来自 /api/settings）：单模型调用上限、计划步数上限、
+  // 单步工具调用上限。用于设置面板展示"一轮分析为什么这么久"。
   max_iterations: number;
   max_plan_steps: number;
+  max_tool_calls_per_step: number;
   langsmith_tracing?: boolean;
   storage_status?: string;
   warning?: string;

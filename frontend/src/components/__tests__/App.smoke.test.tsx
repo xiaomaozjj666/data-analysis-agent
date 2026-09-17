@@ -81,6 +81,7 @@ describe("App 渲染冒烟", () => {
           reasoning_effort: "medium",
           max_iterations: 24,
           max_plan_steps: 8,
+          max_tool_calls_per_step: 6,
           langsmith_tracing: false,
           storage_status: "ok",
           max_upload_bytes: 52_428_800,

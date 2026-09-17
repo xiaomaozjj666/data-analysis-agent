@@ -83,6 +83,12 @@ def get_settings() -> dict[str, Any]:
         # 上传大小上限：前端据此做客户端预校验，避免与服务端配置脱节
         # （服务端可通过 DATA_AGENT_MAX_UPLOAD_BYTES 调整）。
         "max_upload_bytes": api.bootstrap_settings.max_upload_bytes,
+        # 执行预算：前端 Settings 类型早就声明了 max_iterations / max_plan_steps，
+        # 但接口从未下发（类型与运行时不一致，读到就是 undefined）。这里补齐，
+        # 并带上决定"一轮分析跑多久"的两个上限——用户抱怨卡顿时能看到实际配置。
+        "max_iterations": settings.max_iterations,
+        "max_plan_steps": settings.max_plan_steps,
+        "max_tool_calls_per_step": settings.max_tool_calls_per_step,
     }
 
 

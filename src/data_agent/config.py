@@ -187,6 +187,9 @@ class AgentSettings:
             raise ValueError("DeepSeek reasoning_effort 仅支持 high 或 max。")
         if not 1 <= self.max_iterations <= 100:
             raise ValueError("AGENT_MAX_ITERATIONS 必须在 1 到 100 之间。")
+        # 上限 50：单步工具调用超过这个量级说明模型在空转，几乎必然是配置写错了
+        if not 1 <= self.max_tool_calls_per_step <= 50:
+            raise ValueError("AGENT_MAX_TOOL_CALLS_PER_STEP 必须在 1 到 50 之间。")
         if not 2 <= self.max_plan_steps <= 12:
             raise ValueError("AGENT_MAX_PLAN_STEPS 必须在 2 到 12 之间。")
         if self.max_upload_bytes <= 0 or self.max_rows <= 0 or self.max_cells <= 0:

@@ -220,11 +220,26 @@ def _collect_charts(workspace: DataWorkspace) -> list[dict[str, Any]]:
 
 
 def _is_wide_chart(chart: dict[str, Any]) -> bool:
-    """SPLOM（多 grid）与 3D 散点占满整行，其余图表半宽双列。"""
-    if chart["engine"] != "echarts":
-        return False
+    """SPLOM（多 grid）、3D 散点与密度图占满整行，其余图表半宽双列。
+
+    密度图（分面或 jointplot 带边缘直方图）必须整行：它们内部按固定字号排版
+    多个子图，塞进半宽卡片里时面板标题、峰值标注与截断提示会互相压字
+    （实测截图确认），整行宽度下才和独立打开时一致。
+    """
+    if chart["engine"] == "plotly":
+        layout = (chart.get("fig") or {}).get("layout") or {}
+        if isinstance(layout.get("meta"), dict) and layout["meta"].get("density_view"):
+            return True
+        # 3D 散点在 Plotly 里是 scene（不是 yaxis2），同样需要整行才看得清方位
+        if isinstance(layout.get("scene"), dict):
+            return True
+        # 散点矩阵/多子图：yaxis2..N 存在即视为宽图
+        return any(str(key).startswith("yaxis") and key != "yaxis" for key in layout)
     option = chart["option"]
     grids = option.get("grid")
+    if isinstance(grids, list) and len(grids) > 1:
+        # 密度分面（多 grid）与 jointplot（主图 + 边缘直方图）都按整行排版
+        return True
     if isinstance(grids, list) and len(grids) > 4:
         return True
     return any(s.get("type") == "scatter3D" for s in option.get("series", []))
