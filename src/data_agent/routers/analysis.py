@@ -273,6 +273,9 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
                 _safe_emit(loop, queue, ("plan_ready", {
                     "plan": plan_payload.get("plan", []),
                     "objective": plan_payload.get("objective", ""),
+                    # "fallback" = 模型没给出结构化计划，用的是内置模板；
+                    # 前端据此提示用户，避免"看起来正常但模型没参与"。
+                    "source": plan_payload.get("plan_source", "model"),
                 }))
             else:
                 if final_payload is None:

@@ -83,6 +83,16 @@ _ECHARTS_BASE_AXIS = {
     "nameTextStyle": {"color": _ECHARTS_TEXT_SECONDARY, "fontSize": 12, "padding": [0, 0, 0, -16]},
 }
 
+#: 轴名位置：ECharts 默认把类目轴名放在轴末端（"区域"贴在绘图区右下角），
+#: 实测看起来像残留文本、也容易被裁掉。改成居中放在轴下方（数值轴同理放在
+#: 左侧中部），这是 ECharts 官方示例之外的通用做法，读数时视线不用横跨整屏。
+_ECHARTS_X_AXIS_NAME: dict[str, Any] = {"nameLocation": "middle", "nameGap": 32}
+#: 数值轴名放在轴顶端偏左（与 y 轴刻度同一视觉列），避免与顶部标题打架。
+_ECHARTS_Y_AXIS_NAME: dict[str, Any] = {
+    "nameLocation": "end", "nameGap": 14,
+    "nameTextStyle": {"color": _ECHARTS_TEXT_SECONDARY, "fontSize": 12, "align": "left"},
+}
+
 _ECHARTS_BASE_TOOLTIP = {
     "backgroundColor": "rgba(255,255,255,0.98)",
     "borderColor": _ECHARTS_GRID_COLOR,
@@ -206,17 +216,40 @@ def _series_color(index: int) -> str:
 
 # === 坐标轴 nice ticks 工具 ===
 
+def _stacked_totals(
+    df: pd.DataFrame, *, x: str, y: str | None, color: str | None,
+) -> list[float] | None:
+    """按 x 汇总各 color 分组的 y 之和，供堆叠柱/堆叠面积的轴范围使用。"""
+    if not (x and y and color) or x not in df.columns or y not in df.columns:
+        return None
+    frame = df[[x, y]].copy()
+    frame[y] = pd.to_numeric(frame[y], errors="coerce")
+    totals = frame.dropna().groupby(x, dropna=False)[y].sum()
+    return [float(value) for value in totals.tolist()]
+
+
 def _echarts_value_axis(
     df: pd.DataFrame, y: str | None, *, name: str, scale: bool = True,
-    values: list[float] | None = None,
+    values: list[float] | None = None, zero_base: bool = False, is_x: bool = False,
 ) -> dict[str, Any]:
     """构建数值型 yAxis：应用 nice ticks 对齐刻度到 1/2/5/10 倍数，
     并用大数值自适应 formatter（万/亿）让坐标轴可读。
 
     values 可覆盖取值来源：堆叠图的轴范围必须按各类目堆叠总和计算，
     而非单列 min/max，否则堆叠后的线/面会冲出绘图区顶部。
+
+    ``zero_base=True`` 强制包含 0：柱状图靠**长度**表达数值，截断基线会
+    把 1%~2% 的差异放大成肉眼上的成倍差距（实测：三地区销售额 66~68 万，
+    轴从 21 万起，看起来差了三四倍）。折线图不受此限——折线的斜率才是
+    信息，截断基线是常规做法。
     """
-    base: dict[str, Any] = {**_ECHARTS_BASE_AXIS, "type": "value", "name": name, "scale": scale}
+    base: dict[str, Any] = {
+        **_ECHARTS_BASE_AXIS, "type": "value", "name": name, "scale": scale,
+        # 轴名位置分方向：Y 轴放顶端偏左（与刻度同一视觉列），X 轴居中放轴下方
+        # ——数值轴当 X 用时若沿用 Y 的 "end" 定位，轴名会贴到绘图区最右侧被裁掉
+        # （实测散点图右边缘只剩"销售"两个字）。
+        **(_ECHARTS_X_AXIS_NAME if is_x else _ECHARTS_Y_AXIS_NAME),
+    }
     numeric = pd.Series(dtype=float)
     if values is not None:
         numeric = pd.to_numeric(pd.Series(values), errors="coerce").dropna()
@@ -224,7 +257,12 @@ def _echarts_value_axis(
         numeric = pd.to_numeric(df[y], errors="coerce").dropna()
     if len(numeric) > 0:
         vmin, vmax = float(numeric.min()), float(numeric.max())
-        nice_min, nice_max, _ = _nice_ticks(vmin, vmax, n=5)
+        if zero_base and vmin > 0:
+            # 从 0 起算 nice 刻度（含全负数据时保留负向范围）
+            nice_min, nice_max, _ = _nice_ticks(min(0.0, vmin), vmax, n=5)
+            nice_min = min(0.0, nice_min)
+        else:
+            nice_min, nice_max, _ = _nice_ticks(vmin, vmax, n=5)
         base["min"] = nice_min
         base["max"] = nice_max
         # 不固定 interval：dataZoom/滚轮缩放后 ECharts 会按新范围自动
@@ -300,6 +338,7 @@ def _auto_interpret(
     aggregation: str,
     title: str | None,
     density_view: DensityView | None = None,
+    stacked: bool = False,
 ) -> str:
     """基于聚合结果生成一段业务白话解读。
 
@@ -333,11 +372,12 @@ def _interpret_impl(
     aggregation: str,
     title: str | None,
     density_view: DensityView | None = None,
+    stacked: bool = False,
 ) -> str:
     title_text = title or f"{_build_axis_label(x) or ''}与{_build_axis_label(y) or ''}分布"
     if chart_type in {"bar", "line", "area"} and x and y and len(df) > 0:
         return _interpret_trend(df, chart_type=chart_type, x=x, y=y,
-                                color=color, aggregation=aggregation, title=title_text)
+                                color=color, aggregation=aggregation, title=title_text, stacked=stacked)
     if chart_type == "pie" and x and len(df) > 0:
         return _interpret_pie(df, x=x, title=title_text)
     if chart_type == "scatter" and density_view is not None and x and y and len(df) > 0:
@@ -358,7 +398,7 @@ def _interpret_impl(
 
 def _interpret_trend(
     df: pd.DataFrame, *, chart_type: str, x: str, y: str,
-    color: str | None, aggregation: str, title: str,
+    color: str | None, aggregation: str, title: str, stacked: bool = False,
 ) -> str:
     agg_label = {"mean": "平均", "median": "中位", "sum": "合计", "count": "计数",
                  "min": "最小", "max": "最大"}.get(aggregation, "")
@@ -369,14 +409,16 @@ def _interpret_trend(
         # 分组场景：对比各系列总量与差异
         pivot = df.groupby(color)[y].sum() if y in df.columns else None
         if pivot is None or pivot.empty:
-            return f"「{title}」按{_build_axis_label(color)}分组对比，悬浮可查看每组明细。"
+            grouping = "堆叠" if stacked else "分组"
+            return f"「{title}」按{_build_axis_label(color)}{grouping}对比，悬浮可查看每组明细。"
         top_series = pivot.idxmax()
         top_val = float(pivot.max())
         low_series = pivot.idxmin()
         low_val = float(pivot.min())
         ratio = top_val / low_val if low_val > 0 else float("inf")
+        grouping = "堆叠" if stacked else "分组"
         return (
-            f"「{title}」按{_build_axis_label(color)}分组，{top_series}累计最高"
+            f"「{title}」按{_build_axis_label(color)}{grouping}，{top_series}累计最高"
             f"（{_format_number(top_val)}），{low_series}最低（{_format_number(low_val)}），"
             f"前者约为后者的{ratio:.1f}倍。点击图例可隐藏系列聚焦对比，框选区域可放大查看。"
         )
@@ -585,9 +627,14 @@ def _format_time_categories(values: pd.Series) -> list[str] | None:
 
 def _echarts_bar(
     df: pd.DataFrame, *, x: str, y: str | None, color: str | None,
-    aggregation: str, title: str,
+    aggregation: str, title: str, stacked: bool = False,
 ) -> dict[str, Any]:
-    """分组/堆叠柱状图：默认分组，color 维度自动展开为多系列。"""
+    """分组/堆叠柱状图：默认分组，color 维度自动展开为多系列。
+
+    ``stacked=True`` 时同一类目的多个系列堆叠（ECharts 的 ``series.stack``），
+    Y 轴范围按**各类目堆叠总和**计算并强制含 0。此前只支持分组柱，模型按
+    "堆叠"写标题时图上却是并排柱——标题与图形不一致，用户会以为数据错了。
+    """
     x_label = _build_axis_label(x)
     y_label = _build_axis_label(y) if y else "计数"
     agg_suffix = {"mean": "（平均）", "median": "（中位）", "sum": "（合计）",
@@ -607,9 +654,13 @@ def _echarts_bar(
         "toolbox": {**_ECHARTS_BASE_TOOLBOX},
         "color": _ECHARTS_PALETTE,
         "xAxis": [{**_ECHARTS_BASE_AXIS, "type": "category", "data": categories, "name": x_label,
+                   **_ECHARTS_X_AXIS_NAME,
                    "axisLabel": {**_ECHARTS_BASE_AXIS["axisLabel"], "hideOverlap": True,
                                  "rotate": 30 if len(categories) > 8 else 0}}],
-        "yAxis": [_echarts_value_axis(df, y, name=f"{y_label}{agg_suffix}", scale=False)],
+        "yAxis": [_echarts_value_axis(
+            df, y, name=f"{y_label}{agg_suffix}", scale=False, zero_base=True,
+            values=_stacked_totals(df, x=x, y=y, color=color) if (stacked and color and y) else None,
+        )],
     }
 
     if color:
@@ -623,9 +674,11 @@ def _echarts_bar(
             series.append({
                 "name": str(level),
                 "type": "bar",
+                # 堆叠模式：同类目各系列叠起来，Y 轴按堆叠总和计算（下方 yAxis）
+                **({"stack": "Total", "barGap": "0%"} if stacked else {}),
                 "data": data,
-                "barMaxWidth": 32,
-                "barGap": "20%",
+                "barMaxWidth": 32 if not stacked else 48,
+                "barGap": "20%" if not stacked else "0%",
                 "barCategoryGap": "30%",
                 "itemStyle": {
                     "color": _build_linear_gradient(_series_color(idx)),
@@ -715,6 +768,7 @@ def _echarts_line(
         "toolbox": {**_ECHARTS_BASE_TOOLBOX},
         "color": _ECHARTS_PALETTE,
         "xAxis": [{**_ECHARTS_BASE_AXIS, "type": "category", "boundaryGap": False, "data": categories, "name": x_label,
+                   **_ECHARTS_X_AXIS_NAME,
                    # hideOverlap：密集时间标签自动抽疏，避免重叠成墨团（ECharts v5 主流做法）
                    "axisLabel": {**_ECHARTS_BASE_AXIS["axisLabel"], "hideOverlap": True}}],
         # 堆叠时 scale=False 从 0 起；非堆叠 scale=True 让 Y 轴自适应非零起点
@@ -842,15 +896,31 @@ def _append_structure_annotations(
         mark_items.append({
             "xAxis": mean_x,
             "lineStyle": {"color": "#9aa0a6", "width": 1.2, "type": "dashed", "opacity": 0.9},
-            "label": {"formatter": f"x 均值 {_format_number(mean_x)}", "position": "insideEndTop",
-                      "color": "#9aa0a6", "fontSize": 10},
+            # 竖线标签默认沿轴贴在最上端并旋转 90°，实测压在绘图区顶边、
+            # 与标题抢位且半截被裁。改成水平放在竖线下端上方（insideStartTop），
+            # 加白底衬垫，既读得清也不越界。
+            "label": {
+                "formatter": f"x 均值 {_format_number(mean_x)}",
+                "position": "insideStartTop", "rotate": 0,
+                "color": "#6b7280", "fontSize": 10,
+                "padding": [2, 4], "borderRadius": 3,
+                "backgroundColor": "rgba(255,255,255,0.82)",
+            },
         })
     if mean_y is not None:
         mark_items.append({
             "yAxis": mean_y,
             "lineStyle": {"color": "#9aa0a6", "width": 1.2, "type": "dashed", "opacity": 0.9},
-            "label": {"formatter": f"y 均值 {_format_number(mean_y)}", "position": "insideEndRight",
-                      "color": "#9aa0a6", "fontSize": 10},
+            # 横线标签放在线**左端内侧**（insideStartTop 会贴到绘图区左边界被裁），
+            # 白底衬垫保证压在点数上时也能读。
+            "label": {
+                "formatter": f"y 均值 {_format_number(mean_y)}",
+                # 右对齐锚在线的右端内侧：左对齐会从锚点向右延伸、越过绘图区被裁
+                "position": "insideEndTop", "align": "right",
+                "color": "#6b7280", "fontSize": 10,
+                "padding": [2, 4], "borderRadius": 3,
+                "backgroundColor": "rgba(255,255,255,0.82)",
+            },
         })
     if not mark_items:
         return
@@ -870,10 +940,10 @@ def _echarts_scatter(
 
     # 大数据语义与 Plotly 分支对齐：数十万点全量绘制时 10px 不透明点
     # 互相覆盖，最后绘制的系列把其它分组的颜色完全盖住（视觉上"只有
-    # 一个颜色"）。缩小点径 + 半透明让分组色混合成彩色点阵。
-    large_cloud = len(df) > 10_000
-    base_symbol = 4 if large_cloud else 10
-    base_opacity = 0.5 if large_cloud else 0.78
+    # 一个颜色"）。点径/透明度按点数分档，与 Plotly 分支共用同一张表。
+    from data_agent.tools.builder import scatter_symbol_style
+
+    base_symbol, base_opacity, base_border = scatter_symbol_style(len(df))
 
     base: dict[str, Any] = {
         "title": {**_ECHARTS_BASE_TITLE, "text": title, "subtext": f"{x_label} × {y_label}"},
@@ -883,7 +953,7 @@ def _echarts_scatter(
         "grid": {**_ECHARTS_BASE_GRID},
         "toolbox": {**_ECHARTS_BASE_TOOLBOX},
         "color": _ECHARTS_PALETTE,
-        "xAxis": [_echarts_value_axis(df, x, name=x_label, scale=True)],
+        "xAxis": [_echarts_value_axis(df, x, name=x_label, scale=True, is_x=True)],
         "yAxis": [_echarts_value_axis(df, y, name=y_label, scale=True)],
         # 显式 id（dz-x/dz-y）：模板里的缩放自适应脚本按 id 区分事件来自
         # 哪个轴的 dataZoom（e.batch[].dataZoomId），未加 id 时 ECharts 生成
@@ -918,9 +988,11 @@ def _echarts_scatter(
                 "itemStyle": {
                     "color": _series_color(idx),
                     "opacity": base_opacity,
-                    "borderWidth": 0.8,
+                    "borderWidth": base_border,
                     "borderColor": "#fff",
-                    "shadowBlur": 4,
+                    # 光晕只在点少时加：几千点以上每点一圈 shadow 既拖慢渲染、
+                    # 又让密集区糊成一片（点径缩小后尤其明显）。
+                    "shadowBlur": 4 if base_border else 0,
                     "shadowColor": _hex_to_rgba(_series_color(idx), 0.3),
                 },
                 "emphasis": {"scale": 1.4, "itemStyle": {"opacity": 1, "shadowBlur": 10}},
@@ -975,25 +1047,27 @@ def _echarts_scatter(
             "itemStyle": {
                 "color": _ECHARTS_PALETTE[0],
                 "opacity": base_opacity,
-                "borderWidth": 0.8,
+                "borderWidth": base_border,
                 "borderColor": "#fff",
-                "shadowBlur": 4,
+                "shadowBlur": 4 if base_border else 0,
                 "shadowColor": _hex_to_rgba(_ECHARTS_PALETTE[0], 0.3),
             },
             "emphasis": {"scale": 1.4, "itemStyle": {"opacity": 1, "shadowBlur": 10}},
         }]
         if len(outlier_df):
+            # 离群点要比普通点略大、略实，才能在密集点云里被看见；
+            # 但同样随总点数收敛，避免几万个离群点把画面糊满。
             series.append({
                 "name": "离群点",
                 "type": "scatter",
                 "data": _rows_data(outlier_df, data_cols),
-                "symbolSize": _size_func(size, size_min, size_max) if size else (6 if large_cloud else 13),
+                "symbolSize": _size_func(size, size_min, size_max) if size else max(base_symbol + 3.0, 6.0),
                 "itemStyle": {
                     "color": _ECHARTS_PALETTE[3],
-                    "opacity": 0.7 if large_cloud else 0.92,
-                    "borderWidth": 1.2,
+                    "opacity": min(0.92, base_opacity + 0.18),
+                    "borderWidth": 1.0,
                     "borderColor": "#fff",
-                    "shadowBlur": 6,
+                    "shadowBlur": 6 if base_border else 0,
                     "shadowColor": _hex_to_rgba(_ECHARTS_PALETTE[3], 0.35),
                 },
                 "emphasis": {"scale": 1.5, "itemStyle": {"opacity": 1, "shadowBlur": 12}},
@@ -2052,6 +2126,7 @@ def _echarts_histogram(
         "toolbox": {**_ECHARTS_BASE_TOOLBOX},
         "color": [_ECHARTS_PALETTE[0]],
         "xAxis": [{**_ECHARTS_BASE_AXIS, "type": "category", "data": categories, "name": x_label,
+                   **_ECHARTS_X_AXIS_NAME,
                    "axisLabel": {**_ECHARTS_BASE_AXIS["axisLabel"], "rotate": 35}}],
         # Y 轴范围必须按分箱频数计算（并入 0 作基线）；若误用原始 x 列取值，
         # 数据量级与频数不匹配时柱体会被压扁或冲出绘图区。
@@ -2178,6 +2253,7 @@ def _echarts_box(
         "toolbox": {**_ECHARTS_BASE_TOOLBOX},
         "color": _ECHARTS_PALETTE,
         "xAxis": [{**_ECHARTS_BASE_AXIS, "type": "category", "data": categories, "name": x_label,
+                   **_ECHARTS_X_AXIS_NAME,
                    "axisLabel": {**_ECHARTS_BASE_AXIS["axisLabel"],
                                  "rotate": 30 if len(categories) > 8 else 0}}],
         "yAxis": [_echarts_value_axis(df, y, name=y_label, scale=True)],
@@ -3279,6 +3355,7 @@ def _build_echarts_option(
     bins: int,
     density_view: DensityView | None = None,
     scale_mode: str = "auto",
+    stacked: bool = False,
 ) -> dict[str, Any]:
     """根据 chart_type 分派到对应的 ECharts option 生成器。
 
@@ -3287,7 +3364,8 @@ def _build_echarts_option(
     "超大数据散点走密度视图"这一分派在两条入口上完全一致。
     """
     if chart_type == "bar":
-        return _echarts_bar(df, x=x, y=y, color=color, aggregation=aggregation, title=title)
+        return _echarts_bar(df, x=x, y=y, color=color, aggregation=aggregation,
+                            title=title, stacked=stacked)
     if chart_type == "line":
         return _echarts_line(df, x=x, y=y, color=color, aggregation=aggregation, title=title, area=False)
     if chart_type == "area":
@@ -3351,6 +3429,7 @@ def _render_echarts(
     stem: str,
     chart_type_source: str = "explicit",
     scale_mode: str = "auto",
+    stacked: bool = False,
     export_png: bool = False,
 ) -> dict[str, Any]:
     """ECharts 渲染主入口：生成 option、HTML、解读文本，返回 response dict。"""
@@ -3371,14 +3450,14 @@ def _render_echarts(
         df, chart_type=chart_type, x=x, y=y, color=color, z=z, size=size,
         values=values, path_columns=path_columns, dimensions=dimensions,
         aggregation=aggregation, title=display_title, bins=bins,
-        density_view=density_view, scale_mode=scale_mode,
+        density_view=density_view, scale_mode=scale_mode, stacked=stacked,
     )
 
     # 自动白话解读（密度图走密度编码说明，见 _density_interpretation）
     interpretation = _auto_interpret(
         df, chart_type=chart_type, x=x, y=y, color=color,
         aggregation=aggregation, title=display_title,
-        density_view=density_view,
+        density_view=density_view, stacked=stacked,
     )
 
     # 大数据 HTML 嵌入降采样：散点/折线超过嵌入上限时，交互 HTML 按等距

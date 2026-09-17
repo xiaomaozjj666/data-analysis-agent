@@ -66,6 +66,10 @@ class WorkflowState(TypedDict, total=False):
     dataset_profile: dict[str, Any]
     objective: str
     plan: list[dict[str, str]]
+    #: 计划来源："model" 表示模型结构化输出成功，"fallback" 表示模型失败、
+    #: 用了内置默认模板。降级必须对用户可见——模型没参与规划却装作正常，
+    #: 是这个项目踩过的坑（thinking 模式拒绝 tool_choice 导致 100% 静默降级）。
+    plan_source: str
     remaining_steps: list[dict[str, str]]
     current_step: dict[str, str]
     last_step_result: dict[str, Any]

@@ -70,7 +70,32 @@
 - 这套用例第一次跑就抓到真问题：**ECharts 30 万行密度图要 7.3 秒，而 Plotly 只要 1.8 秒**。Profiler 显示时间不在渲染里，而在 `ensure_echarts_bundle()`——它**按会话**从 CDN 下载 1MB 的 `echarts.min.js`，每个新会话的首张 ECharts 图都要重下一次。改为机器级共享缓存（`runs/_bundles`，各会话硬链接引用）+ 服务启动时后台预热（`api._warm_chart_bundles`），ECharts 降到 2.5 秒；离线且有缓存时照常可用，无缓存时返回 None 让调用方 fallback 到 CDN 直引（`tests/test_bundle_cache.py` 覆盖这四种情形）。
 - 教训：**"首图慢"和"渲染慢"要分开量**。cProfile 里渲染只占 1.8s，剩下 6s 全在第一次网络 I/O；只看总耗时会误判成渲染性能问题。
 
-**文档截图怎么重拍**：`python scripts/capture_docs_screenshots.py`（需 `pip install playwright && playwright install chromium`，以及本地已起服务、`.env` 里的 `APP_ACCESS_TOKEN`、演示会话 `api_bigtest0001`）。两个坑写在脚本注释里：① 缩略图懒加载且**离开视口会被 purge**，所以产物页截图不能用 `full_page`（折叠线以下的卡片会是空白）；② 也不能中途改视口——ECharts 迷你画布不会跟着重绘，会截成空白——要用高视口**新开一个页面**。
+**文档截图怎么重拍**：python scripts/capture_docs_screenshots.py（需 pip install playwright && playwright install chromium，以及本地已起服务、.env 里的 APP_ACCESS_TOKEN、演示会话 pi_bigtest0001）。两个坑写在脚本注释里：① 缩略图懒加载且**离开视口会被 purge**，所以产物页截图不能用 ull_page（折叠线以下的卡片会是空白）；② 也不能中途改视口——ECharts 迷你画布不会跟着重绘，会截成空白——要用高视口**新开一个页面**。
+
+**一次分析的耗时构成（实测时间线，不是估算）**：用 SSE 事件时间戳量过完整一轮"按地区对比销售额 + 画关系图"（4k 行样例数据）：
+
+| 阶段 | 优化前 | 优化后 |
+|---|---|---|
+| 总耗时 | **427s** | **230s** |
+| 工具调用次数 | 62 | 36（单步上限 6） |
+| replan 阶段 | 37.5s（6 轮，每轮 ~6s） | 5.5s（正常进度跳过咨询） |
+| 单轮 LLM（带 thinking/high） | ~2.8s | 不变（属模型档位，用户可调） |
+| 报告生成静默期 | 45s（只发 15s 心跳） | 不变 |
+
+- **单步工具调用上限**（`AGENT_MAX_TOOL_CALLS_PER_STEP`，默认 6）：ReAct 循环原本没有工具调用预算，实测一步能烧掉 23 次调用、每次都要一次 thinking 往返。现在超出即结束本步、用已有结果写小结（`exit_behavior="end"`，属可预期降级而非报错）。
+- **正常进度下跳过 replan 咨询**：`nodes/replan.py::_needs_replan` —— 只有"有步骤失败 / 计划已执行完 / 连续两步零产物"才花那次 LLM 往返；其余情况沿用原计划剩余步骤，`replan_reason` 里写明是"跳过咨询"而不是模型的决定（不假装是模型判断）。
+- **降级要可见**：规划失败（模型没返回结构化计划）时 `plan_source="fallback"` 会随 `plan_ready` 事件送到前端，计划面板显示"以下为内置默认步骤"。此前 thinking 模式拒绝 `tool_choice` 导致 planner 100% 失败却只有日志知道。
+- 想更快：调低 `AGENT_REASONING_EFFORT`（如 `medium`）或模型档位——每轮 thinking 是本项目最大的单点延迟，但会牺牲推理质量，属用户取舍，不擅自改默认。
+
+**结构化输出必须绕开 `tool_choice`**：`model.with_structured_output(Schema)` 会强制 tool_choice，DeepSeek thinking 模式直接 `400 Thinking mode does not support this tool_choice`。改用 `bind_tools([Schema])`（auto）+ 正文 JSON 兜底解析（`_ToolSchemaRunnable`），并注意 JSON 扫描要**跟踪字符串状态**——分析文本里 `{"steps": ["统计 profit} 列"]}` 这种带右花括号的字符串很常见，纯数括号会提前截断。
+
+**图表表达完整性（"看起来像数据错了"的三类）**：
+
+- **柱状图零基线**：三地区销售额 66~68 万而轴从 21 万起，1.9% 的差异被放大成肉眼上的三四倍。`_echarts_value_axis(zero_base=True)` 对柱状图强制含 0；折线图不受此限（斜率才是信息）。
+- **标题说"堆叠"、图上是并排柱**：工具原先没有堆叠能力。新增 `stacked` 参数（ECharts `series.stack` / Plotly `barmode`），轴范围按堆叠总和计算，解读文案同步区分"堆叠/分组"，并在工具描述里告诉模型何时该用。
+- **点云糊成色块**：点径/透明度改为按点数分档的共享表 `SCATTER_POINT_STYLE`（两引擎同值，观感一致），4 千点从 10px/0.78 降到 5.5px/0.60，分组色才混得开、放大后仍能分辨单点。
+
+**3D 散点的可读性**（`_refine_scatter_3d`）：默认 `px.scatter_3d` 是一团看不出深度的毛球。三处调整：点径比 2D 再小一档并加白色细描边（留缝才有前后层次）、立方体用**对数压缩比例**（`_scatter_3d_aspect`：`data` 会把小量程轴压成一条缝、`cube` 丢失形状信息，取中间并夹在 [0.75, 1.25]）、相机抬高俯视角（默认视角下竖轴几乎与视线平行，整团点看起来像一张平板）。另外**不要给分类着色的 3D 图强开 `showscale`**——会画出一条 1~9 的"类别编号色条"，看着像多了一个连续维度。
 
 **三处"分层抽样"是同一思路的三个变体，不是意外重复**：`tools/builder._stratified_sample`（小提琴，按组配额、无硬上限）、`echarts_engine._stratified_3d_sample`（3D 散点，配额 + 收敛到硬预算）、`density.sample_detail_points`（密度细节层，额外做视口过滤）。差异是刻意的（各自的预算/过滤语义不同），合并成一个函数反而要引入模式开关；新增第四处前先看看能不能复用其中任何一个。
 

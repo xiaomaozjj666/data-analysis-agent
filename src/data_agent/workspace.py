@@ -1008,20 +1008,28 @@ class DataWorkspace:
         只发生一次（存到 runs 根下的 ``_bundles``），各会话用硬链接/复制引用；
         服务启动时还会后台预热一次（见 api.lifespan），用户请求基本不再等待。
         离线且无缓存时返回 None，调用方按原逻辑 fallback 到 CDN 引用。
+
+        顺序很关键：**先看本会话目录里有没有**，有就直接返回，绝不碰网络。
+        否则"共享缓存是空的"会让已有 bundle 的会话也去下载一次——测试里
+        表现为整个套件卡在 20 秒网络超时上（本地踩过一次）。
         """
+        bundle = (self.artifacts_dir / name).resolve()
+        if bundle.exists() and bundle.stat().st_size > MIN_BUNDLE_BYTES:
+            return bundle
         shared = shared_bundle_path(self.root, name)
         if not (shared.exists() and shared.stat().st_size > MIN_BUNDLE_BYTES):
             _download_bundle(url, shared)
-        bundle = (self.artifacts_dir / name).resolve()
         if shared.exists() and shared.stat().st_size > MIN_BUNDLE_BYTES:
-            if not (bundle.exists() and bundle.stat().st_size == shared.stat().st_size):
+            try:
+                # 硬链接省磁盘；跨盘/不支持时退回复制
+                if bundle.exists():
+                    bundle.unlink()
+                os.link(shared, bundle)
+            except OSError:
                 try:
-                    # 硬链接省磁盘；跨盘/不支持时退回复制
-                    if bundle.exists():
-                        bundle.unlink()
-                    os.link(shared, bundle)
-                except OSError:
                     shutil.copyfile(shared, bundle)
+                except OSError:
+                    return None
             return bundle
         return bundle if bundle.exists() and bundle.stat().st_size > 0 else None
 

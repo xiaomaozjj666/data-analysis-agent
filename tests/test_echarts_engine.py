@@ -228,8 +228,10 @@ def test_echarts_large_scatter_uses_small_transparent_points(tmp_path):
     option = json.loads(Path(result["echarts_json"]).read_text(encoding="utf-8"))
     series = option["series"]
     assert len(series) == 2                       # 两个区域的独立系列
-    assert series[0]["symbolSize"] == 4           # 大数据：小点
-    assert series[0]["itemStyle"]["opacity"] == 0.5
+    # 点径/透明度按点数分档（12k 落在最大一档）：小点 + 半透明 + 无描边
+    assert series[0]["symbolSize"] == pytest.approx(3.2)
+    assert series[0]["itemStyle"]["opacity"] == pytest.approx(0.45)
+    assert series[0]["itemStyle"]["borderWidth"] == 0
     # 分组颜色保留（Tableau 色板按系列索引区分）
     assert series[0]["itemStyle"]["color"] != series[1]["itemStyle"]["color"]
 

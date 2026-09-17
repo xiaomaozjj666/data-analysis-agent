@@ -96,6 +96,10 @@ class AgentSettings:
     reasoning_effort: str = "high"
     temperature: float = 0.0
     max_iterations: int = 25
+    #: 单个计划步骤内允许的工具调用次数上限。实测简单任务会跑出 23 次调用、
+    #: 耗时 7 分钟（每次调用都要一次 thinking 往返），用户感受是"卡住"。
+    #: 超过即结束本步、用已有结果写小结（可预期降级，不让整次分析失败）。
+    max_tool_calls_per_step: int = 6
     max_plan_steps: int = 8
     timeout_seconds: float = 120.0
     runs_dir: Path = Path("runs")
@@ -149,6 +153,7 @@ class AgentSettings:
             reasoning_effort=reasoning_effort,
             temperature=float(os.getenv("AGENT_TEMPERATURE", "0")),
             max_iterations=int(os.getenv("AGENT_MAX_ITERATIONS", "25")),
+            max_tool_calls_per_step=max(1, int(os.getenv("AGENT_MAX_TOOL_CALLS_PER_STEP", "6"))),
             max_plan_steps=int(os.getenv("AGENT_MAX_PLAN_STEPS", "8")),
             timeout_seconds=float(os.getenv("AGENT_TIMEOUT_SECONDS", "120")),
             runs_dir=Path(os.getenv("DATA_AGENT_RUNS_DIR", "runs")),

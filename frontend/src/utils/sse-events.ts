@@ -55,7 +55,9 @@ export interface SSEEventPayload {
   progress: { title?: string };
   validate_dataset: Record<string, never>;
   plan_analysis: { plan?: PlanStep[] };
-  plan_ready: { plan?: PlanStep[]; objective?: string };
+  // source="fallback" 表示模型未返回结构化计划、后端用了内置模板：
+  // 面板需要把这件事说出来，否则用户看到的是"正常但很泛"的计划。
+  plan_ready: { plan?: PlanStep[]; objective?: string; source?: "model" | "fallback" };
   step_progress: { progress?: number; tool_calls?: number; message?: string; step_index?: number; total_steps?: number };
   execute_step: Record<string, never>;
   replan: { completed_steps?: CompletedStep[] };

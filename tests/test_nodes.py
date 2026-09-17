@@ -547,7 +547,8 @@ def test_replan_preserves_original_remaining_on_llm_failure(tmp_path):
             {"id": "step2", "title": "步骤2", "instruction": "...", "success_criteria": "..."},
         ],
         "completed_steps": [],
-        "last_step_result": {"id": "inspect", "title": "检查", "status": "ok", "summary": "完成"},
+        # 步骤失败才会咨询重规划器（成功且仍有后续时已短路，见下一个用例）
+        "last_step_result": {"id": "inspect", "title": "检查", "status": "failed", "summary": "失败"},
         "artifacts": [],
     }
 
@@ -558,6 +559,55 @@ def test_replan_preserves_original_remaining_on_llm_failure(tmp_path):
     assert len(result["remaining_steps"]) == 1
     assert result["remaining_steps"][0]["id"] == "step2"
     assert "保留" in result["replan_reason"]
+    assert agent.replanner.invoke_count == 1
+
+
+def test_replan_skips_llm_when_progress_is_healthy(tmp_path):
+    """步骤成功、计划仍有后续、已有产物 → 不花 LLM 往返，直接按原计划继续。
+
+    实测一次简单任务会走 6 轮 replan、每轮约 6 秒（合计 ~37s），而结论几乎都是
+    "按原计划继续"——用户感受就是"卡住"。
+    """
+    workspace = _make_workspace(tmp_path, "replan_skip")
+    agent = FakeAgent(workspace, replanner=_MockRunnable())
+    state = {
+        "query": "分析数据",
+        "objective": "分析目标",
+        "remaining_steps": [
+            {"id": "step1", "title": "步骤1", "instruction": "...", "success_criteria": "..."},
+            {"id": "step2", "title": "步骤2", "instruction": "...", "success_criteria": "..."},
+        ],
+        "completed_steps": [],
+        "last_step_result": {"id": "inspect", "title": "检查", "status": "ok", "summary": "完成"},
+        "artifacts": [{"name": "图_1.html"}],
+    }
+
+    result = replan(agent, state)
+
+    assert agent.replanner.invoke_count == 0, "进度正常时不应调用重规划 LLM"
+    assert [item["id"] for item in result["remaining_steps"]] == ["step2"]
+    assert "跳过" in result["replan_reason"]
+
+
+def test_replan_consults_llm_when_plan_is_exhausted(tmp_path):
+    """计划执行完（remaining 为空）→ 必须咨询：决定是收尾还是补步骤。"""
+    workspace = _make_workspace(tmp_path, "replan_done")
+    agent = FakeAgent(workspace, replanner=_MockRunnable(response=ReplanDecision(done=True, rationale="目标已达成", remaining_steps=[])))
+    state = {
+        "query": "分析数据",
+        "objective": "分析目标",
+        "remaining_steps": [
+            {"id": "step1", "title": "步骤1", "instruction": "...", "success_criteria": "..."},
+        ],
+        "completed_steps": [],
+        "last_step_result": {"id": "step1", "title": "步骤1", "status": "ok", "summary": "完成"},
+        "artifacts": [{"name": "图_1.html"}],
+    }
+
+    result = replan(agent, state)
+
+    assert agent.replanner.invoke_count == 1
+    assert result["remaining_steps"] == []
 
 
 def test_replan_finalizes_when_max_plan_steps_reached(tmp_path):

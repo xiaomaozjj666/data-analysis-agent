@@ -95,7 +95,7 @@ function App() {
     setSession, setActiveTab,
     lastActiveTab, setLastActiveTab,
     // 分析任务
-    task, plan, completed, result, running,
+    task, plan, planSource, completed, result, running,
     setTask, setPlan, setCompleted, setResult, setRunning,
     // 计划审批：plan_only 流程的待审阅状态、步骤进度
     awaitingApproval, pendingObjective, stepProgress,
@@ -935,6 +935,7 @@ function App() {
                 </section>
                 <PlanPanel
                   plan={plan}
+                  planSource={planSource}
                   completed={completed}
                   running={running && session?.id === runningSessionIdRef.current}
                   currentNodeTitle={currentNodeTitle}

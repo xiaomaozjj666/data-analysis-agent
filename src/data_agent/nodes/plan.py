@@ -42,6 +42,7 @@ def plan_analysis(agent: DataAnalysisAgent, state: WorkflowState) -> dict[str, A
     prompt = agent.prompts["plan_template"].format(
         query=state["query"], profile_text=profile_text, metric_context=metric_context
     )
+    plan_source = "model"
     try:
         plan = agent.planner.invoke(prompt, config=agent._invoke_config())
         if not isinstance(plan, AnalysisPlan):
@@ -49,6 +50,12 @@ def plan_analysis(agent: DataAnalysisAgent, state: WorkflowState) -> dict[str, A
     except Exception:
         logger.exception("Plan LLM structured output failed, falling back to default plan")
         plan = _fallback_plan(state["query"], agent.prompts)
+        plan_source = "fallback"
     plan = _apply_query_constraints(state["query"], plan)
     steps = [step.model_dump() for step in plan.steps[: agent.settings.max_plan_steps]]
-    return {"objective": plan.objective, "plan": steps, "remaining_steps": steps}
+    return {
+        "objective": plan.objective,
+        "plan": steps,
+        "plan_source": plan_source,
+        "remaining_steps": steps,
+    }

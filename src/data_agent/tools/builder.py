@@ -114,6 +114,134 @@ _TRANSFORM_LIMIT_MAX = 1_000_000
 #: scattergl 走 GPU 管线，几十万点仍可流畅悬停/缩放/导出。
 _PLOTLY_WEBGL_THRESHOLD = 10_000
 
+#: 散点"点径 / 透明度 / 描边"分档表：``(点数上限, 点径, 透明度, 描边宽度)``。
+#: 两个引擎共用同一张表（ECharts 分支把点径换算成 symbolSize），保证同一份数据
+#: 在两引擎下观感一致。设计依据：固定 9px/0.82 在几千点以上会糊成实心色块，
+#: 分组色互相覆盖、看起来"只有一个颜色"；随点数缩小并降低透明度后，密集区
+#: 自然混色、稀疏区与放大后仍能分辨单点（Tableau/Power BI 的默认做法）。
+SCATTER_POINT_STYLE: tuple[tuple[int, float, float, float], ...] = (
+    (500, 9.0, 0.85, 0.7),
+    (2_000, 7.0, 0.72, 0.6),
+    (5_000, 5.5, 0.60, 0.4),
+    (_PLOTLY_WEBGL_THRESHOLD, 4.0, 0.50, 0.2),
+    (float("inf"), 3.2, 0.45, 0.0),
+)
+
+
+def scatter_point_style(rows: int) -> dict[str, Any]:
+    """按点数返回 Plotly 的 marker 配置（见 ``SCATTER_POINT_STYLE``）。"""
+    for limit, size, opacity, border in SCATTER_POINT_STYLE:
+        if rows <= limit:
+            return {
+                "size": size,
+                "opacity": opacity,
+                "line": {"width": border, "color": "white"},
+            }
+    return {"size": 3.2, "opacity": 0.45, "line": {"width": 0, "color": "white"}}  # pragma: no cover
+
+
+def scatter_symbol_style(rows: int) -> tuple[float, float, float]:
+    """按点数返回 ECharts 的 ``(symbolSize, opacity, borderWidth)``。
+
+    与 Plotly 共用同一张表、同一数值：ECharts 的 ``symbolSize`` 与 Plotly 的
+    ``marker.size`` 都是像素直径量级，取同值才能保证"同一份数据在两引擎下
+    观感一致"（此前 ECharts 在大点云下反而更大，属历史偏差）。
+    """
+    for limit, size, opacity, border in SCATTER_POINT_STYLE:
+        if rows <= limit:
+            return size, opacity, border
+    return 3.2, 0.45, 0.0  # pragma: no cover
+
+
+def _refine_scatter_3d(fig: Any, *, rows: int) -> None:
+    """把 3D 散点从"默认毛球"调成可读、可判断空间结构的样子（就地改 fig）。
+
+    默认 ``px.scatter_3d`` 的问题（实测截图逐条确认）：
+
+    1. 点接近不透明且没有描边/光照层次 → 前后点糊成一团，**看不出深度**；
+    2. 立方体三轴等长（``aspectmode="cube"``）而三列量纲常相差几个数量级，
+       真实形状被拉伸成一条斜带；
+    3. 默认相机角度让密集区正好朝向观察者，遮挡最严重；
+    4. 无 marker 描边时同色点相互粘连，边界不可辨。
+
+    调整：点径与透明度按点数分档（与 2D 共用一张表），加白色细描边，
+    立方体用**压缩比例**（见 ``_scatter_3d_aspect``），相机抬高俯视角，
+    网格线弱化并去掉背景板。
+    """
+    size, opacity, border = scatter_symbol_style(rows)[:3]
+    # 3D 里点需要比 2D 略小才不至于互相粘连（透视投影下近点会被放大）
+    point_size = max(2.4, size - 1.4)
+    aspect = _scatter_3d_aspect(fig)
+    fig.update_traces(
+        marker={
+            "size": point_size,
+            "opacity": min(0.92, opacity + 0.12),
+            # 3D 描边只能靠 marker.line（scatter3d 支持），白描边给点之间留缝
+            "line": {"width": 0.6 if border else 0.4, "color": "rgba(255,255,255,0.85)"},
+            # 不要碰 showscale/colorbar：分类着色（color=地区）时强行显示色标
+            # 会画出一条 1~9 的"类别编号色条"，看起来像多了一个连续维度
+            # （实测踩到）。数值着色时 px 自己会带上 colorbar，保持原样即可。
+        },
+        selector={"type": "scatter3d"},
+    )
+    scene: dict[str, Any] = {
+        # manual + 对数压缩比例：比 data 可读、比 cube 诚实（见 _scatter_3d_aspect）
+        "aspectmode": "manual",
+        "aspectratio": aspect,
+        # 相机：抬高俯视角（z 更大）。默认视角下竖轴几乎与视线平行，
+        # 整团点看起来是"一张平板"，量纲差异被压没（实测截图对比后定的值）。
+        "camera": {"eye": {"x": 1.5, "y": 1.5, "z": 1.35}},
+        "xaxis": {"showbackground": False, "gridcolor": "rgba(148,163,184,0.28)",
+                  "zerolinecolor": "rgba(148,163,184,0.45)", "showspikes": False},
+        "yaxis": {"showbackground": False, "gridcolor": "rgba(148,163,184,0.28)",
+                  "zerolinecolor": "rgba(148,163,184,0.45)", "showspikes": False},
+        "zaxis": {"showbackground": False, "gridcolor": "rgba(148,163,184,0.28)",
+                  "zerolinecolor": "rgba(148,163,184,0.45)", "showspikes": False},
+    }
+    fig.update_layout(
+        scene=scene,
+        # 3D 图例横排在底部会挤压立方体高度，改为贴右侧竖排
+        legend={"orientation": "v", "x": 1.0, "xanchor": "right", "y": 0.5},
+        margin={"l": 0, "r": 0, "t": 56, "b": 0},
+        hoverlabel={"namelength": -1},
+    )
+
+
+def _scatter_3d_aspect(fig: Any) -> dict[str, float]:
+    """按三轴量程的对数压缩出立方体长宽比，兼顾"真实比例"与"可读性"。
+
+    Plotly 的两个极端都不好用：``aspectmode="data"`` 忠实反映量程，但三列量纲
+    相差百倍时小量程轴会被压成一条缝（刻度挤在一起、轴名也看不见）；
+    ``aspectmode="cube"`` 三轴等长，形状信息全丢。这里取中间：长宽比与量程的
+    **对数**成正比，并压缩到 [0.75, 1.25]，量程大的轴仍然更长（方向可读），
+    但小量程轴不会被压没。
+    """
+    import numpy as np
+
+    spans: list[float] = []
+    for axis in ("x", "y", "z"):
+        values: list[float] = []
+        for trace in fig.data:
+            raw = getattr(trace, axis, None)
+            if raw is None:
+                continue
+            try:
+                array = np.asarray(raw, dtype=float)
+            except (TypeError, ValueError):
+                continue
+            finite = array[np.isfinite(array)]
+            if finite.size:
+                values.append(float(finite.max() - finite.min()))
+        spans.append(max(values) if values else 1.0)
+    logs = np.log10([max(span, 1e-9) for span in spans])
+    spread = float(logs.max() - logs.min())
+    if spread <= 0.05:
+        # 三轴量程同量级：等比即可（此时 cube 不会失真）
+        return {"x": 1.0, "y": 1.0, "z": 0.9}
+    scaled = 0.75 + 0.5 * (logs - logs.min()) / spread
+    return {"x": round(float(scaled[0]), 3), "y": round(float(scaled[1]), 3),
+            "z": round(float(scaled[2]), 3)}
+
 
 def _as_scattergl(fig: Any) -> Any:
     """把 Plotly 图例的 Scatter 轨迹整体换成 Scattergl（WebGL 渲染）。
@@ -1039,6 +1167,7 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         top_n: int | None = None,
         scale_mode: Literal["auto", "full"] = "auto",
         export_png: bool = False,
+        stacked: bool = False,
     ) -> str:
         """Create an interactive chart and save a standalone HTML artifact.
 
@@ -1062,6 +1191,10 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         extreme values and adds readable main/full viewport controls without changing the data;
         use scale_mode="full" only when the user explicitly wants the uncompressed raw scale.
         export_png is best-effort and needs Chrome.
+        stacked=True stacks bars of the same category (ECharts series.stack /
+        Plotly barmode="stack") and scales the Y axis to the stacked totals;
+        omit it for grouped bars. Use stacked only when the user asks for
+        堆叠/构成占比——标题写"堆叠"而图上是并排柱会让用户以为数据画错了。
 
         散点图可读性增强（双引擎一致）：自动叠加 OLS 趋势线（标注 r 值）与
         双轴均值象限参考线，给大点云提供视觉锚点；chart_type="auto" 选出
@@ -1218,6 +1351,7 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                 display_title=display_title, stem=stem,
                 chart_type_source="auto" if was_auto else "explicit",
                 export_png=export_png,
+                stacked=stacked,
             ))
         # === Plotly 原有渲染逻辑（默认分支，保持不变）===
         # Plotly title 支持 HTML 子集，需 escape 防止 LLM 输出注入 <b>/<i> 等标签
@@ -1284,6 +1418,7 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             if not x or not y or not z:
                 raise ValueError("scatter_3d 需要 x、y、z。")
             fig = px.scatter_3d(**common, x=x, y=y, z=z, color=color, size=size)
+            _refine_scatter_3d(fig, rows=len(df))
         elif chart_type == "histogram":
             if len(df) > STAT_AGG_THRESHOLD:
                 # 大数据：服务端分箱，纵轴仍是真实记录数（不是抽样估计）
@@ -1440,19 +1575,18 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                 )
             if x and not pd.api.types.is_numeric_dtype(df[x]):
                 fig.update_xaxes(categoryorder="total descending")
-            fig.update_layout(bargap=0.26, bargroupgap=0.08)
+            # 堆叠柱（stacked=True）与分组柱：Plotly 用 barmode 表达，
+            # 与 ECharts 分支的 series.stack 语义一致。
+            fig.update_layout(bargap=0.26, bargroupgap=0.08,
+                              barmode="stack" if stacked else "group")
         elif chart_type == "scatter" and density_view is None:
-            # 大数据时轨迹已被切换为 scattergl（WebGL），两个选择器都覆盖
-            fig.update_traces(marker={"size": 9, "opacity": 0.82, "line": {"width": 0.7, "color": "white"}}, selector={"type": "scatter"})
-            fig.update_traces(marker={"size": 9, "opacity": 0.82, "line": {"width": 0.7, "color": "white"}}, selector={"type": "scattergl"})
-            if len(df) > _PLOTLY_WEBGL_THRESHOLD:
-                # 大数据全量点互相覆盖：不透明的 9px 点会让最后绘制的
-                # 系列把其它品类的颜色完全盖住，视觉上"只有一个颜色"。
-                # 缩小点径 + 降低透明度，让分组色混合成彩色点阵（密度
-                # 感由色彩混合表达而非实心色块），放大后仍可分辨。
-                small = {"size": 3.5, "opacity": 0.5, "line": {"width": 0.2, "color": "white"}}
-                fig.update_traces(marker=small, selector={"type": "scatter"})
-                fig.update_traces(marker=small, selector={"type": "scattergl"})
+            # 点径与透明度随点数分档（与 ECharts 分支同一张表，见 scatter_point_style）：
+            # 固定 9px/0.82 在几千点以上就会糊成一团实心色块，分组色互相覆盖，
+            # 看起来"只有一个颜色"；分档缩小并降低透明度后，密集区自然混色、
+            # 稀疏区与放大后仍能分辨单点。
+            marker_style = scatter_point_style(len(df))
+            fig.update_traces(marker=marker_style, selector={"type": "scatter"})
+            fig.update_traces(marker=marker_style, selector={"type": "scattergl"})
             # 结构注记（Tableau 式视觉锚点）：OLS 趋势线 + 双轴均值象限线。
             # 大点云没有锚点就是一堵"点墙"（实测用户反馈眼花缭乱）。
             # 趋势线用 SVG Scatter 追加（与 scattergl 混合渲染，线在点上层

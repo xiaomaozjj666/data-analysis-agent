@@ -15,6 +15,9 @@ interface AnalysisState {
   running: boolean;
   awaitingApproval: boolean;
   pendingObjective: string;
+  //: 计划来源（"model" | "fallback"）：fallback 时面板要提示用户
+  planSource: string;
+  setPlanSource: (v: string) => void;
   stepProgress: StepProgress | null;
   currentNodeTitle: string;
   setTask: (v: string) => void;
@@ -36,6 +39,7 @@ export const useAnalysisStore = create<AnalysisState>((set) => ({
   running: false,
   awaitingApproval: false,
   pendingObjective: "",
+  planSource: "model",
   stepProgress: null,
   currentNodeTitle: "",
   setTask: (v) => set({ task: v }),
@@ -48,6 +52,7 @@ export const useAnalysisStore = create<AnalysisState>((set) => ({
   setRunning: (v) => set({ running: v }),
   setAwaitingApproval: (v) => set({ awaitingApproval: v }),
   setPendingObjective: (v) => set({ pendingObjective: v }),
+  setPlanSource: (v) => set({ planSource: v }),
   setStepProgress: (v) => set({ stepProgress: v }),
   setCurrentNodeTitle: (updater) =>
     set((state) => ({

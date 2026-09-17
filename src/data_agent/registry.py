@@ -444,7 +444,11 @@ class SessionRegistry:
                     "analysis_status": record.analysis_status,
                     "created_at": record.created_at,
                     "has_result": record.last_result is not None,
-                    "artifact_count": len(record.workspace.artifacts),
+                    # 计数必须与产物中心看到的卡片数一致：workspace.artifacts
+                    # 含 .plotly.json / .echarts.json 这类 chart_data 旁挂文件，
+                    # 直接 len() 会把"11 个产物"显示成只有 5 张卡片（实测用户
+                    # 会认为图表丢了）。统一走 _curate_artifacts 的口径。
+                    "artifact_count": len(_curate_artifacts(record.workspace.artifacts)),
                     "updated_at": record.last_access,
                     "in_memory": True,
                 }
@@ -480,7 +484,10 @@ class SessionRegistry:
                 "analysis_status": str(payload.get("analysis_status") or "idle"),
                 "created_at": float(payload.get("created_at") or 0.0),
                 "has_result": isinstance(last_result, dict) and isinstance(last_result.get("response"), str),
-                "artifact_count": len(artifacts) if isinstance(artifacts, list) else 0,
+                # 与内存分支同一口径：只数用户真正会看到的产物（过滤 chart_data、
+                # 按语义标题+引擎去重、按类别限量），否则历史徽章的数字会比
+                # 产物中心的卡片数大出一截。
+                "artifact_count": len(_curate_artifacts(artifacts)) if isinstance(artifacts, list) else 0,
                 "updated_at": float(payload.get("updated_at") or payload.get("created_at") or 0.0),
                 "in_memory": False,
             })

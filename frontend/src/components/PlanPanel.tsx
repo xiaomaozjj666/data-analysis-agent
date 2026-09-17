@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import {
   Activity,
+  AlertTriangle,
   Check,
   ChevronDown,
   ChevronUp,
@@ -24,6 +25,8 @@ interface PlanPanelProps {
   elapsedSeconds?: number | null;
   toolTrace?: ToolTraceItemType[];
   // Batch 4：计划审批 / 步骤进度 / 重跑入口
+  //: 计划来源："fallback" = 模型未返回结构化计划，用的是内置模板
+  planSource?: string;
   awaitingApproval?: boolean;
   stepProgress?: StepProgress | null;
   onApprovePlan?: (editedPlan: PlanStep[]) => void;
@@ -38,6 +41,7 @@ const PlanPanel = React.memo(function PlanPanel({
   currentNodeTitle,
   elapsedSeconds,
   toolTrace,
+  planSource,
   awaitingApproval,
   stepProgress,
   onApprovePlan,
@@ -143,6 +147,17 @@ const PlanPanel = React.memo(function PlanPanel({
           </span>
         </div>
       </div>
+
+      {/* 计划降级提示：模型没返回结构化计划时后端用内置模板兜底。
+          不提示的话，用户看到的是一份"正常但很泛"的计划，无从判断模型是否
+          真的参与了规划（这正是本项目踩过的坑：thinking 模式拒绝 tool_choice，
+          planner 100% 失败却只有日志知道）。 */}
+      {planSource === "fallback" && plan.length > 0 && (
+        <p className="plan-fallback-note" role="status">
+          <AlertTriangle size={12} aria-hidden="true" />
+          模型未能返回结构化计划，以下为内置默认步骤（可编辑后重试以获得更贴合的方案）。
+        </p>
+      )}
 
       {running && currentNodeTitle && (
         <div className="current-node" role="status" aria-live="polite">

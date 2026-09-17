@@ -16,6 +16,31 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _needs_replan(
+    *, completed: list[dict[str, Any]], remaining: list[dict[str, str]], artifact_count: int,
+) -> bool:
+    """是否值得花一次 LLM 往返咨询重规划器。
+
+    实测：一次"按地区对比销售额 + 画关系图"的简单任务会走 6 轮 replan，
+    每轮约 6 秒、合计 ~37 秒，而绝大多数轮次的结论就是"按原计划继续"——
+    这笔开销换来的是"用户觉得卡住"。真正需要重规划的情形很少：
+
+    - 有步骤失败 → 需要补偿步骤；
+    - 计划已执行完 → 需要判断"目标是否达成、要不要补步骤"；
+    - 连续两步没有产出任何产物 → 方向可能不对，值得让模型重新审视。
+
+    其余情况（步骤成功、计划还有后续、已有产物）直接沿用原计划剩余步骤，
+    省掉往返；``replan_reason`` 里写明是"跳过咨询"而不是模型的决定。
+    """
+    if any(item.get("status") == "failed" for item in completed):
+        return True
+    if not remaining:
+        return True
+    if artifact_count == 0 and len(completed) >= 2:
+        return True
+    return False
+
+
 def replan(agent: DataAnalysisAgent, state: WorkflowState) -> dict[str, Any]:
     agent._ensure_not_cancelled()
     agent._enter_node("replan", "正在审查进度并重规划")
@@ -46,6 +71,17 @@ def replan(agent: DataAnalysisAgent, state: WorkflowState) -> dict[str, Any]:
         "artifact_count": len(state.get("artifacts", [])),
         "failed_steps": [item for item in completed if item.get("status") == "failed"],
     }
+    if not _needs_replan(
+        completed=completed,
+        remaining=original_remaining,
+        artifact_count=review_payload["artifact_count"],
+    ):
+        # 进度正常：不花 LLM 往返，直接按原计划继续（reason 里说明是跳过而非模型判断）
+        return {
+            "completed_steps": completed,
+            "remaining_steps": original_remaining,
+            "replan_reason": "步骤正常完成且仍有后续步骤，按原计划继续（已跳过重规划咨询）。",
+        }
     try:
         replan_prompt = agent.prompts["replan_template"].format(
             payload=json.dumps(review_payload, ensure_ascii=False)[:_REPLAN_PAYLOAD_MAX_CHARS]

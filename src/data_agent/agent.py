@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable, Iterator
 from threading import Event
@@ -24,11 +25,13 @@ from typing import Any
 from uuid import uuid4
 
 from langchain.agents import create_agent
+from langchain.agents.middleware import ModelCallLimitMiddleware, ToolCallLimitMiddleware
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_deepseek import ChatDeepSeek
 from langchain_openai import ChatOpenAI
+from pydantic import BaseModel
 
 from data_agent.callbacks import (
     CancelCallback,
@@ -116,6 +119,93 @@ def create_chat_model(settings: AgentSettings) -> BaseChatModel:
     )
 
 
+class _ToolSchemaRunnable:
+    """把"让模型按 Pydantic schema 返回结构化结果"做成一个可靠的可调用对象。
+
+    为什么不用 ``model.with_structured_output(Schema)``：它默认走 function
+    calling 并**强制 tool_choice**，而 DeepSeek 的 thinking 模式会直接拒绝：
+    ``400 Thinking mode does not support this tool_choice``。此时规划节点会
+    静默退化成"默认计划"——分析照样跑完，但模型其实从未参与规划（实测：所有
+    planner/replanner 调用 100% 失败，只在日志里留了 exception）。
+
+    这里改为 ``bind_tools([Schema])``（tool_choice 保持 auto，thinking 模式
+    接受），并保留两级兜底：
+    1. 正常路径：取 ``tool_calls[0].args`` 用 Pydantic 校验；
+    2. 兜底路径：模型若把 JSON 写在正文里，从 ``content`` 里抠出 JSON 再校验
+       （thinking 模型偶尔会"说"出 JSON 而不调用工具）；
+    3. 仍失败则抛异常，由调用方决定是否降级——降级必须可见，不能静默。
+
+    ``invoke`` 的签名与 LangChain Runnable 兼容（prompt / config）。
+    """
+
+    def __init__(self, model: Any, schema: type[BaseModel], *, logger: logging.Logger) -> None:
+        self._runnable = model.bind_tools([schema])
+        self._schema = schema
+        self._logger = logger
+
+    def invoke(self, prompt: Any, config: dict[str, Any] | None = None) -> BaseModel:
+        message = self._runnable.invoke(prompt, config=config)
+        calls = getattr(message, "tool_calls", None) or []
+        if calls:
+            arguments = calls[0].get("args") if isinstance(calls[0], dict) else None
+            if arguments:
+                return self._schema.model_validate(arguments)
+        content = getattr(message, "content", "")
+        text = content if isinstance(content, str) else str(content)
+        parsed = _extract_json_object(text)
+        if parsed is not None:
+            self._logger.warning("结构化输出退回正文 JSON 解析（模型未调用工具）")
+            return self._schema.model_validate(parsed)
+        raise ValueError(
+            f"模型既未调用 {self._schema.__name__} 工具，正文里也没有可用 JSON：{text[:200]!r}"
+        )
+
+
+def _extract_json_object(text: str) -> dict[str, Any] | None:
+    """从模型正文里抠出第一个平衡的 JSON 对象（```json 代码块也认）。
+
+    扫描时**必须跟踪字符串状态**：分析文本里出现 `{"steps": ["统计 profit} 列"]}`
+    这种带右花括号的字符串很常见，纯数括号会提前截断——那样 planner 又会静默
+    退化成默认计划（自测用例就是这么抓到这个洞的）。
+    """
+    if not text:
+        return None
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        if cleaned.lower().startswith("json"):
+            cleaned = cleaned[4:]
+    for start, char in enumerate(cleaned):
+        if char != "{":
+            continue
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(cleaned)):
+            current = cleaned[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif current == "\\":
+                    escaped = True
+                elif current == '"':
+                    in_string = False
+                continue
+            if current == '"':
+                in_string = True
+            elif current == "{":
+                depth += 1
+            elif current == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        parsed = json.loads(cleaned[start:index + 1])
+                    except json.JSONDecodeError:
+                        break
+                    return parsed if isinstance(parsed, dict) else None
+    return None
+
+
 class DataAnalysisAgent:
     """Plan-and-Execute LangGraph 工作流，内嵌 ReAct 执行器。
 
@@ -150,15 +240,31 @@ class DataAnalysisAgent:
         self.event_callback = event_callback or (lambda event_type, payload: None)
         self.tools = build_tools(workspace)
         self.prompts = get_prompts(self.settings.language)
+        # ReAct 执行器的两道预算闸门（实测一次"按地区对比销售额 + 画关系图"的
+        # 简单任务跑出 23 次工具调用 / 418 秒，用户感受就是"卡住了"）：
+        #   - 单步工具调用上限：超过后本步**直接结束**，用已有结果写小结，
+        #     而不是继续无限试探；复杂任务相当于强制收敛。
+        #   - 单步模型调用上限：兜住"工具调用没有增长但模型一直在绕"的情况。
+        # 两者都设 end 而非 error：超出预算属于可预期的降级，不该让整次分析失败。
         self.react_agent = create_agent(
             model=self.model,
             tools=self.tools,
             system_prompt=self.prompts["system_prompt"],
-            middleware=[_handle_tool_error],
+            middleware=[
+                _handle_tool_error,
+                ToolCallLimitMiddleware(
+                    run_limit=self.settings.max_tool_calls_per_step, exit_behavior="end",
+                ),
+                ModelCallLimitMiddleware(
+                    run_limit=self.settings.max_iterations, exit_behavior="end",
+                ),
+            ],
             name="data_analysis_react_executor",
         )
-        self.planner = self.model.with_structured_output(AnalysisPlan)
-        self.replanner = self.model.with_structured_output(ReplanDecision)
+        # 结构化输出用 bind_tools（tool_choice=auto）：见 _ToolSchemaRunnable 的说明，
+        # with_structured_output 会强制 tool_choice，thinking 模式直接 400。
+        self.planner = _ToolSchemaRunnable(self.model, AnalysisPlan, logger=logger)
+        self.replanner = _ToolSchemaRunnable(self.model, ReplanDecision, logger=logger)
         self.graph = self._build_workflow()
         # 上一次 chat() 调用累计的 token 用量与思考过程，供 API 层在 chat_done
         # 事件中读取。每次 chat() 调用会覆盖。stream()/run() 不使用这两个属性

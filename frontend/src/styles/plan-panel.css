@@ -20,6 +20,9 @@
 .current-node { display: flex; align-items: center; gap: 8px; padding: 10px 18px; border-top: 1px solid var(--border-muted); border-bottom: 1px solid var(--border-muted); background: var(--accent-subtle); color: var(--accent-fg); font-size: var(--text-sm); font-weight: 600; }
 .current-node svg { flex: 0 0 auto; }
 .current-node span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 计划降级提示：琥珀色（提示而非错误），与 retry-bar 同一套配色语言 */
+.plan-fallback-note { display: flex; align-items: flex-start; gap: 6px; margin: 0; padding: 9px 18px; border-top: 1px solid var(--border-muted); border-bottom: 1px solid var(--border-muted); background: rgba(217, 160, 91, 0.12); color: var(--attention-fg); font-size: var(--text-xs); line-height: 1.55; }
+.plan-fallback-note svg { flex: 0 0 auto; margin-top: 2px; }
 .progress-line { height: 3px; background: var(--neutral-muted); overflow: hidden; }
 .progress-line span { height: 100%; display: block; background: linear-gradient(90deg, var(--success-fg), #22c55e); transition: width 0.4s var(--ease-out); }
 .plan-empty { min-height: 180px; display: grid; place-content: center; justify-items: center; padding: 28px; color: var(--fg-subtle); text-align: center; }

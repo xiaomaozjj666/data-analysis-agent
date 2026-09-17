@@ -50,7 +50,7 @@ function useAnalysisRunner(deps: UseAnalysisRunnerDeps): UseAnalysisRunnerResult
     session, task, plan, completed, running, stopping,
     setRunning, setError, setResult, setPlan, setCompleted,
     setCurrentNodeTitle, setRetryOffer, setAwaitingApproval, setStepProgress,
-    setPendingObjective, setElapsedSeconds, setToolTrace, setReasoning,
+    setPendingObjective, setPlanSource, setElapsedSeconds, setToolTrace, setReasoning,
     setReasoningStreaming, setUsage, setFollowUps, setTask, setSession,
     setStopping, setRetryChecking,
   } = useAppStore();
@@ -257,6 +257,8 @@ function useAnalysisRunner(deps: UseAnalysisRunnerDeps): UseAnalysisRunnerResult
           if (session.id === runningSessionIdRef.current) {
             setPlan(data.plan || []);
             setPendingObjective(data.objective || "");
+            // 计划来源：fallback 时面板会提示"模型未返回结构化计划"
+            setPlanSource(data.source || "model");
             setAwaitingApproval(true);
             setCurrentNodeTitle("计划已生成，等待审阅");
             setRunning(false);

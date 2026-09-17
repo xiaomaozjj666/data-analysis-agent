@@ -1328,8 +1328,9 @@ def test_plotly_large_scatter_switches_to_webgl(tmp_path):
     payload = json.loads(Path(result["plotly_json"]).read_text(encoding="utf-8"))
     assert payload["data"][0]["type"] == "scattergl"
     # 大数据点阵：小点 + 半透明，避免后绘制的系列盖住其它分组颜色
-    assert payload["data"][0]["marker"]["size"] == 3.5
-    assert payload["data"][0]["marker"]["opacity"] == 0.5
+    # 55k 落在最大一档（>10k）：3.2px / 0.45 / 无描边
+    assert payload["data"][0]["marker"]["size"] == pytest.approx(3.2)
+    assert payload["data"][0]["marker"]["opacity"] == pytest.approx(0.45)
     assert payload["data"][0]["marker"]["color"]
     # plotly.py 把 numpy 数组写成 typed-array（{"dtype","bdata"}），解码验证点数
     import base64 as _b64
