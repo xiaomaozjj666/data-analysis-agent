@@ -60,7 +60,9 @@ export interface SSEEventPayload {
   plan_ready: { plan?: PlanStep[]; objective?: string; source?: "model" | "fallback" };
   step_progress: { progress?: number; tool_calls?: number; message?: string; step_index?: number; total_steps?: number };
   execute_step: Record<string, never>;
-  replan: { completed_steps?: CompletedStep[] };
+  // replan_reason：为什么调整/提前结束计划（例如"已用完 10 分钟分析预算"）。
+  // 后端一直在推，前端此前丢弃——分析被缩短时用户看不到任何解释。
+  replan: { completed_steps?: CompletedStep[]; replan_reason?: string };
   thinking_chunk: { chunk?: string };
   finalize: Record<string, never>;
   report_chunk: { chunk?: string };

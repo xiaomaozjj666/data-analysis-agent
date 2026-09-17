@@ -27,6 +27,8 @@ interface PlanPanelProps {
   // Batch 4：计划审批 / 步骤进度 / 重跑入口
   //: 计划来源："fallback" = 模型未返回结构化计划，用的是内置模板
   planSource?: string;
+  //: 最近一次重规划/收尾的原因（超预算、失败补偿等）
+  replanReason?: string;
   awaitingApproval?: boolean;
   stepProgress?: StepProgress | null;
   onApprovePlan?: (editedPlan: PlanStep[]) => void;
@@ -42,6 +44,7 @@ const PlanPanel = React.memo(function PlanPanel({
   elapsedSeconds,
   toolTrace,
   planSource,
+  replanReason,
   awaitingApproval,
   stepProgress,
   onApprovePlan,
@@ -156,6 +159,15 @@ const PlanPanel = React.memo(function PlanPanel({
         <p className="plan-fallback-note" role="status">
           <AlertTriangle size={12} aria-hidden="true" />
           模型未能返回结构化计划，以下为内置默认步骤（可编辑后重试以获得更贴合的方案）。
+        </p>
+      )}
+
+      {/* 重规划/收尾原因：计划被调整或提前结束时说明理由（例如"已用完分析预算"），
+          否则用户只看到步骤变少，无从判断是失败还是主动收敛。 */}
+      {replanReason && plan.length > 0 && (
+        <p className="plan-fallback-note" role="status">
+          <AlertTriangle size={12} aria-hidden="true" />
+          {replanReason}
         </p>
       )}
 

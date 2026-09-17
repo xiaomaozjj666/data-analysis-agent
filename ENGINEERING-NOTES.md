@@ -85,6 +85,10 @@
 - **单步工具调用上限**（`AGENT_MAX_TOOL_CALLS_PER_STEP`，默认 6）：ReAct 循环原本没有工具调用预算，实测一步能烧掉 23 次调用、每次都要一次 thinking 往返。现在超出即结束本步、用已有结果写小结（`exit_behavior="end"`，属可预期降级而非报错）。
 - **正常进度下跳过 replan 咨询**：`nodes/replan.py::_needs_replan` —— 只有"有步骤失败 / 计划已执行完 / 连续两步零产物"才花那次 LLM 往返；其余情况沿用原计划剩余步骤，`replan_reason` 里写明是"跳过咨询"而不是模型的决定（不假装是模型判断）。
 - **降级要可见**：规划失败（模型没返回结构化计划）时 `plan_source="fallback"` 会随 `plan_ready` 事件送到前端，计划面板显示"以下为内置默认步骤"。此前 thinking 模式拒绝 `tool_choice` 导致 planner 100% 失败却只有日志知道。
+- **墙钟上限**（AGENT_MAX_ANALYSIS_SECONDS，默认 600s）：同一句任务在不同数据上实测 230s（顺利）
+  也可能 680s（样例数据里没有利润列，模型得现场拼数据），没有上限时用户无法预期何时拿到结果。
+  超预算后 replan 与 execute 都不再开新步骤、直接汇总已完成部分，reason 与步骤小结里写明"已用完预算"
+  ——降级要说出来，不能悄悄少做几步。
 - 想更快：调低 `AGENT_REASONING_EFFORT`（如 `medium`）或模型档位——每轮 thinking 是本项目最大的单点延迟，但会牺牲推理质量，属用户取舍，不擅自改默认。
 
 **结构化输出必须绕开 `tool_choice`**：`model.with_structured_output(Schema)` 会强制 tool_choice，DeepSeek thinking 模式直接 `400 Thinking mode does not support this tool_choice`。改用 `bind_tools([Schema])`（auto）+ 正文 JSON 兜底解析（`_ToolSchemaRunnable`），并注意 JSON 扫描要**跟踪字符串状态**——分析文本里 `{"steps": ["统计 profit} 列"]}` 这种带右花括号的字符串很常见，纯数括号会提前截断。

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import Callable, Iterator
 from threading import Event
 from typing import Any
@@ -271,6 +272,14 @@ class DataAnalysisAgent:
         # （其用量通过 AnalysisResult 返回）。
         self._last_usage: dict[str, int] | None = None
         self._last_reasoning: str = ""
+        #: 本轮分析的开始时刻（monotonic），供墙钟预算判断使用；None 表示未在跑。
+        self._run_started_at: float | None = None
+
+    def analysis_budget_left(self) -> float:
+        """本轮分析剩余的时间预算（秒）；未在跑时返回配置值。"""
+        if self._run_started_at is None:
+            return self.settings.max_analysis_seconds
+        return self.settings.max_analysis_seconds - (time.monotonic() - self._run_started_at)
 
     def _invoke_config(self, *extra_callbacks: BaseCallbackHandler, **extra: Any) -> dict[str, Any]:
         """Build a RunnableConfig that wires the cancel callback into every
@@ -354,6 +363,7 @@ class DataAnalysisAgent:
             ValueError: query 为空时。
             AnalysisCancelled: 外部请求取消时。
         """
+        self._run_started_at = time.monotonic()
         result = self.graph.invoke(
             self._input_state(query, history, resume_from=resume_from),
             config={
@@ -400,6 +410,7 @@ class DataAnalysisAgent:
             "configurable": {"thread_id": uuid4().hex},
             "recursion_limit": self.settings.max_plan_steps * 3 + 10,
         }
+        self._run_started_at = time.monotonic()
         for update in self.graph.stream(
             self._input_state(query, history, resume_from=resume_from), config=config
         ):

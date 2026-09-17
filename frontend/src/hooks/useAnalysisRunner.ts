@@ -50,7 +50,7 @@ function useAnalysisRunner(deps: UseAnalysisRunnerDeps): UseAnalysisRunnerResult
     session, task, plan, completed, running, stopping,
     setRunning, setError, setResult, setPlan, setCompleted,
     setCurrentNodeTitle, setRetryOffer, setAwaitingApproval, setStepProgress,
-    setPendingObjective, setPlanSource, setElapsedSeconds, setToolTrace, setReasoning,
+    setPendingObjective, setPlanSource, setReplanReason, setElapsedSeconds, setToolTrace, setReasoning,
     setReasoningStreaming, setUsage, setFollowUps, setTask, setSession,
     setStopping, setRetryChecking,
   } = useAppStore();
@@ -286,6 +286,9 @@ function useAnalysisRunner(deps: UseAnalysisRunnerDeps): UseAnalysisRunnerResult
         [SSE_EVENT_TYPES.REPLAN]: (data) => {
           if (session.id === runningSessionIdRef.current) {
             setCompleted(data.completed_steps || []);
+            // 计划被调整/提前收尾时把原因留下来（如"已用完分析预算"），
+            // 否则用户只看到"步骤变少了"却不知道为什么。
+            if (data.replan_reason) setReplanReason(String(data.replan_reason));
             setCurrentNodeTitle("正在审查进度并重规划");
           }
         },

@@ -49,6 +49,18 @@ def replan(agent: DataAnalysisAgent, state: WorkflowState) -> dict[str, Any]:
     if current:
         completed.append(current)
     original_remaining = list(state.get("remaining_steps", []))[1:]
+    # 墙钟预算：超时后不再开新步骤，直接进汇总。宁可给一份"基于已完成部分"的
+    # 报告，也不要让用户无限等下去（实测同一句任务可能 230s 也可能 680s）。
+    budget_left = agent.analysis_budget_left()
+    if budget_left <= 0 and original_remaining:
+        return {
+            "completed_steps": completed,
+            "remaining_steps": [],
+            "replan_reason": (
+                f"已用完 {agent.settings.max_analysis_seconds / 60:.0f} 分钟分析预算，"
+                f"跳过剩余 {len(original_remaining)} 个步骤并直接汇总已完成部分。"
+            ),
+        }
     if len(completed) >= agent.settings.max_plan_steps:
         return {
             "completed_steps": completed,

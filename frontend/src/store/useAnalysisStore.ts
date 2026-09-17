@@ -17,6 +17,9 @@ interface AnalysisState {
   pendingObjective: string;
   //: 计划来源（"model" | "fallback"）：fallback 时面板要提示用户
   planSource: string;
+  //: 最近一次重规划/收尾的原因（超预算、失败补偿等），面板上要显示给用户
+  replanReason: string;
+  setReplanReason: (v: string) => void;
   setPlanSource: (v: string) => void;
   stepProgress: StepProgress | null;
   currentNodeTitle: string;
@@ -40,6 +43,7 @@ export const useAnalysisStore = create<AnalysisState>((set) => ({
   awaitingApproval: false,
   pendingObjective: "",
   planSource: "model",
+  replanReason: "",
   stepProgress: null,
   currentNodeTitle: "",
   setTask: (v) => set({ task: v }),
@@ -53,6 +57,7 @@ export const useAnalysisStore = create<AnalysisState>((set) => ({
   setAwaitingApproval: (v) => set({ awaitingApproval: v }),
   setPendingObjective: (v) => set({ pendingObjective: v }),
   setPlanSource: (v) => set({ planSource: v }),
+  setReplanReason: (v) => set({ replanReason: v }),
   setStepProgress: (v) => set({ stepProgress: v }),
   setCurrentNodeTitle: (updater) =>
     set((state) => ({

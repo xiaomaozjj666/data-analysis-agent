@@ -23,6 +23,7 @@ import logging
 import re
 import threading
 import time
+import urllib.parse
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -752,10 +753,14 @@ def _artifact_payload(session_id: str, artifacts: list[dict[str, str]]) -> list[
     result: list[dict[str, Any]] = []
     for item in _curate_artifacts(artifacts):
         value = dict(item)
-        value["download_url"] = f"/api/sessions/{session_id}/artifacts/{item['name']}"
+        # 产物名多为中文（散点图_1.html…）：URL 里必须百分号编码，否则标准 HTTP
+        # 客户端（curl / python-urllib / Java）拿到这个字符串会直接抛编码错误
+        # ——浏览器会自动编码，所以前端看不出问题，只有 API 调用方会踩到。
+        quoted = urllib.parse.quote(item["name"], safe="")
+        value["download_url"] = f"/api/sessions/{session_id}/artifacts/{quoted}"
         value["previewable"] = item.get("kind") == "visualization"
         if item.get("kind") == "visualization":
-            value["preview_url"] = f"/api/sessions/{session_id}/artifacts/{item['name']}/preview"
+            value["preview_url"] = f"/api/sessions/{session_id}/artifacts/{quoted}/preview"
             # 图表缩略图与引擎标识：仅 Plotly 图表（存在 .plotly.json）提供缩略图，
             # ECharts 图表无 JSON 数据文件，回退到图标展示。
             artifact_name = item.get("name", "")
@@ -768,7 +773,7 @@ def _artifact_payload(session_id: str, artifacts: list[dict[str, str]]) -> list[
                 )
                 if has_plotly_json:
                     value["thumbnail_url"] = (
-                        f"/api/sessions/{session_id}/artifacts/{artifact_name}/thumbnail"
+                        f"/api/sessions/{session_id}/artifacts/{quoted}/thumbnail"
                     )
                     value["engine"] = "plotly"
                 else:

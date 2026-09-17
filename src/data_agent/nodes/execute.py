@@ -76,6 +76,23 @@ def execute_step(agent: DataAnalysisAgent, state: WorkflowState) -> dict[str, An
         "execute_step",
         f"正在执行 ({step_index}/{total_steps})：{step.get('title', step.get('id', '未知步骤'))}",
     )
+    # 墙钟预算：已经超时就不要再开新步骤（否则单步可能又要几分钟），
+    # 直接把这步标记为跳过、交给 replan 收尾汇总。
+    if agent.analysis_budget_left() <= 0:
+        remaining_titles = "、".join(item.get("title", "") for item in remaining[:3])
+        skipped = {
+            **step,
+            "status": "skipped",
+            "summary": (
+                f"已用完 {agent.settings.max_analysis_seconds / 60:.0f} 分钟分析预算，"
+                f"跳过本步及后续步骤（{remaining_titles}），直接汇总已完成部分。"
+            ),
+        }
+        return {
+            "current_step": step,
+            "last_step_result": skipped,
+            "remaining_steps": [],
+        }
     completed = state.get("completed_steps", [])
     completed_text = "\n".join(
         f"- {item['title']}: {item.get('summary', '')[:800]}" for item in completed

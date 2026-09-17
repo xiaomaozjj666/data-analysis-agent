@@ -92,6 +92,10 @@ class FakeAgent:
         self.model = model or _MockRunnable()
         self.entered_nodes: list[tuple[str, str]] = []
 
+    def analysis_budget_left(self) -> float:
+        """墙钟预算：测试默认给足（节点用它与 0 比较决定是否跳过步骤）。"""
+        return 1e9
+
     def _ensure_not_cancelled(self) -> None:
         if self.cancel_event.is_set():
             raise AnalysisCancelled("分析已取消。")
