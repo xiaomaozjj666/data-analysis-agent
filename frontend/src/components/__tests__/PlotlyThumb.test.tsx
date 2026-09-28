@@ -1,5 +1,5 @@
 /// <reference types="vitest/globals" />
-import "@testing-library/jest-dom";
+import "@testing-library/jest-dom/vitest";
 import { render, waitFor } from "@testing-library/react";
 
 import PlotlyThumb, { simplifyPlotlyForThumb } from "../PlotlyThumb";
