@@ -1,5 +1,5 @@
 /// <reference types="vitest/globals" />
-import "@testing-library/jest-dom";
+import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 
 import DataTable from "../DataTable";
