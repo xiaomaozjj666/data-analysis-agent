@@ -9,6 +9,11 @@ updates:
       time: "03:00"
       timezone: Asia/Shanghai
     open-pull-requests-limit: 5
+    # MCP Python SDK 2.x 是破坏性大版本，test_mcp_server 全量挂；
+    # 需要按官方迁移指南适配 FastMCP API 后再放开
+    ignore:
+      - dependency-name: mcp
+        versions: [">=2"]
     groups:
       python-runtime:
         patterns:
