@@ -24,13 +24,27 @@ import re
 import shutil
 import threading
 from collections import OrderedDict
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any
 from uuid import uuid4
 
 import pandas as pd
 
+from data_agent._workspace_bundles import (
+    ECHARTS_BUNDLE_NAME,
+    ECHARTS_CDN_URL,
+    ECHARTS_GL_BUNDLE_NAME,
+    ECHARTS_GL_CDN_URL,
+    MIN_BUNDLE_BYTES,
+    PLOTLY_BUNDLE_NAME,
+    Artifact,
+    WorkspaceSnapshot,
+    _atomic_write_text,  # noqa: F401
+    _downcast_dtypes,
+    _download_bundle,
+    shared_bundle_path,
+    warm_bundles,  # noqa: F401
+)
 from data_agent.serialization import to_jsonable
 from data_agent.sqlite_source import SQLITE_EXTENSIONS, read_default_table
 
@@ -45,74 +59,17 @@ logger = logging.getLogger(__name__)
 #: 非结构化/半结构化：PDF（表格提取）、TXT（行式文本）、DOCX（Word 表格）
 #: 数据库：SQLite（默认载入行数最多的表，其余表由 query_database 工具查询）
 SUPPORTED_EXTENSIONS = {
-    ".csv", ".tsv", ".xlsx", ".xls", ".json", ".jsonl", ".parquet",
-    ".pdf", ".txt", ".docx",
+    ".csv",
+    ".tsv",
+    ".xlsx",
+    ".xls",
+    ".json",
+    ".jsonl",
+    ".parquet",
+    ".pdf",
+    ".txt",
+    ".docx",
 } | set(SQLITE_EXTENSIONS)
-
-#: 共享 Plotly.js 束缚文件名，每个工作区只写一次，所有图表复用。
-PLOTLY_BUNDLE_NAME = "plotly.min.js"
-#: ECharts 引擎所需的前端 bundle 文件名，与 plotly.min.js 同目录共存。
-#: 双引擎互不冲突：HTML 通过相对路径引用各自的 bundle。
-ECHARTS_BUNDLE_NAME = "echarts.min.js"
-#: ECharts 官方稳定版 CDN，首次生成 echarts 图表时下载到 artifacts_dir，
-#: 后续复用。下载失败时 fallback 到 CDN URL 直接引用（在线场景）。
-ECHARTS_CDN_URL = "https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"
-#: echarts-gl 扩展 bundle（3D 散点等 gl 系列需要），与主 bundle 同目录按需下载。
-ECHARTS_GL_BUNDLE_NAME = "echarts-gl.min.js"
-ECHARTS_GL_CDN_URL = "https://cdn.jsdelivr.net/npm/echarts-gl@2.0.9/dist/echarts-gl.min.js"
-
-#: CDN bundle 的机器级共享缓存目录名（位于 runs 根目录下）。
-#: 这些文件对所有会话完全相同，没必要每个会话各下一次——实测每个新会话的
-#: 首张 ECharts 图要多等约 6 秒，纯粹是重复下载同一个 1MB 文件。
-_BUNDLE_CACHE_DIRNAME = "_bundles"
-#: 小于该字节数视为损坏/半截下载（CDN 出错页），需要重新拉取。
-MIN_BUNDLE_BYTES = 1024
-
-_bundle_lock = threading.Lock()
-
-
-def shared_bundle_path(root: Path, name: str) -> Path:
-    """共享缓存里某个 bundle 的路径（不保证存在）。"""
-    directory = Path(os.environ.get("DATA_AGENT_BUNDLE_CACHE_DIR") or (root / _BUNDLE_CACHE_DIRNAME))
-    return directory / name
-
-
-def warm_bundles(root: Path, names: tuple[tuple[str, str], ...] | None = None) -> dict[str, bool]:
-    """预下载 CDN bundle 到共享缓存（供服务启动时后台调用）。
-
-    返回 ``{文件名: 是否可用}``。任何失败都只记为 False——离线时图表会按原
-    逻辑 fallback 到 CDN 直引，不能因为预热失败影响启动。
-    """
-    targets = names or ((ECHARTS_BUNDLE_NAME, ECHARTS_CDN_URL),
-                        (ECHARTS_GL_BUNDLE_NAME, ECHARTS_GL_CDN_URL))
-    result: dict[str, bool] = {}
-    for name, url in targets:
-        path = shared_bundle_path(root, name)
-        if not (path.exists() and path.stat().st_size > MIN_BUNDLE_BYTES):
-            _download_bundle(url, path)
-        result[name] = path.exists() and path.stat().st_size > MIN_BUNDLE_BYTES
-    return result
-
-
-def _download_bundle(url: str, target: Path) -> bool:
-    """下载 bundle 到共享缓存（先写临时文件再原子替换，避免半截文件被复用）。"""
-    import urllib.request
-
-    with _bundle_lock:
-        if target.exists() and target.stat().st_size > MIN_BUNDLE_BYTES:
-            return True
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with urllib.request.urlopen(url, timeout=20) as response:  # noqa: S310
-                content = response.read()
-            if not content or len(content) < MIN_BUNDLE_BYTES:
-                return False
-            temporary = target.with_suffix(target.suffix + ".part")
-            temporary.write_bytes(content)
-            temporary.replace(target)
-            return True
-        except Exception:
-            return False
 
 #: 活动 DataFrame 的 checkpoint 文件名，用于重启后恢复。
 WORKSPACE_STATE_NAME = "workspace_state.parquet"
@@ -149,88 +106,6 @@ _CSV_ENCODING_CANDIDATES = ("utf-8-sig", "utf-8", "gb18030")
 #: nunique / duplicated 保持全量——它们是 C 层哈希实现且图表语义防护
 #: （标识符列/常量列判定）依赖精确的 unique 计数，不能采样。
 _PROFILE_DEEP_MEMORY_MAX_CELLS = 5_000_000
-
-
-def _atomic_write_text(path: Path, content: str, *, encoding: str = "utf-8") -> None:
-    """Write text atomically: write to a sibling .tmp file then rename.
-
-    A direct ``path.write_text`` truncates the destination before writing; if
-    the process is killed mid-write (OOM, deploy restart, disk full) we leave
-    a corrupt partial file that subsequent reads will fail on. The tmp + rename
-    pattern guarantees readers either see the old file or the new file, never
-    a half-written one. ``os.replace`` is atomic on POSIX and Windows for
-    same-filesystem renames.
-    """
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    try:
-        temporary.write_text(content, encoding=encoding)
-        os.replace(temporary, path)
-    except Exception:
-        temporary.unlink(missing_ok=True)
-        raise
-
-
-def _downcast_dtypes(df: pd.DataFrame) -> pd.DataFrame:
-    """降级 DataFrame 数值列的 dtype 以节省内存。
-
-    pandas 默认用 int64/float64，对大多数业务数据来说 int32/float32 已足够。
-    安全降级：仅在不丢失精度时转换（如 0-255 的整数列 → uint8）。
-    典型场景：100 万行 × 10 列的 int64 数据，降级后内存从 ~80MB 降到 ~20MB。
-    """
-    for col in df.columns:
-        col_data = df[col]
-        if col_data.dtype == "int64":
-            # 尝试降级到最小可容纳的整数类型
-            df[col] = pd.to_numeric(col_data, downcast="integer")
-        elif col_data.dtype == "float64":
-            # float32 精度足够大多数统计场景（6-7 位有效数字）
-            df[col] = pd.to_numeric(col_data, downcast="float")
-    return df
-
-
-@dataclass(frozen=True, slots=True)
-class Artifact:
-    """工作区中已注册的产物文件元数据。
-
-    Attributes:
-        name: 文件名（不含目录）。
-        kind: 产物类型（visualization / dataset / image / chart_data）。
-        path: 绝对路径。
-        description: 面向用户的简短描述。
-    """
-
-    name: str
-    kind: str
-    path: Path
-    description: str
-
-    def as_dict(self) -> dict[str, str]:
-        return {
-            "name": self.name,
-            "kind": self.kind,
-            "path": str(self.path.resolve()),
-            "description": self.description,
-        }
-
-
-class WorkspaceSnapshot(NamedTuple):
-    """单步执行前的回滚点。
-
-    ``source_row_count`` 一并纳入快照：跨源合并会重置行数基线，若回滚只恢复
-    DataFrame 而不恢复基线，后续 clean_data 的 20% 安全下限就会以"已被回滚掉的
-    那张表"的规模计算，护栏在同一会话内失效。
-
-    Attributes:
-        dataframe: 快照时的活动数据集（浅拷贝，依赖 pandas 写时复制语义）。
-        files: 快照时 artifacts 目录中已存在的文件路径集合。
-        version: 快照时的 ``_df_version``，用于跳过多余的 DataFrame 还原。
-        source_row_count: 快照时的行数基线。
-    """
-
-    dataframe: pd.DataFrame
-    files: set[Path]
-    version: int
-    source_row_count: int
 
 
 class DataWorkspace:
@@ -428,7 +303,9 @@ class DataWorkspace:
             raise FileNotFoundError(f"数据文件不存在：{path}")
         suffix = path.suffix.lower()
         if suffix not in SUPPORTED_EXTENSIONS:
-            raise ValueError(f"不支持 {suffix} 文件。支持：{', '.join(sorted(SUPPORTED_EXTENSIONS))}")
+            raise ValueError(
+                f"不支持 {suffix} 文件。支持：{', '.join(sorted(SUPPORTED_EXTENSIONS))}"
+            )
         if copy_into_workspace and self.input_dir.resolve() not in path.parents:
             target = self.input_dir / path.name
             shutil.copy2(path, target)
@@ -462,7 +339,9 @@ class DataWorkspace:
         """
         suffix = path.suffix.lower()
         if suffix not in SUPPORTED_EXTENSIONS:
-            raise ValueError(f"不支持 {suffix} 文件。支持：{', '.join(sorted(SUPPORTED_EXTENSIONS))}")
+            raise ValueError(
+                f"不支持 {suffix} 文件。支持：{', '.join(sorted(SUPPORTED_EXTENSIONS))}"
+            )
         warnings: list[str] = []
         try:
             if suffix in {".csv", ".tsv"}:
@@ -531,7 +410,9 @@ class DataWorkspace:
         df, _warnings = self._read_table(resolved)
         return df
 
-    def adopt_dataset(self, dataframe: pd.DataFrame, *, reset_source_baseline: bool = False) -> None:
+    def adopt_dataset(
+        self, dataframe: pd.DataFrame, *, reset_source_baseline: bool = False
+    ) -> None:
         """把一张新表设为活动数据集。
 
         Args:
@@ -610,7 +491,9 @@ class DataWorkspace:
                 chunks: list[pd.DataFrame] = []
                 for chunk in pd.read_csv(path, sep=sep, engine="python", **reader_kwargs):  # type: ignore[arg-type]
                     chunks.append(chunk)
-                df: pd.DataFrame = pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame()
+                df: pd.DataFrame = (
+                    pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame()
+                )
             else:
                 df = pd.read_csv(path, **kwargs)  # type: ignore[arg-type]
             return _downcast_dtypes(df)
@@ -653,7 +536,7 @@ class DataWorkspace:
                     if not table or len(table) < 2:
                         continue
                     # 首行作为表头，其余为数据行
-                    header = [str(c or f"列{i+1}").strip() for i, c in enumerate(table[0])]
+                    header = [str(c or f"列{i + 1}").strip() for i, c in enumerate(table[0])]
                     data = table[1:]
                     df_page = pd.DataFrame(data, columns=header)
                     tables.append(df_page)
@@ -726,7 +609,9 @@ class DataWorkspace:
             if len(table.rows) < 2:
                 continue
             # 首行作为表头
-            header = [cell.text.strip() or f"列{i+1}" for i, cell in enumerate(table.rows[0].cells)]
+            header = [
+                cell.text.strip() or f"列{i + 1}" for i, cell in enumerate(table.rows[0].cells)
+            ]
             data = [[cell.text.strip() for cell in row.cells] for row in table.rows[1:]]
             tables.append(pd.DataFrame(data, columns=header))
 
@@ -766,7 +651,10 @@ class DataWorkspace:
             normalized: list[str] = []
             seen: dict[str, int] = {}
             for value in original:
-                base = re.sub(r"[^\w\u4e00-\u9fff]+", "_", str(value).strip().lower()).strip("_") or "column"
+                base = (
+                    re.sub(r"[^\w\u4e00-\u9fff]+", "_", str(value).strip().lower()).strip("_")
+                    or "column"
+                )
                 seen[base] = seen.get(base, 0) + 1
                 normalized.append(base if seen[base] == 1 else f"{base}_{seen[base]}")
             if normalized != original:
@@ -778,7 +666,9 @@ class DataWorkspace:
             trimmed = 0
             for column in string_columns:
                 original_values = df[column].copy()
-                df[column] = df[column].map(lambda value: value.strip() if isinstance(value, str) else value)
+                df[column] = df[column].map(
+                    lambda value: value.strip() if isinstance(value, str) else value
+                )
                 if not df[column].equals(original_values):
                     trimmed += 1
             if trimmed:
@@ -800,9 +690,7 @@ class DataWorkspace:
             # °C, km/h, ...) since converting them would silently drop the
             # unit and corrupt the data. Only currency prefixes and thousands
             # separators are considered unambiguous and get stripped.
-            unit_residual_pattern = re.compile(
-                r"^[\s¥￥$€]*[+-]?[\d.,]+(?:[eE][+-]?\d+)?"
-            )
+            unit_residual_pattern = re.compile(r"^[\s¥￥$€]*[+-]?[\d.,]+(?:[eE][+-]?\d+)?")
             for column in list(df.select_dtypes(include=["object", "string"]).columns):
                 series = df[column]
                 non_empty = series.dropna()
@@ -822,7 +710,9 @@ class DataWorkspace:
                 candidate = pd.to_numeric(stripped, errors="coerce")
                 if candidate.notna().all():
                     df[column] = pd.to_numeric(
-                        df[column].astype("string").str.strip()
+                        df[column]
+                        .astype("string")
+                        .str.strip()
                         .str.replace(",", "", regex=False)
                         .str.replace(r"^[¥￥$€]\s*", "", regex=True),
                         errors="coerce",
@@ -874,7 +764,10 @@ class DataWorkspace:
         called in succession (upload + session GET), caching these avoids
         scanning the table twice.
         """
-        if self._cached_full_stats is not None and self._cached_full_stats_version == self._df_version:
+        if (
+            self._cached_full_stats is not None
+            and self._cached_full_stats_version == self._df_version
+        ):
             return self._cached_full_stats
         df = self.dataframe
         missing = df.isna().sum()
@@ -936,10 +829,12 @@ class DataWorkspace:
         # Reuse expensive full-table stats (nunique, duplicated, memory)
         # across different sample_rows calls.
         stats = self._compute_full_stats()
-        result = to_jsonable({
-            **stats,
-            "sample": self.dataframe.head(sample_rows),
-        })
+        result = to_jsonable(
+            {
+                **stats,
+                "sample": self.dataframe.head(sample_rows),
+            }
+        )
         # LRU 淘汰：超容量时移除最旧条目（OrderedDict 首项），而非全清。
         # 全清会导致相邻两次不同 sample_rows 的调用互相淘汰，命中率归零。
         while len(self._profile_cache) >= _PROFILE_CACHE_MAX_ENTRIES:
@@ -1053,11 +948,7 @@ class DataWorkspace:
         ``adopt_dataset`` (cross-source joins).
         """
         try:
-            files = {
-                path.resolve()
-                for path in self.artifacts_dir.iterdir()
-                if path.is_file()
-            }
+            files = {path.resolve() for path in self.artifacts_dir.iterdir() if path.is_file()}
         except FileNotFoundError:
             files = set()
         # pandas >= 2.3 (enabled by default in 3.0) uses copy-on-write:
@@ -1086,7 +977,9 @@ class DataWorkspace:
             resolved = path.resolve()
             if path.is_file() and resolved not in existing_files:
                 path.unlink(missing_ok=True)
-        self._artifacts = [item for item in self._artifacts if item.path.resolve() in existing_files]
+        self._artifacts = [
+            item for item in self._artifacts if item.path.resolve() in existing_files
+        ]
 
     def save_checkpoint(self) -> Path:
         """Persist the active DataFrame separately from user-facing artifacts.

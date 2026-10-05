@@ -388,8 +388,16 @@ def test_cli_analyze_with_overrides_and_artifacts(tmp_path, monkeypatch):
     result = runner.invoke(
         app,
         [
-            "analyze", str(data_path), "--task", "检查", "--provider", "openai",
-            "--model", "gpt-test", "--base-url", "http://localhost:9999",
+            "analyze",
+            str(data_path),
+            "--task",
+            "检查",
+            "--provider",
+            "openai",
+            "--model",
+            "gpt-test",
+            "--base-url",
+            "http://localhost:9999",
         ],
     )
     assert result.exit_code == 0, result.output
@@ -416,6 +424,7 @@ def test_cli_main_guard_invokes_app(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.ci_required
 def test_frontend_catchall_serves_spa_and_static_assets(monkeypatch):
     """真实 frontend/dist 存在时：SPA fallback、静态资源 immutable 缓存、API 404。"""
     from fastapi.testclient import TestClient
@@ -426,7 +435,7 @@ def test_frontend_catchall_serves_spa_and_static_assets(monkeypatch):
     monkeypatch.delenv("APP_ACCESS_TOKEN", raising=False)
 
     if not api.frontend_dist.is_dir():
-        pytest.skip("frontend/dist 不存在，catch-all 未注册")
+        pytest.skip("frontend/dist 不存在，catch-all 未注册（CI 环境应存在）")
 
     client = TestClient(api.app)
 
@@ -500,10 +509,10 @@ def test_frontend_catchall_404_when_dist_missing(monkeypatch):
 def test_read_bundle_cached_error_and_eviction(tmp_path, monkeypatch):
     from pathlib import Path as RealPath
 
-    from data_agent.routers import artifacts as artifacts_router
+    from data_agent.routers._artifacts import bundle as bundle_mod
 
     # stat 失败 → None
-    assert artifacts_router._read_bundle_cached(tmp_path / "missing.js") is None
+    assert bundle_mod._read_bundle_cached(tmp_path / "missing.js") is None
 
     # read_text 失败 → None
     bundle = tmp_path / "bundle.js"
@@ -513,21 +522,21 @@ def test_read_bundle_cached_error_and_eviction(tmp_path, monkeypatch):
         raise OSError("io error")
 
     monkeypatch.setattr(RealPath, "read_text", failing_read)
-    assert artifacts_router._read_bundle_cached(bundle) is None
+    assert bundle_mod._read_bundle_cached(bundle) is None
 
     # 缓存满 → 淘汰最旧条目
     monkeypatch.setattr(RealPath, "read_text", lambda self, *a, **k: "/* x */")
     cache: dict = {}
-    monkeypatch.setattr(artifacts_router, "_BUNDLE_TEXT_CACHE", cache)
+    monkeypatch.setattr(bundle_mod, "_BUNDLE_TEXT_CACHE", cache)
     for index in range(8):
         p = tmp_path / f"bundle_{index}.js"
         p.write_text("/* x */", encoding="utf-8")
-        artifacts_router._read_bundle_cached(p)
-    assert len(cache) <= artifacts_router._BUNDLE_CACHE_MAX
+        bundle_mod._read_bundle_cached(p)
+    assert len(cache) <= bundle_mod._BUNDLE_CACHE_MAX
 
 
 def test_inline_bundles_return_original_when_read_fails(tmp_path, monkeypatch):
-    from data_agent.routers import artifacts as artifacts_router
+    from data_agent.routers._artifacts import bundle as bundle_mod
 
     class FakeWorkspace:
         artifacts_dir = tmp_path
@@ -537,21 +546,21 @@ def test_inline_bundles_return_original_when_read_fails(tmp_path, monkeypatch):
 
     echarts = tmp_path / "echarts.min.js"
     echarts.write_text("/* js */", encoding="utf-8")
-    monkeypatch.setattr(artifacts_router, "_read_bundle_cached", lambda path: None)
+    monkeypatch.setattr(bundle_mod, "_read_bundle_cached", lambda path: None)
     html = '<script src="echarts.min.js"></script>'
-    assert artifacts_router._inline_echarts_bundle(FakeRecord(), html) == html
+    assert bundle_mod._inline_echarts_bundle(FakeRecord(), html) == html
 
     plotly = tmp_path / "plotly.min.js"
     plotly.write_text("/* js */", encoding="utf-8")
     html2 = "<script src='plotly.min.js'></script>"
-    assert artifacts_router._inline_plotly_bundle(FakeRecord(), html2) == html2
+    assert bundle_mod._inline_plotly_bundle(FakeRecord(), html2) == html2
 
 
 def test_read_utf8_robust_latin1_fallback(tmp_path, monkeypatch):
-    from data_agent.routers import artifacts as artifacts_router
+    from data_agent.routers._artifacts import repair as repair_mod
 
     # 所有候选编码都不可用时走 latin-1 兜底（绝不抛错）
-    monkeypatch.setattr(artifacts_router, "_PREVIEW_TEXT_CANDIDATES", ())
+    monkeypatch.setattr(repair_mod, "_PREVIEW_TEXT_CANDIDATES", ())
     p = tmp_path / "bin.html"
     p.write_bytes(b"\xff\xfe\x00binary")
-    assert artifacts_router._read_utf8_robust(p) == "\xff\xfe\x00binary"
+    assert repair_mod._read_utf8_robust(p) == "\xff\xfe\x00binary"

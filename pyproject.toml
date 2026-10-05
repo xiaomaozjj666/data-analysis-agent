@@ -54,16 +54,10 @@ dev = [
 ]
 # 数据库查询工具的 Postgres 驱动：按需安装（pip install ".[postgres]"），
 # 未安装时 query_database 会给出可操作的中文提示而不是裸 ImportError。
-postgres = [
-  "psycopg[binary]>=3.2,<4",
-]
+postgres = ["psycopg[binary]>=3.2,<4"]
 # MCP 数据面服务：按需安装（pip install ".[mcp]"）。
-mcp = [
-  "mcp>=1.2,<2",
-]
-deploy = [
-  "langgraph-cli[inmem]>=0.4,<1",
-]
+mcp = ["mcp>=1.2,<2"]
+deploy = ["langgraph-cli[inmem]>=0.4,<1"]
 
 [project.scripts]
 data-agent = "data_agent.cli:app"
@@ -78,6 +72,7 @@ data_agent = ["echarts_engine.py"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --disable-warnings"
+markers = ["ci_required: 标记需要 CI 环境才能运行的用例（本地缺依赖时条件跳过）"]
 # 单测超时保护：CI 上曾有无超时的测试挂起（外网/LLM 调用不 fail-fast）导致流水线卡死。
 # 240s 的依据：本机最慢的合法用例是"首次导入 LLM 栈并构造客户端"（实测 17~26s，
 # 属导入开销而非用例逻辑），CI runner 还要慢几倍；先前 120s 会把这类用例误杀，

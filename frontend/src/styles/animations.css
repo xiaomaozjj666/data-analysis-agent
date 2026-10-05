@@ -1,38 +1,104 @@
 /* 格子波浪呼吸动画：弱化对比度，staggered delay 形成对角波浪 */
 @keyframes cell-breathe {
-  0%, 100% { opacity: 0.72; }
-  50% { opacity: 0.96; }
+  0%,
+  100% {
+    opacity: 0.72;
+  }
+  50% {
+    opacity: 0.96;
+  }
 }
 
-@keyframes pulse-dot { 0% { box-shadow: 0 0 0 0 rgba(59, 108, 179, 0.4); } 70% { box-shadow: 0 0 0 5px rgba(59, 108, 179, 0); } 100% { box-shadow: 0 0 0 0 rgba(59, 108, 179, 0); } }
+@keyframes pulse-dot {
+  0% {
+    box-shadow: 0 0 0 0 rgba(59, 108, 179, 0.4);
+  }
+  70% {
+    box-shadow: 0 0 0 5px rgba(59, 108, 179, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(59, 108, 179, 0);
+  }
+}
 
-@keyframes blink { to { visibility: hidden; } }
+@keyframes blink {
+  to {
+    visibility: hidden;
+  }
+}
 
 /* ---------- 动画 ---------- */
-.spin { animation: spin 0.85s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
+.spin {
+  animation: spin 0.85s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 @keyframes status-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(59, 108, 179, 0.45); }
-  70% { box-shadow: 0 0 0 5px rgba(59, 108, 179, 0); }
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(59, 108, 179, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 5px rgba(59, 108, 179, 0);
+  }
 }
 @keyframes skeleton-shimmer {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
 }
-@keyframes fade-in { from { opacity: 0; } }
-@keyframes rise { from { opacity: 0; transform: translateY(6px); } }
-@keyframes modal-in { from { opacity: 0; transform: translateY(8px) scale(0.985); } }
-@keyframes banner-in { from { opacity: 0; transform: translateY(-4px); } }
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+}
+@keyframes banner-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
 
 @keyframes thinking-bounce {
-  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
-  30% { transform: translateY(-3px); opacity: 1; }
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
 }
 
 /* 空状态几何插画呼吸浮动：3s 周期内上下 6px，克制不夸张 */
 @keyframes gentle-float {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-6px); }
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
 }
 
 /* ---------- 内容模块交错入场 ---------- */
@@ -40,19 +106,56 @@
 
 /* 空状态插画的轻柔呼吸浮动 */
 @keyframes gentle-float {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-2px); }
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-2px);
+  }
 }
 
 /* 主内容区子元素交错入场 */
 .app-main > * {
   animation: fade-in-up 0.4s var(--ease-out) both;
 }
-.app-main > *:nth-child(1) { animation-delay: 0ms; }
-.app-main > *:nth-child(2) { animation-delay: 60ms; }
-.app-main > *:nth-child(3) { animation-delay: 120ms; }
+.app-main > *:nth-child(1) {
+  animation-delay: 0ms;
+}
+.app-main > *:nth-child(2) {
+  animation-delay: 60ms;
+}
+.app-main > *:nth-child(3) {
+  animation-delay: 120ms;
+}
 
 /* 尊重 reduced-motion 偏好 */
 @media (prefers-reduced-motion: reduce) {
-  .app-main > * { animation: none; }
+  .app-main > * {
+    animation: none;
+  }
+}
+/* Suspense 懒加载占位（复用 skeleton-shimmer，补齐 fallback={null} 的加载态） */
+.lazy-suspense-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 120px;
+  margin: 8px 0;
+  border-radius: 8px;
+  opacity: 0.5;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(59, 108, 179, 0.08),
+    transparent
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s infinite linear;
+}
+@media (prefers-reduced-motion: reduce) {
+  .lazy-suspense-fallback {
+    animation: none;
+    opacity: 0.3;
+  }
 }

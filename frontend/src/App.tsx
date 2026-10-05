@@ -1,4 +1,3 @@
-import React, { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   ChevronRight,
@@ -15,55 +14,50 @@ import {
   Upload,
   X,
 } from "lucide-react";
+import React, {
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { AccessGate, Metric } from "./components/AccessGate";
-import EmptyWorkspace from "./components/EmptyWorkspace";
-import DatasetOverview from "./components/DatasetOverview";
-import ConversationThread from "./components/ConversationThread";
-import PlanPanel from "./components/PlanPanel";
-import HistoryPanel from "./components/HistoryPanel";
 import ArtifactCenter from "./components/ArtifactCenter";
-import SettingsPanel from "./components/SettingsPanel";
+import ConversationThread from "./components/ConversationThread";
+import DatasetOverview from "./components/DatasetOverview";
+import EmptyWorkspace from "./components/EmptyWorkspace";
+import HistoryPanel from "./components/HistoryPanel";
+import PlanPanel from "./components/PlanPanel";
 import PreviewModal from "./components/PreviewModal";
+import SettingsPanel from "./components/SettingsPanel";
 import TaskBox from "./components/TaskBox";
 import WorkspaceTabs from "./components/WorkspaceTabs";
 // React Bits 风格动效（手写、零新增依赖）：品牌渐变 / 指标数字滚动 /
 // 主 CTA 流光描边 / 数据概览滚动入场，均兼容暗色与 prefers-reduced-motion。
+import ClickSpark from "./components/rb/ClickSpark";
 import CountUp from "./components/rb/CountUp";
+import GlareHover from "./components/rb/GlareHover";
 import GradientText from "./components/rb/GradientText";
 import Reveal from "./components/rb/Reveal";
-import StarBorder from "./components/rb/StarBorder";
-import GlareHover from "./components/rb/GlareHover";
-import ClickSpark from "./components/rb/ClickSpark";
-// 代码分割/懒加载（#16）：重型组件延迟加载，减小首次 bundle 体积。
-// - CommandPalette / HelpPanel：弹层，仅在用户触发（Cmd+K / ?）时显示
-// - ReportView：含 ReactMarkdown，仅在分析完成后渲染（result 非空）
-// - DataTable：含搜索/排序逻辑，仅在切到"数据" Tab 时渲染
-const DataTable = React.lazy(() => import("./components/DataTable"));
-const ReportView = React.lazy(() => import("./components/ReportView"));
-const CommandPalette = React.lazy(() => import("./components/CommandPalette"));
-const HelpPanel = React.lazy(() => import("./components/HelpPanel"));
+import {
+  ACTIVE_ANALYSIS_STATES,
+  COMMAND_ACTIONS,
+  MAX_UPLOAD_BYTES_CLIENT,
+} from "./constants";
 import useAnalysisRunner from "./hooks/useAnalysisRunner";
 import useArtifactPreview from "./hooks/useArtifactPreview";
 import useAuthBootstrap from "./hooks/useAuthBootstrap";
 import useChatRunner from "./hooks/useChatRunner";
 import useDownloads from "./hooks/useDownloads";
 import useHistorySync from "./hooks/useHistorySync";
-import useSessionMutations from "./hooks/useSessionMutations";
 import useScrollProgress from "./hooks/useScrollProgress";
+import useSessionMutations from "./hooks/useSessionMutations";
 import useSettingsPanel from "./hooks/useSettingsPanel";
 import useShortcuts from "./hooks/useShortcuts";
 import useTabPersistence from "./hooks/useTabPersistence";
 import useTheme from "./hooks/useTheme";
 import useTimer from "./hooks/useTimer";
 import { useAppStore } from "./store/useAppStore";
-import { api, ApiError, uploadWithProgress } from "./utils/api";
-import { wait } from "./utils/format";
-import { restoreCompletedAnalysis, restoreFollowUps } from "./utils/sessionRestore";
-import {
-  ACTIVE_ANALYSIS_STATES,
-  COMMAND_ACTIONS,
-  MAX_UPLOAD_BYTES_CLIENT,
-} from "./constants";
 import type {
   CommandAction,
   DatasetProfile,
@@ -72,6 +66,30 @@ import type {
   RetryOffer,
   Session,
 } from "./types";
+import { api, ApiError, uploadWithProgress } from "./utils/api";
+import { wait } from "./utils/format";
+import {
+  restoreCompletedAnalysis,
+  restoreFollowUps,
+} from "./utils/sessionRestore";
+// 代码分割/懒加载（#16）：重型组件延迟加载，减小首次 bundle 体积。
+// - CommandPalette / HelpPanel：弹层，仅在用户触发（Cmd+K / ?）时显示
+// - ReportView：含 ReactMarkdown，仅在分析完成后渲染（result 非空）
+// - DataTable：含搜索/排序逻辑，仅在切到"数据" Tab 时渲染
+const DataTable = React.lazy(() => import("./components/DataTable"));
+const ReportView = React.lazy(() => import("./components/ReportView"));
+const CommandPalette = React.lazy(() => import("./components/CommandPalette"));
+const HelpPanel = React.lazy(() => import("./components/HelpPanel"));
+// Suspense 懒加载占位：补齐 fallback={null} 的加载态（FIND-UX-001~004），
+// 复用 skeleton-shimmer 动画，不改组件 props 语义、不新增用户可见功能。
+const LazyFallback = () => (
+  <div
+    className="lazy-suspense-fallback"
+    role="status"
+    aria-busy="true"
+    aria-label="加载中"
+  />
+);
 
 // /api/sessions GET 列表响应的解析已随 fetchHistory 移入 useHistorySync。
 
@@ -83,65 +101,117 @@ function App() {
   // setter 既接受直接值也接受 functional updater，与原 useState 行为一致。
   const {
     // 认证
-    authRequired, authenticated, authReady,
-    setAuthRequired, setAuthenticated, setAuthReady,
+    authRequired,
+    authenticated,
+    authReady,
+    setAuthRequired,
+    setAuthenticated,
+    setAuthReady,
     // 配置（apiKey/effort/thinking 的编辑逻辑已移至 SettingsPanel；
     // setSettings/setEffort/setThinking 仍供 useAuthBootstrap 初始化，
     // setApiKey 供 useShortcuts 的 Esc 清空逻辑使用）
     settings,
-    setSettings, setApiKey, setEffort, setThinking,
+    setSettings,
+    setApiKey,
+    setEffort,
+    setThinking,
     // 会话
-    session, activeTab,
-    setSession, setActiveTab,
-    lastActiveTab, setLastActiveTab,
+    session,
+    activeTab,
+    setSession,
+    setActiveTab,
+    lastActiveTab,
+    setLastActiveTab,
     // 分析任务
-    task, plan, planSource, replanReason, completed, result, running,
-    setTask, setPlan, setCompleted, setResult, setRunning,
+    task,
+    plan,
+    planSource,
+    replanReason,
+    completed,
+    result,
+    running,
+    setTask,
+    setPlan,
+    setCompleted,
+    setResult,
+    setRunning,
     // 计划审批：plan_only 流程的待审阅状态、步骤进度
-    awaitingApproval, pendingObjective, stepProgress,
-    setAwaitingApproval, setPendingObjective, setStepProgress,
+    awaitingApproval,
+    pendingObjective,
+    stepProgress,
+    setAwaitingApproval,
+    setPendingObjective,
+    setStepProgress,
     // UI（previewHtml/previewLoading/previewError 及其 setter 已交由
     // useArtifactPreview / PreviewModal 消费，App 不再直接读写）
-    uploading, uploadProgress, previewItem, currentNodeTitle,
-    setUploading, setUploadProgress, setCurrentNodeTitle,
+    uploading,
+    uploadProgress,
+    previewItem,
+    currentNodeTitle,
+    setUploading,
+    setUploadProgress,
+    setCurrentNodeTitle,
     // 错误
-    error, errorExpanded,
-    setError, setErrorExpanded,
+    error,
+    errorExpanded,
+    setError,
+    setErrorExpanded,
     // Key UI（showKey 已移至 SettingsPanel；keyOpen/setKeyOpen 供
     // useSettingsPanel / useShortcuts / 命令面板动作使用）
     keyOpen,
     setKeyOpen,
     // 工具调用时间线（toolTrace）：ReAct 执行器内部每次工具调用实时推送，
     // 让用户看到"正在读取数据→正在清洗→正在生成图表"的过程
-    toolTrace, setToolTrace,
+    toolTrace,
+    setToolTrace,
     // 多轮对话：followUps 存储报告之后的追问消息对（user+assistant），
     // 让用户基于已有分析结果继续提问，不必每次都触发完整 plan→execute→finalize。
     // 结构：[{role, content, streaming?, tools?, error?}]
-    followUps, followUpInput, chatRunning,
-    setFollowUps, setFollowUpInput, setChatRunning,
+    followUps,
+    followUpInput,
+    chatRunning,
+    setFollowUps,
+    setFollowUpInput,
+    setChatRunning,
     // 重试
-    retryOffer, retryChecking,
-    setRetryOffer, setRetryChecking,
+    retryOffer,
+    retryChecking,
+    setRetryOffer,
+    setRetryChecking,
     // Busy：停止分析的 busy 状态（保存设置的 busy 已移至 SettingsPanel）
     stopping,
     setStopping,
     // 历史（historyError 区分"没数据"和"加载失败"，避免用户误以为数据丢失）。
     // setHistory/setHistoryLoading/setHistoryError 已随 fetchHistory 移入
     // useHistorySync，这里只读列表状态和展开开关。
-    history, historyLoading, historyError, historyExpanded, switchingSessionId,
-    setHistoryExpanded, setSwitchingSessionId,
+    history,
+    historyLoading,
+    historyError,
+    historyExpanded,
+    switchingSessionId,
+    setHistoryExpanded,
+    setSwitchingSessionId,
     // 计时：running 时由 setInterval 每秒刷新；非 running 时由
     // session.elapsed_seconds / completed - started 计算一次性赋值
-    elapsedSeconds, setElapsedSeconds,
+    elapsedSeconds,
+    setElapsedSeconds,
     // Reasoning（DeepSeek reasoning_content）：分析/追问时后端推送 thinking_chunk，
     // 累积到这里让 ReportView / ConversationBubble 展示思考过程。
     // 主分析的 reasoning 放在 App 级别（单条），追问的 reasoning 内嵌在每条 assistant 气泡上。
     // Token 用量（usage）：complete / chat_done 事件携带，展示在报告/气泡底部。
-    reasoning, reasoningStreaming, usage,
-    setReasoning, setReasoningStreaming, setUsage,
+    reasoning,
+    reasoningStreaming,
+    usage,
+    setReasoning,
+    setReasoningStreaming,
+    setUsage,
     // 命令面板（Cmd+K）与快捷键帮助（?）弹层状态
-    commandOpen, commandQuery, helpOpen,
-    setCommandOpen, setCommandQuery, setHelpOpen,
+    commandOpen,
+    commandQuery,
+    helpOpen,
+    setCommandOpen,
+    setCommandQuery,
+    setHelpOpen,
   } = useAppStore();
 
   // refs 保持局部状态：useRef 不迁移到 store（控制器、缓存、闭包内
@@ -166,19 +236,29 @@ function App() {
   // 其内部读取的 analysisController / chatControllerRef / retryController
   // 在它被实际调用时均已赋值，无 TDZ 风险。
   const {
-    startAnalysis, stopAnalysis,
-    analysisController, startedAtRef, runningSessionIdRef, lastTaskRef,
-  } = useAnalysisRunner({ handleSessionLost, retryController, autoRecover: retryAnalysis });
+    startAnalysis,
+    stopAnalysis,
+    analysisController,
+    startedAtRef,
+    runningSessionIdRef,
+    lastTaskRef,
+  } = useAnalysisRunner({
+    handleSessionLost,
+    retryController,
+    autoRecover: retryAnalysis,
+  });
   // useChatRunner：startFollowUp / stopFollowUp 及 chatControllerRef /
   // followUpInputRef（供 handleSessionLost / deleteSession / ConversationThread 共享）。
-  const { startFollowUp, stopFollowUp, chatControllerRef, followUpInputRef } = useChatRunner();
+  const { startFollowUp, stopFollowUp, chatControllerRef, followUpInputRef } =
+    useChatRunner();
   // useArtifactPreview：图表预览模态、对比/全屏/PNG 导出、图表内联编辑。
   // 完整返回值整体传给 PreviewModal，App 仅直接使用开/关两个回调。
   const artifactPreview = useArtifactPreview();
   const { openArtifactPreview, closeArtifactPreview } = artifactPreview;
   // useDownloads：单产物下载 / 批量下载 / 会话导出 ZIP（exportingSessionId
   // 供 HistoryPanel 在对应条目上展示导出 loading）。
-  const { downloadArtifact, batchDownload, exportSession, exportingSessionId } = useDownloads();
+  const { downloadArtifact, batchDownload, exportSession, exportingSessionId } =
+    useDownloads();
 
   // 移动端侧边栏抽屉开关：桌面端 sidebar 常驻，平板/手机折叠为抽屉
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -217,13 +297,27 @@ function App() {
 
   // 历史会话列表同步：fetchHistory + 分析结束刷新 + 自动轮询（提取至 useHistorySync）。
   // 必须在 useAuthBootstrap 之前调用：引导流程鉴权就绪后会调用 fetchHistory。
-  const { fetchHistory } = useHistorySync({ authReady, authRequired, authenticated, running });
+  const { fetchHistory } = useHistorySync({
+    authReady,
+    authRequired,
+    authenticated,
+    running,
+  });
 
   // 认证引导 + 鉴权就绪后拉取历史（提取至 useAuthBootstrap）。
   useAuthBootstrap({
-    setAuthRequired, setAuthenticated, setAuthReady,
-    setSettings, setEffort, setThinking, setKeyOpen, setError,
-    fetchHistory, authReady, authRequired, authenticated,
+    setAuthRequired,
+    setAuthenticated,
+    setAuthReady,
+    setSettings,
+    setEffort,
+    setThinking,
+    setKeyOpen,
+    setError,
+    fetchHistory,
+    authReady,
+    authRequired,
+    authenticated,
   });
 
   // 切换到历史会话：拉取完整 session payload，并恢复 result/plan/completed。
@@ -256,7 +350,9 @@ function App() {
       restoreCompletedAnalysis(latest, { setResult, setPlan, setCompleted });
       restoreFollowUps(latest, setFollowUps);
       if (!running) {
-        startedAtRef.current = (latest as Session & { analysis_started_at?: number | null }).analysis_started_at ?? null;
+        startedAtRef.current =
+          (latest as Session & { analysis_started_at?: number | null })
+            .analysis_started_at ?? null;
         setElapsedSeconds(latest.elapsed_seconds ?? null);
       }
       // 恢复上次查看的 Tab：有 preview 数据时恢复 lastActiveTab（如数据/产物），
@@ -266,7 +362,9 @@ function App() {
     } catch (err) {
       const error = err as Error & { status?: number };
       if (error instanceof ApiError && error.status === 404) {
-        handleSessionLost("该历史会话已被服务端清理，请选择其他会话或重新上传数据。");
+        handleSessionLost(
+          "该历史会话已被服务端清理，请选择其他会话或重新上传数据。",
+        );
       } else {
         setError(`无法打开历史会话：${error.message}`);
       }
@@ -278,7 +376,11 @@ function App() {
   // 会话增删改：导入 / 删除 / 重命名（提取至 useSessionMutations）。
   // 在 selectSession 定义之后调用：导入成功后要复用它跳转新会话。
   const { importSession, deleteSession, renameSession } = useSessionMutations({
-    selectSession, fetchHistory, retryController, analysisController, chatControllerRef,
+    selectSession,
+    fetchHistory,
+    retryController,
+    analysisController,
+    chatControllerRef,
   });
 
   // 实时耗时：running 时持续刷新 elapsed = now - startedAtRef（提取至 useTimer）。
@@ -286,44 +388,50 @@ function App() {
 
   // 命令面板动作执行器：根据 action.id 路由到具体操作。
   // 用 useCallback 保持身份稳定，作为 props 传入 CommandPalette 时不会触发重渲染。
-  const runCommandAction = useCallback((action: CommandAction) => {
-    switch (action?.id) {
-      case "new-analysis":
-        fileInput.current?.click();
-        break;
-      case "toggle-theme":
-        toggleTheme();
-        break;
-      case "open-settings":
-        setKeyOpen(true);
-        break;
-      case "tab-analysis":
-        setActiveTab("analysis");
-        break;
-      case "tab-data":
-        setActiveTab("data");
-        break;
-      case "tab-artifacts":
-        setActiveTab("artifacts");
-        break;
-      case "show-help":
-        setHelpOpen(true);
-        break;
-      default:
-        break;
-    }
-    setCommandOpen(false);
-    setCommandQuery("");
-  }, [toggleTheme]);
+  const runCommandAction = useCallback(
+    (action: CommandAction) => {
+      switch (action?.id) {
+        case "new-analysis":
+          fileInput.current?.click();
+          break;
+        case "toggle-theme":
+          toggleTheme();
+          break;
+        case "open-settings":
+          setKeyOpen(true);
+          break;
+        case "tab-analysis":
+          setActiveTab("analysis");
+          break;
+        case "tab-data":
+          setActiveTab("data");
+          break;
+        case "tab-artifacts":
+          setActiveTab("artifacts");
+          break;
+        case "show-help":
+          setHelpOpen(true);
+          break;
+        default:
+          break;
+      }
+      setCommandOpen(false);
+      setCommandQuery("");
+    },
+    [toggleTheme],
+  );
 
   // 消息编辑重发：截断 index 之后的所有 followUps，把新文本作为新追问重发。
   // 参考 ChatGPT/Claude 的"编辑并重新发送"交互——保留历史上下文的同时重置分支。
-  const handleEditFollowUp = useCallback((index: number, newContent: string) => {
-    setFollowUps((prev) => prev.slice(0, index));
-    setFollowUpInput(newContent);
-    // 让输入框立即获得焦点，用户可直接 Cmd+Enter 发送
-    window.setTimeout(() => followUpInputRef.current?.focus(), 0);
-  }, []);
+  const handleEditFollowUp = useCallback(
+    (index: number, newContent: string) => {
+      setFollowUps((prev) => prev.slice(0, index));
+      setFollowUpInput(newContent);
+      // 让输入框立即获得焦点，用户可直接 Cmd+Enter 发送
+      window.setTimeout(() => followUpInputRef.current?.focus(), 0);
+    },
+    [],
+  );
 
   // useCallback：downloadArtifact 作为 props 传给 React.memo(ArtifactCenter)。
   // 若每次渲染都创建新函数，memo 比较失败，ArtifactCenter 仍然每次重渲染。
@@ -333,9 +441,20 @@ function App() {
   // closeArtifactPreview / stopAnalysis / stopFollowUp 由 useArtifactPreview /
   // useAnalysisRunner / useChatRunner 返回（hook 在上方已调用），此处可直接引用。
   useShortcuts({
-    previewItem, keyOpen, closeArtifactPreview, setKeyOpen, setApiKey,
-    running, chatRunning, stopAnalysis, stopFollowUp, toggleTheme,
-    setCommandOpen, setHistoryExpanded, setHelpOpen, setActiveTab,
+    previewItem,
+    keyOpen,
+    closeArtifactPreview,
+    setKeyOpen,
+    setApiKey,
+    running,
+    chatRunning,
+    stopAnalysis,
+    stopFollowUp,
+    toggleTheme,
+    setCommandOpen,
+    setHistoryExpanded,
+    setHelpOpen,
+    setActiveTab,
   });
 
   // loadCompareChart / downloadPng 已提取至 useArtifactPreview；
@@ -350,10 +469,13 @@ function App() {
     // 客户端文件大小校验：优先用服务端下发的 max_upload_bytes（/api/settings），
     // 旧后端无此字段时回退本地默认值。提前检查可以避免上传 100MB+
     // 才得到 422，浪费用户带宽和等待时间。
-    const maxUploadBytes = settings?.max_upload_bytes ?? MAX_UPLOAD_BYTES_CLIENT;
+    const maxUploadBytes =
+      settings?.max_upload_bytes ?? MAX_UPLOAD_BYTES_CLIENT;
     if (file.size > maxUploadBytes) {
       const mb = Math.round(maxUploadBytes / (1024 * 1024));
-      setError(`文件 ${file.name} 超过 ${mb}MB 上传上限，请拆分或精简后再上传。`);
+      setError(
+        `文件 ${file.name} 超过 ${mb}MB 上传上限，请拆分或精简后再上传。`,
+      );
       if (fileInput.current) fileInput.current.value = "";
       return;
     }
@@ -381,7 +503,9 @@ function App() {
         signal: controller.signal,
       });
       setSession(value);
-      startedAtRef.current = (value as Session & { analysis_started_at?: number | null }).analysis_started_at ?? null;
+      startedAtRef.current =
+        (value as Session & { analysis_started_at?: number | null })
+          .analysis_started_at ?? null;
       setElapsedSeconds(value.elapsed_seconds ?? null);
       setFollowUps([]);
       fetchHistory();
@@ -393,7 +517,8 @@ function App() {
         setError(error.message);
       }
     } finally {
-      if (uploadControllerRef.current === controller) uploadControllerRef.current = null;
+      if (uploadControllerRef.current === controller)
+        uploadControllerRef.current = null;
       setUploading(false);
       setUploadProgress(null);
       if (fileInput.current) fileInput.current.value = "";
@@ -414,12 +539,21 @@ function App() {
       setUploading(true);
       setError("");
       closeArtifactPreview();
-      setPlan([]); setCompleted([]); setResult(null); setTask("");
-      setActiveTab("analysis"); setCurrentNodeTitle(""); setRetryOffer(null);
+      setPlan([]);
+      setCompleted([]);
+      setResult(null);
+      setTask("");
+      setActiveTab("analysis");
+      setCurrentNodeTitle("");
+      setRetryOffer(null);
       try {
-        const value = await api<Session>("/api/sessions/sample", { method: "POST" });
+        const value = await api<Session>("/api/sessions/sample", {
+          method: "POST",
+        });
         setSession(value);
-        startedAtRef.current = (value as Session & { analysis_started_at?: number | null }).analysis_started_at ?? null;
+        startedAtRef.current =
+          (value as Session & { analysis_started_at?: number | null })
+            .analysis_started_at ?? null;
         setElapsedSeconds(value.elapsed_seconds ?? null);
         setFollowUps([]);
         fetchHistory();
@@ -435,11 +569,23 @@ function App() {
       // 顺序上传：每个文件独立成会话，避免并发挤占 slot
       for (const file of files) await uploadFile(file);
     };
-    window.addEventListener("empty-workspace:load-sample", onLoadSample as EventListener);
-    window.addEventListener("empty-workspace:extra-files", onExtraFiles as EventListener);
+    window.addEventListener(
+      "empty-workspace:load-sample",
+      onLoadSample as EventListener,
+    );
+    window.addEventListener(
+      "empty-workspace:extra-files",
+      onExtraFiles as EventListener,
+    );
     return () => {
-      window.removeEventListener("empty-workspace:load-sample", onLoadSample as EventListener);
-      window.removeEventListener("empty-workspace:extra-files", onExtraFiles as EventListener);
+      window.removeEventListener(
+        "empty-workspace:load-sample",
+        onLoadSample as EventListener,
+      );
+      window.removeEventListener(
+        "empty-workspace:extra-files",
+        onExtraFiles as EventListener,
+      );
     };
   }, []);
 
@@ -485,7 +631,10 @@ function App() {
     setRetryChecking(true);
     try {
       // 单次查询用短超时（8s），让网络故障快速暴露而不是卡 45s。
-      let latest = await api<Session & { analysis_started_at?: number | null }>(`/api/sessions/${session.id}`, { timeoutMs: 8000, signal: controller.signal });
+      let latest = await api<Session & { analysis_started_at?: number | null }>(
+        `/api/sessions/${session.id}`,
+        { timeoutMs: 8000, signal: controller.signal },
+      );
       setSession(latest);
 
       if (ACTIVE_ANALYSIS_STATES.has(latest.analysis_status)) {
@@ -498,10 +647,16 @@ function App() {
         startedAtRef.current = latest.analysis_started_at ?? Date.now() / 1000;
         setElapsedSeconds(latest.elapsed_seconds ?? 0);
         const deadline = Date.now() + 5 * 60 * 1000;
-        while (ACTIVE_ANALYSIS_STATES.has(latest.analysis_status) && Date.now() < deadline) {
+        while (
+          ACTIVE_ANALYSIS_STATES.has(latest.analysis_status) &&
+          Date.now() < deadline
+        ) {
           await wait(3000);
           if (controller.signal.aborted) break;
-          latest = await api<Session & { analysis_started_at?: number | null }>(`/api/sessions/${session.id}`, { timeoutMs: 8000, signal: controller.signal });
+          latest = await api<Session & { analysis_started_at?: number | null }>(
+            `/api/sessions/${session.id}`,
+            { timeoutMs: 8000, signal: controller.signal },
+          );
           setSession(latest);
           // 每 3 秒由后端返回的 elapsed_seconds 同步一次，比 setInterval
           // 的客户端估算更准（客户端时钟漂移、tab 后台限流都会影响）。
@@ -517,21 +672,27 @@ function App() {
         // 用户主动取消轮询，不修改 error（stopAnalysis 已设过消息）。
         return;
       }
-      if (latest.analysis_status === "completed" && restoreCompletedAnalysis(latest, { setResult, setPlan, setCompleted })) {
+      if (
+        latest.analysis_status === "completed" &&
+        restoreCompletedAnalysis(latest, { setResult, setPlan, setCompleted })
+      ) {
         setError("");
         setRetryOffer(null);
       } else if (ACTIVE_ANALYSIS_STATES.has(latest.analysis_status)) {
         // 5 分钟 deadline 到了但后端仍在 running——可能是 Render free 实例被
         // 暂停、worker 死亡或 LLM 调用超长。提供"强制重新运行"让用户能
         // 中断旧任务重跑，而不是无限等待。
-        setError("原分析长时间未结束（可能服务被暂停或任务卡住）。可以选择强制重新运行，将提交新的分析任务。");
+        setError(
+          "原分析长时间未结束（可能服务被暂停或任务卡住）。可以选择强制重新运行，将提交新的分析任务。",
+        );
         setRetryOffer({ task: retryTask, reason: "ready" });
       } else {
-        const statusMessage = latest.analysis_status === "cancelled"
-          ? "原分析已经取消。确认后可以重新运行。"
-          : latest.analysis_status === "failed"
-            ? "原分析执行失败。确认后可以重新运行。"
-            : "没有发现正在运行的任务。确认后可以重新运行。";
+        const statusMessage =
+          latest.analysis_status === "cancelled"
+            ? "原分析已经取消。确认后可以重新运行。"
+            : latest.analysis_status === "failed"
+              ? "原分析执行失败。确认后可以重新运行。"
+              : "没有发现正在运行的任务。确认后可以重新运行。";
         setError(statusMessage);
         setRetryOffer({ task: retryTask, reason: "ready" });
       }
@@ -546,14 +707,19 @@ function App() {
       if (error instanceof ApiError && error.status === 404) {
         // 服务端 session 已被清理（Render 重启 /tmp 清空、TTL 过期等）。
         // 明确告知用户并重置到上传界面，避免用户反复点"检查状态"得到 404。
-        handleSessionLost("会话已失效（服务端数据已被清理），请重新上传数据集后再开始分析。");
+        handleSessionLost(
+          "会话已失效（服务端数据已被清理），请重新上传数据集后再开始分析。",
+        );
         return;
       }
       // 网络错误（TypeError）或超时：立即退出轮询，不傻等 5 分钟。
       // 保留 retryOffer 让用户可以再次尝试检查状态。
-      setError(`暂时无法确认任务状态：${error.message}。可稍后再次点击检查状态。`);
+      setError(
+        `暂时无法确认任务状态：${error.message}。可稍后再次点击检查状态。`,
+      );
     } finally {
-      if (retryController.current === controller) retryController.current = null;
+      if (retryController.current === controller)
+        retryController.current = null;
       setRetryChecking(false);
     }
   }
@@ -564,21 +730,34 @@ function App() {
   //   - resumeAnalysis 复用已有 plan，跳过 completed 中的步骤，从中断处继续
   function resumeAnalysis() {
     if (!retryOffer?.canResume) return;
-    const { task: resumeTask, plan: savedPlan, completed: savedCompleted } = retryOffer;
+    const {
+      task: resumeTask,
+      plan: savedPlan,
+      completed: savedCompleted,
+    } = retryOffer;
     setRetryOffer(null);
     setError("");
-    startAnalysis(resumeTask, { plan: savedPlan || [], completed_steps: savedCompleted || [] });
+    startAnalysis(resumeTask, {
+      plan: savedPlan || [],
+      completed_steps: savedCompleted || [],
+    });
   }
 
   // === Batch 4：计划审批回调 ===
   // 用户在 PlanPanel 中编辑计划后点击"批准并执行"触发，
   // 用编辑后的计划作为 resume_from，completed_steps 为空表示从头执行。
-  const approvePlan = useCallback((editedPlan: PlanStep[]) => {
-    setAwaitingApproval(false);
-    setPlan(editedPlan);
-    setStepProgress(null);
-    startAnalysis(lastTaskRef.current, { plan: editedPlan, completed_steps: [] });
-  }, [startAnalysis]);
+  const approvePlan = useCallback(
+    (editedPlan: PlanStep[]) => {
+      setAwaitingApproval(false);
+      setPlan(editedPlan);
+      setStepProgress(null);
+      startAnalysis(lastTaskRef.current, {
+        plan: editedPlan,
+        completed_steps: [],
+      });
+    },
+    [startAnalysis],
+  );
 
   // 用户取消审批：丢弃编辑、清空待执行计划
   const cancelApproval = useCallback(() => {
@@ -590,25 +769,59 @@ function App() {
 
   // 从指定步骤重跑：截断 completed 至 index 之前的步骤，
   // 用原始 plan 作为 resume_from，跳过已保留部分。
-  const rerunFromStep = useCallback((index: number) => {
-    if (!session || running) return;
-    // 截断 completed_steps：保留 index 之前的步骤，丢弃 index 及之后的
-    const truncatedCompleted = completed.slice(0, index);
-    startAnalysis(lastTaskRef.current, { plan, completed_steps: truncatedCompleted });
-  }, [session, running, completed, plan, startAnalysis]);
+  const rerunFromStep = useCallback(
+    (index: number) => {
+      if (!session || running) return;
+      // 截断 completed_steps：保留 index 之前的步骤，丢弃 index 及之后的
+      const truncatedCompleted = completed.slice(0, index);
+      startAnalysis(lastTaskRef.current, {
+        plan,
+        completed_steps: truncatedCompleted,
+      });
+    },
+    [session, running, completed, plan, startAnalysis],
+  );
 
-  const profile = (session?.profile || null) as (DatasetProfile & { rows?: number; columns?: number; load_warnings?: string[] }) | null;
+  const profile = (session?.profile || null) as
+    | (DatasetProfile & {
+        rows?: number;
+        columns?: number;
+        load_warnings?: string[];
+      })
+    | null;
   const columnInfo = profile?.column_info || [];
-  const missingCount = columnInfo.reduce((sum, item) => sum + ((item.missing as number) || 0), 0);
-  const rows = (profile?.rows as number | undefined) ?? (profile?.row_count as number | undefined) ?? 0;
-  const columns = (profile?.columns as number | undefined) ?? (profile?.column_count as number | undefined) ?? 0;
-  const missingRate = profile ? ((missingCount / Math.max(rows * columns, 1)) * 100).toFixed(1) : "0.0";
+  const missingCount = columnInfo.reduce(
+    (sum, item) => sum + ((item.missing as number) || 0),
+    0,
+  );
+  const rows =
+    (profile?.rows as number | undefined) ??
+    (profile?.row_count as number | undefined) ??
+    0;
+  const columns =
+    (profile?.columns as number | undefined) ??
+    (profile?.column_count as number | undefined) ??
+    0;
+  const missingRate = profile
+    ? ((missingCount / Math.max(rows * columns, 1)) * 100).toFixed(1)
+    : "0.0";
 
   if (!authReady) {
-    return <main className="auth-gate"><div className="auth-loading">正在连接数据工作台…</div></main>;
+    return (
+      <main className="auth-gate">
+        <div className="auth-loading">正在连接数据工作台…</div>
+      </main>
+    );
   }
   if (authRequired && !authenticated) {
-    return <AccessGate onAuthenticated={() => { setAuthenticated(true); window.location.reload(); }} />;
+    return (
+      <AccessGate
+        onAuthenticated={() => {
+          setAuthenticated(true);
+          window.location.reload();
+        }}
+      />
+    );
   }
 
   return (
@@ -619,14 +832,26 @@ function App() {
         onTouchEnd={onSidebarTouchEnd}
       >
         <div className="wordmark">
-          <strong><GradientText speed={8}>数据台</GradientText></strong>
+          <strong>
+            <GradientText speed={8}>数据台</GradientText>
+          </strong>
           <span>DATA DESK</span>
         </div>
 
         {/* ReactBits ClickSpark：点击时白色火花迸发，强化"新建"这一主操作的确认感；
             spark 层 pointer-events:none 不影响点击，reduced-motion 下自动隐藏 */}
-        <ClickSpark sparkColor="#ffffff" sparkCount={8} sparkLength={14} className="sidebar-spark">
-          <button type="button" className="new-analysis" onClick={() => fileInput.current?.click()} disabled={uploading}>
+        <ClickSpark
+          sparkColor="#ffffff"
+          sparkCount={8}
+          sparkLength={14}
+          className="sidebar-spark"
+        >
+          <button
+            type="button"
+            className="new-analysis"
+            onClick={() => fileInput.current?.click()}
+            disabled={uploading}
+          >
             <FilePlus2 size={17} />
             新建分析
           </button>
@@ -638,21 +863,48 @@ function App() {
               borderColor 透明避免与按钮自身边框叠加；.sidebar-glare 撑满宽度并
               放开 overflow，防止按钮 hover 的 translateX/阴影被裁切 */}
           {session ? (
-            <GlareHover className="sidebar-glare" borderRadius="var(--radius-md)" borderColor="transparent">
-              <button type="button" className="dataset-button" onClick={() => fileInput.current?.click()}>
+            <GlareHover
+              className="sidebar-glare"
+              borderRadius="var(--radius-md)"
+              borderColor="transparent"
+            >
+              <button
+                type="button"
+                className="dataset-button"
+                onClick={() => fileInput.current?.click()}
+              >
                 <FileSpreadsheet size={17} />
                 <span>
                   <strong>{session.filename}</strong>
-                  <small>{rows.toLocaleString()} 行 · {columns} 列</small>
+                  <small>
+                    {rows.toLocaleString()} 行 · {columns} 列
+                  </small>
                 </span>
                 <RefreshCw size={13} />
               </button>
             </GlareHover>
           ) : (
-            <GlareHover className="sidebar-glare" borderRadius="var(--radius-md)" borderColor="transparent">
-              <button type="button" className="upload-button" onClick={() => fileInput.current?.click()} disabled={uploading}>
-                {uploading ? <LoaderCircle className="spin" size={17} /> : <Upload size={17} />}
-                {uploading ? (uploadProgress != null ? `上传中 ${uploadProgress}%` : "正在读取") : "选择数据文件"}
+            <GlareHover
+              className="sidebar-glare"
+              borderRadius="var(--radius-md)"
+              borderColor="transparent"
+            >
+              <button
+                type="button"
+                className="upload-button"
+                onClick={() => fileInput.current?.click()}
+                disabled={uploading}
+              >
+                {uploading ? (
+                  <LoaderCircle className="spin" size={17} />
+                ) : (
+                  <Upload size={17} />
+                )}
+                {uploading
+                  ? uploadProgress != null
+                    ? `上传中 ${uploadProgress}%`
+                    : "正在读取"
+                  : "选择数据文件"}
               </button>
             </GlareHover>
           )}
@@ -663,11 +915,17 @@ function App() {
             accept=".csv,.tsv,.xlsx,.xls,.json,.jsonl,.parquet,.db,.sqlite,.sqlite3,.pdf,.txt,.docx"
             hidden
             onChange={(event) => {
-              const files = event.target.files ? Array.from(event.target.files) : [];
+              const files = event.target.files
+                ? Array.from(event.target.files)
+                : [];
               if (files.length === 0) return;
               uploadFile(files[0]);
               if (files.length > 1) {
-                window.dispatchEvent(new CustomEvent("empty-workspace:extra-files", { detail: { files: files.slice(1) } }));
+                window.dispatchEvent(
+                  new CustomEvent("empty-workspace:extra-files", {
+                    detail: { files: files.slice(1) },
+                  }),
+                );
               }
             }}
           />
@@ -696,29 +954,60 @@ function App() {
         <SettingsPanel />
 
         <div className="sidebar-foot">
-          <span><i className={settings?.langsmith_tracing ? "online" : ""} />LangSmith</span>
+          <span>
+            <i className={settings?.langsmith_tracing ? "online" : ""} />
+            LangSmith
+          </span>
           <small>{settings?.langsmith_tracing ? "追踪开启" : "本地模式"}</small>
         </div>
         <div className="storage-status">
-          <span><i className={settings?.storage_status === "ok" ? "online" : "warning"} />对象存储</span>
-          <small>{settings?.storage_status === "ok" ? "持久化正常" : "降级模式"}</small>
+          <span>
+            <i
+              className={
+                settings?.storage_status === "ok" ? "online" : "warning"
+              }
+            />
+            对象存储
+          </span>
+          <small>
+            {settings?.storage_status === "ok" ? "持久化正常" : "降级模式"}
+          </small>
         </div>
       </aside>
-      {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} aria-hidden="true" />}
+      {sidebarOpen && (
+        <div
+          className="sidebar-overlay"
+          onClick={() => setSidebarOpen(false)}
+          aria-hidden="true"
+        />
+      )}
 
       <main className={session ? "app-main" : "app-main is-empty"}>
         <header className="topbar">
-          <button type="button" className="sidebar-toggle" onClick={() => setSidebarOpen(true)} aria-label="打开侧边栏"><Menu size={18} /></button>
+          <button
+            type="button"
+            className="sidebar-toggle"
+            onClick={() => setSidebarOpen(true)}
+            aria-label="打开侧边栏"
+          >
+            <Menu size={18} />
+          </button>
           <div className="breadcrumb">
             <span>分析工作区</span>
             <ChevronRight size={13} />
             <strong>{session?.filename || "未命名分析"}</strong>
           </div>
           <div className="topbar-actions">
-            <div className="api-status"><i className={settings ? "online" : ""} />{settings ? "服务正常" : "连接中"}</div>
+            <div className="api-status">
+              <i className={settings ? "online" : ""} />
+              {settings ? "服务正常" : "连接中"}
+            </div>
             {/* 命令面板入口：点击等价于 Cmd+K，给不熟悉快捷键的用户一个可见入口。
                 与主题按钮统一用 GlareHover 悬停流光，顶栏三个图标按钮交互一致 */}
-            <GlareHover borderRadius="var(--radius-md)" borderColor="transparent">
+            <GlareHover
+              borderRadius="var(--radius-md)"
+              borderColor="transparent"
+            >
               <button
                 type="button"
                 className="icon-button topbar-action"
@@ -730,7 +1019,10 @@ function App() {
               </button>
             </GlareHover>
             {/* 快捷键帮助入口：与 ? 快捷键等价 */}
-            <GlareHover borderRadius="var(--radius-md)" borderColor="transparent">
+            <GlareHover
+              borderRadius="var(--radius-md)"
+              borderColor="transparent"
+            >
               <button
                 type="button"
                 className="icon-button topbar-action"
@@ -765,7 +1057,11 @@ function App() {
         {error && (
           <div className="error-banner" role="alert">
             <AlertTriangle size={16} />
-            <span className={error.length > 120 ? (errorExpanded ? "" : "is-clamped") : ""}>
+            <span
+              className={
+                error.length > 120 ? (errorExpanded ? "" : "is-clamped") : ""
+              }
+            >
               {error}
             </span>
             {error.length > 120 && (
@@ -785,7 +1081,8 @@ function App() {
                 onClick={resumeAnalysis}
                 title={`从已完成的 ${retryOffer.completed?.length || 0} 个步骤继续，跳过已完成部分`}
               >
-                <Play size={13} fill="currentColor" />继续分析
+                <Play size={13} fill="currentColor" />
+                继续分析
               </button>
             )}
             {retryOffer && !running && (
@@ -797,10 +1094,22 @@ function App() {
                 aria-busy={retryChecking}
               >
                 <RefreshCw size={13} className={retryChecking ? "spin" : ""} />
-                {retryChecking ? "检查中…" : retryOffer.reason === "ready" ? "重新运行" : "检查状态"}
+                {retryChecking
+                  ? "检查中…"
+                  : retryOffer.reason === "ready"
+                    ? "重新运行"
+                    : "检查状态"}
               </button>
             )}
-            <button type="button" title="关闭" aria-label="关闭错误提示" className="error-close" onClick={() => setError("")}><X size={15} /></button>
+            <button
+              type="button"
+              title="关闭"
+              aria-label="关闭错误提示"
+              className="error-close"
+              onClick={() => setError("")}
+            >
+              <X size={15} />
+            </button>
           </div>
         )}
 
@@ -822,7 +1131,8 @@ function App() {
                 onClick={resumeAnalysis}
                 title="从已完成的步骤继续，跳过已完成部分"
               >
-                <Play size={13} fill="currentColor" />继续分析
+                <Play size={13} fill="currentColor" />
+                继续分析
               </button>
             )}
             <button
@@ -833,14 +1143,32 @@ function App() {
               aria-busy={retryChecking}
             >
               <RefreshCw size={13} className={retryChecking ? "spin" : ""} />
-              {retryChecking ? "检查中…" : retryOffer.reason === "ready" ? "重新运行" : "检查状态"}
+              {retryChecking
+                ? "检查中…"
+                : retryOffer.reason === "ready"
+                  ? "重新运行"
+                  : "检查状态"}
             </button>
-            <button type="button" title="放弃恢复" aria-label="放弃恢复" className="error-close" onClick={() => setRetryOffer(null)}><X size={13} /></button>
+            <button
+              type="button"
+              title="放弃恢复"
+              aria-label="放弃恢复"
+              className="error-close"
+              onClick={() => setRetryOffer(null)}
+            >
+              <X size={13} />
+            </button>
           </div>
         )}
 
         {!session ? (
-          <EmptyWorkspace uploading={uploading} uploadProgress={uploadProgress} onUpload={() => fileInput.current?.click()} onFileDrop={uploadFile} onCancelUpload={cancelUpload} />
+          <EmptyWorkspace
+            uploading={uploading}
+            uploadProgress={uploadProgress}
+            onUpload={() => fileInput.current?.click()}
+            onFileDrop={uploadFile}
+            onCancelUpload={cancelUpload}
+          />
         ) : (
           <>
             <section className="dataset-header">
@@ -848,29 +1176,64 @@ function App() {
                 <span className="section-kicker">当前数据集</span>
                 <h1>{session.filename}</h1>
                 {profile?.load_warnings && profile.load_warnings.length > 0 && (
-                  <p className="dataset-warning"><AlertTriangle size={13} />{profile.load_warnings[0]}</p>
+                  <p className="dataset-warning">
+                    <AlertTriangle size={13} />
+                    {profile.load_warnings[0]}
+                  </p>
                 )}
               </div>
-              <button type="button" className="change-file" onClick={() => fileInput.current?.click()}>
-                <RefreshCw size={14} />替换数据
+              <button
+                type="button"
+                className="change-file"
+                onClick={() => fileInput.current?.click()}
+              >
+                <RefreshCw size={14} />
+                替换数据
               </button>
             </section>
 
             <section className="metrics-band">
               {/* 可点击指标：记录数 / 字段数 → 跳转数据 Tab；
                   分析产物 → 跳转产物 Tab。缺失率保持静态展示。 */}
-              <button type="button" className="metric metric-clickable" onClick={() => setActiveTab("data")} title="查看数据预览">
+              <button
+                type="button"
+                className="metric metric-clickable"
+                onClick={() => setActiveTab("data")}
+                title="查看数据预览"
+              >
                 <span>记录</span>
-                <strong><CountUp end={rows} duration={1100} /><small>行</small></strong>
+                <strong>
+                  <CountUp end={rows} duration={1100} />
+                  <small>行</small>
+                </strong>
               </button>
-              <button type="button" className="metric metric-clickable" onClick={() => setActiveTab("data")} title="查看数据预览">
+              <button
+                type="button"
+                className="metric metric-clickable"
+                onClick={() => setActiveTab("data")}
+                title="查看数据预览"
+              >
                 <span>字段</span>
-                <strong><CountUp end={columns} duration={900} /><small>列</small></strong>
+                <strong>
+                  <CountUp end={columns} duration={900} />
+                  <small>列</small>
+                </strong>
               </button>
               <Metric label="缺失率" value={missingRate} unit="%" />
-              <button type="button" className="metric metric-clickable" onClick={() => setActiveTab("artifacts")} title="查看分析产物">
+              <button
+                type="button"
+                className="metric metric-clickable"
+                onClick={() => setActiveTab("artifacts")}
+                title="查看分析产物"
+              >
                 <span>分析产物</span>
-                <strong><CountUp end={session.artifacts?.length || 0} duration={900} /><small>项</small></strong>
+                <strong>
+                  <CountUp
+                    end={session.artifacts?.length || 0}
+                    duration={900}
+                  />
+                  <small>项</small>
+                </strong>
               </button>
             </section>
 
@@ -889,17 +1252,30 @@ function App() {
               onStop={stopAnalysis}
               taskInputRef={taskInput}
             />
-            {!settings?.configured && <p className="composer-note">请先在左侧配置 DeepSeek API Key。</p>}
+            {!settings?.configured && (
+              <p className="composer-note">请先在左侧配置 DeepSeek API Key。</p>
+            )}
 
             {/* tabs 紧贴 task-box 下方：切换分析/数据/产物三个视图（提取至 WorkspaceTabs） */}
-            <WorkspaceTabs activeTab={activeTab} artifactCount={session.artifacts?.length || 0} onSelectTab={setActiveTab} />
+            <WorkspaceTabs
+              activeTab={activeTab}
+              artifactCount={session.artifacts?.length || 0}
+              onSelectTab={setActiveTab}
+            />
 
             {activeTab === "analysis" && (
-              <div className="analysis-grid tab-content-enter" key="tab-analysis" id="tabpanel-analysis" role="tabpanel" aria-labelledby="tab-analysis" tabIndex={0}>
+              <div
+                className="analysis-grid tab-content-enter"
+                key="tab-analysis"
+                id="tabpanel-analysis"
+                role="tabpanel"
+                aria-labelledby="tab-analysis"
+                tabIndex={0}
+              >
                 <section className="analysis-column">
                   {result ? (
                     <>
-                      <Suspense fallback={null}>
+                      <Suspense fallback={<LazyFallback />}>
                         <ReportView
                           result={result}
                           streaming={running && !!result}
@@ -938,10 +1314,18 @@ function App() {
                   planSource={planSource}
                   replanReason={replanReason}
                   completed={completed}
-                  running={running && session?.id === runningSessionIdRef.current}
+                  running={
+                    running && session?.id === runningSessionIdRef.current
+                  }
                   currentNodeTitle={currentNodeTitle}
-                  elapsedSeconds={session?.id === runningSessionIdRef.current ? elapsedSeconds : (session?.elapsed_seconds ?? null)}
-                  toolTrace={session?.id === runningSessionIdRef.current ? toolTrace : []}
+                  elapsedSeconds={
+                    session?.id === runningSessionIdRef.current
+                      ? elapsedSeconds
+                      : (session?.elapsed_seconds ?? null)
+                  }
+                  toolTrace={
+                    session?.id === runningSessionIdRef.current ? toolTrace : []
+                  }
                   awaitingApproval={awaitingApproval}
                   stepProgress={stepProgress}
                   onApprovePlan={approvePlan}
@@ -952,21 +1336,41 @@ function App() {
             )}
 
             {activeTab === "data" && (
-              <section className="data-view tab-content-enter" key="tab-data" id="tabpanel-data" role="tabpanel" aria-labelledby="tab-data" tabIndex={0}>
+              <section
+                className="data-view tab-content-enter"
+                key="tab-data"
+                id="tabpanel-data"
+                role="tabpanel"
+                aria-labelledby="tab-data"
+                tabIndex={0}
+              >
                 <div className="section-title">
-                  <div><span className="section-kicker">数据预览</span><h2>原始记录</h2></div>
+                  <div>
+                    <span className="section-kicker">数据预览</span>
+                    <h2>原始记录</h2>
+                  </div>
                   <small>前 100 行</small>
                 </div>
-                <Suspense fallback={null}>
+                <Suspense fallback={<LazyFallback />}>
                   <DataTable rows={session.preview} />
                 </Suspense>
               </section>
             )}
 
             {activeTab === "artifacts" && (
-              <section className="artifact-view tab-content-enter" key="tab-artifacts" id="tabpanel-artifacts" role="tabpanel" aria-labelledby="tab-artifacts" tabIndex={0}>
+              <section
+                className="artifact-view tab-content-enter"
+                key="tab-artifacts"
+                id="tabpanel-artifacts"
+                role="tabpanel"
+                aria-labelledby="tab-artifacts"
+                tabIndex={0}
+              >
                 <div className="section-title artifact-title">
-                  <div><span className="section-kicker">结果中心</span><h2>值得保留的结论</h2></div>
+                  <div>
+                    <span className="section-kicker">结果中心</span>
+                    <h2>值得保留的结论</h2>
+                  </div>
                   <small>中间文件已自动收起</small>
                 </div>
                 <ArtifactCenter
@@ -982,9 +1386,14 @@ function App() {
       </main>
       {/* 产物预览模态：图表预览/对比/全屏/PNG/内联编辑，已提取至 PreviewModal；
           previewItem 为空时组件内部直接返回 null */}
-      <PreviewModal preview={artifactPreview} theme={theme} setTheme={setTheme} onDownload={downloadArtifact} />
+      <PreviewModal
+        preview={artifactPreview}
+        theme={theme}
+        setTheme={setTheme}
+        onDownload={downloadArtifact}
+      />
       {commandOpen && (
-        <Suspense fallback={null}>
+        <Suspense fallback={<LazyFallback />}>
           <CommandPalette
             query={commandQuery}
             onQueryChange={setCommandQuery}
@@ -996,13 +1405,16 @@ function App() {
               setCommandQuery("");
               selectSession(item);
             }}
-            onClose={() => { setCommandOpen(false); setCommandQuery(""); }}
+            onClose={() => {
+              setCommandOpen(false);
+              setCommandQuery("");
+            }}
             theme={theme}
           />
         </Suspense>
       )}
       {helpOpen && (
-        <Suspense fallback={null}>
+        <Suspense fallback={<LazyFallback />}>
           <HelpPanel onClose={() => setHelpOpen(false)} />
         </Suspense>
       )}

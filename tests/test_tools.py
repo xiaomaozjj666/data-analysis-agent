@@ -62,7 +62,9 @@ def test_clean_data_updates_frame_and_exports(workspace):
 
 def test_clean_data_refuses_high_volume_row_drop_even_with_columns(tmp_path):
     source = tmp_path / "mostly_missing.csv"
-    pd.DataFrame({"keep": [1, 2, 3, 4], "notes": [None, None, None, "ok"]}).to_csv(source, index=False)
+    pd.DataFrame({"keep": [1, 2, 3, 4], "notes": [None, None, None, "ok"]}).to_csv(
+        source, index=False
+    )
     workspace = DataWorkspace(tmp_path / "runs", session_id="guard")
     workspace.load(source, copy_into_workspace=True)
 
@@ -168,7 +170,9 @@ def test_statistics_groupby_and_regression(workspace):
     assert "adjusted_r2" in regression
 
     correlation = json.loads(
-        tools["statistical_analysis"].invoke({"method": "correlation", "columns": ["sales", "profit"]})
+        tools["statistical_analysis"].invoke(
+            {"method": "correlation", "columns": ["sales", "profit"]}
+        )
     )
     assert correlation["sample_sizes"]["sales"]["profit"] == 5
     assert "p_values" in correlation
@@ -227,13 +231,19 @@ def test_visualizations_keep_extreme_values_but_default_to_readable_scale(tmp_pa
     assert bar_result["scale_mode"] == "robust"
     assert bar_result["extreme_points"] == 1
     assert bar.layout.yaxis.range[1] < 10_000
-    assert max(
-        float(value)
-        for trace in bar.data
-        if trace.type == "bar"
-        for value in plotly_values(trace.y)
-    ) == 2_990_001
-    assert [button.label for button in bar.layout.updatemenus[0].buttons] == ["主体尺度", "全量视图"]
+    assert (
+        max(
+            float(value)
+            for trace in bar.data
+            if trace.type == "bar"
+            for value in plotly_values(trace.y)
+        )
+        == 2_990_001
+    )
+    assert [button.label for button in bar.layout.updatemenus[0].buttons] == [
+        "主体尺度",
+        "全量视图",
+    ]
     assert all(button.method == "relayout" for button in bar.layout.updatemenus[0].buttons)
     assert any("极端值超出主体尺度" in annotation.text for annotation in bar.layout.annotations)
     html_text = Path(bar_result["html"]).read_text(encoding="utf-8")
@@ -257,12 +267,15 @@ def test_visualizations_keep_extreme_values_but_default_to_readable_scale(tmp_pa
     assert scatter.layout.yaxis.range[1] < 10_000
     # The real point remains in the base traces and is only outside the default viewport.
     # 趋势线注记 trace 除外：OLS 端点外推可略超极值点的 y（数学上正确）。
-    assert max(
-        float(value)
-        for trace in scatter.data
-        if not (isinstance(trace.name, str) and trace.name.startswith("趋势线"))
-        for value in plotly_values(trace.y)
-    ) == 2_990_001
+    assert (
+        max(
+            float(value)
+            for trace in scatter.data
+            if not (isinstance(trace.name, str) and trace.name.startswith("趋势线"))
+            for value in plotly_values(trace.y)
+        )
+        == 2_990_001
+    )
 
 
 def test_grouped_bars_explain_absent_category_combinations(tmp_path):
@@ -364,7 +377,13 @@ def test_visualization_rejects_id_and_constant_columns(tmp_path):
     for params in (
         {"chart_type": "bar", "x": "order_id", "aggregation": "count"},
         {"chart_type": "pie", "x": "用户编号", "values": "sales"},
-        {"chart_type": "bar", "x": "region", "y": "sales", "aggregation": "sum", "color": "order_id"},
+        {
+            "chart_type": "bar",
+            "x": "region",
+            "y": "sales",
+            "aggregation": "sum",
+            "color": "order_id",
+        },
     ):
         try:
             visualization.invoke(params)
@@ -403,7 +422,13 @@ def test_visualization_high_cardinality_requires_top_n(tmp_path):
     # 低基数业务列不受防护影响
     ok_result = json.loads(
         visualization.invoke(
-            {"chart_type": "bar", "x": "region", "y": "sales", "aggregation": "sum", "title": "区域销售"}
+            {
+                "chart_type": "bar",
+                "x": "region",
+                "y": "sales",
+                "aggregation": "sum",
+                "title": "区域销售",
+            }
         )
     )
     assert Path(ok_result["html"]).exists()
@@ -682,9 +707,7 @@ def test_run_python_code_timeout(workspace, monkeypatch):
 
     monkeypatch.setattr(_sandbox, "_SANDBOX_TIMEOUT_SECONDS", 0.5)
     try:
-        tool_map(workspace)["run_python_code"].invoke(
-            {"code": "x = 0\nwhile True:\n    x += 1"}
-        )
+        tool_map(workspace)["run_python_code"].invoke({"code": "x = 0\nwhile True:\n    x += 1"})
     except Exception as exc:
         assert "熔断" in str(exc)
     else:
@@ -802,7 +825,9 @@ class TestApplyMissingStrategy:
         df = pd.DataFrame({"a": [None, 2.0, None, 4.0, None]})
         _apply_missing_strategy(df, ["a"], "backward_fill")
         assert df["a"].iloc[:4].tolist() == [2.0, 2.0, 4.0, 4.0]
-        assert df["a"].iloc[4] is pd.NA or (isinstance(df["a"].iloc[4], float) and np.isnan(df["a"].iloc[4]))
+        assert df["a"].iloc[4] is pd.NA or (
+            isinstance(df["a"].iloc[4], float) and np.isnan(df["a"].iloc[4])
+        )
 
     def test_mean_fill(self):
         df = pd.DataFrame({"a": [10.0, 20.0, None, 30.0]})
@@ -927,24 +952,27 @@ class TestCompactNumber:
 class TestNiceNum:
     """nice number 算法：对齐到 1/2/5/10 的倍数。"""
 
-    @pytest.mark.parametrize("x,round_,expected", [
-        (0, True, 0.0),
-        (0, False, 0.0),
-        # round_=True 用 <= 判断：1.3<=1.5→1.0, 3.5<=7.0→5.0, 8.0>7.0→10.0
-        (1.3, True, 1.0),
-        (3.5, True, 5.0),
-        (8.0, True, 10.0),
-        # round_=False 用 < 判断：1.3<1.5→1.0, 3.5<7.0→5.0, 8.0>=7.0→10.0
-        (1.3, False, 1.0),
-        (3.5, False, 5.0),
-        (8.0, False, 10.0),
-        # 负数：取绝对值计算 nice_fraction 后乘以符号
-        (-7.0, True, -5.0),   # 7.0<=7.0→5.0
-        (-7.0, False, -10.0), # 7.0>=7.0→10.0
-        # 26: exp=1, fraction=2.6, 2.6<=3.0→2.0, result=2.0*10=20.0
-        (26, True, 20.0),
-        (26, False, 20.0),
-    ])
+    @pytest.mark.parametrize(
+        "x,round_,expected",
+        [
+            (0, True, 0.0),
+            (0, False, 0.0),
+            # round_=True 用 <= 判断：1.3<=1.5→1.0, 3.5<=7.0→5.0, 8.0>7.0→10.0
+            (1.3, True, 1.0),
+            (3.5, True, 5.0),
+            (8.0, True, 10.0),
+            # round_=False 用 < 判断：1.3<1.5→1.0, 3.5<7.0→5.0, 8.0>=7.0→10.0
+            (1.3, False, 1.0),
+            (3.5, False, 5.0),
+            (8.0, False, 10.0),
+            # 负数：取绝对值计算 nice_fraction 后乘以符号
+            (-7.0, True, -5.0),  # 7.0<=7.0→5.0
+            (-7.0, False, -10.0),  # 7.0>=7.0→10.0
+            # 26: exp=1, fraction=2.6, 2.6<=3.0→2.0, result=2.0*10=20.0
+            (26, True, 20.0),
+            (26, False, 20.0),
+        ],
+    )
     def test_nice_num_values(self, x, round_, expected):
         assert _nice_num(x, round_) == expected
 
@@ -989,20 +1017,23 @@ class TestNiceTicks:
 class TestNiceAxisFormatter:
     """大数值自适应单位格式化：亿/万/千分位/小数/科学计数。"""
 
-    @pytest.mark.parametrize("value,expected_contains", [
-        (0, "0"),
-        (150_000_000, "1.5亿"),
-        (35_000, "3.5万"),
-        (5_000, "5,000"),
-        (500, "500"),
-        (25.5, "25.5"),
-        (3.14, "3.14"),
-        (0.05, "0.05"),
-        (0.005, "0.005"),
-        (0.0001, "e-"),
-        (-1_000_000, "-100万"),
-        (-500, "-500"),
-    ])
+    @pytest.mark.parametrize(
+        "value,expected_contains",
+        [
+            (0, "0"),
+            (150_000_000, "1.5亿"),
+            (35_000, "3.5万"),
+            (5_000, "5,000"),
+            (500, "500"),
+            (25.5, "25.5"),
+            (3.14, "3.14"),
+            (0.05, "0.05"),
+            (0.005, "0.005"),
+            (0.0001, "e-"),
+            (-1_000_000, "-100万"),
+            (-500, "-500"),
+        ],
+    )
     def test_format_values(self, value, expected_contains):
         result = _nice_axis_formatter(value)
         assert expected_contains in result
@@ -1011,15 +1042,18 @@ class TestNiceAxisFormatter:
 class TestPlotlyAxisTickformat:
     """Plotly tickformat 生成：根据数值范围选择合适格式。"""
 
-    @pytest.mark.parametrize("value_range,expected", [
-        ((0, 0), ",.0f"),
-        ((0, 5000), ",.0f"),
-        ((0, 50), ",.1f"),
-        ((0, 5), ".2f"),
-        ((0, 0.05), ".3f"),
-        ((0, 0.005), ".4f"),
-        ((0, 0.0001), ".2e"),
-    ])
+    @pytest.mark.parametrize(
+        "value_range,expected",
+        [
+            ((0, 0), ",.0f"),
+            ((0, 5000), ",.0f"),
+            ((0, 50), ",.1f"),
+            ((0, 5), ".2f"),
+            ((0, 0.05), ".3f"),
+            ((0, 0.005), ".4f"),
+            ((0, 0.0001), ".2e"),
+        ],
+    )
     def test_tickformat_values(self, value_range, expected):
         assert _plotly_axis_tickformat(value_range) == expected
 
@@ -1071,16 +1105,7 @@ def test_run_python_code_memory_monitor_process_gone(workspace, monkeypatch):
     tool = tool_map(workspace)["run_python_code"]
     # 加长计算让 worker 存活到 monitor 首次采样（0.5s 间隔）
     result = json.loads(
-        tool.invoke(
-            {
-                "code": (
-                    "n = 0\n"
-                    "for i in range(30_000_000):\n"
-                    "    n += i\n"
-                    "result = n"
-                )
-            }
-        )
+        tool.invoke({"code": ("n = 0\nfor i in range(30_000_000):\n    n += i\nresult = n")})
     )
     assert result["status"] == "ok"
 
@@ -1088,7 +1113,6 @@ def test_run_python_code_memory_monitor_process_gone(workspace, monkeypatch):
 def test_run_python_code_memory_monitor_start_failure(workspace, monkeypatch):
     """psutil.Process() 抛错时监控线程启动失败应被吞掉（268-270 分支）。"""
     import psutil
-
 
     def boom(*args, **kwargs):
         raise RuntimeError("psutil unavailable")
@@ -1354,7 +1378,13 @@ def test_plotly_large_scatter_switches_to_webgl(tmp_path):
     # 折线同样切换
     result_line = json.loads(
         tools["create_visualization"].invoke(
-            {"chart_type": "line", "x": "sales", "y": "profit", "aggregation": "none", "title": "序列"}
+            {
+                "chart_type": "line",
+                "x": "sales",
+                "y": "profit",
+                "aggregation": "none",
+                "title": "序列",
+            }
         )
     )
     line_payload = json.loads(Path(result_line["plotly_json"]).read_text(encoding="utf-8"))
@@ -1570,7 +1600,10 @@ def test_looks_like_datetime_series_empty_and_errors(monkeypatch):
     # 空 sample → False（663）
     assert _looks_like_datetime_series(pd.Series([None, None], dtype="object")) is False
     # to_datetime 抛异常 → False（666-667）
-    monkeypatch.setattr("data_agent.tools.charts.pd.to_datetime", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(
+        "data_agent.tools._charts.validate.pd.to_datetime",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
     assert _looks_like_datetime_series(pd.Series(["2025-01-01", "2025-01-02"])) is False
 
 
@@ -1579,15 +1612,33 @@ def test_infer_chart_type_dimensions_two_and_no_columns():
 
     df = pd.DataFrame({"a": [1, 2], "b": [3, 4], "c": ["x", "y"]})
     result = _infer_chart_type(
-        df, x=None, y=None, color=None, z=None, size=None, values=None,
-        path_columns=None, dimensions=["a", "b"], aggregation="none", top_n=None,
+        df,
+        x=None,
+        y=None,
+        color=None,
+        z=None,
+        size=None,
+        values=None,
+        path_columns=None,
+        dimensions=["a", "b"],
+        aggregation="none",
+        top_n=None,
     )
     assert result == "scatter"  # 2 维 → scatter（720）
     df2 = pd.DataFrame({"t": ["x", "y"]})
     with pytest.raises(ValueError, match="auto 模式下无法确定"):
         _infer_chart_type(
-            df2, x=None, y=None, color=None, z=None, size=None, values=None,
-            path_columns=None, dimensions=None, aggregation="none", top_n=None,
+            df2,
+            x=None,
+            y=None,
+            color=None,
+            z=None,
+            size=None,
+            values=None,
+            path_columns=None,
+            dimensions=None,
+            aggregation="none",
+            top_n=None,
         )  # 无 x/y 无数值列 → raise（732）
 
 
@@ -1602,29 +1653,46 @@ def test_plotly_interpretation_branches():
 
     # box/violin 解读（841/954）
     box_text = _plotly_auto_interpret(
-        pd.DataFrame({"g": ["a", "b"], "v": [1.0, 2.0]}), chart_type="box", x="g", y="v",
-        color=None, aggregation="none", title="分组分布",
+        pd.DataFrame({"g": ["a", "b"], "v": [1.0, 2.0]}),
+        chart_type="box",
+        x="g",
+        y="v",
+        color=None,
+        aggregation="none",
+        title="分组分布",
     )
     assert "箱体" in box_text
 
     # trend color 分支 pivot 空（861）：color 列全 NaN → groupby 无有效组
     trend_text = _plotly_interpret_trend(
-        pd.DataFrame({"x": ["a", "b"], "y": [1.0, 2.0], "c": [None, None]}), chart_type="line",
-        x="x", y="y", color="c", aggregation="sum", title="趋势",
+        pd.DataFrame({"x": ["a", "b"], "y": [1.0, 2.0], "c": [None, None]}),
+        chart_type="line",
+        x="x",
+        y="y",
+        color="c",
+        aggregation="sum",
+        title="趋势",
     )
     assert "分组对比" in trend_text
 
     # 少于 3 个点 → 波动描述（901）
     short = _plotly_interpret_trend(
-        pd.DataFrame({"x": ["a", "b"], "y": [1.0, 2.0]}), chart_type="line",
-        x="x", y="y", color=None, aggregation="sum", title="短序列",
+        pd.DataFrame({"x": ["a", "b"], "y": [1.0, 2.0]}),
+        chart_type="line",
+        x="x",
+        y="y",
+        color=None,
+        aggregation="sum",
+        title="短序列",
     )
     assert "波动" in short
 
     # pie 无数值列（910）与总和 ≤ 0（914）
     pie_no_num = _plotly_interpret_pie(pd.DataFrame({"cat": ["a"]}), x="cat", title="占比")
     assert "占比" in pie_no_num
-    pie_zero = _plotly_interpret_pie(pd.DataFrame({"cat": ["a", "b"], "v": [0.0, -1.0]}), x="cat", title="占比")
+    pie_zero = _plotly_interpret_pie(
+        pd.DataFrame({"cat": ["a", "b"], "v": [0.0, -1.0]}), x="cat", title="占比"
+    )
     assert "占比" in pie_zero
 
     # scatter 非数值列（930）
@@ -1691,19 +1759,25 @@ def test_apply_outlier_scale_controls_scatter_variants():
 
     # 仅 y 有极端值 → x guard 为 None → x zeros 分支（381-382）
     fig2c = go.Figure()
-    fig2c.add_scatter(x=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], y=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 2000.0])
+    fig2c.add_scatter(
+        x=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], y=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 2000.0]
+    )
     result2c = _apply_outlier_scale_controls(fig2c, "scatter", "robust")
     assert result2c["scale_mode"] == "robust"
 
     # 无任何极端值 → 直接返回 full（363-364）
     fig2d = go.Figure()
-    fig2d.add_scatter(x=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], y=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
+    fig2d.add_scatter(
+        x=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], y=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+    )
     result2d = _apply_outlier_scale_controls(fig2d, "scatter", "robust")
     assert result2d["scale_mode"] == "full"
 
     # 极端点对应 x 为非数值（字符串）→ 详情走 str 分支（397-398）
     fig2e = go.Figure()
-    fig2e.add_scatter(x=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, "txt"], y=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 2000.0])
+    fig2e.add_scatter(
+        x=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, "txt"], y=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 2000.0]
+    )
     result2e = _apply_outlier_scale_controls(fig2e, "scatter", "robust")
     assert result2e["scale_mode"] == "robust"
 
@@ -1746,15 +1820,33 @@ def test_infer_chart_type_single_numeric_no_xy():
     # 1-2 个数值列且无 x/y → histogram（731）
     df = pd.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]})
     result = _infer_chart_type(
-        df, x=None, y=None, color=None, z=None, size=None, values=None,
-        path_columns=None, dimensions=None, aggregation="none", top_n=None,
+        df,
+        x=None,
+        y=None,
+        color=None,
+        z=None,
+        size=None,
+        values=None,
+        path_columns=None,
+        dimensions=None,
+        aggregation="none",
+        top_n=None,
     )
     assert result == "histogram"
     # 分类 x + 分类 y → bar（766 分类计数）
     df2 = pd.DataFrame({"cat": ["a", "b"], "kind": ["x", "y"]})
     result2 = _infer_chart_type(
-        df2, x="cat", y="kind", color=None, z=None, size=None, values=None,
-        path_columns=None, dimensions=None, aggregation="none", top_n=None,
+        df2,
+        x="cat",
+        y="kind",
+        color=None,
+        z=None,
+        size=None,
+        values=None,
+        path_columns=None,
+        dimensions=None,
+        aggregation="none",
+        top_n=None,
     )
     assert result2 == "bar"
 
@@ -1814,10 +1906,12 @@ class TestChartPalette:
         runs_dir = tmp_path / "runs"
         runs_dir.mkdir()
         workspace = DataWorkspace(runs_dir, session_id="api_palette")
-        workspace.dataframe = pd.DataFrame({
-            "category": ["A", "B", "C"],
-            "sales": [100, 200, 300],
-        })
+        workspace.dataframe = pd.DataFrame(
+            {
+                "category": ["A", "B", "C"],
+                "sales": [100, 200, 300],
+            }
+        )
         tools = build_tools(workspace)
         vis = next(t for t in tools if t.name == "create_visualization")
         vis.invoke({"chart_type": "bar", "x": "category", "y": "sales", "aggregation": "sum"})
@@ -1834,10 +1928,12 @@ def test_plotly_scatter_structure_annotations(tmp_path):
     rng = np.random.default_rng(11)
     n = 500
     sales_vals = rng.uniform(0, 5000, n)
-    df = pd.DataFrame({
-        "sales": sales_vals,
-        "profit": 100 + 0.2 * sales_vals + rng.normal(0, 50, n),
-    })
+    df = pd.DataFrame(
+        {
+            "sales": sales_vals,
+            "profit": 100 + 0.2 * sales_vals + rng.normal(0, 50, n),
+        }
+    )
     source = tmp_path / "scatter.csv"
     df.to_csv(source, index=False)
     ws = DataWorkspace(tmp_path / "runs", session_id="structure")
@@ -1850,7 +1946,9 @@ def test_plotly_scatter_structure_annotations(tmp_path):
     fig = json.loads(Path(result["plotly_json"]).read_text(encoding="utf-8"))
     names = [t.get("name") for t in fig["data"]]
     assert any(isinstance(nm, str) and nm.startswith("趋势线 r=") for nm in names)
-    trend_trace = next(t for t in fig["data"] if isinstance(t.get("name"), str) and t["name"].startswith("趋势线"))
+    trend_trace = next(
+        t for t in fig["data"] if isinstance(t.get("name"), str) and t["name"].startswith("趋势线")
+    )
     assert trend_trace["mode"] == "lines"
     # 强相关数据 r 应接近 1
     assert float(trend_trace["name"].split("r=")[1]) > 0.9
@@ -1869,11 +1967,13 @@ def test_auto_scatter_picks_low_cardinality_color(tmp_path):
     """
     rng = np.random.default_rng(13)
     n = 800
-    df = pd.DataFrame({
-        "region": rng.choice(["East", "West", "South"], n),
-        "sales": rng.uniform(0, 5000, n),
-        "profit": rng.uniform(0, 1500, n),
-    })
+    df = pd.DataFrame(
+        {
+            "region": rng.choice(["East", "West", "South"], n),
+            "sales": rng.uniform(0, 5000, n),
+            "profit": rng.uniform(0, 1500, n),
+        }
+    )
     source = tmp_path / "auto.csv"
     df.to_csv(source, index=False)
     ws = DataWorkspace(tmp_path / "runs", session_id="autocolor")
@@ -1974,7 +2074,7 @@ def test_huge_scatter_renders_density_grid_instead_of_point_cloud(tmp_path):
     assert "sampling" not in result
 
     html = Path(result["html"]).read_text(encoding="utf-8")
-    assert "密度面板" in html          # 解读文案解释颜色读什么
+    assert "密度面板" in html  # 解读文案解释颜色读什么
     # 色标标题/刻度（HTML 里 "/" 会被 JSON 编码成 \u002f，因此断言图对象）
     assert heatmaps[0]["colorbar"]["title"]["text"] == "记录数/格"
     assert heatmaps[0]["colorbar"]["ticktext"][0] == "1"
