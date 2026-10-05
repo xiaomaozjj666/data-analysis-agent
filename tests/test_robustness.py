@@ -242,6 +242,9 @@ def test_rate_limit_raises_429_when_bucket_exhausted(monkeypatch):
 def test_setup_middleware_warns_when_production_without_token(monkeypatch, caplog):
     from fastapi import FastAPI
 
+    # 先 import api 触发 .env 加载，再删除环境变量，
+    # 避免 setup_middleware 内部首次 import api 时从 .env 重新注入 APP_ACCESS_TOKEN。
+    from data_agent import api  # noqa: F401
     from data_agent.middleware import setup_middleware
 
     monkeypatch.delenv("APP_ACCESS_TOKEN", raising=False)
