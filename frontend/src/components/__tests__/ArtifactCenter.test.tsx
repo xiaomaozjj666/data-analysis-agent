@@ -1,5 +1,5 @@
 /// <reference types="vitest/globals" />
-import "@testing-library/jest-dom";
+import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 
 import ArtifactCenter from "../ArtifactCenter";

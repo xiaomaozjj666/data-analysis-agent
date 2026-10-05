@@ -32,9 +32,10 @@ from data_agent.serialization import json_text, to_jsonable
 from data_agent.workspace import SUPPORTED_EXTENSIONS, DataWorkspace
 
 try:  # pragma: no cover - 视安装环境而定
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer
+    from mcp.server.mcpserver.exceptions import ToolError
 except ImportError:  # pragma: no cover - 可选依赖
-    FastMCP = None  # type: ignore[assignment]
+    MCPServer = None  # type: ignore[assignment]
 
 _INSTALL_HINT = '未安装 MCP SDK。请先安装：pip install ".[mcp]"。'
 
@@ -65,12 +66,12 @@ def create_server(settings: AgentSettings | None = None) -> Any:
             数据面用不到模型）。
 
     Returns:
-        FastMCP 服务实例；调用 ``.run()`` 即以 stdio 启动。
+        MCPServer 服务实例；调用 ``.run()`` 即以 stdio 启动。
 
     Raises:
         ValueError: 未安装 MCP SDK。
     """
-    if FastMCP is None:
+    if MCPServer is None:
         raise ValueError(_INSTALL_HINT)
     resolved = settings or AgentSettings.from_env()
     registry = _registry(resolved)
@@ -80,11 +81,11 @@ def create_server(settings: AgentSettings | None = None) -> Any:
         try:
             return registry.get(session_id)
         except HTTPException as exc:  # 404：会话不存在或已被 TTL 清理
-            raise ValueError(
+            raise ToolError(
                 f"会话「{session_id}」不存在或已过期。可先用 list_sessions 查看可用会话。"
             ) from exc
 
-    mcp = FastMCP(
+    mcp = MCPServer(
         "data-analysis-agent",
         instructions=(
             "受控数据分析工作台的数据面。先 list_sessions 或 open_dataset 取得会话，"
@@ -116,16 +117,16 @@ def create_server(settings: AgentSettings | None = None) -> Any:
         """
         source = Path(path).expanduser().resolve()
         if not source.is_file():
-            raise ValueError(f"文件不存在：{source}")
+            raise ToolError(f"文件不存在：{source}")
         if source.suffix.lower() not in SUPPORTED_EXTENSIONS:
-            raise ValueError(
+            raise ToolError(
                 f"不支持的格式「{source.suffix}」。支持：{', '.join(sorted(SUPPORTED_EXTENSIONS))}"
             )
         size = source.stat().st_size
         if size == 0:
-            raise ValueError("文件为空。")
+            raise ToolError("文件为空。")
         if size > resolved.max_upload_bytes:
-            raise ValueError(
+            raise ToolError(
                 f"文件过大（{size / 1024 / 1024:.1f}MB，上限 "
                 f"{resolved.max_upload_bytes / 1024 / 1024:.0f}MB）。"
             )
@@ -134,13 +135,18 @@ def create_server(settings: AgentSettings | None = None) -> Any:
             workspace.load(source, copy_into_workspace=True)
             rows, columns = len(workspace.dataframe), len(workspace.dataframe.columns)
             if rows > resolved.max_rows or rows * columns > resolved.max_cells:
-                raise ValueError(
+                raise ToolError(
                     f"数据规模超过限制：最多 {resolved.max_rows:,} 行或 "
                     f"{resolved.max_cells:,} 个单元格。"
                 )
-        except Exception:
+        except ToolError:
             workspace.cleanup()
             raise
+        except Exception as exc:
+            # 2.x 下非 ToolError 的异常会丢掉原因（客户端只见泛化文案），
+            # 转写后重抛，把 workspace.load 的原始信息带给调用方。
+            workspace.cleanup()
+            raise ToolError(str(exc)) from exc
         session_id, _record = registry.create(workspace)
         return json_text(
             {
@@ -194,7 +200,7 @@ def create_server(settings: AgentSettings | None = None) -> Any:
         at 5000 rows; this tool never mutates any session's active dataset.
         """
         if source not in _VALID_SOURCES:
-            raise ValueError(
+            raise ToolError(
                 f"未知的 source「{source}」。可用值：{'、'.join(_VALID_SOURCES)}"
                 "（session=会话内 SQLite 文件，postgres=环境变量配置的连接）。"
             )
@@ -204,7 +210,7 @@ def create_server(settings: AgentSettings | None = None) -> Any:
             source_label = "postgres（环境变量配置的连接）"
         else:
             if not session_id.strip():
-                raise ValueError(
+                raise ToolError(
                     'source="session" 需要提供 session_id；可先用 list_sessions 或 open_dataset 取得。'
                 )
             record = _session(session_id)
@@ -212,7 +218,7 @@ def create_server(settings: AgentSettings | None = None) -> Any:
             database_path = sqlite_source.resolve_session_source(workspace.source_path, workspace.input_dir)
             if database_path is None:
                 available = ["postgres"] if postgres_source.is_configured() else []
-                raise ValueError(
+                raise ToolError(
                     "该会话没有 SQLite 数据源（source=\"session\" 需要 .db/.sqlite 文件）。"
                     + (
                         "环境变量已配置 PostgreSQL，请改用 source=\"postgres\"。"
@@ -262,6 +268,10 @@ def create_server(settings: AgentSettings | None = None) -> Any:
                     f"结果超过 {limit} 行已截断，请先用聚合或过滤收敛结果。"
                 )
             return json_text(payload)
+        except ValueError as exc:
+            # 驱动层的校验信息（只读白名单、表不存在、超时预算等）都是
+            # 面向用户的中文文案，原样透出给 MCP 客户端。
+            raise ToolError(str(exc)) from exc
         finally:
             connection.close()
 

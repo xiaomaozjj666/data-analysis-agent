@@ -1,7 +1,7 @@
 """MCP 数据面服务测试：用官方 SDK 的内存客户端做真实协议互操作。
 
 不走 mock：客户端经 MCP 协议（initialize / tools/list / tools/call）与服务器
-交互，验证的是外部 Agent 实际看到的行为。工具报错必须以 ``isError=True``
+交互，验证的是外部 Agent 实际看到的行为。工具报错必须以 ``is_error=True``
 返回并带中文原因，而不是把异常炸断协议流——这是 MCP 客户端的契约。
 """
 
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
 
@@ -36,16 +37,38 @@ def _server(tmp_path: Path):
 
 
 def _payload(result) -> dict:
-    """把成功调用结果解析成 dict；isError 时抛出带原因的断言错误。"""
+    """把成功调用结果解析成 dict；is_error 时抛出带原因的断言错误。"""
     text = result.content[0].text
-    if result.isError:
+    if result.is_error:
         raise AssertionError(f"工具调用意外失败：{text}")
     return json.loads(text)
 
 
 def _error_text(result) -> str:
-    assert result.isError is True, "预期工具报错（isError=True）"
+    assert result.is_error is True, "预期工具报错（is_error=True）"
     return result.content[0].text
+
+
+@asynccontextmanager
+async def _connected_session(server):
+    """SDK 2.x 移除了 create_connected_server_and_client_session，
+    按官方推荐用内存流自行组装等价的进程内连接。"""
+    from mcp.client.session import ClientSession
+    from mcp.shared.memory import create_client_server_memory_streams
+
+    lowlevel = server._lowlevel_server
+    async with create_client_server_memory_streams() as (client_streams, server_streams):
+        async with ClientSession(*client_streams) as session:
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(
+                    lowlevel.run,
+                    server_streams[0],
+                    server_streams[1],
+                    lowlevel.create_initialization_options(),
+                )
+                await session.initialize()
+                yield session
+                tg.cancel_scope.cancel()
 
 
 def _run(scenario) -> None:
@@ -93,9 +116,8 @@ def test_lists_expected_tools(tmp_path: Path):
     observed: set[str] = set()
 
     async def scenario():
-        from mcp.shared.memory import create_connected_server_and_client_session
 
-        async with create_connected_server_and_client_session(_server(tmp_path)) as session:
+        async with _connected_session(_server(tmp_path)) as session:
             result = await session.list_tools()
             observed.update(tool.name for tool in result.tools)
 
@@ -108,9 +130,8 @@ def test_open_dataset_then_inspect_roundtrip(tmp_path: Path):
     csv_path.write_text("region,sales\nEast,100\nWest,200\n", encoding="utf-8")
 
     async def scenario():
-        from mcp.shared.memory import create_connected_server_and_client_session
 
-        async with create_connected_server_and_client_session(_server(tmp_path)) as session:
+        async with _connected_session(_server(tmp_path)) as session:
             opened = _payload(await session.call_tool("open_dataset", {"path": str(csv_path)}))
             assert opened["rows"] == 2
             assert opened["columns"] == 2
@@ -130,9 +151,8 @@ def test_open_dataset_rejects_unsupported_extension(tmp_path: Path):
     bad.write_bytes(b"whatever")
 
     async def scenario():
-        from mcp.shared.memory import create_connected_server_and_client_session
 
-        async with create_connected_server_and_client_session(_server(tmp_path)) as session:
+        async with _connected_session(_server(tmp_path)) as session:
             result = await session.call_tool("open_dataset", {"path": str(bad)})
             assert "不支持的格式" in _error_text(result)
 
@@ -141,9 +161,8 @@ def test_open_dataset_rejects_unsupported_extension(tmp_path: Path):
 
 def test_open_dataset_rejects_missing_file(tmp_path: Path):
     async def scenario():
-        from mcp.shared.memory import create_connected_server_and_client_session
 
-        async with create_connected_server_and_client_session(_server(tmp_path)) as session:
+        async with _connected_session(_server(tmp_path)) as session:
             result = await session.call_tool("open_dataset", {"path": str(tmp_path / "nope.csv")})
             assert "文件不存在" in _error_text(result)
 
@@ -151,11 +170,10 @@ def test_open_dataset_rejects_missing_file(tmp_path: Path):
 
 
 def test_tool_errors_surface_as_iserror_not_protocol_break(tmp_path: Path):
-    """MCP 客户端的契约：报错以 isError 结果返回，协议流不中断。"""
+    """MCP 客户端的契约：报错以 is_error 结果返回，协议流不中断。"""
     async def scenario():
-        from mcp.shared.memory import create_connected_server_and_client_session
 
-        async with create_connected_server_and_client_session(_server(tmp_path)) as session:
+        async with _connected_session(_server(tmp_path)) as session:
             broken = await session.call_tool("inspect_data", {"session_id": "no_such_session"})
             assert "不存在" in _error_text(broken)
             # 出错后协议仍然可用：后续调用正常
@@ -170,9 +188,8 @@ def test_list_sessions_reports_created_sessions(tmp_path: Path):
     csv_path.write_text("region,sales\nEast,100\n", encoding="utf-8")
 
     async def scenario():
-        from mcp.shared.memory import create_connected_server_and_client_session
 
-        async with create_connected_server_and_client_session(_server(tmp_path)) as session:
+        async with _connected_session(_server(tmp_path)) as session:
             opened = _payload(await session.call_tool("open_dataset", {"path": str(csv_path)}))
             listing = _payload(await session.call_tool("list_sessions", {}))
             ids = {item["id"] for item in listing["sessions"]}
@@ -194,9 +211,8 @@ async def _open_sqlite_session(session, tmp_path: Path) -> dict:
 
 def test_sql_query_lists_schema_and_available_sources(tmp_path: Path):
     async def scenario():
-        from mcp.shared.memory import create_connected_server_and_client_session
 
-        async with create_connected_server_and_client_session(_server(tmp_path)) as session:
+        async with _connected_session(_server(tmp_path)) as session:
             opened = await _open_sqlite_session(session, tmp_path)
             payload = _payload(
                 await session.call_tool("sql_query", {"session_id": opened["session_id"], "sql": ""})
@@ -211,9 +227,8 @@ def test_sql_query_lists_schema_and_available_sources(tmp_path: Path):
 
 def test_sql_query_runs_select_and_join(tmp_path: Path):
     async def scenario():
-        from mcp.shared.memory import create_connected_server_and_client_session
 
-        async with create_connected_server_and_client_session(_server(tmp_path)) as session:
+        async with _connected_session(_server(tmp_path)) as session:
             opened = await _open_sqlite_session(session, tmp_path)
             payload = _payload(
                 await session.call_tool(
@@ -237,9 +252,8 @@ def test_sql_query_runs_select_and_join(tmp_path: Path):
 
 def test_sql_query_rejects_writing_statement(tmp_path: Path):
     async def scenario():
-        from mcp.shared.memory import create_connected_server_and_client_session
 
-        async with create_connected_server_and_client_session(_server(tmp_path)) as session:
+        async with _connected_session(_server(tmp_path)) as session:
             opened = await _open_sqlite_session(session, tmp_path)
             result = await session.call_tool(
                 "sql_query",
@@ -252,9 +266,8 @@ def test_sql_query_rejects_writing_statement(tmp_path: Path):
 
 def test_sql_query_requires_session_id_for_session_source(tmp_path: Path):
     async def scenario():
-        from mcp.shared.memory import create_connected_server_and_client_session
 
-        async with create_connected_server_and_client_session(_server(tmp_path)) as session:
+        async with _connected_session(_server(tmp_path)) as session:
             result = await session.call_tool("sql_query", {"sql": "SELECT 1"})
             assert "session_id" in _error_text(result)
 
@@ -263,9 +276,8 @@ def test_sql_query_requires_session_id_for_session_source(tmp_path: Path):
 
 def test_sql_query_rejects_unknown_source(tmp_path: Path):
     async def scenario():
-        from mcp.shared.memory import create_connected_server_and_client_session
 
-        async with create_connected_server_and_client_session(_server(tmp_path)) as session:
+        async with _connected_session(_server(tmp_path)) as session:
             result = await session.call_tool(
                 "sql_query", {"session_id": "whatever", "sql": "SELECT 1", "source": "oracle"}
             )
@@ -277,9 +289,8 @@ def test_sql_query_rejects_unknown_source(tmp_path: Path):
 def test_sql_query_never_mutates_the_session_dataset(tmp_path: Path):
     """数据面只读承诺：查询之后会话的活动数据集必须原封不动。"""
     async def scenario():
-        from mcp.shared.memory import create_connected_server_and_client_session
 
-        async with create_connected_server_and_client_session(_server(tmp_path)) as session:
+        async with _connected_session(_server(tmp_path)) as session:
             opened = await _open_sqlite_session(session, tmp_path)
             await session.call_tool(
                 "sql_query",
@@ -302,9 +313,8 @@ def test_sql_query_never_mutates_the_session_dataset(tmp_path: Path):
 @requires_pg
 def test_sql_query_postgres_discovery_and_select(tmp_path: Path):
     async def scenario():
-        from mcp.shared.memory import create_connected_server_and_client_session
 
-        async with create_connected_server_and_client_session(_server(tmp_path)) as session:
+        async with _connected_session(_server(tmp_path)) as session:
             discovery = _payload(
                 await session.call_tool("sql_query", {"source": "postgres", "sql": ""})
             )

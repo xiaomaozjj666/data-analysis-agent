@@ -1,0 +1,61 @@
+version: 2
+updates:
+  # Python 依赖（pyproject.toml）。dev extra 单独成组，避免测试工具淹没运行时依赖。
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "03:00"
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 5
+    groups:
+      python-runtime:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "pytest*"
+          - "ruff*"
+          - "reportlab*"
+          - "psycopg*"
+      python-dev:
+        patterns:
+          - "pytest*"
+          - "ruff*"
+          - "reportlab*"
+          - "psycopg*"
+    labels:
+      - dependencies
+
+  # 前端依赖（frontend/package.json，Vite + React）
+  - package-ecosystem: npm
+    directory: "/frontend"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "03:00"
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 3
+    groups:
+      npm-frontend:
+        patterns:
+          - "*"
+    labels:
+      - dependencies
+      - frontend
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "03:00"
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 2
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    labels:
+      - dependencies
+      - ci
