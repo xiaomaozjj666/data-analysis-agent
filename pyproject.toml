@@ -10,30 +10,30 @@ readme = "README.md"
 requires-python = ">=3.11,<3.14"
 dependencies = [
   "langchain==1.4.3",
-  "langgraph==1.2.12",
-  "langchain-openai==1.6.7",
+  "langgraph==1.2.14",
+  "langchain-openai==1.7.0",
   "langchain-deepseek==1.1.1",
   "pandas>=3.0.6,<3.1",
   "numpy>=2.4.6,<3",
   "scipy>=1.17.1,<2",
   "scikit-learn>=1.9.1,<2",
   "plotly>=7.1.0,<8",
-  "kaleido>=1.4.0,<2",
+  "kaleido>=1.5.0,<2",
   "openpyxl>=3.1.5,<4",
   "xlrd>=2.0.2,<3",
   "pyarrow>=25.0.1,<26",
   "pdfplumber>=0.11.10,<1",
   "python-docx>=1.2.0,<2",
   "psutil>=7.2.2,<8",
-  "fastapi>=0.142.2,<1",
+  "fastapi>=0.143.0,<1",
   "uvicorn[standard]>=0.54.0,<1",
   "python-multipart>=0.0.32,<1",
-  "langsmith>=0.14.2,<1",
+  "langsmith>=0.14.4,<1",
   "python-dotenv>=1.2.4,<2",
-  "typer>=0.27.2,<1",
+  "typer>=0.27.3,<1",
   "rich>=15.0.0,<16",
   "keyring==25.7.0",
-  "boto3>=1.43.106,<2",
+  "boto3>=1.43.109,<2",
 ]
 
 [project.optional-dependencies]
@@ -50,14 +50,14 @@ dev = [
   # 本地开发环境默认包含 Postgres 驱动，CI 的 Postgres service 依赖它跑集成测试。
   "psycopg[binary]>=3.3.6,<4",
   # 本地开发环境默认包含 MCP SDK，CI 依赖它做 MCP 服务的协议互操作测试。
-  "mcp>=2.2.0,<3",
+  "mcp>=2.3.0,<3",
 ]
 # 数据库查询工具的 Postgres 驱动：按需安装（pip install ".[postgres]"），
 # 未安装时 query_database 会给出可操作的中文提示而不是裸 ImportError。
 postgres = ["psycopg[binary]>=3.3.6,<4"]
 # MCP 数据面服务：按需安装（pip install ".[mcp]"）。
-mcp = ["mcp>=2.2.0,<3"]
-deploy = ["langgraph-cli[inmem]>=0.4.32,<1"]
+mcp = ["mcp>=2.3.0,<3"]
+deploy = ["langgraph-cli[inmem]>=0.4.33,<1"]
 
 [project.scripts]
 data-agent = "data_agent.cli:app"
