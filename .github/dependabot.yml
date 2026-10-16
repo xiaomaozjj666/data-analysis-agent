@@ -1,6 +1,9 @@
 version: 2
 updates:
   # Python 依赖（pyproject.toml）。dev extra 单独成组，避免测试工具淹没运行时依赖。
+  # numpy / scipy 的自动更新会在更新器生成新文件时抛 unknown_error（2026-09-28、
+  # 10-04、10-11 连续三周同一签名，同批其余依赖均正常）——dependabot 上游问题，
+  # 本地无从规避；保留继续尝试，这两包平时靠手动批量升级跟进。
   - package-ecosystem: pip
     directory: "/"
     schedule:
