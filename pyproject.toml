@@ -9,9 +9,9 @@ description = "A production-oriented data analysis agent powered by LangChain, L
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 dependencies = [
-  "langchain==1.4.5",
+  "langchain==1.4.6",
   "langgraph==1.2.15",
-  "langchain-openai==1.7.1",
+  "langchain-openai==1.7.2",
   "langchain-deepseek==1.1.1",
   "pandas>=3.0.6,<3.1",
   "numpy>=2.4.6,<3",
@@ -25,15 +25,15 @@ dependencies = [
   "pdfplumber>=0.11.10,<1",
   "python-docx>=1.2.0,<2",
   "psutil>=7.2.2,<8",
-  "fastapi>=0.143.0,<1",
+  "fastapi>=0.143.2,<1",
   "uvicorn[standard]>=0.54.0,<1",
   "python-multipart>=0.0.32,<1",
-  "langsmith>=0.14.8,<1",
+  "langsmith>=0.14.9,<1",
   "python-dotenv>=1.2.4,<2",
   "typer>=0.27.3,<1",
   "rich>=15.0.0,<16",
   "keyring==25.7.0",
-  "boto3>=1.43.112,<2",
+  "boto3>=1.43.114,<2",
 ]
 
 [project.optional-dependencies]
@@ -57,7 +57,7 @@ dev = [
 postgres = ["psycopg[binary]>=3.3.6,<4"]
 # MCP 数据面服务：按需安装（pip install ".[mcp]"）。
 mcp = ["mcp>=2.3.0,<3"]
-deploy = ["langgraph-cli[inmem]>=0.4.33,<1"]
+deploy = ["langgraph-cli[inmem]>=0.4.35,<1"]
 
 [project.scripts]
 data-agent = "data_agent.cli:app"
