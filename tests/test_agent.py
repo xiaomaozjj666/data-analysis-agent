@@ -5,6 +5,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
+import pytest
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
@@ -567,3 +568,15 @@ def test_history_messages_are_trimmed():
     assert trimmed.startswith("结论速览")
     assert "已截断" in trimmed
 
+
+
+def test_package_lazy_imports_cover_all_documented_names():
+    """包级 __getattr__ 的四个延迟导入分支都要可达（沙箱子进程依赖这一设计）。"""
+    import data_agent
+
+    assert data_agent.AgentSettings.__name__ == "AgentSettings"
+    assert data_agent.AnalysisResult.__name__ == "AnalysisResult"
+    assert data_agent.DataAnalysisAgent.__name__ == "DataAnalysisAgent"
+    assert data_agent.DataWorkspace.__name__ == "DataWorkspace"
+    with pytest.raises(AttributeError):
+        data_agent.definitely_not_a_name  # noqa: B018 —— 故意触发 AttributeError 分支

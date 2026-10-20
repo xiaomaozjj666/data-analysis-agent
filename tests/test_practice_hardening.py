@@ -288,3 +288,243 @@ def test_session_metrics_env_path_is_read_only(tmp_path, monkeypatch):
     assert loaded.json()["metrics"][0]["name"] == "GMV"
     blocked = client.put("/api/sessions/envm/metrics", json={"metrics": []})
     assert blocked.status_code == 409
+
+
+def test_mask_cell_handles_empty_and_short_sensitive_values():
+    """敏感列的空值与超短值分支：空值原样、两字符全遮、正常值首尾保留。"""
+    from data_agent.privacy import mask_cell
+
+    assert mask_cell("customer_phone", "") == ""
+    assert mask_cell("customer_phone", "ab") == "**"
+    assert mask_cell("customer_phone", "13800001111") == "1*********1"
+
+
+def test_report_export_embeds_chart_images_and_tolerates_missing(tmp_path):
+    """docx/pptx 的图表嵌页分支；缺失/非图片路径必须被跳过而不是报错。"""
+    from PIL import Image
+
+    chart = tmp_path / "trend.png"
+    Image.new("RGB", (8, 6), "red").save(chart)
+    markdown = "## 结论\n销售上行。\n\n## 注意事项\n样本量小。"
+    docx_bytes = build_docx("报告", markdown, [chart])
+    pptx_bytes = build_pptx("报告", markdown, [chart])
+    assert docx_bytes[:2] == b"PK"
+    assert pptx_bytes[:2] == b"PK"
+    # 缺失的图片路径走 continue 分支，产物仍然合法
+    assert build_docx("报告", markdown, [tmp_path / "missing.png"])[:2] == b"PK"
+    assert build_pptx("报告", markdown, [tmp_path / "missing.png"])[:2] == b"PK"
+
+
+def test_report_export_empty_markdown_falls_back():
+    """空 Markdown：docx 走"暂无内容"兜底，pptx 不生成结论页。"""
+    docx_bytes = build_docx("标题", "")
+    pptx_bytes = build_pptx("标题", "")
+    assert docx_bytes[:2] == b"PK"
+    assert pptx_bytes[:2] == b"PK"
+
+
+def test_connect_from_frame_normalises_exotic_dtypes():
+    """datetime/boolean/Int64 列必须先归一化才能写入 SQLite（dataframe_source）。"""
+    from data_agent.dataframe_source import ACTIVE_TABLE, connect_from_frame
+
+    frame = pd.DataFrame(
+        {
+            "ts": pd.to_datetime(["2024-01-01", "2024-01-02"]),
+            "flag": pd.array([True, False], dtype="boolean"),
+            "nullable_int": pd.array([1, None], dtype="Int64"),
+        }
+    )
+    connection = connect_from_frame(frame)
+    try:
+        rows = connection.execute(f"SELECT * FROM {ACTIVE_TABLE}").fetchall()
+        assert len(rows) == 2
+    finally:
+        connection.close()
+
+
+def test_recipe_replay_covers_ok_skip_and_error_paths(tmp_path):
+    """配方重放的三条路径：正常执行、未知工具跳过、工具报错不中断。"""
+    from data_agent.recipe import data_fingerprint, load_recipe, replay_report_markdown
+
+    workspace = DataWorkspace(tmp_path / "runs", session_id="recipe_replay")
+    source = workspace.save_upload("sales.csv", b"region,sales\nEast,100\n")
+    workspace.load(source)
+    recipe = build_recipe(
+        task="配方重放",
+        plan=[],
+        completed_steps=[
+            {
+                "id": 1,
+                "title": "正常步骤",
+                "status": "completed",
+                "tool_calls": [{"name": "inspect_data", "args": {}}],
+            },
+            {
+                "id": 2,
+                "title": "未知工具",
+                "status": "completed",
+                "tool_calls": [{"name": "no_such_tool", "args": {}}],
+            },
+            {
+                "id": 3,
+                "title": "报错工具",
+                "status": "completed",
+                "tool_calls": [{"name": "explode", "args": {}}],
+            },
+        ],
+        fingerprint=data_fingerprint(workspace),
+    )
+    save_recipe(workspace, recipe)
+    loaded = load_recipe(workspace)
+    assert loaded is not None and loaded["task"] == "配方重放"
+
+    class ExplodingTool:
+        name = "explode"
+
+        def invoke(self, args):
+            raise ValueError("炸了")
+
+    tools = [ExplodingTool()] + list(build_tools(workspace))
+    replay = replay_recipe(workspace, loaded, tools)
+    statuses = {call["name"]: call["status"] for call in replay["calls"]}
+    assert statuses["inspect_data"] == "ok"
+    assert statuses["no_such_tool"] == "skipped"
+    assert statuses["explode"] == "error"
+    error_call = next(call for call in replay["calls"] if call["name"] == "explode")
+    assert "炸了" in error_call["detail"]
+    assert replay["skipped"] == 1
+
+    report = replay_report_markdown(replay)
+    assert "已按上次分析配方重跑" in report
+    assert "数据规模：" in report
+    assert "不会重新规划" in report
+
+
+def test_extract_facts_covers_payload_variants():
+    """facts 抽取的字段/means/coefficients/告警与各类型归一化分支。"""
+    import math
+
+    trace = [
+        {
+            "type": "tool_result",
+            "name": "statistical_analysis",
+            "detail": {
+                "p_value": 0.03,
+                "sample_size": 120,
+                "method": "独立样本 t 检验",
+                "means": {"sales": 12.5, "cost": 3},
+                "warning": "样本量偏小",
+            },
+        },
+        {
+            "type": "tool_result",
+            "name": "regression",
+            "detail": {"coefficients": {"ads": 0.8, "season": 0.2, "noise": 0.0}},
+        },
+        {
+            "type": "tool_result",
+            "name": "clean_data",
+            "detail": json.dumps({"rows": 99, "truncated": False}),
+        },
+        {
+            "type": "tool_result",
+            "name": "numbers",
+            "detail": {
+                "statistic": "1,234",
+                "mae": "12.5",
+                "eta_squared": "inf",
+                "mae": "12.5",
+                "eta_squared": "inf",
+                "mean_difference": float("nan"),
+                "effect_size": None,
+                "r2": True,
+                "adjusted_r2": math.inf,
+                "rmse": "not-a-number",
+            },
+        },
+        {"type": "tool_result", "name": "empty_detail", "detail": ""},
+        {"type": "tool_result", "name": "garbage", "detail": "不是 JSON 也不是字面量"},
+        {"type": "not_tool_result", "name": "skipped_by_type", "detail": {"p_value": 1}},
+    ]
+    completed = [{"title": "清洗与检验", "status": "completed"}]
+    facts = extract_facts(trace, completed)
+    by_field: dict[str, list[str]] = {}
+    for item in facts:
+        by_field.setdefault(item["field"], []).append(item["value"])
+
+    assert by_field["p_value"] == ["0.03"]
+    assert by_field["sample_size"] == ["120"]
+    assert by_field["method"] == ["独立样本 t 检验"]
+    assert by_field["statistic"] == ["1234"]
+    assert by_field["mean:sales"] == ["12.5"]
+    assert by_field["coef:ads"] == ["0.8"]
+    assert by_field["warning"] == ["样本量偏小"]
+    assert by_field["status"] == ["completed"]
+    assert by_field["rows"] == ["99"]
+    # NaN/None 的 rendered 为空或 "nan" 被过滤；bool/inf/不可解析字符串按原样渲染
+    assert "mean_difference" not in by_field
+    assert "effect_size" not in by_field
+    assert by_field["r2"] == ["True"]
+    assert by_field["adjusted_r2"] == ["inf"]
+    assert by_field["rmse"] == ["not-a-number"]
+    assert by_field["mae"] == ["12.5"]
+    assert by_field["eta_squared"] == ["inf"]
+    assert by_field["mae"] == ["12.5"]
+    assert by_field["eta_squared"] == ["inf"]
+    # 空字符串与不可解析的 detail 不产生事实
+    assert not any(item["source"] in {"empty_detail", "garbage"} for item in facts)
+    # 同源同字段同值去重：重复的 p_value 只出现一次
+    duplicate = extract_facts(
+        [
+            {"type": "tool_result", "name": "statistical_analysis", "detail": {"p_value": 0.03}},
+            {"type": "tool_result", "name": "statistical_analysis", "detail": {"p_value": 0.03}},
+        ],
+        None,
+    )
+    assert len([item for item in duplicate if item["field"] == "p_value"]) == 1
+
+
+def test_validate_select_semicolon_guard_and_quoted_semicolons():
+    """多语句拒绝；字符串字面量内的分号（含反斜杠转义）不误伤。"""
+    with pytest.raises(ValueError, match="单条"):
+        validate_select("SELECT 1; SELECT 2")
+    with pytest.raises(ValueError, match="单条"):
+        validate_select("SELECT 'a\\'b'; DROP TABLE t")
+    assert validate_select("SELECT ';' AS s") == "SELECT ';' AS s"
+    assert validate_select('SELECT "a;b" AS x') == 'SELECT "a;b" AS x'
+    assert validate_select("SELECT 'a\\'b' AS x") == "SELECT 'a\\'b' AS x"
+
+
+def test_to_json_safe_renders_custom_driver_types():
+    """datetime/Decimal 等驱动自定义类型统一转字符串，避免 json_text 抛错。"""
+    from datetime import datetime
+    from decimal import Decimal
+
+    from data_agent.sql_guard import to_json_safe
+
+    assert to_json_safe(datetime(2024, 1, 1, 12, 0)) == "2024-01-01 12:00:00"
+    assert to_json_safe(Decimal("1.5")) == "1.5"
+    assert to_json_safe(b"\x00\x01") == "<blob:2 bytes>"
+
+
+def test_validate_select_semicolon_guard_and_quoted_semicolons():
+    """多语句拒绝；字符串字面量内的分号（含反斜杠转义）不误伤。"""
+    with pytest.raises(ValueError, match="单条"):
+        validate_select("SELECT 1; SELECT 2")
+    with pytest.raises(ValueError, match="单条"):
+        validate_select("SELECT 'a\\\'b'; DROP TABLE t")
+    assert validate_select("SELECT ';' AS s") == "SELECT ';' AS s"
+    assert validate_select('SELECT "a;b" AS x') == 'SELECT "a;b" AS x'
+    assert validate_select("SELECT 'a\\\'b' AS x") == "SELECT 'a\\\'b' AS x"
+
+
+def test_to_json_safe_renders_custom_driver_types():
+    """datetime/Decimal 等驱动自定义类型统一转字符串，避免 json_text 抛错。"""
+    from datetime import datetime
+    from decimal import Decimal
+
+    from data_agent.sql_guard import to_json_safe
+
+    assert to_json_safe(datetime(2024, 1, 1, 12, 0)) == "2024-01-01 12:00:00"
+    assert to_json_safe(Decimal("1.5")) == "1.5"
+    assert to_json_safe(b"\x00\x01") == "<blob:2 bytes>"

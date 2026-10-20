@@ -329,3 +329,97 @@ def test_sql_query_postgres_discovery_and_select(tmp_path: Path):
             assert selected["rows"] == [[1]]
 
     _run(scenario)
+
+
+def test_create_server_requires_sdk(monkeypatch):
+    from data_agent import mcp_server
+
+    monkeypatch.setattr(mcp_server, "MCPServer", None)
+    with pytest.raises(ValueError, match="MCP SDK"):
+        create_server()
+
+
+def test_open_dataset_rejects_empty_file(tmp_path):
+    empty = tmp_path / "empty.csv"
+    empty.write_text("", encoding="utf-8")
+
+    async def scenario():
+        async with _connected_session(_server(tmp_path)) as session:
+            result = await session.call_tool("open_dataset", {"path": str(empty)})
+            assert "文件为空" in _error_text(result)
+
+    _run(scenario)
+
+
+def test_open_dataset_rejects_oversized_file(tmp_path):
+    settings = AgentSettings(
+        api_key="not-used",
+        runs_dir=tmp_path / "runs",
+        max_upload_bytes=64,
+        max_rows=1000,
+        max_cells=100_000,
+        max_active_sessions=10,
+        session_ttl_hours=24.0,
+    )
+    big = tmp_path / "big.csv"
+    big.write_text("region,sales\n" + "East,100\n" * 20, encoding="utf-8")
+
+    async def scenario():
+        async with _connected_session(create_server(settings)) as session:
+            result = await session.call_tool("open_dataset", {"path": str(big)})
+            assert "过大" in _error_text(result)
+
+    _run(scenario)
+
+
+def test_open_dataset_translates_load_failure(tmp_path):
+    bad = tmp_path / "broken.parquet"
+    bad.write_bytes(b"PAR1 definitely not a parquet body")
+
+    async def scenario():
+        async with _connected_session(_server(tmp_path)) as session:
+            result = await session.call_tool("open_dataset", {"path": str(bad)})
+            assert "文件格式无法解析" in _error_text(result)
+
+    _run(scenario)
+
+
+def test_sql_query_requires_session_id_for_session_source(tmp_path):
+    async def scenario():
+        async with _connected_session(_server(tmp_path)) as session:
+            result = await session.call_tool("sql_query", {"sql": "SELECT 1"})
+            assert "session_id" in _error_text(result)
+
+    _run(scenario)
+
+
+def test_sql_query_discovery_lists_postgres_when_configured(monkeypatch, tmp_path):
+    monkeypatch.setattr(postgres_source, "is_configured", lambda: True)
+
+    async def scenario():
+        async with _connected_session(_server(tmp_path)) as session:
+            opened = await _open_sqlite_session(session, tmp_path)
+            payload = _payload(
+                await session.call_tool(
+                    "sql_query", {"session_id": opened["session_id"], "sql": ""}
+                )
+            )
+            assert set(payload["available_sources"]) >= {"session", "postgres"}
+
+    _run(scenario)
+
+
+def test_sql_query_reports_truncation_note(tmp_path):
+    async def scenario():
+        async with _connected_session(_server(tmp_path)) as session:
+            opened = await _open_sqlite_session(session, tmp_path)
+            payload = _payload(
+                await session.call_tool(
+                    "sql_query",
+                    {"session_id": opened["session_id"], "sql": "SELECT * FROM orders", "limit": 1},
+                )
+            )
+            assert payload["truncated"] is True
+            assert "已截断" in payload["note"]
+
+    _run(scenario)
