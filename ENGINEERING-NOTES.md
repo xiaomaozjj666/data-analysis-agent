@@ -230,3 +230,16 @@ EnvHttpProxyAgent 会维持与代理的空闲连接——vitest 收尾终止 for
 **解法**：`env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy npm test`。
 CI 无这些变量不受影响。同族坑：pip 在此沙箱里做**卸载/升级**也会触发批量删除守卫
 （SAFE_DELETE_BULK_CONFIRM → SystemExit），venv 级依赖变更一律重建环境 + 后台安装。
+
+## 覆盖率门槛在哪、怎么过（2026-10 实战）
+
+- **门槛不在 pyproject**：`--cov-fail-under=97` 写在 ci.yml 的 pytest 命令行
+  （`--cov=data_agent --cov-report=term-missing`）。本地裸跑 `-n 4` 不触发，
+  "本地全绿、CI 挂在 Coverage failure: total of 96"就是这种——改 src 后用 CI 同款
+  命令本地验证一遍再推。
+- **缺口定位**：term-missing 报告逐文件给出缺失行号，对照写定向测试。迁移批次
+  （一次 +800 行新模块）曾把总覆盖率稀释 1 个点，模块落地时同步补测试才是正解。
+- **子进程不进覆盖率**：`python -m data_agent.sandbox_worker` 的集成测试验证的是
+  进程边界，模块本体要在测试进程内直调 `main()` 才计入覆盖。两种测试都留。
+- **测试文件的追加要用精确 Edit**：heredoc `cat >>` 一旦重复执行就是 F811 重复
+  定义 + 字典重复键，ruff 报错只在 CI lint 步骤出现，本地截断输出容易漏看。
