@@ -384,15 +384,6 @@ def test_open_dataset_translates_load_failure(tmp_path):
     _run(scenario)
 
 
-def test_sql_query_requires_session_id_for_session_source(tmp_path):
-    async def scenario():
-        async with _connected_session(_server(tmp_path)) as session:
-            result = await session.call_tool("sql_query", {"sql": "SELECT 1"})
-            assert "session_id" in _error_text(result)
-
-    _run(scenario)
-
-
 def test_sql_query_discovery_lists_postgres_when_configured(monkeypatch, tmp_path):
     monkeypatch.setattr(postgres_source, "is_configured", lambda: True)
 

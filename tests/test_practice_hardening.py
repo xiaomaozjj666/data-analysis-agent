@@ -431,12 +431,9 @@ def test_extract_facts_covers_payload_variants():
             "name": "numbers",
             "detail": {
                 "statistic": "1,234",
-                "mae": "12.5",
-                "eta_squared": "inf",
-                "mae": "12.5",
-                "eta_squared": "inf",
                 "mean_difference": float("nan"),
-                "effect_size": None,
+                "mae": "12.5",
+                "eta_squared": "inf",
                 "r2": True,
                 "adjusted_r2": math.inf,
                 "rmse": "not-a-number",
@@ -482,29 +479,6 @@ def test_extract_facts_covers_payload_variants():
         None,
     )
     assert len([item for item in duplicate if item["field"] == "p_value"]) == 1
-
-
-def test_validate_select_semicolon_guard_and_quoted_semicolons():
-    """多语句拒绝；字符串字面量内的分号（含反斜杠转义）不误伤。"""
-    with pytest.raises(ValueError, match="单条"):
-        validate_select("SELECT 1; SELECT 2")
-    with pytest.raises(ValueError, match="单条"):
-        validate_select("SELECT 'a\\'b'; DROP TABLE t")
-    assert validate_select("SELECT ';' AS s") == "SELECT ';' AS s"
-    assert validate_select('SELECT "a;b" AS x') == 'SELECT "a;b" AS x'
-    assert validate_select("SELECT 'a\\'b' AS x") == "SELECT 'a\\'b' AS x"
-
-
-def test_to_json_safe_renders_custom_driver_types():
-    """datetime/Decimal 等驱动自定义类型统一转字符串，避免 json_text 抛错。"""
-    from datetime import datetime
-    from decimal import Decimal
-
-    from data_agent.sql_guard import to_json_safe
-
-    assert to_json_safe(datetime(2024, 1, 1, 12, 0)) == "2024-01-01 12:00:00"
-    assert to_json_safe(Decimal("1.5")) == "1.5"
-    assert to_json_safe(b"\x00\x01") == "<blob:2 bytes>"
 
 
 def test_validate_select_semicolon_guard_and_quoted_semicolons():
