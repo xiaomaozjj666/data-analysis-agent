@@ -193,3 +193,40 @@
 - **测试走官方 SDK 的内存客户端**（`mcp.shared.memory.create_connected_server_and_client_session`），经真实协议（initialize/tools/list/tools/call）交互，任何io 运行时用 `anyio.run(scenario)` 包住即可，不需要 pytest-asyncio 插件。**必须断言错误契约**：工具抛异常要以 `isError=True` + 中文原因返回、且协议流不中断（出错后还能继续 list_tools）——这是 MCP 客户端的实际依赖行为。
 - MCP SDK 也是可选依赖（`extras mcp`，dev 默认包含）；未安装时 `create_server` 给中文提示。
 - **边界**：stdio 传输由本地受信客户端拉起，天然无网络暴露面；不要把它挂到网上——远程场景走带令牌与限流的 HTTP API。
+
+## 2026-10 批次：沙箱进程隔离 / 隐私 / 指标可执行化 / 配方重跑 / 报告导出
+
+各模块的设计动机见其 docstring（`sandbox_runtime`/`sandbox_worker`/`privacy`/`facts`/
+`recipe`/`report_export`/`dataframe_source`/`tools/_stats`），这里只记跨模块的要点：
+
+- **沙箱从线程进程化**：用户代码经 `python -m data_agent.sandbox_worker` 在子进程执行，
+  `sandbox_runtime.py` 刻意不依赖 langchain/FastAPI，否则子进程启动会把整个 Web 栈拉起来。
+- **SQL 墙钟预算可配置**：`DATA_AGENT_SQL_TIMEOUT_SECONDS`（1-120，默认 30），取代硬编码
+  5s——5s 会掐死合法的百行级 JOIN。SQLite 走 progress handler、Postgres 走
+  `statement_timeout`，两处都读 `sql_guard.query_time_budget_ms()`（导入期求值，进程内不变）。
+- **SQLite 默认表 10 万行上限**：超大表不再整表进内存，提示改用 `query_database`
+  聚合后 `adopt`；CSV 会话由 `dataframe_source.py` 提供同名只读表 `data`。
+- **样例脱敏只动送出的副本**（privacy.py），活动数据集一字不改——别把它扩展成
+  "落库前清洗"，那是 clean_data 的职责。
+- **指标表达式是 AST 白名单**（四则/幂/模 + 列名，拒绝属性/调用/下标），
+  不是 `eval`；放宽白名单前先想清楚它会被用户提交的 metrics.json 注入。
+
+## 取消告警分支的测试为什么不能走 HTTP 断开（平台差异实证）
+
+`routers/analysis.py` 的取消分支（`_handle_stream_cancel`）曾经通过"客户端断开流"来测，
+结果 Windows/Proactor 本地 6/6 失败、CI/Linux 间歇绿：**传输层把取消注入协程的方式
+因平台而异**——断开若落在 `yield "started"`（worker 尚未 start）处以 GeneratorExit 收尾，
+`except CancelledError` 分支根本不进入。修法：把该分支从闭包提取为模块级
+`_handle_stream_cancel(record, session_id, worker, loop)`，测试直接以真实 record +
+阻塞在 `Event` 上的伪 worker 线程驱动，完全确定。教训：**依赖传输层断开时序的测试
+不可写**，把分支提为可显式传参的函数才是解。附带修正：告警消息里的窗口秒数改为
+插值（原硬编码 "5s"，而窗口是可配置的——消息在说谎）。
+
+## 本机沙箱：代理环境变量会卡死 vitest worker（前端测试"无输出/超时"真因）
+
+WorkBuddy 的 shell 注入 `HTTP_PROXY/HTTPS_PROXY` + `NODE_USE_ENV_PROXY=1`，undici 的
+EnvHttpProxyAgent 会维持与代理的空闲连接——vitest 收尾终止 forks worker 时等不到退出，
+全部报 `Timeout terminating forks worker`，测试汇总丢失（显示 no tests / N errors）。
+**解法**：`env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy npm test`。
+CI 无这些变量不受影响。同族坑：pip 在此沙箱里做**卸载/升级**也会触发批量删除守卫
+（SAFE_DELETE_BULK_CONFIRM → SystemExit），venv 级依赖变更一律重建环境 + 后台安装。

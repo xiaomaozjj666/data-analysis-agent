@@ -3252,57 +3252,53 @@ def test_chat_stream_first_frame_disconnect_swallows_release_error(tmp_path, mon
     assert calls["n"] >= 1, "请求未执行（chat worker.start 未被调用）"
     assert BrokenLock.released["n"] >= 1, "兜底路径未执行 run_lock.release"
 
-def test_analyze_stream_cancel_warns_when_worker_still_alive(tmp_path, monkeypatch, caplog):
-    """取消后 worker 5s 内未退出应记录 warning（376-380 分支）。"""
-    import time
+def test_stream_cancel_handler_warns_when_worker_still_alive(tmp_path, monkeypatch, caplog):
+    """取消处理器在 worker 未于等待窗口内退出时必须记录 warning。
+
+    曾经通过 HTTP 流的客户端断开来驱动这条分支，但传输层把取消注入协程的
+    方式因平台而异：Windows/Proactor 下以 GeneratorExit 在 yield 处收尾，
+    except CancelledError 分支根本不会进入（本地 6/6 失败、caplog 为空）；
+    CI/Linux 下才走 CancelledError。环境依赖性的忽绿忽红不可接受，因此
+    改为直接以真实 record + 阻塞的 worker 线程驱动 _handle_stream_cancel，
+    完全确定。
+    """
+    import threading
 
     _isolate_runtime(tmp_path, monkeypatch)
-    client = TestClient(api.app)
-    uploaded = _upload_csv_session(client, content=b"region,sales\nEast,100\n")
+    workspace = DataWorkspace(tmp_path / "runs", session_id="cancel_probe")
+    source = workspace.save_upload("sales.csv", b"region,sales\nEast,100\n")
+    workspace.load(source)
+    session_id, record = api.registry.create(workspace)
+    # 进入 running 态：取消处理器应做 running → cancelling 的 CAS 转换并持久化
+    record._analysis_status = "running"
 
-    monkeypatch.setattr(
-        api, "_effective_settings", lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs")
-    )
+    release = threading.Event()
+    worker = threading.Thread(target=release.wait, args=(30,), name="probe-worker", daemon=True)
 
-    class VerySlowAgent:
-        def __init__(self, workspace, settings, cancel_event=None, progress_callback=None, event_callback=None):
-            self.workspace = workspace
-            self.cancel_event = cancel_event
-
-        def stream(self, query, history=None, resume_from=None, plan_only=False):
-            # 模拟 worker 在取消后未能及时退出：休眠须长于 _await_worker_exit 的
-            # 等待窗口（测试已将其 monkeypatch 为 0.2s），才能触发"5s 未退出"的
-            # warning 分支。这里取 0.5s 留足余量。
-            time.sleep(0.5)
-            if self.cancel_event and self.cancel_event.is_set():
-                from data_agent.models import AnalysisCancelled
-
-                raise AnalysisCancelled("用户取消")
-            yield {"node": "finalize", "data": _finalize_data(self.workspace)}
-
-    monkeypatch.setattr(api, "DataAnalysisAgent", VerySlowAgent)
-    # 缩短等待窗口以加速测试：把模块级 WORKER_EXIT_TIMEOUT 从默认 5.0 改为 0.2s，
-    # 配合上面 0.5s 的 worker 休眠，仍能在取消后触发"未在窗口内退出"的 warning 分支。
     from data_agent.routers import analysis as analysis_router
 
     monkeypatch.setattr(analysis_router, "WORKER_EXIT_TIMEOUT", 0.2)
 
-    def cancel_first(awaitable, timeout=None):
-        awaitable.close()
-        raise asyncio.CancelledError()
+    loop = asyncio.new_event_loop()
+    try:
+        with caplog.at_level(logging.WARNING, logger="data_agent.routers.analysis"):
+            worker.start()
+            # worker 阻塞在 release 上，必然活过 0.2s 窗口 → 稳定触发告警分支
+            loop.run_until_complete(
+                analysis_router._handle_stream_cancel(record, session_id, worker, loop)
+            )
+    finally:
+        release.set()
+        loop.close()
 
-    monkeypatch.setattr(api.asyncio, "wait_for", cancel_first)
-
-    with caplog.at_level(logging.WARNING, logger="data_agent.routers.analysis"):
-        try:
-            with client.stream(
-                "POST", f"/api/sessions/{uploaded['id']}/analyze/stream", json={"task": "x"}
-            ) as resp:
-                for line in resp.iter_lines():
-                    if line.startswith("event: started"):
-                        break
-        except Exception:
-            pass
-    assert "did not exit within 5s" in caplog.text
+    # 生产代码把实际等待窗口插值进日志消息（不再硬编码 "5s"），断言随之同步
+    assert f"did not exit within {analysis_router.WORKER_EXIT_TIMEOUT}s" in caplog.text
+    # CAS 转换生效：running → cancelling，且状态已持久化
+    assert record._analysis_status == "cancelling"
+    assert (tmp_path / "runs" / session_id / "session.json").is_file()
+    # 放行 worker 线程并确认干净退出
+    release.set()
+    worker.join(timeout=5)
+    assert not worker.is_alive()
 
 

@@ -27,6 +27,7 @@ from data_agent.registry import (
     API_VERSION_INT,
     SSE_QUEUE_MAXSIZE,
     AnalyzeRequest,
+    SessionRecord,
     _artifact_payload,
     _history,
     _result_payload,
@@ -44,6 +45,56 @@ _CLIENT_ERROR_MAX_CHARS = 300
 #: 取消分析后等待 worker 线程退出的窗口（秒）。抽为模块级常量以便测试
 #: monkeypatch 缩短，避免真实 5s 等待拖累 CI 墙钟时间；运行期保持 5.0。
 WORKER_EXIT_TIMEOUT = 5.0
+
+
+async def _await_worker_exit(worker: threading.Thread, loop: asyncio.AbstractEventLoop, timeout: float) -> bool:
+    """Poll worker.is_alive() without blocking the event loop.
+
+    ``threading.Thread.join`` is a blocking call; invoking it directly in a
+    coroutine stalls the event loop for the entire timeout window, which
+    means other HTTP requests (history polling, new uploads, cancels) are
+    frozen while we wait for a possibly-stuck LLM call to unwind. Polling
+    with ``asyncio.sleep`` keeps the loop responsive.
+    """
+    deadline = loop.time() + timeout
+    while worker.is_alive() and loop.time() < deadline:
+        await asyncio.sleep(0.1)
+    return not worker.is_alive()
+
+
+async def _handle_stream_cancel(
+    record: SessionRecord,
+    session_id: str,
+    worker: threading.Thread,
+    loop: asyncio.AbstractEventLoop,
+) -> None:
+    """流式分析被取消（客户端断开/任务被取消）后的清理与告警。
+
+    从 ``generate`` 闭包提取为模块级函数：传输层把取消注入协程的方式因平台
+    而异（Windows/Proactor 与 CI/Linux 表现不同），经过 HTTP 断开来驱动这条
+    分支的测试在部分环境必然失败，因此告警分支需要对 worker 与 record 显式
+    传参、可直接单测。
+
+    CAS 式转换：只在当前仍是 running/cancelling 时才写 cancelling 过渡态。
+    若 worker 已先于本块写入 completed/cancelled/failed 终态，不能覆盖。
+    """
+    from data_agent import api  # 延迟导入：与本文件其余函数一致，避免循环依赖
+
+    record.cancel_event.set()
+    with record._status_lock:
+        already_terminal = record._analysis_status not in {"running", "cancelling"}
+        if not already_terminal:
+            record._analysis_status = "cancelling"
+    if not already_terminal:
+        api.registry.persist(session_id, record)
+    exited = await _await_worker_exit(worker, loop, timeout=WORKER_EXIT_TIMEOUT)
+    if not exited:
+        logger.warning(
+            "Analysis worker for session %s did not exit within %ss of cancel; "
+            "slot will be released when the current LLM call returns.",
+            session_id,
+            WORKER_EXIT_TIMEOUT,
+        )
 
 
 def _client_error_detail(exc: Exception) -> str:
@@ -356,20 +407,6 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
 
     worker = threading.Thread(target=_run_analysis, name=f"analysis-{session_id}", daemon=True)
 
-    async def _await_worker_exit(timeout: float) -> bool:
-        """Poll worker.is_alive() without blocking the event loop.
-
-        ``threading.Thread.join`` is a blocking call; invoking it directly in a
-        coroutine stalls the event loop for the entire timeout window, which
-        means other HTTP requests (history polling, new uploads, cancels) are
-        frozen while we wait for a possibly-stuck LLM call to unwind. Polling
-        with ``asyncio.sleep`` keeps the loop responsive.
-        """
-        deadline = loop.time() + timeout
-        while worker.is_alive() and loop.time() < deadline:
-            await asyncio.sleep(0.1)
-        return not worker.is_alive()
-
     async def generate():
         worker_started = False
         try:
@@ -388,22 +425,7 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
                     event, data = item
                     yield _sse(event, data)
             except asyncio.CancelledError:
-                record.cancel_event.set()
-                # CAS 式转换：只在当前仍是 running 时才写 cancelling 过渡态。
-                # 若 worker 已先于本块写入 completed/cancelled/failed 终态，不能覆盖。
-                with record._status_lock:
-                    already_terminal = record._analysis_status not in {"running", "cancelling"}
-                    if not already_terminal:
-                        record._analysis_status = "cancelling"
-                if not already_terminal:
-                    api.registry.persist(session_id, record)
-                exited = await _await_worker_exit(timeout=WORKER_EXIT_TIMEOUT)
-                if not exited:
-                    logger.warning(
-                        "Analysis worker for session %s did not exit within 5s of cancel; "
-                        "slot will be released when the current LLM call returns.",
-                        session_id,
-                    )
+                await _handle_stream_cancel(record, session_id, worker, loop)
                 raise
             finally:
                 if worker.is_alive():
