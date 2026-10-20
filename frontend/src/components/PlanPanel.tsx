@@ -30,6 +30,7 @@ interface PlanPanelProps {
   //: 最近一次重规划/收尾的原因（超预算、失败补偿等）
   replanReason?: string;
   awaitingApproval?: boolean;
+  pendingObjective?: string;
   stepProgress?: StepProgress | null;
   onApprovePlan?: (editedPlan: PlanStep[]) => void;
   onCancelApproval?: () => void;
@@ -46,6 +47,7 @@ const PlanPanel = React.memo(function PlanPanel({
   planSource,
   replanReason,
   awaitingApproval,
+  pendingObjective,
   stepProgress,
   onApprovePlan,
   onCancelApproval,
@@ -78,6 +80,19 @@ const PlanPanel = React.memo(function PlanPanel({
       setEditedPlan([]);
     }
   }, [awaitingApproval, plan]);
+
+  useEffect(() => {
+    if (!editMode) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.key !== "Enter" || editedPlan.length === 0) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest(".metrics-editor, .conversation-thread")) return;
+      event.preventDefault();
+      onApprovePlan?.(editedPlan);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [editMode, editedPlan, onApprovePlan]);
 
   // 更新步骤字段（title / success_criteria）
   const updateStep = (index: number, field: "title" | "success_criteria", value: string) => {
@@ -120,12 +135,34 @@ const PlanPanel = React.memo(function PlanPanel({
   // 是否有可还原的改动：无改动时禁用按钮，避免无意义点击
   const planEdited = JSON.stringify(editedPlan) !== JSON.stringify(plan);
 
+  const renderApproval = () =>
+    editMode ? (
+      <div className="plan-approval-actions">
+        <button
+          type="button"
+          className="plan-reset-btn"
+          onClick={resetPlan}
+          disabled={!planEdited}
+          title="丢弃所有编辑，恢复为模型生成的原始计划"
+        >
+          <RotateCcw size={12} />
+          还原
+        </button>
+        <button type="button" className="cancel-btn" onClick={cancelApproval}>
+          取消
+        </button>
+        <button type="button" className="approve-btn" onClick={approvePlan} disabled={editedPlan.length === 0}>
+          批准并执行
+        </button>
+      </div>
+    ) : null;
+
   return (
-    <aside className="plan-panel" aria-label="执行记录">
+    <aside className={`plan-panel ${editMode ? "is-reviewing" : ""}`} aria-label="执行记录">
       <div className="panel-heading">
         <div>
-          <span className="section-kicker">执行记录</span>
-          <h2>分析进度</h2>
+          <span className="section-kicker">{editMode ? "待你确认" : "执行记录"}</span>
+          <h2>{editMode ? "审阅计划" : "分析进度"}</h2>
         </div>
         <div className="panel-meta">
           {hasTiming && elapsedLabel && (
@@ -138,7 +175,7 @@ const PlanPanel = React.memo(function PlanPanel({
               <span className="elapsed-value">{formatDuration(elapsedSeconds ?? null)}</span>
             </span>
           )}
-          <span className={`run-state ${running ? "is-running" : isCompleted ? "is-done" : ""}`}>
+          <span className={`run-state ${running ? "is-running" : editMode ? "is-running" : isCompleted ? "is-done" : ""}`}>
             {running ? (
               <span className="status-dot" aria-hidden="true" />
             ) : isCompleted ? (
@@ -146,7 +183,7 @@ const PlanPanel = React.memo(function PlanPanel({
             ) : (
               <Circle size={7} />
             )}
-            {running ? "运行中" : isCompleted ? "已完成" : "待开始"}
+            {running ? "运行中" : editMode ? "待审阅" : isCompleted ? "已完成" : "待开始"}
           </span>
         </div>
       </div>
@@ -155,6 +192,12 @@ const PlanPanel = React.memo(function PlanPanel({
           不提示的话，用户看到的是一份"正常但很泛"的计划，无从判断模型是否
           真的参与了规划（这正是本项目踩过的坑：thinking 模式拒绝 tool_choice，
           planner 100% 失败却只有日志知道）。 */}
+      {editMode && pendingObjective && (
+        <p className="plan-objective-banner">
+          围绕这个问题：{pendingObjective}
+        </p>
+      )}
+
       {planSource === "fallback" && plan.length > 0 && (
         <p className="plan-fallback-note" role="status">
           <AlertTriangle size={12} aria-hidden="true" />
@@ -206,7 +249,7 @@ const PlanPanel = React.memo(function PlanPanel({
       {!plan.length ? (
         <div className="plan-empty">
           <Rows3 size={18} />
-          <p>运行任务后，这里会显示规划和执行状态。</p>
+          <p>点「生成计划」后，步骤会在这里等你核对再执行。</p>
         </div>
       ) : editMode ? (
         // === 编辑模式：每步可改标题/成功标准，可删除、上下移动 ===
@@ -288,27 +331,7 @@ const PlanPanel = React.memo(function PlanPanel({
         </ol>
       )}
 
-      {/* 审批操作区：还原 / 取消 / 批准执行 */}
-      {editMode && (
-        <div className="plan-approval-actions">
-          <button
-            type="button"
-            className="plan-reset-btn"
-            onClick={resetPlan}
-            disabled={!planEdited}
-            title="丢弃所有编辑，恢复为模型生成的原始计划"
-          >
-            <RotateCcw size={12} />
-            还原
-          </button>
-          <button type="button" className="cancel-btn" onClick={cancelApproval}>
-            取消
-          </button>
-          <button type="button" className="approve-btn" onClick={approvePlan} disabled={editedPlan.length === 0}>
-            批准并执行
-          </button>
-        </div>
-      )}
+      {renderApproval()}
 
       {/* 工具调用时间线：实时展示 ReAct 内部工具调用，让用户看到"正在读取数据
           → 正在清洗 → 正在生成图表"的过程，而不是只看到"正在执行 (2/4)"等 30 秒 */}

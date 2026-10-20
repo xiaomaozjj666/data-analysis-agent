@@ -668,7 +668,7 @@ def test_finalize_returns_response_and_artifacts(tmp_path):
     result = finalize(agent, state)
 
     assert result["response"] == "这是分析报告。"
-    assert result["artifacts"] == []
+    assert [item["name"] for item in result["artifacts"]] == ["analysis_recipe.json"]
     assert result["dataset_profile"]["rows"] == 6
     assert result["plan"] == state["plan"]
     assert result["completed_steps"] == state["completed_steps"]
@@ -742,6 +742,7 @@ def test_finalize_returns_workspace_artifacts_not_state_artifacts(tmp_path):
     # Artifacts come from agent.workspace.artifacts, not state["artifacts"].
     artifact_names = [item["name"] for item in result["artifacts"]]
     assert "cleaned.csv" in artifact_names
+    assert "analysis_recipe.json" in artifact_names
     assert "stale_from_state" not in artifact_names
 
 

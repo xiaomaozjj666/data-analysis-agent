@@ -1,5 +1,7 @@
 import { useRef, type RefObject } from "react";
 import { useAppStore } from "../store/useAppStore";
+import { useAnalysisStore } from "../store/useAnalysisStore";
+import { useSessionStore } from "../store/useSessionStore";
 import { api, ApiError, describeApiError, requestHeaders } from "../utils/api";
 import { consumeSSEStream } from "../utils/sse";
 import { SSE_EVENT_TYPES } from "../utils/sse-events";
@@ -173,9 +175,8 @@ function useAnalysisRunner(deps: UseAnalysisRunnerDeps): UseAnalysisRunnerResult
     setUsage(null);
     // 新分析开始时清空追问历史，避免上轮的追问残留混淆当前分析
     setFollowUps([]);
-    // 任务已提交运行，清空输入框，避免用户以为还没发起分析。
-    // lastTaskRef 仍保留实际任务文本，供 retry 与日志追踪使用。
-    setTask("");
+    // 保留任务原文：审阅计划时用户要对着目标改步骤；批准执行后也要能看见
+    // 正在跑的是哪句话。lastTaskRef 仍给 retry / 批准 / 重跑用。
     lastTaskRef.current = nextTask;
     const controller = new AbortController();
     analysisController.current = controller;
@@ -262,6 +263,11 @@ function useAnalysisRunner(deps: UseAnalysisRunnerDeps): UseAnalysisRunnerResult
             setAwaitingApproval(true);
             setCurrentNodeTitle("计划已生成，等待审阅");
             setRunning(false);
+            useSessionStore.getState().setActiveTab("analysis");
+            const currentTask = useAnalysisStore.getState().task;
+            if (!currentTask.trim()) {
+              setTask(String(data.objective || lastTaskRef.current || ""));
+            }
           }
         },
         [SSE_EVENT_TYPES.STEP_PROGRESS]: (data) => {

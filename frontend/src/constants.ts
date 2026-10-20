@@ -47,7 +47,7 @@ const HELP_SHORTCUTS: ShortcutGroup[] = [
   {
     section: "分析",
     items: [
-      { keys: ["⌘", "Enter"], desc: "运行分析任务 / 发送追问" },
+      { keys: ["⌘", "Enter"], desc: "生成计划；审阅时批准执行 / 发送追问" },
       { keys: ["⌘", "."], desc: "停止正在运行的分析" },
       { keys: ["T"], desc: "切换亮色 / 暗色主题" },
       { keys: ["1", "2", "3"], desc: "切换 分析 / 数据 / 产物 三个 Tab" },
@@ -76,7 +76,7 @@ const REMARK_PLUGINS = [remarkGfm];
 // Maximum upload size hint for client-side validation. The server enforces the
 // real limit (max_upload_bytes); this mirror lets us fail fast in the browser
 // instead of uploading 100MB before getting a 422.
-const MAX_UPLOAD_BYTES_CLIENT = 100 * 1024 * 1024;
+const MAX_UPLOAD_BYTES_CLIENT = 200 * 1024 * 1024;
 
 const presets: PresetEntry[] = [
   {
@@ -110,6 +110,10 @@ const TOOL_LABELS: Record<string, string> = {
   statistical_analysis: "统计分析",
   create_visualization: "生成图表",
   export_data: "导出数据",
+  join_datasets: "合并数据",
+  query_database: "查询数据库",
+  run_python_code: "沙箱计算",
+  compute_registered_metrics: "计算登记指标",
 };
 
 // React.memo：artifacts 仅在 session 切换或分析完成时变化。memo 让产物

@@ -45,6 +45,7 @@ from data_agent._workspace_bundles import (
     shared_bundle_path,
     warm_bundles,  # noqa: F401
 )
+from data_agent.privacy import mask_sample_records
 from data_agent.serialization import to_jsonable
 from data_agent.sqlite_source import SQLITE_EXTENSIONS, read_default_table
 
@@ -832,7 +833,8 @@ class DataWorkspace:
         result = to_jsonable(
             {
                 **stats,
-                "sample": self.dataframe.head(sample_rows),
+                "sample": mask_sample_records(self.dataframe, sample_rows),
+                "sample_masked": True,
             }
         )
         # LRU 淘汰：超容量时移除最旧条目（OrderedDict 首项），而非全清。

@@ -9,18 +9,22 @@
 - 没有定义文件时整个特性静默失效，既有行为一字不变（默认关闭，显式启用）。
 - 定义文件结构错误时直接报错而不是跳过：静默忽略用户登记的指标口径，会让分析
   在"看起来正常"的情况下用错定义，比直接失败危险得多。
-- 只做匹配与注入，不做自动计算。把口径变成可执行表达式需要 SQL 或沙箱配合，
-  属于后续工作。
+- 有表达式时由 ``compute_registered_metrics`` 按登记口径计算，禁止同名现推。
 """
 
 from __future__ import annotations
 
+import ast
 import json
 import os
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import numpy as np
+import pandas as pd
 
 #: 工作区内约定使用的指标定义文件名。
 METRICS_FILENAME = "metrics.json"
@@ -113,6 +117,34 @@ def load_metric_definitions(path: str | Path) -> list[MetricDefinition]:
     return parse_metric_definitions(payload)
 
 
+def serialize_metric_definitions(definitions: Sequence[MetricDefinition]) -> dict[str, Any]:
+    """把口径对象写成可往返的 ``{"metrics": [...]}`` 载荷。"""
+    return {
+        "metrics": [
+            {
+                "name": item.name,
+                "description": item.description,
+                "expression": item.expression,
+                "aliases": list(item.aliases),
+                "source_columns": list(item.source_columns),
+            }
+            for item in definitions
+        ]
+    }
+
+
+def save_workspace_metrics(root: str | Path, payload: Any) -> list[MetricDefinition]:
+    """校验后写入工作区 ``metrics.json``，供界面登记口径。"""
+    definitions = parse_metric_definitions(payload)
+    path = Path(root).expanduser() / METRICS_FILENAME
+    serialized = serialize_metric_definitions(definitions)
+    path.write_text(
+        json.dumps(serialized, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return definitions
+
+
 def load_metrics_for_workspace(root: str | Path) -> list[MetricDefinition]:
     """加载适用于当前会话的指标定义。
 
@@ -187,7 +219,10 @@ def render_metric_context(
     selected = select_metrics(query, definitions, limit)
     if not selected:
         return ""
-    lines = ["本会话已登记的指标口径（必须优先采用以下定义，不得自行重新定义同名指标，也不得把别名当作独立指标重复计算）："]
+    lines = [
+        "本会话已登记的指标口径（必须用 compute_registered_metrics 按下列公式计算，"
+        "不得自行重新定义同名指标，也不得把别名当作独立指标在沙箱里另算一遍）："
+    ]
     for item in selected:
         segment = f"- {item.name}"
         if item.aliases:
@@ -202,3 +237,93 @@ def render_metric_context(
     if hidden > 0:
         lines.append(f"（另有 {hidden} 条已登记指标未在此列出；如分析涉及，请先在结论中说明口径来源。）")
     return "\n".join(lines)
+
+
+_ALLOWED_BINOPS = (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow, ast.Mod)
+_ALLOWED_UNARY = (ast.UAdd, ast.USub)
+_NAME_OK = re.compile(r"^[\w\u4e00-\u9fff]+$")
+
+
+def _assert_safe_expression(tree: ast.AST) -> None:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Expression):
+            continue
+        if isinstance(node, ast.BinOp) and isinstance(node.op, _ALLOWED_BINOPS):
+            continue
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, _ALLOWED_UNARY):
+            continue
+        if isinstance(node, ast.Name):
+            if not _NAME_OK.fullmatch(node.id) or node.id.startswith("_"):
+                raise ValueError(f"指标表达式含非法名称 {node.id!r}。")
+            continue
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            continue
+        if isinstance(node, _ALLOWED_BINOPS + _ALLOWED_UNARY):
+            continue
+        if isinstance(node, ast.Load):
+            continue
+        raise ValueError("指标表达式只允许列名与 + - * / ** % 和括号。")
+
+
+def _column_lookup(frame: pd.DataFrame) -> dict[str, str]:
+    lookup: dict[str, str] = {}
+    for column in frame.columns:
+        name = str(column)
+        lookup[name] = name
+        lookup[name.strip()] = name
+        lookup[name.lower()] = name
+    return lookup
+
+
+def evaluate_metric_expression(frame: pd.DataFrame, expression: str) -> pd.Series:
+    """在 DataFrame 上安全求值一条登记表达式，返回与行对齐的 Series。"""
+    expr = (expression or "").strip()
+    if not expr:
+        raise ValueError("指标缺少 expression，无法计算。")
+    tree = ast.parse(expr, mode="eval")
+    _assert_safe_expression(tree)
+    names = [node.id for node in ast.walk(tree) if isinstance(node, ast.Name)]
+    lookup = _column_lookup(frame)
+    env: dict[str, Any] = {}
+    missing: list[str] = []
+    for name in names:
+        column = lookup.get(name) or lookup.get(name.lower())
+        if column is None:
+            missing.append(name)
+            continue
+        env[name] = pd.to_numeric(frame[column], errors="coerce")
+    if missing:
+        available = "、".join(str(column) for column in list(frame.columns)[:30])
+        raise ValueError(f"指标表达式引用了不存在的列 {missing}。可用列：{available}。")
+    value = eval(compile(tree, "<metric>", "eval"), {"__builtins__": {}}, env)  # noqa: S307
+    if isinstance(value, pd.Series):
+        return value
+    return pd.Series(np.broadcast_to(value, len(frame)), index=frame.index)
+
+
+def compute_metrics_on_frame(
+    frame: pd.DataFrame,
+    definitions: Sequence[MetricDefinition],
+) -> list[dict[str, Any]]:
+    """计算全部登记指标，失败项带 error 而不是悄悄跳过。"""
+    results: list[dict[str, Any]] = []
+    for item in definitions:
+        entry: dict[str, Any] = {
+            "name": item.name,
+            "description": item.description,
+            "expression": item.expression,
+        }
+        try:
+            series = evaluate_metric_expression(frame, item.expression)
+            numeric = pd.to_numeric(series, errors="coerce")
+            entry.update(
+                status="ok",
+                sum=float(numeric.sum(skipna=True)),
+                mean=float(numeric.mean()) if numeric.notna().any() else None,
+                non_null=int(numeric.notna().sum()),
+            )
+        except Exception as exc:  # noqa: BLE001 — 单条失败不影响其余指标
+            entry.update(status="error", error=str(exc))
+        results.append(entry)
+    return results
+

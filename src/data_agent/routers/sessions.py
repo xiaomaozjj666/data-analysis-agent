@@ -13,6 +13,8 @@
 from __future__ import annotations
 
 import io
+import os
+from pathlib import Path
 from typing import Annotated, Any
 from uuid import uuid4
 
@@ -112,6 +114,62 @@ def delete_session(session_id: str) -> Response:
 
     api.registry.delete(session_id)
     return Response(status_code=204)
+
+
+@router.get("/api/sessions/{session_id}/metrics")
+def get_session_metrics(session_id: str) -> dict[str, Any]:
+    """读取当前会话生效的指标口径（全局环境变量优先于工作区文件）。"""
+    from data_agent import api
+    from data_agent.metrics import (
+        METRICS_FILENAME,
+        METRICS_PATH_ENV,
+        load_metrics_for_workspace,
+        serialize_metric_definitions,
+    )
+
+    record = api.registry.get(session_id)
+    configured = os.environ.get(METRICS_PATH_ENV, "").strip()
+    env_file = Path(configured).expanduser() if configured else None
+    env_overrides = bool(env_file and env_file.is_file())
+    workspace_file = Path(record.workspace.root) / METRICS_FILENAME
+    try:
+        definitions = load_metrics_for_workspace(record.workspace.root)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    source = "env" if env_overrides else ("workspace" if workspace_file.is_file() else None)
+    return {
+        "metrics": serialize_metric_definitions(definitions)["metrics"],
+        "source": source,
+        "env_overrides": env_overrides,
+    }
+
+
+@router.put("/api/sessions/{session_id}/metrics")
+def put_session_metrics(session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """把指标口径写入本会话工作区的 metrics.json。"""
+    from data_agent import api
+    from data_agent.metrics import (
+        METRICS_PATH_ENV,
+        save_workspace_metrics,
+        serialize_metric_definitions,
+    )
+
+    configured = os.environ.get(METRICS_PATH_ENV, "").strip()
+    if configured and Path(configured).expanduser().is_file():
+        raise HTTPException(
+            status_code=409,
+            detail="当前使用全局 DATA_AGENT_METRICS_PATH，无法在会话内改写口径。",
+        )
+    record = api.registry.get(session_id)
+    try:
+        definitions = save_workspace_metrics(record.workspace.root, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "metrics": serialize_metric_definitions(definitions)["metrics"],
+        "source": "workspace",
+        "env_overrides": False,
+    }
 
 
 @router.patch("/api/sessions/{session_id}")

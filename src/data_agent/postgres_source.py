@@ -24,6 +24,7 @@ import pandas as pd
 
 from data_agent.sql_guard import (
     collect_rows,
+    query_time_budget_ms,
     quote_identifier,
     validate_select,
 )
@@ -32,7 +33,7 @@ from data_agent.sql_guard import (
 DATABASE_URL_ENV = "DATA_AGENT_DATABASE_URL"
 
 #: 单条查询的墙钟预算（毫秒），通过服务端 statement_timeout 强制执行。
-QUERY_TIME_BUDGET_MS = 5_000
+QUERY_TIME_BUDGET_MS = query_time_budget_ms()
 
 #: 表结构概览里逐表 COUNT(*) 的预算（毫秒），只用于"看一眼结构"。
 _ROW_COUNT_BUDGET_MS = 500

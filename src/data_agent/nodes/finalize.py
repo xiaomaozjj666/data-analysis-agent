@@ -10,9 +10,11 @@ from data_agent.callbacks import (
     ReportStreamCallback,
     UsageAccumulator,
 )
+from data_agent.facts import extract_facts, facts_prompt_block, render_facts_markdown
 from data_agent.nodes._utils import _message_text
 from data_agent.nodes.state import WorkflowState
 from data_agent.prompts import _FINALIZE_EVIDENCE_BUDGET, _FINALIZE_PER_STEP_MIN_CHARS
+from data_agent.recipe import build_recipe, data_fingerprint, save_recipe
 
 if TYPE_CHECKING:
     from data_agent.agent import DataAnalysisAgent
@@ -50,9 +52,12 @@ def finalize(agent: DataAnalysisAgent, state: WorkflowState) -> dict[str, Any]:
 
     # 报告写给不懂统计的业务读者：结论先行（金字塔结构），证据跟上，
     # 统计术语必须当场翻译成大白话，禁止学术八股式的章节堆砌。
+    facts = extract_facts(state.get("trace"), completed_steps)
+    facts_md = render_facts_markdown(facts)
     prompt = agent.prompts["finalize_template"].format(
         query=state["query"], evidence=evidence
     )
+    prompt += "\n\n" + facts_prompt_block(facts)
     try:
         # 流式报告：ReportStreamCallback 把每个 token 通过 event_callback
         # 推送到前端，用户看着报告逐字写出，而不是等 30-60 秒看完整报告。
@@ -84,6 +89,20 @@ def finalize(agent: DataAnalysisAgent, state: WorkflowState) -> dict[str, Any]:
             )
         else:
             response = "分析已完成，但没有可汇总的步骤结果。"
+    if facts_md and "## 核验附录" not in response:
+        response = f"{response.rstrip()}\n\n{facts_md}"
+    try:
+        save_recipe(
+            agent.workspace,
+            build_recipe(
+                task=state["query"],
+                plan=list(state.get("plan") or []),
+                completed_steps=completed_steps,
+                fingerprint=data_fingerprint(agent.workspace),
+            ),
+        )
+    except Exception:
+        logger.exception("Failed to persist analysis recipe")
     return {
         "response": response,
         "artifacts": list(agent.workspace.artifacts),

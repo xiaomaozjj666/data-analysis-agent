@@ -7,7 +7,26 @@ SQLite 与 Postgres 两个数据源共用这一层。驱动差异（连接方式
 
 from __future__ import annotations
 
+import os
 from typing import Any
+
+#: SQL 墙钟预算环境变量。默认 30 秒：5 秒会把合法的百成千行 JOIN/GROUP BY
+#: 掐死，120 秒封顶避免笛卡尔积把分析线程占满。
+SQL_TIMEOUT_SECONDS_ENV = "DATA_AGENT_SQL_TIMEOUT_SECONDS"
+_DEFAULT_SQL_TIMEOUT_SECONDS = 30.0
+_MIN_SQL_TIMEOUT_SECONDS = 1.0
+_MAX_SQL_TIMEOUT_SECONDS = 120.0
+
+
+def query_time_budget_ms() -> int:
+    """当前进程的单条查询墙钟预算（毫秒）。"""
+    raw = os.getenv(SQL_TIMEOUT_SECONDS_ENV, "").strip()
+    try:
+        seconds = float(raw) if raw else _DEFAULT_SQL_TIMEOUT_SECONDS
+    except ValueError:
+        seconds = _DEFAULT_SQL_TIMEOUT_SECONDS
+    seconds = min(max(seconds, _MIN_SQL_TIMEOUT_SECONDS), _MAX_SQL_TIMEOUT_SECONDS)
+    return int(seconds * 1000)
 
 #: 单条查询返回的最大行数（硬上限，工具的 limit 参数只能更小）。
 MAX_RESULT_ROWS = 5_000
@@ -39,6 +58,29 @@ FORBIDDEN_STATEMENTS: dict[str, str] = {
 }
 
 
+def _semicolon_outside_strings(statement: str) -> bool:
+    """字符串字面量之外是否还有分号（多语句）。"""
+    in_single = False
+    in_double = False
+    escape = False
+    for char in statement:
+        if escape:
+            escape = False
+            continue
+        if char == "\\" and in_single:
+            escape = True
+            continue
+        if char == "'" and not in_double:
+            in_single = not in_single
+            continue
+        if char == '"' and not in_single:
+            in_double = not in_double
+            continue
+        if char == ";" and not in_single and not in_double:
+            return True
+    return False
+
+
 def validate_select(sql: str) -> str:
     """校验语句是只读查询，返回去掉首尾空白与结尾分号的语句。
 
@@ -48,6 +90,8 @@ def validate_select(sql: str) -> str:
     statement = (sql or "").strip().rstrip(";").strip()
     if not statement:
         raise ValueError("sql 不能为空；留空调用本工具可先获取库内表结构。")
+    if _semicolon_outside_strings(statement):
+        raise ValueError("只允许单条 SELECT / WITH 语句，禁止用分号拼接多条 SQL。")
     first_word = statement.lower().split(None, 1)[0]
     if first_word in FORBIDDEN_STATEMENTS:
         raise ValueError(

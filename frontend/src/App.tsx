@@ -25,6 +25,7 @@ import { AccessGate, Metric } from "./components/AccessGate";
 import ArtifactCenter from "./components/ArtifactCenter";
 import ConversationThread from "./components/ConversationThread";
 import DatasetOverview from "./components/DatasetOverview";
+import MetricsEditor from "./components/MetricsEditor";
 import EmptyWorkspace from "./components/EmptyWorkspace";
 import HistoryPanel from "./components/HistoryPanel";
 import PlanPanel from "./components/PlanPanel";
@@ -57,8 +58,9 @@ import useShortcuts from "./hooks/useShortcuts";
 import useTabPersistence from "./hooks/useTabPersistence";
 import useTheme from "./hooks/useTheme";
 import useTimer from "./hooks/useTimer";
-import { useAppStore } from "./store/useAppStore";
+import { useAnalysisStore, useAppStore } from "./store/useAppStore";
 import type {
+  AnalysisResult,
   CommandAction,
   DatasetProfile,
   HistorySessionItem,
@@ -259,6 +261,34 @@ function App() {
   // 供 HistoryPanel 在对应条目上展示导出 loading）。
   const { downloadArtifact, batchDownload, exportSession, exportingSessionId } =
     useDownloads();
+
+  const [replayBusy, setReplayBusy] = useState(false);
+  const replayLastAnalysis = useCallback(async () => {
+    if (!session || replayBusy || running) return;
+    setReplayBusy(true);
+    setActiveTab("analysis");
+    if (lastTaskRef.current) setTask(lastTaskRef.current);
+    try {
+      const payload = await api<AnalysisResult>(`/api/sessions/${session.id}/replay`, {
+        method: "POST",
+        timeoutMs: 300000,
+      });
+      setResult(payload);
+      if (payload.plan) setPlan(payload.plan);
+      if (payload.completed_steps) setCompleted(payload.completed_steps);
+    } catch (err) {
+      window.alert(`按配方重跑失败：${err instanceof Error ? err.message : "未知错误"}`);
+    } finally {
+      setReplayBusy(false);
+    }
+  }, [session, replayBusy, running, setResult, setPlan, setCompleted, setActiveTab, setTask, lastTaskRef]);
+
+  const focusPlanPanel = useCallback(() => {
+    setActiveTab("analysis");
+    window.requestAnimationFrame(() => {
+      document.querySelector(".plan-panel")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+  }, [setActiveTab]);
 
   // 移动端侧边栏抽屉开关：桌面端 sidebar 常驻，平板/手机折叠为抽屉
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -751,7 +781,9 @@ function App() {
       setAwaitingApproval(false);
       setPlan(editedPlan);
       setStepProgress(null);
-      startAnalysis(lastTaskRef.current, {
+      const objective = useAnalysisStore.getState().task.trim() || lastTaskRef.current;
+      lastTaskRef.current = objective;
+      startAnalysis(objective, {
         plan: editedPlan,
         completed_steps: [],
       });
@@ -1242,6 +1274,7 @@ function App() {
               task={task}
               running={running}
               stopping={stopping}
+              awaitingApproval={awaitingApproval}
               configured={!!settings?.configured}
               hasSession={!!session}
               currentNodeTitle={currentNodeTitle}
@@ -1250,8 +1283,10 @@ function App() {
               onRun={() => startAnalysis()}
               onRunPlanReview={() => startAnalysis(task, null, true)}
               onStop={stopAnalysis}
+              onFocusPlan={focusPlanPanel}
               taskInputRef={taskInput}
             />
+            {session && <MetricsEditor sessionId={session.id} />}
             {!settings?.configured && (
               <p className="composer-note">请先在左侧配置 DeepSeek API Key。</p>
             )}
@@ -1286,6 +1321,8 @@ function App() {
                           theme={theme}
                           usage={usage}
                           sessionId={session?.id}
+                          onReplay={replayLastAnalysis}
+                          replayBusy={replayBusy}
                         />
                       </Suspense>
                       <ConversationThread
@@ -1327,6 +1364,7 @@ function App() {
                     session?.id === runningSessionIdRef.current ? toolTrace : []
                   }
                   awaitingApproval={awaitingApproval}
+                  pendingObjective={pendingObjective}
                   stepProgress={stepProgress}
                   onApprovePlan={approvePlan}
                   onCancelApproval={cancelApproval}

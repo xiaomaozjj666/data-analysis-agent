@@ -169,6 +169,7 @@ def test_native_deepseek_agent_binds_analysis_tools_without_network(workspace):
         "transform_data",
         "join_datasets",
         "query_database",
+        "compute_registered_metrics",
         "statistical_analysis",
         "create_visualization",
         "export_data",

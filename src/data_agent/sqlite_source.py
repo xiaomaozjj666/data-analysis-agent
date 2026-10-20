@@ -36,6 +36,7 @@ from data_agent.sql_guard import (
 )
 from data_agent.sql_guard import (
     collect_rows,
+    query_time_budget_ms,
 )
 from data_agent.sql_guard import (
     quote_identifier as _quote_identifier,
@@ -51,7 +52,7 @@ from data_agent.sql_guard import (
 SQLITE_EXTENSIONS: frozenset[str] = frozenset({".db", ".sqlite", ".sqlite3"})
 
 #: 单条查询的墙钟预算（毫秒）。SQLite 无语句级超时，靠 progress handler 兜底。
-QUERY_TIME_BUDGET_MS = 5_000
+QUERY_TIME_BUDGET_MS = query_time_budget_ms()
 
 #: progress handler 的回调间隔（虚拟指令数）。太小会拖慢查询，太大则超时不准。
 _PROGRESS_CHECK_INTERVAL = 1_000
@@ -61,8 +62,11 @@ _PROGRESS_CHECK_INTERVAL = 1_000
 _DEFAULT_TABLE_SCAN_LIMIT = 20
 
 #: 表选举与结构概览里逐表 COUNT(*) 的预算。这些只是"看一眼结构"，不该拖慢
-#: 上传：最坏 20 张表 × 500ms = 10s 封顶，而不是按查询预算的 5s/表 放大到 100s。
+#: 上传：最坏 20 张表 × 500ms = 10s 封顶，而不是按查询预算逐表放大。
 _ROW_COUNT_BUDGET_MS = 500
+
+#: 默认载入活动数据集的最大行数。超过则只取前 N 行，全量分析走 query_database。
+DEFAULT_LOAD_MAX_ROWS = 100_000
 
 
 def connect_readonly(path: str | Path) -> sqlite3.Connection:
@@ -296,7 +300,25 @@ def read_default_table(path: str | Path) -> tuple[pd.DataFrame, list[str]]:
                 f"库中共 {len(tables)} 张表，默认表仅在前 {_DEFAULT_TABLE_SCAN_LIMIT} 张中选举；"
                 "如需分析其他表，请用 query_database 查询后 adopt 为活动数据集。"
             )
-        frame = pd.read_sql_query(f"SELECT * FROM {_quote_identifier(default_table)}", connection)
+        quoted = _quote_identifier(default_table)
+        table_rows = count_rows(connection, default_table)
+        if table_rows > DEFAULT_LOAD_MAX_ROWS:
+            try:
+                frame = pd.read_sql_query(
+                    f"SELECT * FROM {quoted} ORDER BY rowid LIMIT {DEFAULT_LOAD_MAX_ROWS}",
+                    connection,
+                )
+            except Exception:
+                frame = pd.read_sql_query(
+                    f"SELECT * FROM {quoted} LIMIT {DEFAULT_LOAD_MAX_ROWS}",
+                    connection,
+                )
+            warnings.append(
+                f"「{default_table}」表约有 {table_rows} 行，默认只载入前 {DEFAULT_LOAD_MAX_ROWS:,} 行作为活动数据集，"
+                "避免整表进内存。全量分析请用 query_database 先聚合或过滤，再 adopt=true。"
+            )
+        else:
+            frame = pd.read_sql_query(f"SELECT * FROM {quoted}", connection)
         warnings.append(
             f"数据来自 SQLite 的「{default_table}」表（库中共 {len(tables)} 张表，已按行数选取主表）；"
             "其余表可用 query_database 查询。"

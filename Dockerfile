@@ -16,13 +16,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Install Python deps
-COPY pyproject.toml ./
-RUN pip install --no-cache-dir . && pip install uvicorn
-
-# Copy app source
+# Install Python deps（必须先有 src/ 与 README，否则 pip install . 装不到包）
+COPY pyproject.toml README.md ./
 COPY src/ ./src/
-COPY README.md ./
+RUN pip install --no-cache-dir . && pip install uvicorn
 
 # Copy built frontend from builder stage
 COPY --from=frontend /build/frontend/dist/ ./frontend/dist/

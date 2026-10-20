@@ -31,13 +31,9 @@ from html import escape, unescape
 from pathlib import Path
 from typing import Any, Literal
 
-import numpy as np
 import pandas as pd
 import plotly.express as px
 from langchain_core.tools import BaseTool, tool
-from scipy import stats
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 from data_agent import postgres_source, sqlite_source
 from data_agent.chart_sampling import (
@@ -45,7 +41,14 @@ from data_agent.chart_sampling import (
     sample_plotly_figure_for_embed,
     sampling_note,
 )
+from data_agent.dataframe_source import (
+    connect_from_frame,
+)
+from data_agent.dataframe_source import (
+    schema_summary as active_schema_summary,
+)
 from data_agent.density import band_label, should_use_density
+from data_agent.metrics import compute_metrics_on_frame, load_metrics_for_workspace
 from data_agent.serialization import json_text
 from data_agent.sql_guard import MAX_RESULT_ROWS
 from data_agent.workspace import DataWorkspace, _atomic_write_text
@@ -91,6 +94,7 @@ from ._plotly_render import (  # noqa: F401
     scatter_symbol_style,
 )
 from ._sandbox import build_run_python_code
+from ._stats import run_statistical_analysis
 from .charts import (
     _BOOLEAN_VALUE_LABELS,
     _HAS_RECORDS_COLUMN,
@@ -195,7 +199,7 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         workspace: 当前分析会话的数据工作区。
 
     Returns:
-        10 个 BaseTool 实例的列表。
+        11 个 BaseTool 实例的列表。
     """
 
     @tool
@@ -406,179 +410,91 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
 
     @tool
     def statistical_analysis(
-        method: Literal["descriptive", "correlation", "groupby", "ttest_ind", "ttest_paired", "anova", "chi_square", "linear_regression"],
+        method: Literal[
+            "descriptive",
+            "correlation",
+            "groupby",
+            "ttest_ind",
+            "ttest_paired",
+            "anova",
+            "chi_square",
+            "linear_regression",
+            "rolling",
+            "pct_change",
+        ],
         columns: list[str] | None = None,
         group_by: str | None = None,
         target: str | None = None,
         aggregation: Literal["mean", "median", "sum", "count", "min", "max", "std"] = "mean",
         alpha: float = 0.05,
+        groups: list[str] | None = None,
+        window: int = 7,
+        periods: int = 1,
     ) -> str:
         """Run rigorous statistical analysis on the active dataset.
 
-        descriptive: optional columns. correlation: numeric columns. groupby: group_by plus value
-        columns. t-tests: exactly two numeric columns. anova: numeric target grouped by group_by.
-        chi_square: exactly two categorical columns. linear_regression: target plus numeric feature
-        columns. Returns statistics, p-values, effect/model metrics and plain decision fields.
-
-        只读契约：此工具不 copy DataFrame，所有下游操作（describe / corr /
-        groupby / dropna / crosstab）都返回新对象，不修改 workspace.dataframe。
-        若未来需要在此工具中修改数据，必须先 ``df = workspace.dataframe.copy()``
-        以免污染主数据。
+        descriptive: optional columns. correlation: numeric columns, with Bonferroni-adjusted
+        significance. groupby: group_by plus value columns. ttest_ind: prefer group_by + target
+        to compare two groups (e.g. region vs sales); two numeric columns is a two-series test
+        and is usually the wrong tool for business grouping. ttest_paired: two numeric columns.
+        anova: numeric target grouped by group_by. chi_square: two categorical columns (warns
+        when min expected frequency < 5). linear_regression: target plus numeric features.
+        rolling / pct_change: ordered numeric series (period-over-period and rolling windows).
         """
-        # 只读引用：所有下游操作都返回新 DataFrame，不修改 workspace.dataframe。
-        df = workspace.dataframe
-        if not 0 < alpha < 1:
-            raise ValueError("alpha 必须在 0 到 1 之间。")
-        result: dict[str, Any] = {"method": method, "alpha": alpha}
-
-        if method == "descriptive":
-            selected = _checked_columns(df, columns)
-            desc = df[selected].describe(include="all").transpose().reset_index(names="column")
-            # 补充分布形态指标（偏度/峰度），帮助判断数据是否正态、是否有重尾。
-            numeric_selected = [c for c in selected if pd.api.types.is_numeric_dtype(df[c])]
-            if numeric_selected:
-                skew = df[numeric_selected].skew().rename("skewness")
-                kurt = df[numeric_selected].kurtosis().rename("kurtosis")
-                shape_df = pd.DataFrame({"column": numeric_selected, "skewness": skew.values, "kurtosis": kurt.values})
-                desc = desc.merge(shape_df, on="column", how="left")
-            result["result"] = desc
-        elif method == "correlation":
-            numeric = _numeric_columns(df, columns)
-            result["columns"] = numeric
-            result["result"] = df[numeric].corr().round(6).to_dict()
-            # 性能优化：预先提取数值子集，避免每对列重复索引和 dropna。
-            # 对 20+ 数值列，原实现每对都 df[[left,right]].dropna()，
-            # 产生大量中间 DataFrame 对象；改为一次性提取子集后按列对操作。
-            numeric_df = df[numeric]
-            p_values: dict[str, dict[str, float | None]] = {column: {} for column in numeric}
-            sample_sizes: dict[str, dict[str, int]] = {column: {} for column in numeric}
-            for i, left in enumerate(numeric):
-                p_values[left][left] = 0.0
-                sample_sizes[left][left] = int(numeric_df[left].notna().sum())
-                left_series = numeric_df[left]
-                for right in numeric[i + 1:]:
-                    right_series = numeric_df[right]
-                    # 只对两列同时非空的行计算，避免全表 dropna。
-                    pair_mask = left_series.notna() & right_series.notna()
-                    n_valid = int(pair_mask.sum())
-                    sample_sizes[left][right] = n_valid
-                    sample_sizes[right][left] = n_valid
-                    if n_valid < 3:
-                        p_values[left][right] = None
-                        p_values[right][left] = None
-                    else:
-                        lv = left_series[pair_mask]
-                        rv = right_series[pair_mask]
-                        if lv.nunique() < 2 or rv.nunique() < 2:
-                            p_values[left][right] = None
-                            p_values[right][left] = None
-                        else:
-                            p_val = float(stats.pearsonr(lv, rv).pvalue)
-                            p_values[left][right] = p_val
-                            p_values[right][left] = p_val
-            result["p_values"] = p_values
-            result["sample_sizes"] = sample_sizes
-        elif method == "groupby":
-            if not group_by:
-                raise ValueError("groupby 方法需要 group_by。")
-            _checked_columns(df, [group_by])
-            values = _numeric_columns(df, columns) if aggregation != "count" else _checked_columns(df, columns)
-            grouped = df.groupby(group_by, dropna=False)[values].agg(aggregation).reset_index()
-            # 补充每组样本量，帮助用户判断分组结果是否可靠。
-            group_sizes = df.groupby(group_by, dropna=False).size().rename("_group_n_").reset_index()
-            grouped = grouped.merge(group_sizes, on=group_by, how="left")
-            result["result"] = grouped.head(_GROUPBY_MAX_ROWS)
-            result["truncated"] = len(grouped) > _GROUPBY_MAX_ROWS
-            result["group_count"] = int(df[group_by].nunique(dropna=False))
-        elif method in {"ttest_ind", "ttest_paired"}:
-            numeric = _numeric_columns(df, columns)
-            if len(numeric) != 2:
-                raise ValueError("t 检验需要恰好两个数值列。")
-            pair = df[numeric].dropna()
-            first, second = pair[numeric[0]], pair[numeric[1]]
-            test = stats.ttest_ind(first, second, equal_var=False) if method == "ttest_ind" else stats.ttest_rel(first, second)
-            difference = first - second
-            if method == "ttest_ind":
-                pooled = np.sqrt(((first.var(ddof=1) * (len(first) - 1)) + (second.var(ddof=1) * (len(second) - 1))) / max(len(pair) - 2, 1))
-                effect_size = float((first.mean() - second.mean()) / pooled) if pooled else 0.0
-            else:
-                effect_size = float(difference.mean() / difference.std(ddof=1)) if difference.std(ddof=1) else 0.0
-            confidence = test.confidence_interval(confidence_level=1 - alpha)
-            result.update(
-                statistic=float(test.statistic),
-                p_value=float(test.pvalue),
-                significant=bool(test.pvalue < alpha),
-                sample_size=len(pair),
-                means={column: float(pair[column].mean()) for column in numeric},
-                mean_difference=float(difference.mean()),
-                confidence_interval={"low": float(confidence.low), "high": float(confidence.high)},
-                effect_size=float(effect_size),
-                effect_size_name="cohens_d",
-            )
-        elif method == "anova":
-            if not group_by or not target:
-                raise ValueError("anova 需要 group_by 和 target。")
-            _checked_columns(df, [group_by, target])
-            if not pd.api.types.is_numeric_dtype(df[target]):
-                raise ValueError("anova target 必须是数值列。")
-            groups = [part[target].dropna().to_numpy() for _, part in df.groupby(group_by) if part[target].notna().sum() >= 2]
-            if len(groups) < 2:
-                raise ValueError("anova 至少需要两个各含 2 个有效观测值的组。")
-            test = stats.f_oneway(*groups)
-            valid = np.concatenate(groups)
-            grand_mean = float(valid.mean())
-            between = sum(len(group) * (float(group.mean()) - grand_mean) ** 2 for group in groups)
-            total = float(((valid - grand_mean) ** 2).sum())
-            result.update(
-                statistic=float(test.statistic),
-                p_value=float(test.pvalue),
-                significant=bool(test.pvalue < alpha),
-                groups=len(groups),
-                total_n=int(len(valid)),
-                eta_squared=float(between / total) if total else 0.0,
-                group_means={str(name): float(part[target].mean()) for name, part in df.groupby(group_by) if part[target].notna().sum() >= 2},
-            )
-        elif method == "chi_square":
-            selected = _checked_columns(df, columns)
-            if len(selected) != 2:
-                raise ValueError("卡方检验需要恰好两个分类列。")
-            cardinality = {column: int(df[column].nunique(dropna=True)) for column in selected}
-            max_cardinality = max(cardinality.values())
-            if max_cardinality > _CHI_SQUARE_MAX_CARDINALITY:
-                raise ValueError(
-                    f"卡方检验拒绝高基数列：{cardinality}。"
-                    "请对类别做合并、分组或改用其他统计方法。"
-                )
-            table = pd.crosstab(df[selected[0]], df[selected[1]])
-            chi2, p_value, dof, expected = stats.chi2_contingency(table)
-            result.update(statistic=float(chi2), p_value=float(p_value), significant=bool(p_value < alpha), degrees_of_freedom=int(dof), contingency_table=table.to_dict(), min_expected=float(np.min(expected)))
-        else:
-            if not target:
-                raise ValueError("linear_regression 需要 target。")
-            features = _numeric_columns(df, columns)
-            _checked_columns(df, [target])
-            if target in features:
-                features.remove(target)
-            if not features or not pd.api.types.is_numeric_dtype(df[target]):
-                raise ValueError("线性回归需要数值 target 和至少一个数值特征列。")
-            model_data = df[[*features, target]].dropna()
-            if len(model_data) <= len(features) + 1:
-                raise ValueError("有效样本量不足以拟合线性回归。")
-            model = LinearRegression().fit(model_data[features], model_data[target])
-            prediction = model.predict(model_data[features])
-            result.update(
-                target=target,
-                features=features,
-                sample_size=len(model_data),
-                intercept=float(model.intercept_),
-                coefficients=dict(zip(features, map(float, model.coef_), strict=True)),
-                r2=float(r2_score(model_data[target], prediction)),
-                rmse=float(mean_squared_error(model_data[target], prediction) ** 0.5),
-                mae=float(mean_absolute_error(model_data[target], prediction)),
-                adjusted_r2=float(1 - (1 - r2_score(model_data[target], prediction)) * (len(model_data) - 1) / max(len(model_data) - len(features) - 1, 1)),
-            )
-
+        result = run_statistical_analysis(
+            workspace.dataframe,
+            method=method,
+            columns=columns,
+            group_by=group_by,
+            target=target,
+            aggregation=aggregation,
+            alpha=alpha,
+            groups=groups,
+            window=window,
+            periods=periods,
+        )
         return json_text(result)
+
+    @tool
+    def compute_registered_metrics(adopt: bool = False) -> str:
+        """Compute metrics registered in metrics.json with their recorded expressions.
+
+        Use this instead of inventing a formula in run_python_code whenever the session
+        has metric definitions (name / aliases / expression). Expressions may only use
+        column names and + - * / ** (). Returns sum / mean / non-null count per metric.
+        adopt=true adds the computed columns to the active dataset.
+        """
+        definitions = load_metrics_for_workspace(workspace.root)
+        if not definitions:
+            return json_text(
+                {
+                    "status": "needs_input",
+                    "message": (
+                        "本会话没有 metrics.json，也没有 DATA_AGENT_METRICS_PATH。"
+                        "登记口径后再调用，才能按统一公式计算，而不是现场发明。"
+                    ),
+                    "metrics": [],
+                }
+            )
+        computed = compute_metrics_on_frame(workspace.dataframe, definitions)
+        payload: dict[str, Any] = {"status": "ok", "metrics": computed}
+        if adopt:
+            from data_agent.metrics import evaluate_metric_expression
+
+            frame = workspace.dataframe.copy()
+            added: list[str] = []
+            for item in computed:
+                if item.get("status") != "ok":
+                    continue
+                frame[item["name"]] = evaluate_metric_expression(frame, item["expression"])
+                added.append(item["name"])
+            if added:
+                workspace.adopt_dataset(frame, reset_source_baseline=False)
+                payload["adopted_columns"] = added
+                payload["output"] = workspace.save_dataframe(
+                    "metrics_computed.csv", description="按登记口径计算的指标列"
+                )
+        return json_text(payload)
 
     @tool
     def create_visualization(
@@ -1338,7 +1254,8 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         and columns) plus the list of available sources — do that before writing SQL.
 
         source selects the target:
-          - "session": the uploaded .db / .sqlite file of this session.
+          - "session": the uploaded .db / .sqlite file; if this session is a CSV/Excel
+            table, the active dataset is exposed as table `data`.
           - "postgres": the warehouse configured through the DATA_AGENT_DATABASE_URL
             environment variable.
 
@@ -1357,8 +1274,8 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
 
         Guards (always enforced regardless of parameters):
           - SELECT / WITH only; the connection itself is read-only.
-          - 5 second wall-clock budget per query: SQLite interrupts the statement via its
-            progress handler, Postgres via statement_timeout.
+          - 30 second wall-clock budget per query (DATA_AGENT_SQL_TIMEOUT_SECONDS, 1-120):
+            SQLite interrupts via progress handler, Postgres via statement_timeout.
           - At most 5000 rows and 500 columns per result.
         """
         if source == "postgres":
@@ -1368,18 +1285,13 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         elif source == "session":
             database_path = sqlite_source.resolve_session_source(workspace.source_path, workspace.input_dir)
             if database_path is None:
-                available = ["postgres"] if postgres_source.is_configured() else []
-                raise ValueError(
-                    "本会话没有 SQLite 数据源（source=\"session\" 需要 .db/.sqlite 文件）。"
-                    + (
-                        f"环境变量已配置 PostgreSQL，请改用 source=\"postgres\"。可用数据源：{'、'.join(available)}。"
-                        if available
-                        else "也可以改用 inspect_data 与预定义工具处理当前数据集。"
-                    )
-                )
-            driver = sqlite_source
-            connection = driver.connect_readonly(database_path)
-            source_label = database_path.name
+                driver = sqlite_source
+                connection = connect_from_frame(workspace.dataframe)
+                source_label = "活动数据集（表名 data）"
+            else:
+                driver = sqlite_source
+                connection = driver.connect_readonly(database_path)
+                source_label = database_path.name
         else:
             raise ValueError(
                 f"未知的 source「{source}」。可用值：session（会话内 SQLite 文件）、"
@@ -1387,7 +1299,10 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             )
         try:
             if not (sql or "").strip():
-                summary = driver.schema_summary(connection)
+                if source_label.startswith("活动数据集"):
+                    summary = active_schema_summary(workspace.dataframe)
+                else:
+                    summary = driver.schema_summary(connection)
                 return json_text(
                     {
                         "status": "ok",
@@ -1446,6 +1361,7 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         transform_data,
         join_datasets,
         query_database,
+        compute_registered_metrics,
         statistical_analysis,
         create_visualization,
         export_data,

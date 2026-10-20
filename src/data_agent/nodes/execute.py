@@ -22,6 +22,7 @@ from data_agent.prompts import (
     _is_recoverable_format_error,
     _query_allows_format_repair,
 )
+from data_agent.recipe import collect_tool_calls
 
 if TYPE_CHECKING:
     from data_agent.agent import DataAnalysisAgent
@@ -206,7 +207,12 @@ def execute_step(agent: DataAnalysisAgent, state: WorkflowState) -> dict[str, An
     summary = _message_text(final_ai) or "步骤已执行，但模型未返回文字摘要。"
     if recovery_note:
         summary = f"{summary}\n\n{recovery_note}"
-    step_result = {**step, "status": "ok", "summary": summary}
+    step_result = {
+        **step,
+        "status": "ok",
+        "summary": summary,
+        "tool_calls": collect_tool_calls(messages),
+    }
     return {
         "current_step": step,
         "last_step_result": step_result,

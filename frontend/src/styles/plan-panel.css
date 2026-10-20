@@ -3,6 +3,16 @@
    底部内容被裁切不可见。改为视口高度 - 顶栏/边距，内部独立滚动，
    保留 sticky 让滚动主区时面板始终可见。 */
 .plan-panel { min-width: 0; align-self: start; position: sticky; top: 84px; max-height: calc(100vh - 108px); overflow-x: hidden; overflow-y: auto; background: var(--canvas-default); border: 1px solid var(--border-default); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); }
+.plan-panel.is-reviewing { border-color: var(--accent-fg); box-shadow: 0 0 0 2px var(--accent-ring), var(--shadow-sm); }
+.plan-objective-banner {
+  margin: 0;
+  padding: 10px 18px;
+  border-top: 1px solid var(--border-muted);
+  background: var(--accent-subtle);
+  color: var(--accent-fg);
+  font-size: var(--text-xs);
+  line-height: 1.55;
+}
 .panel-heading { min-height: 68px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; }
 .panel-heading h2 { margin: 4px 0 0; font-size: var(--text-md); font-weight: 700; }
 .panel-meta { display: flex; align-items: center; gap: 6px; }
@@ -141,9 +151,13 @@
 .plan-approval-actions {
   display: flex;
   gap: 8px;
-  margin: 8px 18px 12px;
-  padding-top: 12px;
+  margin: 8px 0 0;
+  padding: 12px 18px;
   border-top: 1px solid var(--border-muted);
+  background: var(--canvas-default);
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
 }
 .plan-approval-actions button {
   flex: 1;

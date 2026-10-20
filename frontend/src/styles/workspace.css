@@ -107,6 +107,32 @@
 .task-box:hover { border-color: var(--border-strong); box-shadow: var(--shadow-md); }
 .task-box:focus-within { border-color: var(--accent-fg); box-shadow: 0 0 0 3px var(--accent-ring), var(--shadow-sm); }
 .task-box.is-running { border-color: var(--accent-fg); box-shadow: 0 0 0 3px var(--accent-ring); }
+.task-box.is-awaiting { border-color: var(--accent-fg); box-shadow: 0 0 0 2px var(--accent-ring); }
+.task-review-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px 24px 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--accent-subtle);
+  color: var(--accent-fg);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.task-review-banner button {
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--accent-fg);
+  border-radius: var(--radius-full);
+  background: var(--canvas-default);
+  color: var(--accent-fg);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  cursor: pointer;
+}
 .task-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 20px 24px 0; }
 .task-heading h2 { margin: 6px 0 0; font-size: var(--text-lg); font-weight: 700; letter-spacing: -0.005em; }
 .task-heading > span { display: flex; align-items: center; gap: 6px; color: var(--accent-fg); font-size: var(--text-sm); font-weight: 600; }
@@ -149,6 +175,70 @@
   font-weight: 400;
   white-space: nowrap;
 }
+
+.metrics-editor {
+  margin-top: 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--canvas-default);
+}
+.metrics-editor-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-default);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+.metrics-editor-toggle small {
+  margin-left: auto;
+  color: var(--fg-muted);
+  font-weight: 500;
+}
+.metrics-editor-body { padding: 0 14px 14px; }
+.metrics-editor-body p { margin: 0 0 8px; color: var(--fg-muted); font-size: var(--text-xs); line-height: 1.55; }
+.metrics-editor-warn { color: var(--attention-fg) !important; }
+.metrics-editor-body textarea {
+  width: 100%;
+  min-height: 160px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--canvas-subtle);
+  color: var(--fg-default);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  resize: vertical;
+}
+.metrics-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.metrics-editor-actions button {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--canvas-default);
+  color: var(--fg-default);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+.metrics-editor-actions .metrics-save {
+  background: var(--accent-solid);
+  border-color: transparent;
+  color: #fff;
+  font-weight: 600;
+}
+.metrics-editor-actions span { color: var(--fg-muted); font-size: var(--text-xs); }
 
 /* ---------- 字段质量概览 ---------- */
 .dataset-overview { margin-top: 28px; border-top: 1px solid var(--border-default); }

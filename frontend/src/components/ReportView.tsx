@@ -12,9 +12,11 @@ import {
   LayoutDashboard,
   LoaderCircle,
   Printer,
+  RotateCcw,
 } from "lucide-react";
 import { API_URL, REMARK_PLUGINS } from "../constants";
 import { describeApiError, requestHeaders } from "../utils/api";
+import { splitReportAppendix } from "../utils/reportAppendix";
 import { markdownComponents, ReasoningBlock, UsageChip } from "./ReportParts";
 import ShinyText from "./rb/ShinyText";
 import GradientText from "./rb/GradientText";
@@ -31,6 +33,8 @@ interface ReportViewProps {
   usage?: TokenUsage | null;
   // 当前会话 id：用于向后端请求数据画像仪表盘导出（无会话时隐藏菜单项）
   sessionId?: string | null;
+  onReplay?: () => void;
+  replayBusy?: boolean;
 }
 
 // 从 React 子节点提取纯文本：用于给标题生成稳定的 id
@@ -291,6 +295,8 @@ const ReportView = React.memo(function ReportView({
   theme,
   usage,
   sessionId,
+  onReplay,
+  replayBusy,
 }: ReportViewProps) {
   // copyState: "idle" | "copied" | "failed"。之前只有 copied boolean，
   // 复制失败时静默吞掉错误，用户切到其他应用粘贴才发现是旧内容。
@@ -307,6 +313,10 @@ const ReportView = React.memo(function ReportView({
   // defer 让高优先级更新（输入框交互）先走，Markdown 渲染延后。
   const deferredResponse = useDeferredValue(result.response || "");
   const deferredReasoning = useDeferredValue(reasoning || "");
+  const { body: reportBody, appendix: reportAppendix } = useMemo(
+    () => (streaming ? { body: deferredResponse, appendix: "" } : splitReportAppendix(deferredResponse)),
+    [deferredResponse, streaming],
+  );
 
   // useMemo 缓存 markdownComponents：否则每次渲染都返回新对象，ReactMarkdown
   // 会因 components prop 引用变化而全量重解析 AST，流式时每个 chunk 都重解析。
@@ -346,7 +356,9 @@ const ReportView = React.memo(function ReportView({
     }
     const root = reportBodyRef.current;
     if (!root) return;
-    const els = Array.from(root.querySelectorAll("h2, h3")) as HTMLHeadingElement[];
+    const els = Array.from(root.querySelectorAll("h2, h3")).filter(
+      (el) => !el.closest(".report-appendix"),
+    ) as HTMLHeadingElement[];
     const items: HeadingItem[] = els
       .map((el) => ({
         id: el.id,
@@ -506,6 +518,34 @@ const ReportView = React.memo(function ReportView({
     }
   }, [sessionId, dashboardBusy]);
 
+  const exportOffice = useCallback(async (kind: "docx" | "pptx") => {
+    if (!sessionId) return;
+    try {
+      const response = await fetch(`${API_URL}/api/sessions/${sessionId}/report.${kind}`, {
+        headers: requestHeaders(),
+      });
+      if (!response.ok) {
+        const contentType = response.headers.get("content-type") || "";
+        const payload: unknown = contentType.includes("application/json")
+          ? await response.json().catch(() => ({}))
+          : await response.text().catch(() => "");
+        throw new Error(describeApiError(payload, response.status));
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = kind === "docx" ? "分析报告.docx" : "分析汇报.pptx";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setExportOpen(false);
+    } catch (err) {
+      window.alert(`导出失败：${err instanceof Error ? err.message : "未知错误"}`);
+    }
+  }, [sessionId]);
+
   // 打印 / PDF：新窗口写入自包含 HTML，触发 window.print()，由浏览器另存 PDF
   const printReport = useCallback(() => {
     if (!result?.response) return;
@@ -553,6 +593,18 @@ const ReportView = React.memo(function ReportView({
         </div>
         <div className="report-actions">
           {!streaming && <UsageChip usage={usage} />}
+          {onReplay && (
+            <button
+              type="button"
+              className="report-copy"
+              onClick={onReplay}
+              disabled={streaming || replayBusy}
+              title="按上次分析配方重跑，不重新规划"
+            >
+              {replayBusy ? <LoaderCircle size={13} className="spin" /> : <RotateCcw size={13} />}
+              {replayBusy ? "重跑中…" : "按配方重跑"}
+            </button>
+          )}
           <button
             type="button"
             className={`report-copy ${copyState === "failed" ? "is-failed" : ""}`}
@@ -587,6 +639,16 @@ const ReportView = React.memo(function ReportView({
                 <button type="button" role="menuitem" className="export-item" onClick={printReport}>
                   <Printer size={13} />打印 / PDF
                 </button>
+                {sessionId && (
+                  <>
+                    <button type="button" role="menuitem" className="export-item" onClick={() => void exportOffice("docx")}>
+                      <FileText size={13} />Word (.docx)
+                    </button>
+                    <button type="button" role="menuitem" className="export-item" onClick={() => void exportOffice("pptx")}>
+                      <FileSpreadsheet size={13} />PPT (.pptx)
+                    </button>
+                  </>
+                )}
                 {sessionId && (
                   <button
                     type="button"
@@ -633,8 +695,16 @@ const ReportView = React.memo(function ReportView({
           ) : (
             <>
               <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={mdComponents}>
-                {deferredResponse}
+                {reportBody}
               </ReactMarkdown>
+              {reportAppendix && (
+                <details className="report-appendix">
+                  <summary>核验附录（工具算出的数字，不是模型现编的）</summary>
+                  <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={mdComponents}>
+                    {reportAppendix.replace(/^##\s*核验附录[^\n]*\n/, "")}
+                  </ReactMarkdown>
+                </details>
+              )}
               {streaming && <span className="report-cursor" aria-hidden="true" />}
             </>
           )}

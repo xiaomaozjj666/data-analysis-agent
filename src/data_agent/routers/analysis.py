@@ -20,7 +20,7 @@ import threading
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from data_agent.agent import AnalysisCancelled, AnalysisResult
 from data_agent.registry import (
@@ -590,3 +590,92 @@ def cancel_analysis(session_id: str) -> dict[str, str]:
     except Exception:
         logger.exception("Failed to persist cancelling status for %s — may show stale state on restart", session_id)
     return {"status": "cancelling"}
+
+
+def _chart_images(workspace: Any) -> list[Any]:
+    from pathlib import Path
+
+    paths = []
+    for item in workspace.artifacts:
+        path = Path(item.get("path") or workspace.artifacts_dir / item["name"])
+        if path.suffix.lower() in {".png", ".jpg", ".jpeg"} and path.is_file():
+            paths.append(path)
+    return paths[:8]
+
+
+@router.post("/api/sessions/{session_id}/replay")
+def replay_analysis(session_id: str) -> dict[str, Any]:
+    """按上次保存的 recipe.json 重放工具，不重新规划。"""
+    from data_agent import api
+    from data_agent.facts import extract_facts, render_facts_markdown
+    from data_agent.recipe import load_recipe, replay_recipe, replay_report_markdown
+    from data_agent.tools import build_tools
+
+    record = api.registry.get(session_id)
+    recipe = load_recipe(record.workspace)
+    if not recipe:
+        raise HTTPException(status_code=404, detail="没有可重跑的分析配方。请先完整跑完一次分析。")
+    if not record.run_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="当前会话已有分析正在运行。")
+    try:
+        tools = build_tools(record.workspace)
+        replay = replay_recipe(record.workspace, recipe, tools)
+        report = replay_report_markdown(replay)
+        facts = extract_facts(
+            [{"type": "tool_result", "name": item["name"], "detail": item.get("detail")} for item in replay["calls"]]
+        )
+        appendix = render_facts_markdown(facts)
+        if appendix:
+            report = f"{report.rstrip()}\n\n{appendix}"
+        result = AnalysisResult(
+            response=report,
+            trace=replay["calls"],
+            artifacts=list(record.workspace.artifacts),
+            dataset_profile=record.workspace.profile(sample_rows=5),
+            plan=list(recipe.get("plan") or []),
+            completed_steps=list(recipe.get("steps") or []),
+        )
+        record.last_result = result
+        record.chat.extend(
+            [
+                {"role": "user", "content": f"按上次分析重跑：{recipe.get('task', '')}"},
+                {"role": "assistant", "content": report},
+            ]
+        )
+        record.set_finished("completed")
+        api.registry.persist(session_id, record)
+    finally:
+        record.run_lock.release()
+    return _result_payload(session_id, result)
+
+
+@router.get("/api/sessions/{session_id}/report.docx")
+def download_report_docx(session_id: str) -> Response:
+    from data_agent import api
+    from data_agent.report_export import build_docx
+
+    record = api.registry.get(session_id)
+    if record.last_result is None:
+        raise HTTPException(status_code=404, detail="当前会话还没有分析报告。")
+    payload = build_docx("数据分析报告", record.last_result.response, _chart_images(record.workspace))
+    return Response(
+        content=payload,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": 'attachment; filename="analysis-report.docx"'},
+    )
+
+
+@router.get("/api/sessions/{session_id}/report.pptx")
+def download_report_pptx(session_id: str) -> Response:
+    from data_agent import api
+    from data_agent.report_export import build_pptx
+
+    record = api.registry.get(session_id)
+    if record.last_result is None:
+        raise HTTPException(status_code=404, detail="当前会话还没有分析报告。")
+    payload = build_pptx("数据分析报告", record.last_result.response, _chart_images(record.workspace))
+    return Response(
+        content=payload,
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        headers={"Content-Disposition": 'attachment; filename="analysis-report.pptx"'},
+    )

@@ -24,6 +24,21 @@
 .report-body.is-streaming:not(.is-expanded)::after { display: none; }
 /* 占位提示：报告还没出第一个字时显示，配合旋转图标让等待不那么焦虑 */
 .report-placeholder { display: flex; align-items: center; gap: 8px; color: var(--fg-muted); font-size: var(--text-sm); }
+.report-appendix {
+  margin: 24px 0 0;
+  padding: 12px 14px;
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--canvas-subtle);
+}
+.report-appendix summary {
+  cursor: pointer;
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.report-appendix summary:hover { color: var(--accent-fg); }
+.report-appendix .report-body, .report-appendix { color: var(--fg-default); }
 .report-placeholder svg { color: var(--accent-fg); }
 /* 闪烁光标：模拟打字机效果，让用户知道报告正在写出 */
 .report-cursor { display: inline-block; width: 7px; height: 16px; margin-left: 2px; vertical-align: text-bottom; background: var(--accent-fg); border-radius: 1px; animation: blink 1s steps(2, start) infinite; }

@@ -286,6 +286,17 @@ def test_query_budget_default_is_bounded():
     assert QUERY_TIME_BUDGET_MS > 0
 
 
+def test_query_time_budget_env_is_clamped(monkeypatch):
+    from data_agent.sql_guard import query_time_budget_ms
+
+    monkeypatch.setenv("DATA_AGENT_SQL_TIMEOUT_SECONDS", "0")
+    assert query_time_budget_ms() == 1000
+    monkeypatch.setenv("DATA_AGENT_SQL_TIMEOUT_SECONDS", "999")
+    assert query_time_budget_ms() == 120_000
+    monkeypatch.setenv("DATA_AGENT_SQL_TIMEOUT_SECONDS", "not-a-number")
+    assert query_time_budget_ms() == 30_000
+
+
 def test_to_json_safe_handles_blobs_and_scalars():
     assert to_json_safe(b"\x00\x01") == "<blob:2 bytes>"
     assert to_json_safe(None) is None
@@ -431,9 +442,9 @@ def test_query_database_adopts_result_as_dataset(tmp_path):
 
 
 def test_query_database_reports_missing_source_on_non_sqlite_session(workspace):
-    """CSV 会话里调用本工具要给出可纠正的说明，而不是底层异常。"""
-    with pytest.raises(ValueError, match="没有 SQLite 数据源"):
-        _tools(workspace)["query_database"].invoke({"sql": "SELECT 1"})
+    """CSV 会话把活动表暴露为 data，不再因为没有 .db 而失败。"""
+    payload = json.loads(_tools(workspace)["query_database"].invoke({"sql": "SELECT 1 AS n"}))
+    assert payload["row_count"] == 1
 
 
 def test_query_database_result_can_feed_chart_tool(tmp_path):
