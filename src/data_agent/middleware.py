@@ -11,8 +11,10 @@
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import logging
 import os
+import sys
 import threading
 import time
 from collections import defaultdict, deque
@@ -23,6 +25,32 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_bind_host() -> str:
+    """从 uvicorn 命令行推断监听地址，供「空 token 只允许环回」的启动校验使用。
+
+    Dockerfile、Render Blueprint 与 run.ps1 都通过 uvicorn CLI 显式传入
+    ``--host``；命令行里没有 ``--host`` 时取 uvicorn 的默认值 ``127.0.0.1``。
+    """
+    argv = sys.argv[1:]
+    for index, item in enumerate(argv):
+        if item == "--host" and index + 1 < len(argv):
+            return argv[index + 1].strip()
+        if item.startswith("--host="):
+            return item.split("=", 1)[1].strip()
+    return "127.0.0.1"
+
+
+def _is_loopback_host(host: str) -> bool:
+    """``localhost`` / 127.0.0.0/8 / ::1 视为环回；无法解析的主机名按非环回处理。"""
+    normalized = host.strip().strip("[]").lower()
+    if normalized == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
 
 
 def _check_access(request: Request) -> None:
@@ -129,9 +157,18 @@ def setup_middleware(app) -> None:  # type: ignore[no-untyped-def]
     """Attach CORS、GZip、安全头与速率限制中间件到 ``app``。"""
     from data_agent import api
 
-    # Warn on empty access token in non-local deployments (Render, Docker, etc.).
-    # Local dev (uvicorn with no APP_ACCESS_TOKEN) is intentionally unauthenticated.
-    if not os.getenv("APP_ACCESS_TOKEN", "").strip():
+    # 未配置访问令牌时只允许绑定环回地址：0.0.0.0 / 公网 IP 上裸奔等于把
+    # runs/ 下全部会话公开。Dockerfile、Render 与 run.ps1 都显式传 --host，
+    # 因此启动时即可判定（见 _resolve_bind_host）。
+    access_token = os.getenv("APP_ACCESS_TOKEN", "").strip()
+    if not access_token:
+        bind_host = _resolve_bind_host()
+        if not _is_loopback_host(bind_host):
+            raise RuntimeError(
+                f"APP_ACCESS_TOKEN 未设置，但服务监听地址 {bind_host!r} 不是环回地址。"
+                "请设置 APP_ACCESS_TOKEN 或把绑定地址改为 127.0.0.1。"
+            )
+        # 生产类环境即使绑在环回也提示（可能是反向代理背后只绑本机）。
         if os.getenv("RENDER") or os.getenv("DATA_AGENT_STORAGE_BACKEND") == "s3":
             logger.warning(
                 "APP_ACCESS_TOKEN is empty in a production-like environment. "

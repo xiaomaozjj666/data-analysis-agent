@@ -4,7 +4,10 @@ __pycache__/
 .pytest_cache/
 .coverage
 coverage.xml
-.env
+# 所有环境变量文件（.env / .env.production / .env.test / frontend/.env.*）都不入库，
+# 只保留示例文件，避免真实密钥被误提交。
+.env*
+!.env.example
 runs/
 .playwright-cli/
 .pw-browsers/

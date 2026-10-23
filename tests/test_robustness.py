@@ -8,6 +8,7 @@ middleware / callbacks / cli / agent / api 前端 catch-all。
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 import time
 from collections import deque
@@ -253,6 +254,66 @@ def test_setup_middleware_warns_when_production_without_token(monkeypatch, caplo
     with caplog.at_level(logging.WARNING, logger="data_agent.middleware"):
         setup_middleware(app)
     assert "APP_ACCESS_TOKEN is empty" in caplog.text
+
+
+def test_setup_middleware_allows_empty_token_on_loopback(monkeypatch):
+    """未配置 token + 环回地址是合法的本地开发形态，不应阻断启动。"""
+    from fastapi import FastAPI
+
+    from data_agent import api  # noqa: F401
+    from data_agent.middleware import setup_middleware
+
+    monkeypatch.delenv("APP_ACCESS_TOKEN", raising=False)
+    monkeypatch.setattr(sys, "argv", ["uvicorn", "data_agent.api:app", "--host", "127.0.0.1"])
+    setup_middleware(FastAPI())  # 不抛异常即通过
+
+
+def test_setup_middleware_rejects_empty_token_on_public_bind(monkeypatch):
+    """未配置 token + 监听 0.0.0.0：启动即报错，并给出两种修复方式。"""
+    from fastapi import FastAPI
+
+    from data_agent import api  # noqa: F401
+    from data_agent.middleware import setup_middleware
+
+    monkeypatch.delenv("APP_ACCESS_TOKEN", raising=False)
+    monkeypatch.setattr(sys, "argv", ["uvicorn", "data_agent.api:app", "--host", "0.0.0.0"])
+    with pytest.raises(RuntimeError, match="APP_ACCESS_TOKEN 或把绑定地址改为 127.0.0.1"):
+        setup_middleware(FastAPI())
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["uvicorn", "data_agent.api:app", "--host", "0.0.0.0"], "0.0.0.0"),
+        (["uvicorn", "data_agent.api:app", "--host=0.0.0.0"], "0.0.0.0"),
+        (["uvicorn", "data_agent.api:app"], "127.0.0.1"),
+        (["uvicorn", "data_agent.api:app", "--host"], "127.0.0.1"),
+    ],
+)
+def test_resolve_bind_host_from_uvicorn_cli(monkeypatch, argv, expected):
+    from data_agent.middleware import _resolve_bind_host
+
+    monkeypatch.setattr(sys, "argv", argv)
+    assert _resolve_bind_host() == expected
+
+
+@pytest.mark.parametrize(
+    ("host", "expected"),
+    [
+        ("127.0.0.1", True),
+        ("127.0.0.2", True),
+        ("localhost", True),
+        ("[::1]", True),
+        ("0.0.0.0", False),
+        ("::", False),
+        ("example.com", False),
+        ("", False),
+    ],
+)
+def test_is_loopback_host(host, expected):
+    from data_agent.middleware import _is_loopback_host
+
+    assert _is_loopback_host(host) is expected
 
 
 # ---------------------------------------------------------------------------

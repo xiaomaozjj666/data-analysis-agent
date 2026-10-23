@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from threading import Event
 from typing import Any
@@ -14,6 +15,8 @@ from typing import Any
 from langchain_core.callbacks import BaseCallbackHandler
 
 from data_agent.models import AnalysisCancelled
+
+logger = logging.getLogger(__name__)
 
 
 class CancelCallback(BaseCallbackHandler):
@@ -71,7 +74,7 @@ class ReportStreamCallback(BaseCallbackHandler):
             try:
                 self.event_callback(self.event_type, {"chunk": token})
             except Exception:
-                pass
+                logger.debug("流式回调处理失败", exc_info=True)
 
 
 class ToolTraceCallback(BaseCallbackHandler):
@@ -133,7 +136,7 @@ class ToolTraceCallback(BaseCallbackHandler):
                 "started_at": self._tool_starts[run_id],
             })
         except Exception:
-            pass
+            logger.debug("流式回调处理失败", exc_info=True)
         try:
             self.event_callback("step_progress", {
                 "progress": min(90, self._call_count * 20),
@@ -145,7 +148,7 @@ class ToolTraceCallback(BaseCallbackHandler):
                 "total_steps": self.total_steps,
             })
         except Exception:
-            pass
+            logger.debug("流式回调处理失败", exc_info=True)
 
     def on_tool_end(self, output: str = "", **kwargs: Any) -> Any:
         import time
@@ -159,7 +162,7 @@ class ToolTraceCallback(BaseCallbackHandler):
                 "duration_ms": duration_ms,
             })
         except Exception:
-            pass
+            logger.debug("流式回调处理失败", exc_info=True)
 
 
 class ReasoningStreamCallback(BaseCallbackHandler):
@@ -202,7 +205,7 @@ class ReasoningStreamCallback(BaseCallbackHandler):
         try:
             self.event_callback(self.event_type, {"chunk": reasoning})
         except Exception:
-            pass
+            logger.debug("流式回调处理失败", exc_info=True)
 
 
 class UsageAccumulator(BaseCallbackHandler):

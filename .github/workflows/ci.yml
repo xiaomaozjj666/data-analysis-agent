@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+# 最小权限：CI 只读仓库内容（不推送、不发版），降低 workflow 被注入后的影响面。
+permissions:
+  contents: read
+
 # 仅对 PR 取消旧运行（PR 分支会反复推送，取消可避免排队）；
 # 推送默认分支不取消——公开仓库的 Actions 分钟数免费，取消节省不了额度，
 # 反而会让被顶掉的那次运行在提交列表里留下红色的 cancelled 标记。
@@ -14,8 +18,15 @@ concurrency:
 
 jobs:
   backend:
-    name: Backend (ruff + pytest)
+    name: Backend (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      # 一个版本失败时不取消其余版本，便于一次看到全部兼容性结论。
+      fail-fast: false
+      matrix:
+        # requires-python >=3.11,<3.14：三个版本都由本工作流实测。
+        python-version: ["3.11", "3.12", "3.13"]
     # Postgres service：让 query_database 的 Postgres 驱动在 CI 里跑真实集成测试，
     # 而不是只测"没装驱动时报错"这一条降级路径。测试自身在连不上时自动跳过，
     # 本地无 Docker 的环境不受影响。
@@ -37,14 +48,23 @@ jobs:
 
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: pyproject.toml
 
       - name: Install dependencies
+        # Python 3.11 的 ensurepip 自带旧版 setuptools（构建工具，非运行时依赖），
+        # 先升级 pip/setuptools 到已修复版本，避免依赖审计被宿主工具误报。
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install --upgrade pip setuptools
           pip install -e ".[dev]"
+
+      - name: Audit dependencies
+        # pip-audit 没有 npm audit 的 --audit-level 选项；默认行为是发现任何
+        # 已知漏洞即非零退出，比只拦 high 更严格。
+        run: |
+          python -m pip install pip-audit
+          pip-audit
 
       - name: Lint with ruff
         run: ruff check .
@@ -75,6 +95,7 @@ jobs:
   frontend:
     name: Frontend (typecheck + test + build)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: frontend
@@ -89,6 +110,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
 
       - name: Typecheck
         run: npm run typecheck

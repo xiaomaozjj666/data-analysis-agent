@@ -87,7 +87,7 @@ flowchart LR
 
 ### 环境要求
 - Python 3.11–3.13
-- Node.js 20 或更高版本
+- Node.js 22 或更高版本
 - 一个 LLM API Key（默认 DeepSeek，也兼容 OpenAI）
 
 ### 一键启动（Windows）
@@ -170,7 +170,7 @@ DEEPSEEK_REASONING_EFFORT=high
 OPENAI_API_KEY=<your-api-key>
 OPENAI_MODEL=gpt-4.1-mini
 
-# 线上访问保护（公开部署建议设置）
+# 线上访问保护（绑定 0.0.0.0 等非环回地址时必填，否则拒绝启动）
 APP_ACCESS_TOKEN=<your-access-token>
 
 # 可选：指标口径登记文件（登记后规划阶段会注入口径定义，防止跨会话口径漂移）
@@ -226,10 +226,11 @@ tests/               pytest 测试
 
 ## 部署
 
-- **Docker**：根目录 `Dockerfile` 两阶段构建（Node 构建前端 + Python 运行时），以非 root 用户运行并带健康检查。
+- **Docker**：根目录 `Dockerfile` 两阶段构建（Node 构建前端 + Python 运行时），以非 root 用户运行并带健康检查。容器监听 `0.0.0.0`，必须设置 `APP_ACCESS_TOKEN`，否则进程启动即报错退出。
+- **访问令牌**：监听非环回地址（如 Docker / Render 的 `0.0.0.0`）时必须设置 `APP_ACCESS_TOKEN`；本地 `127.0.0.1` 开发可留空。
 - **LangSmith**：`langgraph.json` 导出 `data_analysis_agent` 图，可直接创建 LangSmith Deployment；数据集通过 `dataset_id` 或受控 `dataset_path` 提供。
 - **Render**：根目录 `render.yaml` 提供 Blueprint 一键部署，附持久磁盘；Free 实例休眠后 `/tmp` 会清空，长期保存数据请启用 S3/R2 后端。
-- **CI**：`.github/workflows/ci.yml` 在 push / PR 时自动执行 ruff、pytest（含 240s 单测超时保护）与前端类型检查、测试及生产构建。
+- **CI**：`.github/workflows/ci.yml` 在 push / PR 时自动执行 ruff、pytest（含 240s 单测超时保护与 `--cov-fail-under=97` 覆盖率门禁）与前端类型检查、测试及生产构建。
 
 ## 质量检查
 

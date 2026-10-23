@@ -82,7 +82,7 @@ try {
     }
 
     $NodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
-    if (-not $NodeCommand) { throw "Node.js was not found. Install Node.js 20 or newer." }
+    if (-not $NodeCommand) { throw "Node.js was not found. Install Node.js 22 or newer." }
     $Node = $NodeCommand.Source
     if (-not (Test-Path -LiteralPath $Vite)) {
         Write-Host "[Data Analysis] Installing frontend dependencies..." -ForegroundColor Cyan

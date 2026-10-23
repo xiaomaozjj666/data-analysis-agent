@@ -19,7 +19,7 @@ WORKDIR /app
 # Install Python deps（必须先有 src/ 与 README，否则 pip install . 装不到包）
 COPY pyproject.toml README.md ./
 COPY src/ ./src/
-RUN pip install --no-cache-dir . && pip install uvicorn
+RUN pip install --no-cache-dir .
 
 # Copy built frontend from builder stage
 COPY --from=frontend /build/frontend/dist/ ./frontend/dist/
