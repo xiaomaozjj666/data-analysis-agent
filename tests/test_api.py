@@ -21,6 +21,24 @@ from data_agent.storage import LocalSessionStorage
 from data_agent.tools import build_tools
 from data_agent.workspace import DataWorkspace
 
+
+def _acquire_run_lock_within(record, timeout: float = 2.0) -> bool:
+    """在 timeout 秒内尝试获取 run_lock，语义等同 acquire(blocking=False)。
+
+    断开/兜底路径的锁释放发生在服务端任务里，属异步行为；直接立刻断言会
+    依赖调度时序（慢一点的 runner 上偶发失败）。这里做有界等待：
+    成功即返回 True，超时返回 False，**不代替调用方释放**。
+    """
+    import time as _time
+
+    deadline = _time.monotonic() + timeout
+    while not record.run_lock.acquire(blocking=False):
+        if _time.monotonic() >= deadline:
+            return False
+        _time.sleep(0.02)
+    return True
+
+
 # Capture the real asyncio.wait_for before any test patches it, so the
 # short-timeout shim used to force heartbeats can still delegate to the
 # original implementation without infinite recursion.
@@ -2358,7 +2376,7 @@ def test_analyze_stream_releases_lock_on_first_frame_disconnect(tmp_path, monkey
 
     # 验证 run_lock 已释放（可以成功 acquire）
     record = api.registry.get(session_id)
-    assert record.run_lock.acquire(blocking=False), "run_lock 未释放——C1 修复路径未生效"
+    assert _acquire_run_lock_within(record), "run_lock 未释放——C1 修复路径未生效"
     record.run_lock.release()
     # 验证 analysis_slots 已释放（可以成功 acquire）
     assert api.analysis_slots.acquire(blocking=False), "analysis_slots 未释放——C1 修复路径未生效"
@@ -2417,7 +2435,7 @@ def test_chat_stream_releases_lock_on_first_frame_disconnect(tmp_path, monkeypat
 
     # 验证 run_lock 已释放
     record = api.registry.get(session_id)
-    assert record.run_lock.acquire(blocking=False), "run_lock 未释放——chat_stream C1 修复路径未生效"
+    assert _acquire_run_lock_within(record), "run_lock 未释放——chat_stream C1 修复路径未生效"
     record.run_lock.release()
 
 
@@ -2474,7 +2492,7 @@ def test_lock_release_allows_subsequent_analysis_after_disconnect(tmp_path, monk
 
     # 确认锁已释放
     record = api.registry.get(session_id)
-    assert record.run_lock.acquire(blocking=False), "首次断开后 run_lock 未释放"
+    assert _acquire_run_lock_within(record), "首次断开后 run_lock 未释放"
     record.run_lock.release()
 
     # 第二次：用新的 FastAgent 发起同步分析，验证不返回 409
@@ -2561,7 +2579,7 @@ def test_analyze_stream_c1_fix_releases_lock_when_worker_start_fails(tmp_path, m
 
     # 验证 C1 修复路径已释放 run_lock
     record = api.registry.get(session_id)
-    assert record.run_lock.acquire(blocking=False), "run_lock 未释放——C1 修复路径未生效"
+    assert _acquire_run_lock_within(record), "run_lock 未释放——C1 修复路径未生效"
     record.run_lock.release()
     # 验证 C1 修复路径已释放 analysis_slots
     assert api.analysis_slots.acquire(blocking=False), "analysis_slots 未释放——C1 修复路径未生效"
@@ -2827,7 +2845,7 @@ def test_analyze_stream_first_frame_disconnect_persist_failure(tmp_path, monkeyp
     assert "Failed to persist abort state" in caplog.text
     # 兜底路径已释放锁
     record = api.registry.get(uploaded["id"])
-    assert record.run_lock.acquire(blocking=False)
+    assert _acquire_run_lock_within(record)
     record.run_lock.release()
 
 
@@ -2973,7 +2991,7 @@ def test_chat_stream_first_frame_disconnect_releases_lock_when_start_fails(tmp_p
         pass
 
     record = api.registry.get(session_id)
-    assert record.run_lock.acquire(blocking=False), "chat 兜底路径应释放 run_lock"
+    assert _acquire_run_lock_within(record), "chat 兜底路径应释放 run_lock"
     record.run_lock.release()
 
 
@@ -3056,7 +3074,7 @@ def test_analyze_stream_first_frame_disconnect_swallows_release_errors(tmp_path,
 
     # 兜底路径必须已释放真实 run_lock（worker 从未启动，只有兜底能释放它）
     record = api.registry.get(uploaded["id"])
-    assert record.run_lock.acquire(blocking=False), "兜底路径应释放 run_lock"
+    assert _acquire_run_lock_within(record), "兜底路径应释放 run_lock"
     record.run_lock.release()
 
 
