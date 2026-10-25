@@ -32,8 +32,13 @@ services:
         value: deepseek-flash
       - key: DATA_AGENT_STORAGE_BACKEND
         value: local
-    disk:
-      name: data
-      mountPath: /var/data
-      sizeGB: 10
+    # 不声明 disk：线上服务为 Free 实例（实测 2026-10-26：冷启动唤醒 ~34s），
+    # Free 档不支持持久磁盘，blueprint 里声明 disk 会导致每次 sync 失败。
+    # Free 下 DATA_AGENT_DATA_DIR=/var/data 是容器临时层，重启即清空——
+    # 长期保存请启用 S3/R2 后端（见 README 持久化一节）。
+    # 升级到 Starter 及以上需要持久盘时，把下面几行加回 services[0] 下即可：
+    #   disk:
+    #     name: data
+    #     mountPath: /var/data
+    #     sizeGB: 10
     autoDeploy: true
