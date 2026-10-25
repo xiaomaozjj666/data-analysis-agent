@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.mypy_cache/
 .coverage
 coverage.xml
 # 所有环境变量文件（.env / .env.production / .env.test / frontend/.env.*）都不入库，

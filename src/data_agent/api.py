@@ -37,10 +37,10 @@ from data_agent.middleware import (
     _check_rate_limit,  # noqa: F401
     _client_identifier,  # noqa: F401
     _prune_rate_buckets_locked,  # noqa: F401
-    _trusted_proxy_hops,  # noqa: F401
     request_buckets,  # noqa: F401
     request_buckets_lock,  # noqa: F401
     setup_middleware,
+    trusted_proxy_hops,  # noqa: F401
 )
 
 # 共享单例、请求模型、辅助函数、版本常量 —— 由 registry 持有并在 import 时初始化。

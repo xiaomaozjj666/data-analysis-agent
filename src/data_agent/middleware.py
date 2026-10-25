@@ -2,7 +2,7 @@
 
 ``setup_middleware(app)`` 把上述中间件装配到 FastAPI 应用上。速率限制相关
 的可变状态（``request_buckets``、``request_buckets_lock``、
-``MAX_RATE_LIMIT_BUCKETS``、``_trusted_proxy_hops``）定义在本模块，由
+``MAX_RATE_LIMIT_BUCKETS``、``trusted_proxy_hops()``）定义在本模块，由
 ``api.py`` re-export；限流函数内部通过 ``api.<name>`` 访问这些状态，以便
 测试用 ``monkeypatch.setattr(api, "request_buckets", ...)`` 等替换时能被
 此处感知（与路由层访问 ``api.registry`` 同理）。
@@ -82,7 +82,15 @@ MAX_RATE_LIMIT_BUCKETS = 10_000
 # therefore trust the Nth-from-last entry; taking the leftmost entry when no
 # proxy is declared would let attackers forge the header and bypass limits.
 # Default 0 means "direct exposure, ignore XFF"; set 1 for Render/Nginx.
-_trusted_proxy_hops = max(0, int(os.getenv("DATA_AGENT_TRUSTED_PROXY_HOPS", "0")))
+def trusted_proxy_hops() -> int:
+    """Trusted XFF hops，每次调用时读环境变量。
+
+    不能在导入期求值：``load_dotenv()`` 在 config 导入链里晚于本模块，
+    导入期读取会让只写在 ``.env`` 里的该变量被静默忽略——反代后部署若只配
+    .env，限流键会退化为代理 IP，全部客户端共享同一个限流桶。
+    （与 ``sql_guard.query_time_budget_ms`` 同一套按调用求值的约定。）
+    """
+    return max(0, int(os.getenv("DATA_AGENT_TRUSTED_PROXY_HOPS", "0")))
 
 request_buckets: dict[str, deque[float]] = defaultdict(deque)
 request_buckets_lock = threading.Lock()
@@ -96,15 +104,16 @@ def _client_identifier(request: Request) -> str:
     to spin up fresh identities. Falls back to the direct socket address so
     the limiter always has a stable key.
     """
-    # 通过 ``api._trusted_proxy_hops`` 访问，兼容测试 monkeypatch。
+    # 通过 ``api.trusted_proxy_hops`` 访问，兼容测试 monkeypatch。
     from data_agent import api
 
-    if api._trusted_proxy_hops > 0:
+    hops = api.trusted_proxy_hops()
+    if hops > 0:
         forwarded = request.headers.get("x-forwarded-for", "")
         if forwarded:
             parts = [item.strip() for item in forwarded.split(",") if item.strip()]
-            if len(parts) >= api._trusted_proxy_hops:
-                return parts[-api._trusted_proxy_hops]
+            if len(parts) >= hops:
+                return parts[-hops]
             # XFF has fewer entries than declared hops — likely an internal
             # health check that bypassed the proxy. Fall through to direct host.
     if request.client:

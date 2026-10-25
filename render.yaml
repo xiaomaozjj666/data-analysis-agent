@@ -20,6 +20,12 @@ services:
         sync: false
       - key: OPENAI_API_KEY
         sync: false
+      # 默认 provider 为 deepseek（config.py DATA_AGENT_PROVIDER），
+      # 按 README 默认链路部署时填这里，OPENAI_API_KEY 留给 OpenAI 兼容中转。
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: DEEPSEEK_MODEL
+        sync: false
       - key: DATA_AGENT_STORAGE_BACKEND
         value: local
     disk:

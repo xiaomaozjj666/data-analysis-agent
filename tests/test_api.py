@@ -514,7 +514,7 @@ def test_client_identifier_ignores_xff_when_no_trusted_proxy(monkeypatch):
     config must fall back to the direct socket address.
     """
     monkeypatch.delenv("DATA_AGENT_TRUSTED_PROXY_HOPS", raising=False)
-    monkeypatch.setattr(api, "_trusted_proxy_hops", 0)
+    monkeypatch.setattr(api, "trusted_proxy_hops", lambda: 0)
 
     class FakeRequest:
         headers = {"x-forwarded-for": "1.2.3.4"}
@@ -530,7 +530,7 @@ def test_client_identifier_takes_nth_from_last_xff_with_trusted_hops(monkeypatch
     The Nth-from-last entry is therefore the first untrusted hop — the real
     client — and cannot be forged by the client itself.
     """
-    monkeypatch.setattr(api, "_trusted_proxy_hops", 1)
+    monkeypatch.setattr(api, "trusted_proxy_hops", lambda: 1)
 
     class FakeRequest:
         headers = {"x-forwarded-for": "spoofed, 203.0.113.5"}
@@ -540,12 +540,30 @@ def test_client_identifier_takes_nth_from_last_xff_with_trusted_hops(monkeypatch
     assert api._client_identifier(FakeRequest()) == "203.0.113.5"
 
 
+def test_client_identifier_reads_env_at_call_time(monkeypatch):
+    """DATA_AGENT_TRUSTED_PROXY_HOPS must be read per call, not at import.
+
+    load_dotenv() runs later in the import chain than middleware.py, so an
+    import-time snapshot silently ignored .env-only values — behind a proxy
+    every client then shared one rate-limit bucket keyed on the proxy IP.
+    Setting the env var here (without monkeypatching the function) proves the
+    value takes effect on the next request.
+    """
+    monkeypatch.setenv("DATA_AGENT_TRUSTED_PROXY_HOPS", "1")
+
+    class FakeRequest:
+        headers = {"x-forwarded-for": "spoofed, 203.0.113.5"}
+        client = type("Client", (), {"host": "10.0.0.1"})()
+
+    assert api._client_identifier(FakeRequest()) == "203.0.113.5"
+
+
 def test_client_identifier_falls_back_to_direct_host_on_short_xff(monkeypatch):
     """If XFF has fewer entries than trusted hops, use the socket host.
 
     This happens for internal health checks that bypass the proxy layer.
     """
-    monkeypatch.setattr(api, "_trusted_proxy_hops", 2)
+    monkeypatch.setattr(api, "trusted_proxy_hops", lambda: 2)
 
     class FakeRequest:
         headers = {"x-forwarded-for": "203.0.113.5"}

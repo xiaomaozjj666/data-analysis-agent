@@ -67,9 +67,6 @@ data-agent-mcp = "data_agent.mcp_server:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.setuptools.package-data]
-data_agent = ["echarts_engine.py"]
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --disable-warnings"

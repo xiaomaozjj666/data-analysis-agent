@@ -42,7 +42,7 @@
 
 **验证方式**（单测之外必须做的）：
 
-- 生成 30 万行**有结构**的数据（分类别不同分布 + 少量极端值），在真实应用里看缩略图与预览：`runs/api_bigtest0001` 就是为此保留的演示会话。注意 `session.json` 只有 `registry.create()` 会写——只生成 HTML 的话历史列表里看不到这个会话。
+- 生成 30 万行**有结构**的数据（分类别不同分布 + 少量极端值），在真实应用里看缩略图与预览：`runs/aapi_bigtest0001` 就是为此保留的演示会话。注意 `session.json` 只有 `registry.create()` 会写——只生成 HTML 的话历史列表里看不到这个会话。
 - 悬浮读格子：tooltip 应给出"销售额 689 ~ 722 / 利润 295~300 / 记录数 16（占 0.01%）"。分箱区间必须作为 `customdata` 显式带上——Plotly 的 heatmap hover 本身没有区间字段。
 - 缩放：热力图缩放是栅格拉伸（不是 datashader 那种随缩放的动态重分箱），hover 仍准；这是有意取舍，别当 bug 去"修"。
 
@@ -70,7 +70,7 @@
 - 这套用例第一次跑就抓到真问题：**ECharts 30 万行密度图要 7.3 秒，而 Plotly 只要 1.8 秒**。Profiler 显示时间不在渲染里，而在 `ensure_echarts_bundle()`——它**按会话**从 CDN 下载 1MB 的 `echarts.min.js`，每个新会话的首张 ECharts 图都要重下一次。改为机器级共享缓存（`runs/_bundles`，各会话硬链接引用）+ 服务启动时后台预热（`api._warm_chart_bundles`），ECharts 降到 2.5 秒；离线且有缓存时照常可用，无缓存时返回 None 让调用方 fallback 到 CDN 直引（`tests/test_bundle_cache.py` 覆盖这四种情形）。
 - 教训：**"首图慢"和"渲染慢"要分开量**。cProfile 里渲染只占 1.8s，剩下 6s 全在第一次网络 I/O；只看总耗时会误判成渲染性能问题。
 
-**文档截图怎么重拍**：python scripts/capture_docs_screenshots.py（需 pip install playwright && playwright install chromium，以及本地已起服务、.env 里的 APP_ACCESS_TOKEN、演示会话 pi_bigtest0001）。两个坑写在脚本注释里：① 缩略图懒加载且**离开视口会被 purge**，所以产物页截图不能用 ull_page（折叠线以下的卡片会是空白）；② 也不能中途改视口——ECharts 迷你画布不会跟着重绘，会截成空白——要用高视口**新开一个页面**。
+**文档截图怎么重拍**：python scripts/capture_docs_screenshots.py（需 pip install playwright && playwright install chromium，以及本地已起服务、.env 里的 APP_ACCESS_TOKEN、演示会话 api_bigtest0001）。两个坑写在脚本注释里：① 缩略图懒加载且**离开视口会被 purge**，所以产物页截图不能用 full_page（折叠线以下的卡片会是空白）；② 也不能中途改视口——ECharts 迷你画布不会跟着重绘，会截成空白——要用高视口**新开一个页面**。
 
 **一次分析的耗时构成（实测时间线，不是估算）**：用 SSE 事件时间戳量过完整一轮"按地区对比销售额 + 画关系图"（4k 行样例数据）：
 
