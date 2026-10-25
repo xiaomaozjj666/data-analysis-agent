@@ -190,6 +190,30 @@ def test_access_token_accepts_bearer_prefix_on_authorization_header(monkeypatch)
     assert response.status_code == 200
 
 
+def test_non_ascii_token_header_returns_401_not_500(monkeypatch):
+    """回归：含非 ASCII 字符的令牌头必须按 401 拒绝，而不是抛 TypeError 变 500。
+
+    ``hmac.compare_digest`` 对含非 ASCII 的 str 直接抛
+    ``TypeError: comparing strings with non-ASCII characters is not
+    supported``；middleware 需先编码成 bytes 再比较。
+    """
+    from fastapi.testclient import TestClient
+
+    from data_agent import api
+
+    monkeypatch.setenv("APP_ACCESS_TOKEN", "secret-token")
+    client = TestClient(api.app)
+    # HTTP 头按 latin-1 传输；httpx 测试客户端要求 bytes 形式才能携带非 ASCII 字节
+    for headers in (
+        {"X-App-Token": b"\xe9"},
+        {"X-App-Token": b"Bearer \xe9"},
+        {"Authorization": b"Bearer \xe9"},
+    ):
+        response = client.get("/api/settings", headers=headers)
+        assert response.status_code == 401
+        assert response.json()["detail"] == "需要有效的应用访问令牌。"
+
+
 def test_client_identifier_falls_back_to_unknown_without_client():
     from data_agent.middleware import _client_identifier
 

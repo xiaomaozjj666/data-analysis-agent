@@ -3320,3 +3320,22 @@ def test_stream_cancel_handler_warns_when_worker_still_alive(tmp_path, monkeypat
     assert not worker.is_alive()
 
 
+
+
+def test_access_token_non_ascii_rejected_not_500(monkeypatch):
+    """非 ASCII token 头必须得到 401 而非 500。
+
+    hmac.compare_digest 对含非 ASCII 字符的 str 抛 TypeError（历史缺陷：
+    恶意构造的令牌头导致 500）。按字节比较后应稳定返回 401。
+    """
+    monkeypatch.setenv("APP_ACCESS_TOKEN", "test-access-token")
+    client = TestClient(api.app)
+
+    # X-App-Token 路径：非 ASCII 值（HTTP 头按 latin-1 传输；
+    # httpx 测试客户端要求 bytes 形式才能携带非 ASCII 字节）
+    resp = client.get("/api/settings", headers={"X-App-Token": b"\xe9"})
+    assert resp.status_code == 401
+
+    # Bearer 路径：非 ASCII 值
+    resp = client.get("/api/settings", headers={"Authorization": b"Bearer \xe9\xe8"})
+    assert resp.status_code == 401

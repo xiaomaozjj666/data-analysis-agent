@@ -64,7 +64,11 @@ def _check_access(request: Request) -> None:
         provided = request.headers.get("authorization", "")
         if provided.lower().startswith("bearer "):
             provided = provided[7:]
-    if not hmac.compare_digest(provided.strip(), expected):
+    # 编码成 bytes 再比较：hmac.compare_digest 对含非 ASCII 字符的 str 会抛
+    # TypeError（"comparing strings with non-ASCII characters is not
+    # supported"），恶意构造的令牌头会变成 500 而不是 401。按字节比较没有
+    # 这个限制，时序安全性也不变。
+    if not hmac.compare_digest(provided.strip().encode("utf-8"), expected.encode("utf-8")):
         raise HTTPException(status_code=401, detail="需要有效的应用访问令牌。")
 
 
@@ -117,8 +121,7 @@ def _prune_rate_buckets_locked(now: float) -> None:
         return
     # Drop buckets with no activity in the last 60s (the common case).
     stale = [
-        key for key, bucket in api.request_buckets.items()
-        if not bucket or now - bucket[-1] >= 60
+        key for key, bucket in api.request_buckets.items() if not bucket or now - bucket[-1] >= 60
     ]
     for key in stale:
         del api.request_buckets[key]
@@ -130,7 +133,7 @@ def _prune_rate_buckets_locked(now: float) -> None:
             key=lambda kv: kv[1][-1] if kv[1] else 0.0,
         )
         excess = len(api.request_buckets) - api.MAX_RATE_LIMIT_BUCKETS // 2
-        for key, _ in ordered[:max(excess, 0)]:
+        for key, _ in ordered[: max(excess, 0)]:
             del api.request_buckets[key]
 
 
