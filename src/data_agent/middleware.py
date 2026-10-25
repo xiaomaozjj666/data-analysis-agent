@@ -82,6 +82,9 @@ MAX_RATE_LIMIT_BUCKETS = 10_000
 # therefore trust the Nth-from-last entry; taking the leftmost entry when no
 # proxy is declared would let attackers forge the header and bypass limits.
 # Default 0 means "direct exposure, ignore XFF"; set 1 for Render/Nginx.
+_hops_warning_shown = False
+
+
 def trusted_proxy_hops() -> int:
     """Trusted XFF hops，每次调用时读环境变量。
 
@@ -89,8 +92,24 @@ def trusted_proxy_hops() -> int:
     导入期读取会让只写在 ``.env`` 里的该变量被静默忽略——反代后部署若只配
     .env，限流键会退化为代理 IP，全部客户端共享同一个限流桶。
     （与 ``sql_guard.query_time_budget_ms`` 同一套按调用求值的约定。）
+
+    非法值（非数字）回退 0 并告警一次，而不是让每个请求 500：导入期求值
+    时代码写错配置是"启动即炸"（好在部署时就能发现），改调用期后同样的
+    错误会变成"首个请求 500"——更难排查，且按 0 回退正是安全默认
+    （不信任 XFF，退化为直连 socket 键）。
     """
-    return max(0, int(os.getenv("DATA_AGENT_TRUSTED_PROXY_HOPS", "0")))
+    global _hops_warning_shown
+    raw = os.getenv("DATA_AGENT_TRUSTED_PROXY_HOPS", "0")
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        if not _hops_warning_shown:
+            _hops_warning_shown = True
+            logger.warning(
+                "DATA_AGENT_TRUSTED_PROXY_HOPS=%r 不是合法整数，按 0 处理（不信任 X-Forwarded-For）",
+                raw,
+            )
+        return 0
 
 request_buckets: dict[str, deque[float]] = defaultdict(deque)
 request_buckets_lock = threading.Lock()

@@ -558,6 +558,25 @@ def test_client_identifier_reads_env_at_call_time(monkeypatch):
     assert api._client_identifier(FakeRequest()) == "203.0.113.5"
 
 
+def test_trusted_proxy_hops_invalid_value_falls_back_to_zero(monkeypatch, caplog):
+    """非法配置（非数字）按 0 回退而不是让请求 500。
+
+    导入期求值时代码写错该 env 是"启动即炸"；改调用期后同样的错误会变成
+    "首个请求 500"。0 正是安全默认（不信任 XFF，退化为直连 socket 键），
+    回退 + 一次告警比异常更适合这类配置笔误。
+    """
+    import logging
+
+    from data_agent import middleware
+
+    monkeypatch.setenv("DATA_AGENT_TRUSTED_PROXY_HOPS", "abc")
+    with caplog.at_level(logging.WARNING, logger="data_agent.middleware"):
+        assert middleware.trusted_proxy_hops() == 0
+        assert middleware.trusted_proxy_hops() == 0  # 第二次不再重复告警
+    assert any("不是合法整数" in r.message for r in caplog.records)
+    assert len([r for r in caplog.records if "不是合法整数" in r.message]) == 1
+
+
 def test_client_identifier_falls_back_to_direct_host_on_short_xff(monkeypatch):
     """If XFF has fewer entries than trusted hops, use the socket host.
 
