@@ -245,3 +245,7 @@ cd frontend && npm run build                # 前端生产构建
 后端测试覆盖 `src/data_agent` 全部核心路径（节点、工具、路由、注册表、存储、
 CLI、部署），含异常分支与降级路径；CI 中以 `DATA_AGENT_SKIP_KALEIDO=1` 跳过
 偶发挂起的无头 PNG 渲染（503/500 降级分支仍被覆盖）。
+## 深入文档
+
+- [docs/engineering-notes.md](docs/engineering-notes.md) — 工程笔记：已验证的工程事实与踩坑记录（大数据图表可读性方案、可访问性校准方法、性能与体积预算、沙箱/隐私/指标模块设计要点、平台差异实证）。
+- [docs/competitive-analysis.md](docs/competitive-analysis.md) — 竞品分析：与同类数据分析 Agent 产品的定位与能力对比。
