@@ -2,7 +2,9 @@ services:
   - type: web
     name: data-analysis-agent
     env: python
-    region: singapore
+    # 不声明 region：region 是 blueprint 的不可变字段，声明值若与已有服务
+    # 的实际区域不一致（服务手动创建时多半是 workspace 默认区），sync 会
+    # 因"试图修改不可变字段"失败。不声明则保持服务现状。
     buildCommand: |
       cd frontend && npm ci && npm run build && cd ..
       pip install .
