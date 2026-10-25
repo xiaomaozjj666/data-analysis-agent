@@ -20,12 +20,16 @@ services:
         sync: false
       - key: OPENAI_API_KEY
         sync: false
-      # 默认 provider 为 deepseek（config.py DATA_AGENT_PROVIDER），
-      # 按 README 默认链路部署时填这里，OPENAI_API_KEY 留给 OpenAI 兼容中转。
+      # 默认 provider 为 deepseek（config.py：provider=deepseek / model=deepseek-flash），
+      # 按 README 默认链路部署时填 DEEPSEEK_API_KEY；OPENAI_API_KEY 留给 OpenAI 兼容中转。
+      # 注意 Render 规则（blueprint-spec 文档）：更新已有 Blueprint 时 sync:false 的变量
+      # 会被忽略——首次创建时才会提示填值；已有服务要生效必须在 Render dashboard 手动添加。
       - key: DEEPSEEK_API_KEY
         sync: false
+      # 模型名不是机密，直接带默认值（与 config.py / .env.example 一致），
+      # 让 blueprint 更新真正生效而不是被 sync:false 忽略
       - key: DEEPSEEK_MODEL
-        sync: false
+        value: deepseek-flash
       - key: DATA_AGENT_STORAGE_BACKEND
         value: local
     disk:
