@@ -153,6 +153,15 @@ def test_analyze_endpoint_returns_plan(tmp_path, monkeypatch):
     assert payload["plan"][0]["id"] == "inspect"
     assert payload["completed_steps"][0]["summary"] == "完成"
 
+    # 分析成功后必须自动落溯源链：meta + dataset + tool + report。
+    provenance = client.get(f"/api/sessions/{uploaded['id']}/provenance")
+    assert provenance.status_code == 200
+    body = provenance.json()
+    assert body["verification"]["ok"] is True
+    assert body["summary"]["entries"] == 4
+    assert body["summary"]["tool_calls"] == 1
+    assert body["summary"]["report_sha256"]
+
 
 def test_access_token_protects_api(monkeypatch):
     monkeypatch.setenv("APP_ACCESS_TOKEN", "test-access-token")
