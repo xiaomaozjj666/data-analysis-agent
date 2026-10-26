@@ -170,6 +170,9 @@ DEEPSEEK_REASONING_EFFORT=high
 OPENAI_API_KEY=<your-api-key>
 OPENAI_MODEL=gpt-4.1-mini
 
+# 前端构建产物目录（源码树内运行可省略；Docker / Render / wheel 安装必须显式指定）
+DATA_AGENT_STATIC_DIR=frontend/dist
+
 # 线上访问保护（绑定 0.0.0.0 等非环回地址时必填，否则拒绝启动）
 APP_ACCESS_TOKEN=<your-access-token>
 

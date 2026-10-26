@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio  # noqa: F401 — 测试通过 data_agent.api.asyncio.wait_for 打补丁
 import logging
+import os
 import threading
 from pathlib import Path
 
@@ -133,7 +134,28 @@ app.include_router(settings_router.router)
 # 否则浏览器加载旧 HTML 引用的旧 JS 文件名，导致用户看到过期版本。
 # catch-all 路由必须注册在所有 /api/... 路由之后，确保 API 端点优先匹配。
 # ---------------------------------------------------------------------------
-frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+def _resolve_frontend_dist() -> Path:
+    """定位前端构建产物目录。
+
+    安装为 wheel 后 ``__file__`` 位于 site-packages，``parents[2]`` 指向解释器
+    目录而非仓库根；Docker 与 Render 因此都显式设置 ``DATA_AGENT_STATIC_DIR``。
+    优先使用该变量，其次源码树相对路径，最后回退进程工作目录。
+    """
+    candidates: list[Path] = []
+    configured = os.getenv("DATA_AGENT_STATIC_DIR", "").strip()
+    if configured:
+        # 显式配置即为唯一来源：产物缺失时按“未构建”返回 404，
+        # 不悄悄换用源码树或工作目录里的另一份（可能是旧版本的）产物。
+        return Path(configured).expanduser()
+    candidates.append(Path(__file__).resolve().parents[2] / "frontend" / "dist")
+    candidates.append(Path.cwd() / "frontend" / "dist")
+    for candidate in candidates:
+        if (candidate / "index.html").is_file():
+            return candidate
+    return candidates[0]
+
+
+frontend_dist = _resolve_frontend_dist()
 
 
 def _mount_frontend_assets() -> None:

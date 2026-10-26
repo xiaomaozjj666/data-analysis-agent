@@ -589,6 +589,43 @@ def test_frontend_catchall_404_when_dist_missing(monkeypatch):
     assert client.get("/api/not-a-real-endpoint").status_code == 404
 
 
+def test_resolve_frontend_dist_prefers_env(tmp_path, monkeypatch):
+    """Docker / Render 显式配置的 DATA_AGENT_STATIC_DIR 必须优先于路径推算。"""
+    from data_agent import api
+
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<html></html>", encoding="utf-8")
+    monkeypatch.setenv("DATA_AGENT_STATIC_DIR", str(dist))
+    assert api._resolve_frontend_dist() == dist
+
+
+def test_resolve_frontend_dist_keeps_configured_path_when_not_built(tmp_path, monkeypatch):
+    """显式配置但产物不存在：保留配置值，由 catch-all 返回 404，不悄悄换用旧目录。"""
+    from data_agent import api
+
+    missing = tmp_path / "missing-dist"
+    monkeypatch.setenv("DATA_AGENT_STATIC_DIR", str(missing))
+    assert api._resolve_frontend_dist() == missing
+
+
+def test_resolve_frontend_dist_falls_back_to_cwd_for_wheel_install(tmp_path, monkeypatch):
+    """wheel 安装后 __file__ 在 site-packages，应回退到进程工作目录下的构建产物。"""
+    from data_agent import api
+
+    monkeypatch.delenv("DATA_AGENT_STATIC_DIR", raising=False)
+    installed = tmp_path / "venv" / "lib" / "python3.12" / "site-packages" / "data_agent" / "api.py"
+    installed.parent.mkdir(parents=True)
+    installed.write_text("", encoding="utf-8")
+    workdir = tmp_path / "app"
+    dist = workdir / "frontend" / "dist"
+    dist.mkdir(parents=True)
+    (dist / "index.html").write_text("<html></html>", encoding="utf-8")
+    monkeypatch.setattr(api, "__file__", str(installed))
+    monkeypatch.chdir(workdir)
+    assert api._resolve_frontend_dist() == dist
+
+
 # ---------------------------------------------------------------------------
 # artifacts.py：bundle 缓存错误路径 / latin-1 兜底 / 内联失败保持原样
 # ---------------------------------------------------------------------------
