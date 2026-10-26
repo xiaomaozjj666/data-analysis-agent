@@ -95,6 +95,15 @@ def test_load_results_field_validation(tmp_path: Path) -> None:
             '{"case_id": "x", "passed": true, "latency_ms": true}',
             "latency_ms",
         ),
+        "negative-cost.json": (
+            '{"case_id": "x", "passed": true, "cost_usd": -1}',
+            "非负",
+        ),
+        "infinite-latency.json": (
+            '{"case_id": "x", "passed": true, "latency_ms": Infinity}',
+            "非负",
+        ),
+        "nan-cost.json": ('{"case_id": "x", "passed": true, "cost_usd": NaN}', "非负"),
         "broken.json": ("{not-json", "不是合法 JSON"),
         "broken-array.json": ('[{"case_id": "x"', "不是合法 JSON"),
     }
@@ -210,6 +219,10 @@ def test_policy_validation() -> None:
         GatePolicy(max_cost_increase=-0.1)
     with pytest.raises(ValueError):
         GatePolicy(min_cases=0)
+    with pytest.raises(ValueError):
+        GatePolicy(alpha=float("nan"))
+    with pytest.raises(ValueError):
+        GatePolicy(max_cost_increase=float("inf"))
 
 
 def test_suite_fingerprint_is_stable() -> None:
@@ -257,7 +270,8 @@ def test_ledger_edge_cases(tmp_path: Path) -> None:
 
     broken_tail = tmp_path / "broken-tail.jsonl"
     broken_tail.write_text("garbage\n", encoding="utf-8")
-    assert append_ledger(broken_tail, report, suite_fingerprint="f" * 64)["prev"] == ""
+    with pytest.raises(ValueError, match="不是合法 JSON"):
+        append_ledger(broken_tail, report, suite_fingerprint="f" * 64)
 
     sparse = tmp_path / "sparse.jsonl"
     sparse.write_text("\n" + json.dumps(first) + "\n\n", encoding="utf-8")
@@ -273,6 +287,34 @@ def test_ledger_edge_cases(tmp_path: Path) -> None:
     entry["prev"] = "wrong"
     prev_broken.write_text(json.dumps(entry) + "\n", encoding="utf-8")
     assert any("prev" in error for error in verify_ledger(prev_broken)["errors"])
+
+
+def test_ledger_refuses_to_extend_tampered_chain(tmp_path: Path) -> None:
+    report = evaluate(_suite(14, "base"), _suite(20, "cand"))
+    path = tmp_path / "ledger.jsonl"
+    append_ledger(path, report, suite_fingerprint="f" * 64)
+    entry = read_ledger(path)[0]
+    entry["decision"] = "reject"
+    path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+    before = path.read_text(encoding="utf-8")
+
+    with pytest.raises(ValueError, match="拒绝追加"):
+        append_ledger(path, report, suite_fingerprint="f" * 64)
+    assert path.read_text(encoding="utf-8") == before
+    assert verify_ledger(path)["ok"] is False
+
+
+def test_ledger_rejects_non_object_entries(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.jsonl"
+    path.write_text("[1, 2]\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="不是 JSON 对象"):
+        read_ledger(path)
+    with pytest.raises(ValueError, match="不是 JSON 对象"):
+        append_ledger(
+            path,
+            evaluate(_suite(14, "base"), _suite(20, "cand")),
+            suite_fingerprint="f" * 64,
+        )
 
 
 def test_cli_compare_exit_codes_and_ledger(tmp_path: Path, capsys) -> None:

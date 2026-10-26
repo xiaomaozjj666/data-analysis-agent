@@ -26,6 +26,7 @@ def _entry_hash(payload: dict[str, Any]) -> str:
 
 
 def _last_hash(path: Path) -> str:
+    # 调用方已用 verify_ledger 确认整条链可解析，这里只取已验证的链尾。
     if not path.is_file():
         return ""
     last = ""
@@ -34,10 +35,7 @@ def _last_hash(path: Path) -> str:
             last = line
     if not last:
         return ""
-    try:
-        return str(json.loads(last).get("hash", ""))
-    except json.JSONDecodeError:
-        return ""
+    return str(json.loads(last).get("hash", ""))
 
 
 def append_ledger(
@@ -51,6 +49,11 @@ def append_ledger(
     """追加一条裁决记录并返回写入的条目（含哈希）。"""
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
+    if target.is_file() and target.stat().st_size > 0:
+        existing = verify_ledger(target)
+        if not existing["ok"]:
+            detail = "；".join(existing["errors"])
+            raise ValueError(f"现有台账校验失败，拒绝追加：{detail}")
     entry: dict[str, Any] = {
         "ts": datetime.now(UTC).isoformat(timespec="seconds"),
         "git_sha": git_sha,
@@ -79,9 +82,12 @@ def read_ledger(path: str | Path) -> list[dict[str, Any]]:
         if not line.strip():
             continue
         try:
-            entries.append(json.loads(line))
+            payload = json.loads(line)
         except json.JSONDecodeError as exc:
             raise ValueError(f"{target}:{line_no} 不是合法 JSON：{exc}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError(f"{target}:{line_no} 不是 JSON 对象。")
+        entries.append(payload)
     return entries
 
 

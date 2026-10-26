@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -54,12 +55,13 @@ def _coerce_case(raw: Any, *, line: int, source: Path) -> CaseResult:
         raise ValueError(f"{source}:{line} 的 passed 必须是布尔值。")
     cost = raw.get("cost_usd")
     latency = raw.get("latency_ms")
-    if cost is not None and (not isinstance(cost, (int, float)) or isinstance(cost, bool)):
-        raise ValueError(f"{source}:{line} 的 cost_usd 必须是数字或 null。")
-    if latency is not None and (
-        not isinstance(latency, (int, float)) or isinstance(latency, bool)
-    ):
-        raise ValueError(f"{source}:{line} 的 latency_ms 必须是数字或 null。")
+    for label, value in (("cost_usd", cost), ("latency_ms", latency)):
+        if value is None:
+            continue
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise ValueError(f"{source}:{line} 的 {label} 必须是数字或 null。")
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(f"{source}:{line} 的 {label} 必须是非负有限数字。")
     return CaseResult(
         case_id=case_id,
         passed=passed,

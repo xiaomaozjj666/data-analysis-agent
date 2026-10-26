@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import statistics
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -40,10 +41,15 @@ class GatePolicy:
     min_cases: int = 8
 
     def __post_init__(self) -> None:
-        if not 0 < self.alpha < 1:
-            raise ValueError("alpha 必须位于 (0, 1)。")
-        if self.max_cost_increase < 0 or self.max_latency_increase < 0:
-            raise ValueError("成本 / 延迟涨幅上限不能为负。")
+        if not math.isfinite(self.alpha) or not 0 < self.alpha < 1:
+            raise ValueError("alpha 必须是 (0, 1) 内的有限数。")
+        if (
+            not math.isfinite(self.max_cost_increase)
+            or not math.isfinite(self.max_latency_increase)
+            or self.max_cost_increase < 0
+            or self.max_latency_increase < 0
+        ):
+            raise ValueError("成本 / 延迟涨幅上限必须是非负有限数。")
         if self.min_cases < 1:
             raise ValueError("min_cases 必须为正整数。")
 

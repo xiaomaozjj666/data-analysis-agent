@@ -236,7 +236,11 @@ def test_summary_mismatch_and_bad_session_json(tmp_path):
     (workspace.root / "session.json").write_text("not-json", encoding="utf-8")
     result = provenance.verify(workspace.root)
     assert result["checks"]["report_compared"] is True
-    assert not any("报告正文" in item for item in result["errors"])
+    assert any("session.json 无法解析" in item for item in result["errors"])
+
+    (workspace.root / "session.json").write_text('{"last_result": []}', encoding="utf-8")
+    result = provenance.verify(workspace.root)
+    assert any("缺少可比的报告正文" in item for item in result["errors"])
 
 
 def test_prev_mismatch_is_reported(tmp_path):

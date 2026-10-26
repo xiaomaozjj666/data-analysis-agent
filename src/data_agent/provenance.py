@@ -304,16 +304,22 @@ def verify(root: str | Path) -> dict[str, Any]:
 
     session_path = base / "session.json"
     report_entries = [entry for entry in entries if entry.get("type") == "report"]
-    if report_entries and session_path.is_file():
+    compared = bool(report_entries and session_path.is_file())
+    if compared:
         expected = report_entries[-1].get("data", {}).get("sha256")
+        manifest: Any = None
         try:
             manifest = json.loads(session_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            manifest = {}
-        response = (manifest.get("last_result") or {}).get("response")
-        if isinstance(response, str) and expected != sha256_text(response):
-            errors.append("报告正文与溯源记录不一致。")
-    checks["report_compared"] = bool(report_entries and session_path.is_file())
+        except (OSError, ValueError) as exc:
+            errors.append(f"session.json 无法解析，报告正文未比对：{exc}")
+        if manifest is not None:
+            last_result = manifest.get("last_result") if isinstance(manifest, dict) else None
+            response = last_result.get("response") if isinstance(last_result, dict) else None
+            if not isinstance(response, str):
+                errors.append("session.json 中缺少可比的报告正文。")
+            elif expected != sha256_text(response):
+                errors.append("报告正文与溯源记录不一致。")
+    checks["report_compared"] = compared
 
     return {
         "ok": not errors,
