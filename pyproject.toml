@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=84.0.0,<85", "wheel"]
+requires = ["setuptools>=84.2.1,<85", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -9,11 +9,11 @@ description = "A production-oriented data analysis agent powered by LangChain, L
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 dependencies = [
-  "langchain==1.4.6",
+  "langchain==1.4.7",
   "langgraph==1.2.16",
   "langchain-openai==1.7.2",
   "langchain-deepseek==1.1.1",
-  "pandas>=3.0.6,<3.1",
+  "pandas>=3.1.0,<3.2",
   "numpy>=2.4.6,<3",
   "scipy>=1.17.1,<2",
   "scikit-learn>=1.9.1,<2",
@@ -26,15 +26,15 @@ dependencies = [
   "python-docx>=1.2.0,<2",
   "python-pptx>=1.0.2,<2",
   "psutil>=7.2.2,<8",
-  "fastapi>=0.143.3,<1",
+  "fastapi>=0.161.0,<1",
   "uvicorn[standard]>=0.54.0,<1",
   "python-multipart>=0.0.32,<1",
-  "langsmith>=0.14.11,<1",
+  "langsmith>=0.14.12,<1",
   "python-dotenv>=1.2.4,<2",
   "typer>=0.27.3,<1",
   "rich>=15.0.0,<16",
   "keyring==25.7.0",
-  "boto3>=1.43.114,<2",
+  "boto3>=1.43.117,<2",
 ]
 
 [project.optional-dependencies]
@@ -58,7 +58,7 @@ dev = [
 postgres = ["psycopg[binary]>=3.3.6,<4"]
 # MCP 数据面服务：按需安装（pip install ".[mcp]"）。
 mcp = ["mcp>=2.3.0,<3"]
-deploy = ["langgraph-cli[inmem]>=0.4.36,<1"]
+deploy = ["langgraph-cli[inmem]>=0.4.37,<1"]
 
 [project.scripts]
 data-agent = "data_agent.cli:app"
