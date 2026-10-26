@@ -10,8 +10,9 @@
 
 ```
 runs/<session_id>/
-  provenance.jsonl   # 逐条记录，哈希链
-  provenance.json    # 摘要：条目数、根哈希、模型、代码版本
+  provenance.jsonl                 # 逐条记录，哈希链
+  provenance.json                  # 摘要：条目数、根哈希、模型、代码版本
+  artifacts/report-verification.json  # 正文逐项结论核验结果
 ```
 
 `provenance.jsonl` 每行一个 JSON 对象：
@@ -44,6 +45,27 @@ hash  = sha256( json.dumps(body, ensure_ascii=False, sort_keys=True,
 
 `prev` 指向上一条的 `hash`，首条为空串。摘要里的 `root_hash` 等于链尾 `hash`。
 改任何一条的任何一个字段，该条 `hash` 与后续 `prev` 都会对不上。
+
+## 逐结论确定性核验
+
+finalize 和配方 replay 在写完事实附录后调用 `verify_report(response, facts)`。它不再调用模型：
+从核验附录之前的正文提取数字，匹配事实值，并把每项结论写入
+`artifacts/report-verification.json` 和报告的「结论核验」表。
+
+- **verified**：数字按原文小数位舍入后匹配，或已知文本事实逐字出现；证据含
+  `source`、`field`、`trace_index`、`json_path`（例如 `trace[2]` 的 `/means/sales`）。
+- **conflict**：数字所在分句点名同一字段，但该字段的事实值不兼容，或多个同字段事实彼此矛盾（即使报告命中其中一个也判冲突）；证据列出冲突事实。
+- **unsupported**：数字所在分句没有可绑定的事实字段，`evidence` 为空；即使其他分句或指标恰好有相同数字也不会误判为已证实。
+- **舍入与单位**：按原文小数位的一半容差接受四舍五入；只有事实也声明单位时才做
+  `%`/比例、千/万/亿和元/万元/亿元等换算。未声明事实单位的换算不会被当作 verified。
+
+核验只覆盖正文中的数字和已知文本事实，不证明因果、语义或图表内容；代码块和生成的
+附录不重复扫描。产物可通过既有下载接口获取，哈希也会进入 provenance 链：
+
+```bash
+curl -OJ -H "Authorization: Bearer $APP_ACCESS_TOKEN" \
+  http://127.0.0.1:8000/api/sessions/<session_id>/artifacts/report-verification.json
+```
 
 ## 复核
 

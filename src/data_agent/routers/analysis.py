@@ -660,6 +660,11 @@ def replay_analysis(session_id: str) -> dict[str, Any]:
     from data_agent.facts import extract_facts, render_facts_markdown
     from data_agent.recipe import load_recipe, replay_recipe, replay_report_markdown
     from data_agent.tools import build_tools
+    from data_agent.verification import (
+        render_verification_markdown,
+        save_verification,
+        verify_report,
+    )
 
     record = api.registry.get(session_id)
     recipe = load_recipe(record.workspace)
@@ -677,6 +682,13 @@ def replay_analysis(session_id: str) -> dict[str, Any]:
         appendix = render_facts_markdown(facts)
         if appendix:
             report = f"{report.rstrip()}\n\n{appendix}"
+        verification = verify_report(report, facts)
+        if verification_md := render_verification_markdown(verification):
+            report = f"{report.rstrip()}\n\n{verification_md}"
+        try:
+            save_verification(record.workspace, verification)
+        except Exception:
+            logger.exception("Failed to persist report verification")
         result = AnalysisResult(
             response=report,
             trace=replay["calls"],

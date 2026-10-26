@@ -20,6 +20,14 @@
   任务元信息、数据集、逐条工具调用、产物与报告正文；`GET /api/sessions/{id}/provenance`
   当场复核，`/provenance/export` 下载自包含 JSON，前端导出菜单同步增加入口。
   溯源失败只记日志，不影响已完成的分析。
+- **逐结论确定性核验**：finalize / replay 在事实附录后调用 `verify_report`，把报告
+  正文中的数字与文本结论逐项判为 `verified` / `conflict` / `unsupported`（不调用
+  第二个模型）：按数字所在分句绑定事实字段，原文小数位一半容差接受舍入，仅当事实
+  也声明单位时才做 `%` / 千 / 万 / 亿与元系换算；同字段事实互相矛盾即判 conflict，
+  无可绑定事实判 unsupported 且证据为空。报告追加「结论核验」表，证据带 trace 序号
+  与 JSON Pointer 定位；结果原子写入 `artifacts/report-verification.json` 并注册为
+  verification 产物，自动进入溯源链。事实提取（`extract_facts`）同步升级为携带单位
+  与可回放定位信息。
 
 ### 修复
 

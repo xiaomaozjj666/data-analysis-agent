@@ -152,6 +152,41 @@ def test_recipe_replay_invokes_inspect(tmp_path):
     assert replayed["calls"][0]["status"] == "ok"
 
 
+def test_replay_endpoint_generates_downloadable_verification(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from data_agent import api as api_module
+    from data_agent.registry import SessionRecord, SessionRegistry
+
+    workspace = DataWorkspace(tmp_path / "runs", session_id="replay-proof")
+    pd.DataFrame({"sales": [1, 2, 3]}).to_csv(tmp_path / "tiny.csv", index=False)
+    workspace.load(tmp_path / "tiny.csv", copy_into_workspace=True)
+    save_recipe(
+        workspace,
+        build_recipe(
+            task="检查",
+            plan=[],
+            completed_steps=[
+                {"id": "inspect", "title": "检查", "status": "ok", "tool_calls": [{"name": "inspect_data", "args": {"sample_rows": 2}}]}
+            ],
+            fingerprint={"rows": 3, "columns": ["sales"]},
+        ),
+    )
+    registry = SessionRegistry(tmp_path / "runs", max_sessions=10, ttl_hours=24)
+    registry._items["replay-proof"] = SessionRecord(workspace)
+    monkeypatch.setattr(api_module, "registry", registry)
+    monkeypatch.setenv("APP_ACCESS_TOKEN", "")
+
+    response = TestClient(api_module.app).post("/api/sessions/replay-proof/replay")
+
+    assert response.status_code == 200
+    assert "结论核验" in response.json()["response"]
+    assert "verification" in {item["kind"] for item in response.json()["artifacts"]}
+    saved = json.loads((workspace.artifacts_dir / "report-verification.json").read_text(encoding="utf-8"))
+    assert saved["summary"]["total"] >= 1
+    assert TestClient(api_module.app).get("/api/sessions/replay-proof/artifacts/report-verification.json").status_code == 200
+
+
 def test_office_export_bytes_are_zip_packages():
     markdown = "## 结论速览\n- 收入上升\n\n## 注意事项与建议\n- 核对口径"
     docx = build_docx("测试报告", markdown)

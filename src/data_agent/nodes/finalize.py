@@ -15,6 +15,7 @@ from data_agent.nodes._utils import _message_text
 from data_agent.nodes.state import WorkflowState
 from data_agent.prompts import _FINALIZE_EVIDENCE_BUDGET, _FINALIZE_PER_STEP_MIN_CHARS
 from data_agent.recipe import build_recipe, data_fingerprint, save_recipe
+from data_agent.verification import render_verification_markdown, save_verification, verify_report
 
 if TYPE_CHECKING:
     from data_agent.agent import DataAnalysisAgent
@@ -91,6 +92,13 @@ def finalize(agent: DataAnalysisAgent, state: WorkflowState) -> dict[str, Any]:
             response = "分析已完成，但没有可汇总的步骤结果。"
     if facts_md and "## 核验附录" not in response:
         response = f"{response.rstrip()}\n\n{facts_md}"
+    verification = verify_report(response, facts)
+    if verification_md := render_verification_markdown(verification):
+        response = f"{response.rstrip()}\n\n{verification_md}"
+    try:
+        save_verification(agent.workspace, verification)
+    except Exception:
+        logger.exception("Failed to persist report verification")
     try:
         save_recipe(
             agent.workspace,

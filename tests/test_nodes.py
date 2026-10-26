@@ -668,7 +668,9 @@ def test_finalize_returns_response_and_artifacts(tmp_path):
     result = finalize(agent, state)
 
     assert result["response"] == "这是分析报告。"
-    assert [item["name"] for item in result["artifacts"]] == ["analysis_recipe.json"]
+    assert [item["name"] for item in result["artifacts"]] == ["report-verification.json", "analysis_recipe.json"]
+    verification = json.loads((workspace.artifacts_dir / "report-verification.json").read_text(encoding="utf-8"))
+    assert verification["summary"] == {"verified": 0, "conflict": 0, "unsupported": 0, "total": 0}
     assert result["dataset_profile"]["rows"] == 6
     assert result["plan"] == state["plan"]
     assert result["completed_steps"] == state["completed_steps"]

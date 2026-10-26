@@ -199,6 +199,11 @@
 各模块的设计动机见其 docstring（`sandbox_runtime`/`sandbox_worker`/`privacy`/`facts`/
 `recipe`/`report_export`/`dataframe_source`/`tools/_stats`），这里只记跨模块的要点：
 
+- **结论核验不再调用第二个模型**：`verification.py` 从 finalize/replay 的正文提取数字，
+  对照 `extract_facts` 的 source/field/trace_index/json_path；按数字所在分句绑定字段，
+  同字段不同值是 conflict，无匹配事实是 unsupported，按原文小数位容差接受舍入，
+  且只在事实带单位时换算。
+  结果写入 `report-verification.json` 并注册为 verification 产物，同时追加 Markdown 核验表。
 - **沙箱从线程进程化**：用户代码经 `python -m data_agent.sandbox_worker` 在子进程执行，
   `sandbox_runtime.py` 刻意不依赖 langchain/FastAPI，否则子进程启动会把整个 Web 栈拉起来。
 - **SQL 墙钟预算可配置**：`DATA_AGENT_SQL_TIMEOUT_SECONDS`（1-120，默认 30），取代硬编码

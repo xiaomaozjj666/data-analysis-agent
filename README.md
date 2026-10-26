@@ -73,7 +73,7 @@ flowchart LR
 - **安全与访问控制**：可选访问令牌（`APP_ACCESS_TOKEN`）、滑动窗口速率限制、CORS / GZip / 安全响应头；API Key 通过操作系统凭据库（keyring）保存，不落明文文件。
 - **会话持久化**：本地或 S3 兼容对象存储（如 Cloudflare R2）双后端，会话按 session id 自动归档/恢复，带路径穿越防护。
 - **可观测与部署**：LangSmith 全链路 Trace（规划、每次工具调用、重规划、汇总）；LangGraph Agent Server 部署；Dockerfile（非 root 用户 + 健康检查）；Render Blueprint 一键部署；GitHub Actions 自动 CI。
-- **可复核的分析溯源**：每次分析在会话目录生成哈希链，覆盖任务元信息、数据集、逐条工具调用、产物文件与报告正文；导出 JSON 或调 API 即可复核链完整性与文件字节是否被改过。见 [docs/analysis-provenance.md](docs/analysis-provenance.md)。
+- **可复核的分析溯源与逐结论核验**：每次分析在会话目录生成哈希链，覆盖任务元信息、数据集、逐条工具调用、产物文件与报告正文；finalize/replay 另将正文数字逐项判为 `verified` / `conflict` / `unsupported`，在报告追加结论核验表并生成可下载的 `report-verification.json`，按 trace 序号和 JSON Pointer 定位证据。见 [docs/analysis-provenance.md](docs/analysis-provenance.md)。
 - **发布前质量闸门（可选）**：`data-agent-eval compare` 对同一套用例的基线与候选结果做配对 McNemar 精确检验，同时检查成本与延迟回归，给出接受 / 拒绝 / 证据不足三态裁决，并写入可校验的哈希链 ledger。见 [docs/agent-eval.md](docs/agent-eval.md)。
 
 ## 技术栈
@@ -216,6 +216,7 @@ src/data_agent/
   tools/             ReAct 工具集（检查/清洗/转换/合并/数据库/统计/可视化/导出/沙箱）
   metrics.py         指标口径登记（可选，规划阶段注入）
   provenance.py      分析溯源哈希链（数据集 / 工具 / 产物 / 报告）
+  verification.py    逐结论确定性核验与 JSON 报告（verified/conflict/unsupported）
   evalkit/           发布前评测闸门（McNemar / Wilson / ledger / CLI）
   sqlite_source.py   只读 SQLite 数据源（表发现 / 结构描述 / 受限查询）
   postgres_source.py 只读 PostgreSQL 数据源（服务端只读 + statement_timeout）
