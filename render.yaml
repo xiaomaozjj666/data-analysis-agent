@@ -1,8 +1,8 @@
 services:
   - type: web
     name: data-analysis-agent
-    # 必须用 runtime：它是 Render schema 的 required 字段；env 不是合法字段，
-    # 出现即触发 additionalProperties:false 校验失败，整个 blueprint 无法同步。
+    # runtime 是官方 schema 的 required 字段；env 不在 schema 中。线上同步曾容忍
+    # env: python（cfd83ab 同步成功），但依赖未定义字段不可靠，故改用 runtime。
     runtime: python
     # 线上为 Free 实例；显式声明，避免默认值歧义。
     plan: free
