@@ -1,14 +1,23 @@
 services:
   - type: web
     name: data-analysis-agent
-    env: python
-    # 不声明 region：region 是 blueprint 的不可变字段，声明值若与已有服务
-    # 的实际区域不一致（服务手动创建时多半是 workspace 默认区），sync 会
-    # 因"试图修改不可变字段"失败。不声明则保持服务现状。
+    # 必须用 runtime：它是 Render schema 的 required 字段；env 不是合法字段，
+    # 出现即触发 additionalProperties:false 校验失败，整个 blueprint 无法同步。
+    runtime: python
+    # 线上为 Free 实例；显式声明，避免默认值歧义。
+    plan: free
     buildCommand: |
       cd frontend && npm ci && npm run build && cd ..
       pip install .
     startCommand: uvicorn data_agent.api:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    # 不声明 region：它是不可变字段，声明值与服务现状不一致时 sync 会失败。
+    # 不声明 disk：Free 档不支持持久磁盘；/var/data 是容器临时层，重启即清空。
+    # 需要持久化时升级到 Starter 及以上，并在本服务下加回：
+    #   disk:
+    #     name: data
+    #     mountPath: /var/data
+    #     sizeGB: 10
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.8
@@ -17,30 +26,17 @@ services:
       - key: DATA_AGENT_STATIC_DIR
         value: frontend/dist
       - key: DATA_AGENT_CORS_ORIGINS
-        value: "https://your-frontend-domain.onrender.com"
+        value: "https://data-analysis-agent-wikz.onrender.com"
       - key: APP_ACCESS_TOKEN
         sync: false
       - key: OPENAI_API_KEY
         sync: false
-      # 默认 provider 为 deepseek（config.py：provider=deepseek / model=deepseek-flash），
-      # 按 README 默认链路部署时填 DEEPSEEK_API_KEY；OPENAI_API_KEY 留给 OpenAI 兼容中转。
-      # 注意 Render 规则（blueprint-spec 文档）：更新已有 Blueprint 时 sync:false 的变量
-      # 会被忽略——首次创建时才会提示填值；已有服务要生效必须在 Render dashboard 手动添加。
+      # 默认 provider 为 deepseek（config.py：provider=deepseek / model=deepseek-flash）。
+      # Render 会忽略对已有 Blueprint 的 sync:false 变量，已有服务需在 dashboard 手动补值。
       - key: DEEPSEEK_API_KEY
         sync: false
-      # 模型名不是机密，直接带默认值（与 config.py / .env.example 一致），
-      # 让 blueprint 更新真正生效而不是被 sync:false 忽略
       - key: DEEPSEEK_MODEL
         value: deepseek-flash
       - key: DATA_AGENT_STORAGE_BACKEND
         value: local
-    # 不声明 disk：线上服务为 Free 实例（实测 2026-10-26：冷启动唤醒 ~34s），
-    # Free 档不支持持久磁盘，blueprint 里声明 disk 会导致每次 sync 失败。
-    # Free 下 DATA_AGENT_DATA_DIR=/var/data 是容器临时层，重启即清空——
-    # 长期保存请启用 S3/R2 后端（见 README 持久化一节）。
-    # 升级到 Starter 及以上需要持久盘时，把下面几行加回 services[0] 下即可：
-    #   disk:
-    #     name: data
-    #     mountPath: /var/data
-    #     sizeGB: 10
     autoDeploy: true
