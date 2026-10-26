@@ -9,6 +9,18 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **发布前评测闸门 `data-agent-eval`**：读取同一套用例的基线与候选结果（JSONL /
+  JSON 数组），做配对 McNemar 精确检验、Wilson 区间与成本/延迟护栏，输出
+  `accept` / `reject` / `inconclusive` 三态裁决并以 `0/1/2` 退出码接入 CI；裁决可
+  追加进带 `prev`/`hash` 链的 ledger，`verify-ledger` 可检测篡改。示例与说明见
+  `eval/README.md`、`docs/agent-eval.md`。
+- **分析溯源哈希链**：分析完成时写 `provenance.jsonl` / `provenance.json`，覆盖
+  任务元信息、数据集、逐条工具调用、产物与报告正文；`GET /api/sessions/{id}/provenance`
+  当场复核，`/provenance/export` 下载自包含 JSON，前端导出菜单同步增加入口。
+  溯源失败只记日志，不影响已完成的分析。
+
 ### 修复
 
 - **`DATA_AGENT_TRUSTED_PROXY_HOPS` 改为调用期读取**：此前在中间件模块导入期

@@ -63,6 +63,7 @@ deploy = ["langgraph-cli[inmem]>=0.4.37,<1"]
 [project.scripts]
 data-agent = "data_agent.cli:app"
 data-agent-mcp = "data_agent.mcp_server:main"
+data-agent-eval = "data_agent.evalkit.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

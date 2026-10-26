@@ -73,6 +73,8 @@ flowchart LR
 - **安全与访问控制**：可选访问令牌（`APP_ACCESS_TOKEN`）、滑动窗口速率限制、CORS / GZip / 安全响应头；API Key 通过操作系统凭据库（keyring）保存，不落明文文件。
 - **会话持久化**：本地或 S3 兼容对象存储（如 Cloudflare R2）双后端，会话按 session id 自动归档/恢复，带路径穿越防护。
 - **可观测与部署**：LangSmith 全链路 Trace（规划、每次工具调用、重规划、汇总）；LangGraph Agent Server 部署；Dockerfile（非 root 用户 + 健康检查）；Render Blueprint 一键部署；GitHub Actions 自动 CI。
+- **可复核的分析溯源**：每次分析在会话目录生成哈希链，覆盖任务元信息、数据集、逐条工具调用、产物文件与报告正文；导出 JSON 或调 API 即可复核链完整性与文件字节是否被改过。见 [docs/analysis-provenance.md](docs/analysis-provenance.md)。
+- **发布前质量闸门（可选）**：`data-agent-eval compare` 对同一套用例的基线与候选结果做配对 McNemar 精确检验，同时检查成本与延迟回归，给出接受 / 拒绝 / 证据不足三态裁决，并写入可校验的哈希链 ledger。见 [docs/agent-eval.md](docs/agent-eval.md)。
 
 ## 技术栈
 
@@ -199,7 +201,7 @@ AWS_SECRET_ACCESS_KEY=<your-secret-access-key>
 - **指标要登记才会按同一口径算。** 工作台「业务口径」或 `DATA_AGENT_METRICS_PATH` 写入 `metrics.json`，表达式必须使用真实列名（如 `sales - returns`）。分析时会调用 `compute_registered_metrics`，报告里的「核验附录」默认收起。
 - **SQLite 大表不会整表进内存。** 超过 10 万行只载入前 10 万行；全量请用 `query_database` 聚合后再 `adopt`。CSV 也可用该工具，表名为 `data`。
 - **换新数据重跑：** 报告上的「按配方重跑」读取 `analysis_recipe.json`，按上次工具参数执行，不重新规划。
-- **给业务的文件：** 导出菜单可下载 Word / PPT。
+- **给业务的文件：** 导出菜单可下载 Word / PPT；「分析溯源 (.json)」给出报告对应的数据集、工具调用与产物哈希链及复核结果。
 - 样例行在发给模型前会脱敏手机号、邮箱、身份证号；不要依赖它代替完整的数据治理。
 
 ## 项目结构
@@ -213,6 +215,8 @@ src/data_agent/
   nodes/             LangGraph 节点（validate/plan/execute/replan/finalize）
   tools/             ReAct 工具集（检查/清洗/转换/合并/数据库/统计/可视化/导出/沙箱）
   metrics.py         指标口径登记（可选，规划阶段注入）
+  provenance.py      分析溯源哈希链（数据集 / 工具 / 产物 / 报告）
+  evalkit/           发布前评测闸门（McNemar / Wilson / ledger / CLI）
   sqlite_source.py   只读 SQLite 数据源（表发现 / 结构描述 / 受限查询）
   postgres_source.py 只读 PostgreSQL 数据源（服务端只读 + statement_timeout）
   sql_guard.py       驱动无关的只读 SQL 护栏（两个数据源共用）
@@ -252,3 +256,5 @@ CLI、部署），含异常分支与降级路径；CI 中以 `DATA_AGENT_SKIP_KA
 
 - [docs/engineering-notes.md](docs/engineering-notes.md) — 工程笔记：已验证的工程事实与踩坑记录（大数据图表可读性方案、可访问性校准方法、性能与体积预算、沙箱/隐私/指标模块设计要点、平台差异实证）。
 - [docs/competitive-analysis.md](docs/competitive-analysis.md) — 竞品分析：与同类数据分析 Agent 产品的定位与能力对比。
+- [docs/agent-eval.md](docs/agent-eval.md) — 发布前评测：配对结果格式、McNemar 精确检验、成本/延迟护栏、ledger 校验与 CI 接法。
+- [docs/analysis-provenance.md](docs/analysis-provenance.md) — 分析溯源：哈希链格式、API 与离线复核方法、信任边界。

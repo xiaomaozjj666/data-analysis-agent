@@ -13,6 +13,7 @@ import {
   LoaderCircle,
   Printer,
   RotateCcw,
+  ShieldCheck,
 } from "lucide-react";
 import { API_URL, REMARK_PLUGINS } from "../constants";
 import { describeApiError, requestHeaders } from "../utils/api";
@@ -307,6 +308,7 @@ const ReportView = React.memo(function ReportView({
   // 仪表盘导出需后端实时组装 HTML（含质量剖析），可能耗时数秒，
   // 用 loading 态防重复点击并给用户反馈。
   const [dashboardBusy, setDashboardBusy] = useState(false);
+  const [provenanceBusy, setProvenanceBusy] = useState(false);
   const exportWrapRef = useRef<HTMLDivElement>(null);
   const reportBodyRef = useRef<HTMLDivElement>(null);
   // useDeferredValue: 流式追加时 ReactMarkdown 重解析整个 AST 会卡顿，
@@ -518,6 +520,38 @@ const ReportView = React.memo(function ReportView({
     }
   }, [sessionId, dashboardBusy]);
 
+  // 导出溯源 JSON：数据集、工具调用、产物与报告正文的哈希链 + 服务端复核结果。
+  const exportProvenance = useCallback(async () => {
+    if (!sessionId || provenanceBusy) return;
+    setProvenanceBusy(true);
+    try {
+      const response = await fetch(`${API_URL}/api/sessions/${sessionId}/provenance/export`, {
+        headers: requestHeaders(),
+      });
+      if (!response.ok) {
+        const contentType = response.headers.get("content-type") || "";
+        const payload: unknown = contentType.includes("application/json")
+          ? await response.json().catch(() => ({}))
+          : await response.text().catch(() => "");
+        throw new Error(describeApiError(payload, response.status));
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `分析溯源_${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setExportOpen(false);
+    } catch (err) {
+      window.alert(`导出溯源失败：${err instanceof Error ? err.message : "未知错误"}`);
+    } finally {
+      setProvenanceBusy(false);
+    }
+  }, [sessionId, provenanceBusy]);
+
   const exportOffice = useCallback(async (kind: "docx" | "pptx") => {
     if (!sessionId) return;
     try {
@@ -663,6 +697,23 @@ const ReportView = React.memo(function ReportView({
                       <LayoutDashboard size={13} />
                     )}
                     {dashboardBusy ? "生成仪表盘中…" : "数据画像仪表盘 (.html)"}
+                  </button>
+                )}
+                {sessionId && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="export-item"
+                    onClick={exportProvenance}
+                    disabled={provenanceBusy}
+                    title="数据集、工具调用、产物与报告的哈希链，附复核结果"
+                  >
+                    {provenanceBusy ? (
+                      <LoaderCircle size={13} className="spin" />
+                    ) : (
+                      <ShieldCheck size={13} />
+                    )}
+                    {provenanceBusy ? "导出处…" : "分析溯源 (.json)"}
                   </button>
                 )}
               </div>

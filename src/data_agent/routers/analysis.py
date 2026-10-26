@@ -47,6 +47,32 @@ _CLIENT_ERROR_MAX_CHARS = 300
 WORKER_EXIT_TIMEOUT = 5.0
 
 
+def _record_provenance(
+    record: SessionRecord,
+    result: AnalysisResult,
+    settings: Any,
+    *,
+    task: str,
+) -> None:
+    """写入溯源链；失败只记日志，不影响已成功的分析。"""
+    from data_agent import __version__, provenance
+
+    try:
+        provenance.record_analysis(
+            record.workspace.root,
+            task=task,
+            response=result.response,
+            trace=result.trace,
+            artifacts=result.artifacts,
+            dataset_path=record.workspace.source_path,
+            provider=getattr(settings, "provider", ""),
+            model=getattr(settings, "model", ""),
+            code_version=__version__,
+        )
+    except Exception:
+        logger.exception("Failed to record provenance for session %s", record.session_id)
+
+
 async def _await_worker_exit(worker: threading.Thread, loop: asyncio.AbstractEventLoop, timeout: float) -> bool:
     """Poll worker.is_alive() without blocking the event loop.
 
@@ -232,6 +258,7 @@ def analyze(session_id: str, request: AnalyzeRequest) -> dict[str, Any]:
         record.last_result = result
         record.set_finished("completed")
         api.registry.persist(session_id, record)
+        _record_provenance(record, result, settings, task=request.task)
     except AnalysisCancelled as exc:
         record.set_finished("cancelled")
         api.registry.persist(session_id, record)
@@ -373,6 +400,7 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
                     api.registry.persist(session_id, record)
                 except Exception:
                     logger.exception("Failed to persist completed state for session %s", session_id)
+                _record_provenance(record, result, settings, task=request.task)
                 _safe_emit(loop, queue, ("complete", _result_payload(session_id, result)))
         except AnalysisCancelled:
             record.set_finished("cancelled")
@@ -666,6 +694,12 @@ def replay_analysis(session_id: str) -> dict[str, Any]:
         )
         record.set_finished("completed")
         api.registry.persist(session_id, record)
+        _record_provenance(
+            record,
+            result,
+            api._effective_settings(),
+            task=f"按上次分析重跑：{recipe.get('task', '')}",
+        )
     finally:
         record.run_lock.release()
     return _result_payload(session_id, result)
