@@ -69,6 +69,31 @@ jobs:
       - name: Lint with ruff
         run: ruff check .
 
+      - name: Security scan (bandit)
+        # 静态安全扫描：只拦 High 严重度（SQL 注入、命令注入、硬编码密钥等）。
+        # Medium 中包含大量已知可接受的低风险模式（如内部 sqlite 参数化查询、
+        # 内网回环地址），留作周期评审而非阻塞合并。
+        run: |
+          python -m pip install bandit
+          bandit -r src/data_agent -lll -q
+
+      - name: Type check (mypy, core modules)
+        # 核心模块宽松模式：覆盖沙箱、prompt、隐私脱敏这几个安全敏感文件，
+        # 先建立门禁防止回退；后续按模块逐步扩大覆盖面。
+        run: |
+          python -m pip install mypy
+          python -m mypy \
+            --ignore-missing-imports --no-strict-optional \
+            --allow-untyped-defs --allow-untyped-calls \
+            --disable-error-code=var-annotated \
+            --disable-error-code=import-untyped \
+            --follow-imports=skip \
+            src/data_agent/sandbox_runtime.py \
+            src/data_agent/sandbox_worker.py \
+            src/data_agent/tools/_sandbox.py \
+            src/data_agent/prompts.py \
+            src/data_agent/privacy.py
+
       - name: Run tests
         # kaleido 无头渲染在 CI 上偶发挂起且无法被信号超时中断；
         # 显式跳过真实 PNG 渲染分支（降级路径仍由 503/500 测试覆盖）。

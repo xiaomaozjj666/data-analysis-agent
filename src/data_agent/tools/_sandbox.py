@@ -73,6 +73,93 @@ def _raise_child_error(payload: dict[str, Any]) -> None:
     raise exc_type(message)
 
 
+# 子进程环境变量白名单：仅传递 Python/操作系统运行所必需的、明确无害的变量。
+# 任何 KEY / TOKEN / SECRET / PASSWORD / CREDENTIAL 一律不透传（防沙箱逃逸窃取）。
+_ENV_ALLOWED_EXACT = frozenset(
+    {
+        "PATH",
+        "PATHEXT",
+        "SYSTEMROOT",
+        "SYSTEMDRIVE",
+        "WINDIR",
+        "COMSPEC",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "HOME",
+        "USERPROFILE",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TZ",
+        "PYTHONIOENCODING",
+        "PYTHONUTF8",
+        "PYTHONUNBUFFERED",
+        "PYTHONDONTWRITEBYTECODE",
+        "VIRTUAL_ENV",
+        "NUMBER_OF_PROCESSORS",
+        "OS",
+    }
+)
+
+# 这些前缀开头的环境变量绝不允许进入子进程（即使意外命中白名单）。
+_ENV_FORBIDDEN_SUBSTRINGS = (
+    "KEY",
+    "TOKEN",
+    "SECRET",
+    "PASSWORD",
+    "PASSWD",
+    "CREDENTIAL",
+    "CRED",
+    "AUTH",
+    "API",
+    "PRIVATE",
+    "CERT",
+    "SESSION",
+    "COOKIE",
+    "BEARER",
+    "AWS_",
+    "AZURE_",
+    "GCP_",
+    "OPENAI",
+    "DEEPSEEK",
+    "ANTHROPIC",
+    "GITHUB",
+    "HF_",
+    "HUGGING",
+)
+
+
+def _build_child_env(package_root: str) -> dict[str, str]:
+    """构造子进程环境变量白名单副本：仅放行运行必需 + 明确无害变量。"""
+    env: dict[str, str] = {}
+    for name in _ENV_ALLOWED_EXACT:
+        value = os.environ.get(name)
+        if value is None:
+            continue
+        # 双保险：白名单变量若名字含敏感子串（例如 NUMBER_OF_PROCESSORS 不会命中，
+        # 但防止将来误加白名单）也直接跳过。
+        if any(tag in name.upper() for tag in _ENV_FORBIDDEN_SUBSTRINGS):
+            continue
+        env[name] = value
+    # 把包路径显式注入 PYTHONPATH（不沿用父进程 PYTHONPATH，避免携带敏感路径）。
+    existing = os.environ.get("PYTHONPATH", "")
+    parts = [package_root]
+    if existing:
+        # PYTHONPATH 只允许纯路径，不允许任何带敏感前缀的条目。
+        for chunk in existing.split(os.pathsep):
+            if not chunk:
+                continue
+            upper = chunk.upper()
+            if any(tag in upper for tag in _ENV_FORBIDDEN_SUBSTRINGS):
+                continue
+            parts.append(chunk)
+    env["PYTHONPATH"] = os.pathsep.join(parts)
+    return env
+
+
 def _execute_in_subprocess(code: str, frame: Any) -> dict[str, Any]:
     """把代码和 DataFrame 副本交给子进程，超时或超内存则杀掉。"""
     with tempfile.TemporaryDirectory(prefix="data-agent-sandbox-") as tmp:
@@ -85,11 +172,8 @@ def _execute_in_subprocess(code: str, frame: Any) -> dict[str, Any]:
             pickle.dump(frame, handle, protocol=4)
 
         package_root = str(Path(_data_agent_pkg.__file__).resolve().parents[1])
-        child_env = os.environ.copy()
-        existing = child_env.get("PYTHONPATH", "")
-        child_env["PYTHONPATH"] = os.pathsep.join(
-            item for item in (package_root, existing) if item
-        )
+        # 不再 os.environ.copy()：改用白名单，杜绝 DEEPSEEK_API_KEY / APP_ACCESS_TOKEN 泄漏。
+        child_env = _build_child_env(package_root)
         proc = subprocess.Popen(
             [
                 sys.executable,
