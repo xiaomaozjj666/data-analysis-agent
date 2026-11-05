@@ -19,7 +19,7 @@ from typing import Any
 
 from data_agent.evalkit.harness import GatePolicy, evaluate, suite_fingerprint
 from data_agent.evalkit.ledger import append_ledger, verify_ledger
-from data_agent.evalkit.models import load_results
+from data_agent.evalkit.models import load_results, write_results
 
 _EXIT_BY_DECISION = {"accept": 0, "reject": 1, "inconclusive": 2}
 _POLICY_FIELDS = {
@@ -96,6 +96,45 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     return _EXIT_BY_DECISION[report.decision]
 
 
+def _cmd_run_offline(args: argparse.Namespace) -> int:
+    if not 0.0 <= args.min_accuracy <= 1.0:
+        raise ValueError("min-accuracy 必须在 [0, 1] 内。")
+    if args.min_cases < 1:
+        raise ValueError("min-cases 必须为正整数。")
+    # 延迟导入完整 Agent 栈，compare/verify-ledger 仍保持轻量。
+    from data_agent.evalkit.offline import run_offline_suite
+
+    suite = run_offline_suite(args.suite, work_dir=args.work_dir)
+    if args.output:
+        write_results(args.output, suite)
+    passed = sum(case.passed for case in suite.cases.values())
+    total = len(suite.cases)
+    gate_passed = total >= args.min_cases and suite.accuracy >= args.min_accuracy
+    summary = {
+        "suite_id": suite.variant,
+        "mode": "offline_fake",
+        "cases": total,
+        "passed": passed,
+        "accuracy": round(suite.accuracy, 6),
+        "min_cases": args.min_cases,
+        "min_accuracy": args.min_accuracy,
+        "gate_passed": gate_passed,
+        "output": args.output or "",
+    }
+    if args.json:
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+    else:
+        state = "PASS" if gate_passed else "FAIL"
+        print(
+            f"离线评测: {state} | {suite.variant} | {passed}/{total} 通过 "
+            f"({suite.accuracy:.1%}) | 阈值 case≥{args.min_cases}, accuracy≥{args.min_accuracy:.1%}"
+        )
+        for case in suite.cases.values():
+            if not case.passed:
+                print(f"  - {case.case_id}: {'; '.join(case.details.get('failures', []))}")
+    return 0 if gate_passed else 1
+
+
 def _cmd_verify_ledger(args: argparse.Namespace) -> int:
     result = verify_ledger(args.path)
     if args.json:
@@ -126,6 +165,15 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("--notes", default="", help="本次改动的说明")
     compare.add_argument("--json", action="store_true", help="输出机器可读 JSON")
     compare.set_defaults(handler=_cmd_compare)
+
+    offline = subparsers.add_parser("run-offline", help="用脚本化模型执行真实 Agent 工作流")
+    offline.add_argument("--suite", required=True, help="离线用例套件 JSON")
+    offline.add_argument("--output", default=None, help="写出真实运行结果 JSONL")
+    offline.add_argument("--work-dir", default=None, help="可选工作目录（默认自动清理）")
+    offline.add_argument("--min-accuracy", type=float, default=1.0, help="最低通过率")
+    offline.add_argument("--min-cases", type=int, default=8, help="最少用例数")
+    offline.add_argument("--json", action="store_true", help="输出机器可读摘要")
+    offline.set_defaults(handler=_cmd_run_offline)
 
     verify = subparsers.add_parser("verify-ledger", help="校验台账哈希链")
     verify.add_argument("path")

@@ -23,6 +23,8 @@ class CaseResult:
     passed: bool
     cost_usd: float | None = None
     latency_ms: float | None = None
+    #: 离线运行的实际产出摘要与失败原因；统计门只读取上面的标准字段。
+    details: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -62,11 +64,15 @@ def _coerce_case(raw: Any, *, line: int, source: Path) -> CaseResult:
             raise ValueError(f"{source}:{line} 的 {label} 必须是数字或 null。")
         if not math.isfinite(value) or value < 0:
             raise ValueError(f"{source}:{line} 的 {label} 必须是非负有限数字。")
+    details = raw.get("details", {})
+    if not isinstance(details, dict):
+        raise ValueError(f"{source}:{line} 的 details 必须是 JSON 对象。")
     return CaseResult(
         case_id=case_id,
         passed=passed,
         cost_usd=float(cost) if cost is not None else None,
         latency_ms=float(latency) if latency is not None else None,
+        details=details,
     )
 
 
@@ -109,3 +115,22 @@ def load_results(path: str | Path, variant: str | None = None) -> SuiteResult:
     if not suite.cases:
         raise ValueError(f"评测结果为空：{source}")
     return suite
+
+
+def write_results(path: str | Path, suite: SuiteResult) -> None:
+    """以标准 JSONL 结构写出真实运行结果及可审计证据。"""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    rows: list[str] = []
+    for case_id in sorted(suite.cases):
+        case = suite.cases[case_id]
+        payload: dict[str, Any] = {
+            "case_id": case.case_id,
+            "passed": case.passed,
+            "cost_usd": case.cost_usd,
+            "latency_ms": case.latency_ms,
+        }
+        if case.details:
+            payload["details"] = case.details
+        rows.append(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    target.write_text("\n".join(rows) + "\n", encoding="utf-8")

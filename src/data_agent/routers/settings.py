@@ -14,13 +14,34 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 
+from data_agent._runtime_config import has_runtime_scope, update_runtime_settings
 from data_agent.credentials import delete_saved_api_key
-from data_agent.middleware import _check_access
+from data_agent.middleware import _check_access, _is_loopback_host
+from data_agent.observability import render_metrics
 from data_agent.registry import SettingsUpdate
 
 router = APIRouter()
+
+
+@router.get("/metrics", include_in_schema=False)
+def prometheus_metrics(request: Request) -> Response:
+    """默认仅环回客户端可抓取；可用环境变量完全关闭。"""
+    if os.getenv("DATA_AGENT_METRICS_ENABLED", "true").strip().lower() in {
+        "0",
+        "false",
+        "off",
+        "no",
+    }:
+        raise HTTPException(status_code=404, detail="Not found")
+    host = request.client.host if request.client else ""
+    # Starlette 的本地测试传输使用 testclient 伪主机；真实网络请求不会
+    # 出现该值。生产路径仍严格要求 IP/localhost 环回。
+    if host != "testclient" and not _is_loopback_host(host):
+        raise HTTPException(status_code=404, detail="Not found")
+    payload, media_type = render_metrics()
+    return Response(content=payload, media_type=media_type)
 
 
 @router.get("/api/health")
@@ -103,10 +124,13 @@ def update_settings(update: SettingsUpdate) -> dict[str, Any]:
             raise HTTPException(status_code=422, detail="API Key 不能为空。")
         persisted = api._save_runtime_api_key(value, update.persist_key)
         if update.persist_key and not persisted:
-            keyring_warning = "系统凭据存储不可用，本次 Key 仅保留在服务进程内存中，重启后需重新填写。"
-    with api.runtime_settings_lock:
-        api.runtime_settings["thinking_enabled"] = update.thinking_enabled
-        api.runtime_settings["reasoning_effort"] = update.reasoning_effort
+            keyring_warning = (
+                "系统凭据存储不可用，本次 Key 仅保留在服务进程内存中，重启后需重新填写。"
+            )
+    update_runtime_settings(
+        thinking_enabled=update.thinking_enabled,
+        reasoning_effort=update.reasoning_effort,
+    )
     payload = get_settings()
     if keyring_warning:
         payload["warning"] = keyring_warning
@@ -117,8 +141,9 @@ def update_settings(update: SettingsUpdate) -> dict[str, Any]:
 def delete_key() -> dict[str, bool]:
     from data_agent import api
 
-    with api.runtime_settings_lock:
-        api.runtime_settings["api_key"] = ""
-    delete_saved_api_key()
+    update_runtime_settings(api_key="")
+    # 多用户 Web 作用域不能删除其他客户端或桌面旧流程使用的全局凭据。
+    if not has_runtime_scope():
+        delete_saved_api_key()
     configured = bool(api._effective_settings().api_key)
     return {"configured": configured}

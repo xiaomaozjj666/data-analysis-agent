@@ -12,19 +12,30 @@ from __future__ import annotations
 
 import hmac
 import ipaddress
+import json
 import logging
 import os
+import re
 import sys
 import threading
 import time
 from collections import defaultdict, deque
+from uuid import uuid4
 
 from fastapi import HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 
+from data_agent._runtime_config import bind_runtime_scope
+from data_agent.observability import observe_http_request
+
 logger = logging.getLogger(__name__)
+
+_REQUEST_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+_RUNTIME_COOKIE = "data_agent_client_id"
+_RUNTIME_SCOPE_RE = re.compile(r"[a-f0-9]{32}")
+_HEALTH_PATHS = {"/api/health", "/api/version", "/api/auth"}
 
 
 def _resolve_bind_host() -> str:
@@ -111,6 +122,7 @@ def trusted_proxy_hops() -> int:
             )
         return 0
 
+
 request_buckets: dict[str, deque[float]] = defaultdict(deque)
 request_buckets_lock = threading.Lock()
 
@@ -166,21 +178,36 @@ def _prune_rate_buckets_locked(now: float) -> None:
 
 
 def _check_rate_limit(request: Request) -> None:
-    if request.method not in {"POST", "PUT", "DELETE"} or not request.url.path.startswith("/api/"):
+    """对所有 API 方法限流；读取与健康检查使用独立、较高的路径配额。"""
+    path = request.url.path
+    if not path.startswith("/api/"):
         return
     # 通过 ``api.*`` 访问，兼容测试 monkeypatch（bootstrap_settings / request_buckets）。
     from data_agent import api
 
-    limit = api.bootstrap_settings.rate_limit_per_minute
+    if path in _HEALTH_PATHS:
+        limit = api.bootstrap_settings.health_rate_limit_per_minute
+        suffix = "|health"
+    elif request.method in {"GET", "HEAD"}:
+        limit = api.bootstrap_settings.read_rate_limit_per_minute
+        suffix = "|read"
+    else:
+        limit = api.bootstrap_settings.rate_limit_per_minute
+        # 写请求保留历史键，兼容直接操作 request_buckets 的旧集成。
+        suffix = ""
     now = time.monotonic()
-    key = _client_identifier(request)
+    key = _client_identifier(request) + suffix
     with api.request_buckets_lock:
         _prune_rate_buckets_locked(now)
         bucket = api.request_buckets[key]
         while bucket and now - bucket[0] >= 60:
             bucket.popleft()
         if len(bucket) >= limit:
-            raise HTTPException(status_code=429, detail="请求过于频繁，请稍后再试。")
+            raise HTTPException(
+                status_code=429,
+                detail="请求过于频繁，请稍后再试。",
+                headers={"Retry-After": "60"},
+            )
         bucket.append(now)
 
 
@@ -220,32 +247,83 @@ def setup_middleware(app) -> None:  # type: ignore[no-untyped-def]
         allow_credentials=False,
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["*"],
+        expose_headers=["X-Request-ID", "X-API-Version"],
     )
     app.add_middleware(GZipMiddleware, minimum_size=1000)
 
     @app.middleware("http")
     async def protect_api(request: Request, call_next):  # type: ignore[no-untyped-def]
+        started = time.perf_counter()
+        supplied_id = request.headers.get("x-request-id", "").strip()
+        request_id = supplied_id if _REQUEST_ID_RE.fullmatch(supplied_id) else uuid4().hex
+        request.state.request_id = request_id
+
+        # 浏览器第一次访问时由服务端生成不可猜测的配置作用域；客户端只需
+        # 像处理普通会话一样保留 HttpOnly Cookie，旧的无上下文调用不受影响。
+        scope = request.cookies.get(_RUNTIME_COOKIE, "")
+        new_scope = not bool(_RUNTIME_SCOPE_RE.fullmatch(scope))
+        if new_scope:
+            scope = uuid4().hex
+
         response = None
-        # CORS preflight requests do not carry the application token. Let
-        # CORSMiddleware answer OPTIONS before enforcing auth on the real request.
-        if (
-            request.method != "OPTIONS"
-            and request.url.path.startswith("/api/")
-            and request.url.path not in {"/api/health", "/api/auth"}
-        ):
+        status_code = 500
+        with bind_runtime_scope(scope):
             try:
-                _check_access(request)
-                _check_rate_limit(request)
-            except HTTPException as exc:
-                response = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
-        if response is None:
-            response = await call_next(request)
-        response.headers.setdefault("X-Content-Type-Options", "nosniff")
-        response.headers.setdefault("Referrer-Policy", "no-referrer")
-        response.headers.setdefault("X-Frame-Options", "DENY")
-        response.headers.setdefault(
-            "Permissions-Policy",
-            "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
-        )
-        response.headers.setdefault("X-API-Version", api.API_VERSION)
-        return response
+                # CORS preflight 不携带应用令牌，由 CORSMiddleware 直接处理；
+                # 其余所有 /api/ 方法（包括 GET 与健康检查）都进入限流。
+                if request.method != "OPTIONS" and request.url.path.startswith("/api/"):
+                    try:
+                        if request.url.path not in {"/api/health", "/api/auth"}:
+                            _check_access(request)
+                        _check_rate_limit(request)
+                    except HTTPException as exc:
+                        response = JSONResponse(
+                            status_code=exc.status_code,
+                            content={"detail": exc.detail},
+                            headers=exc.headers,
+                        )
+                if response is None:
+                    response = await call_next(request)
+                status_code = response.status_code
+                response.headers.setdefault("X-Content-Type-Options", "nosniff")
+                response.headers.setdefault("Referrer-Policy", "no-referrer")
+                response.headers.setdefault("X-Frame-Options", "DENY")
+                response.headers.setdefault(
+                    "Permissions-Policy",
+                    "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+                )
+                response.headers.setdefault("X-API-Version", api.API_VERSION)
+                response.headers["X-Request-ID"] = request_id
+                if new_scope:
+                    response.set_cookie(
+                        _RUNTIME_COOKIE,
+                        scope,
+                        max_age=30 * 24 * 3600,
+                        httponly=True,
+                        secure=request.url.scheme == "https",
+                        samesite="lax",
+                        path="/",
+                    )
+                return response
+            finally:
+                duration = time.perf_counter() - started
+                # call_next 返回后 scope 中才有匹配路由；认证/限流提前拒绝时
+                # 使用固定标签，绝不把 session_id、查询串或原始路径写进指标。
+                matched_route = request.scope.get("route")
+                route = getattr(matched_route, "path", "unresolved")
+                if request.url.path != "/metrics":
+                    observe_http_request(request.method, route, status_code, duration)
+                logger.info(
+                    json.dumps(
+                        {
+                            "event": "http_request",
+                            "request_id": request_id,
+                            "method": request.method,
+                            "route": route,
+                            "status_code": status_code,
+                            "duration_ms": round(duration * 1000, 3),
+                        },
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                )

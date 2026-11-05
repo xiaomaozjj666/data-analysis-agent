@@ -52,7 +52,8 @@ _ECHARTS_BASE_AXIS = {
 _ECHARTS_X_AXIS_NAME: dict[str, Any] = {"nameLocation": "middle", "nameGap": 32}
 #: 数值轴名放在轴顶端偏左（与 y 轴刻度同一视觉列），避免与顶部标题打架。
 _ECHARTS_Y_AXIS_NAME: dict[str, Any] = {
-    "nameLocation": "end", "nameGap": 14,
+    "nameLocation": "end",
+    "nameGap": 14,
     "nameTextStyle": {"color": _ECHARTS_TEXT_SECONDARY, "fontSize": 12, "align": "left"},
 }
 
@@ -69,7 +70,7 @@ _ECHARTS_BASE_LEGEND = {
     # 图例下移到 top:80，给右上角亮/暗按钮（top:12 高 34px）和 toolbox
     # 留出充分垂直间距；right 设为 72，让水平图例整体左移，避免图例项
     # 从右向左排列时文本向左延伸到按钮下方，与主题按钮发生水平重叠。
-    # type:scroll 防止多系列（如 color 维度 10 级）图例换行溢出、压住绘图区。
+    # 滚动模式防止多系列（如 color 维度 10 级）图例换行溢出、压住绘图区。
     "top": 80,
     "right": 72,
     "type": "scroll",
@@ -108,7 +109,6 @@ _ECHARTS_BASE_TOOLBOX = {
         "saveAsImage": {"title": "导出 PNG", "pixelRatio": 2, "backgroundColor": _ECHARTS_BG_COLOR},
     },
 }
-
 
 
 class _JsFunction:
@@ -154,9 +154,7 @@ _ECHARTS_VALUE_LABEL_JS = _JsFunction(
 )
 
 
-_TIME_LABEL_PATTERN = re.compile(
-    r"^\d{4}[-/]\d{1,2}([-/]\d{1,2})?([ T]\d{2}:\d{2}(:\d{2})?)?$"
-)
+_TIME_LABEL_PATTERN = re.compile(r"^\d{4}[-/]\d{1,2}([-/]\d{1,2})?([ T]\d{2}:\d{2}(:\d{2})?)?$")
 
 _DENSITY_PANEL_SIZE = (1080.0, 560.0)
 _DENSITY_FACET_PANEL_SIZE = (560.0, 468.0)
@@ -176,20 +174,25 @@ _DENSITY_ACCENT = "#E15759"
 #: 单面板布局（jointplot：主密度面板 + 顶部 x 分布 + 右侧 y 分布），百分比定位。
 #: 百分比跟着容器缩放，缩略图（209×131）与预览模态（1400×850）用同一套几何。
 _DENSITY_SINGLE_LAYOUT = {
-    "left": 7.0,        # 留给 y 轴刻度与轴名
+    "left": 7.0,  # 留给 y 轴刻度与轴名
     "right": 2.5,
-    "top": 14.0,        # 主标题 + 副标题
-    "bottom": 14.0,     # x 轴刻度 + 轴名 + 档位色标
-    "hist": 9.0,        # 边缘直方图厚度
-    "hist_gap": 1.5,    # 边缘直方图与主面板的间隙
+    "top": 14.0,  # 主标题 + 副标题
+    "bottom": 14.0,  # x 轴刻度 + 轴名 + 档位色标
+    "hist": 9.0,  # 边缘直方图厚度
+    "hist_gap": 1.5,  # 边缘直方图与主面板的间隙
     "hist_width": 8.5,  # 右侧 y 分布宽度
 }
 
 #: 分面布局（2 列或 3 列）：面板标题写在每块面板上方，行间距要同时容下
 #: 上一行的 x 刻度与下一行的面板标题。
 _DENSITY_FACET_LAYOUT = {
-    "left": 7.0, "right": 2.5, "top": 13.5, "bottom": 13.0,
-    "gap_x": 3.2, "gap_y": 9.0, "title": 2.8,
+    "left": 7.0,
+    "right": 2.5,
+    "top": 13.5,
+    "bottom": 13.0,
+    "gap_x": 3.2,
+    "gap_y": 9.0,
+    "title": 2.8,
 }
 
 #: 悬浮提示里的数字格式化（JS）：与类目标签/数值轴 formatter 同一口径
@@ -712,4 +715,3 @@ _ECHARTS_HTML_TEMPLATE = """<!doctype html>
 </body>
 </html>
 """
-

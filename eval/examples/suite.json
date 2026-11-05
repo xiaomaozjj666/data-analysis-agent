@@ -1,0 +1,174 @@
+{
+  "schema_version": 1,
+  "suite_id": "offline-workflow-v1",
+  "description": "真实 DataWorkspace + LangGraph + inspect_data 工具链的离线回归套件；模型仅按固定脚本响应。",
+  "cases": [
+    {
+      "case_id": "sales-basic",
+      "task": "检查销售数据的结构与质量",
+      "dataset": {
+        "columns": ["region", "sales"],
+        "rows": [
+          ["East", 100],
+          ["West", 200],
+          ["North", 150],
+          ["South", 180]
+        ]
+      },
+      "expect": {
+        "rows": 4,
+        "columns": 2,
+        "column_names": ["region", "sales"],
+        "tool_calls": ["inspect_data"],
+        "plan_ids": ["inspect"],
+        "completed_step_ids": ["inspect"],
+        "response_contains": ["ReAct"]
+      }
+    },
+    {
+      "case_id": "missing-values",
+      "task": "检查含缺失值的数据",
+      "dataset": {
+        "columns": ["city", "amount"],
+        "rows": [
+          ["北京", 12.5],
+          ["上海", null],
+          ["广州", 18.0]
+        ]
+      },
+      "expect": {
+        "rows": 3,
+        "columns": 2,
+        "column_names": ["city", "amount"],
+        "tool_calls": ["inspect_data"],
+        "plan_ids": ["inspect"],
+        "completed_step_ids": ["inspect"],
+        "response_contains": ["ReAct"]
+      }
+    },
+    {
+      "case_id": "date-dimensions",
+      "task": "检查日期维度数据",
+      "dataset": {
+        "columns": ["date", "channel", "revenue"],
+        "rows": [
+          ["2026-01-01", "organic", 20],
+          ["2026-01-02", "paid", 35],
+          ["2026-01-03", "organic", 25]
+        ]
+      },
+      "expect": {
+        "rows": 3,
+        "columns": 3,
+        "column_names": ["date", "channel", "revenue"],
+        "tool_calls": ["inspect_data"],
+        "plan_ids": ["inspect"],
+        "completed_step_ids": ["inspect"],
+        "response_contains": ["ReAct"]
+      }
+    },
+    {
+      "case_id": "numeric-only",
+      "task": "检查纯数值数据",
+      "dataset": {
+        "columns": ["x", "y"],
+        "rows": [
+          [1, 2.1],
+          [2, 3.8],
+          [3, 5.2],
+          [4, 7.9],
+          [5, 10.4]
+        ]
+      },
+      "expect": {
+        "rows": 5,
+        "columns": 2,
+        "column_names": ["x", "y"],
+        "tool_calls": ["inspect_data"],
+        "plan_ids": ["inspect"],
+        "completed_step_ids": ["inspect"],
+        "response_contains": ["ReAct"]
+      }
+    },
+    {
+      "case_id": "single-row",
+      "task": "检查单行数据边界",
+      "dataset": {
+        "columns": ["name", "active"],
+        "rows": [["only", true]]
+      },
+      "expect": {
+        "rows": 1,
+        "columns": 2,
+        "column_names": ["name", "active"],
+        "tool_calls": ["inspect_data"],
+        "plan_ids": ["inspect"],
+        "completed_step_ids": ["inspect"],
+        "response_contains": ["ReAct"]
+      }
+    },
+    {
+      "case_id": "wide-table",
+      "task": "检查多列宽表",
+      "dataset": {
+        "columns": ["id", "category", "price", "quantity"],
+        "rows": [
+          [1, "A", 9.9, 2],
+          [2, "B", 19.9, 1],
+          [3, "A", 5.0, 4]
+        ]
+      },
+      "expect": {
+        "rows": 3,
+        "columns": 4,
+        "column_names": ["id", "category", "price", "quantity"],
+        "tool_calls": ["inspect_data"],
+        "plan_ids": ["inspect"],
+        "completed_step_ids": ["inspect"],
+        "response_contains": ["ReAct"]
+      }
+    },
+    {
+      "case_id": "chinese-columns",
+      "task": "检查中文字段数据",
+      "dataset": {
+        "columns": ["地区", "销售额"],
+        "rows": [
+          ["华东", 1000],
+          ["华北", 800],
+          ["华南", 1200]
+        ]
+      },
+      "expect": {
+        "rows": 3,
+        "columns": 2,
+        "column_names": ["地区", "销售额"],
+        "tool_calls": ["inspect_data"],
+        "plan_ids": ["inspect"],
+        "completed_step_ids": ["inspect"],
+        "response_contains": ["ReAct"]
+      }
+    },
+    {
+      "case_id": "boolean-and-null",
+      "task": "检查布尔值与空值混合数据",
+      "dataset": {
+        "columns": ["segment", "enabled", "score"],
+        "rows": [
+          ["new", true, 1.5],
+          ["returning", false, null],
+          ["new", true, 2.5]
+        ]
+      },
+      "expect": {
+        "rows": 3,
+        "columns": 3,
+        "column_names": ["segment", "enabled", "score"],
+        "tool_calls": ["inspect_data"],
+        "plan_ids": ["inspect"],
+        "completed_step_ids": ["inspect"],
+        "response_contains": ["ReAct"]
+      }
+    }
+  ]
+}

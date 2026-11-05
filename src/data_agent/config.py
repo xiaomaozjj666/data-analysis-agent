@@ -50,7 +50,9 @@ def sanitize_no_proxy_env() -> list[str]:
         if not raw:
             continue
         entries = [item.strip() for item in raw.split(",")]
-        kept = [item for item in entries if item and not (item.startswith("[") and item.endswith("]"))]
+        kept = [
+            item for item in entries if item and not (item.startswith("[") and item.endswith("]"))
+        ]
         dropped = [item for item in entries if item and item.startswith("[") and item.endswith("]")]
         if dropped:
             removed.extend(dropped)
@@ -114,6 +116,9 @@ class AgentSettings:
     max_active_sessions: int = 100
     session_ttl_hours: float = 24.0
     rate_limit_per_minute: int = 30
+    #: 读取接口与健康接口使用独立桶，避免轮询耗尽上传/分析配额。
+    read_rate_limit_per_minute: int = 120
+    health_rate_limit_per_minute: int = 300
     max_concurrent_analyses: int = 2
     language: str = "zh"
 
@@ -140,8 +145,15 @@ class AgentSettings:
         if selected_provider == "deepseek":
             api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
             model = os.getenv("DEEPSEEK_MODEL", "deepseek-flash").strip()
-            base_url = os.getenv("DEEPSEEK_API_BASE", DEEPSEEK_BASE_URL).strip() or DEEPSEEK_BASE_URL
-            thinking_enabled = os.getenv("DEEPSEEK_THINKING", "true").strip().lower() not in {"0", "false", "no", "off"}
+            base_url = (
+                os.getenv("DEEPSEEK_API_BASE", DEEPSEEK_BASE_URL).strip() or DEEPSEEK_BASE_URL
+            )
+            thinking_enabled = os.getenv("DEEPSEEK_THINKING", "true").strip().lower() not in {
+                "0",
+                "false",
+                "no",
+                "off",
+            }
             reasoning_effort = os.getenv("DEEPSEEK_REASONING_EFFORT", "high").strip().lower()
         else:
             api_key = os.getenv("OPENAI_API_KEY", "").strip()
@@ -169,6 +181,12 @@ class AgentSettings:
             max_active_sessions=int(os.getenv("DATA_AGENT_MAX_ACTIVE_SESSIONS", "100")),
             session_ttl_hours=float(os.getenv("DATA_AGENT_SESSION_TTL_HOURS", "24")),
             rate_limit_per_minute=int(os.getenv("DATA_AGENT_RATE_LIMIT_PER_MINUTE", "30")),
+            read_rate_limit_per_minute=int(
+                os.getenv("DATA_AGENT_READ_RATE_LIMIT_PER_MINUTE", "120")
+            ),
+            health_rate_limit_per_minute=int(
+                os.getenv("DATA_AGENT_HEALTH_RATE_LIMIT_PER_MINUTE", "300")
+            ),
             max_concurrent_analyses=int(os.getenv("DATA_AGENT_MAX_CONCURRENT_ANALYSES", "2")),
             language=(os.getenv("DATA_AGENT_LANGUAGE", "zh").strip().lower() or "zh"),
         )
@@ -206,6 +224,10 @@ class AgentSettings:
             raise ValueError("会话资源上限必须为正数。")
         if self.rate_limit_per_minute <= 0:
             raise ValueError("DATA_AGENT_RATE_LIMIT_PER_MINUTE 必须为正数。")
+        if self.read_rate_limit_per_minute <= 0:
+            raise ValueError("DATA_AGENT_READ_RATE_LIMIT_PER_MINUTE 必须为正数。")
+        if self.health_rate_limit_per_minute <= 0:
+            raise ValueError("DATA_AGENT_HEALTH_RATE_LIMIT_PER_MINUTE 必须为正数。")
         if self.max_concurrent_analyses <= 0:
             raise ValueError("DATA_AGENT_MAX_CONCURRENT_ANALYSES 必须为正数。")
         if self.language not in {"zh", "en"}:

@@ -77,22 +77,12 @@ jobs:
           python -m pip install bandit
           bandit -r src/data_agent -lll -q
 
-      - name: Type check (mypy, core modules)
-        # 核心模块宽松模式：覆盖沙箱、prompt、隐私脱敏这几个安全敏感文件，
-        # 先建立门禁防止回退；后续按模块逐步扩大覆盖面。
+      - name: Type check (mypy, entire data_agent package)
+        # 从 5 个核心文件扩大到整个 src/data_agent。宽松基线与历史错误码
+        # 统一维护在 pyproject.toml，本地和 CI 使用完全相同的配置。
         run: |
           python -m pip install mypy
-          python -m mypy \
-            --ignore-missing-imports --no-strict-optional \
-            --allow-untyped-defs --allow-untyped-calls \
-            --disable-error-code=var-annotated \
-            --disable-error-code=import-untyped \
-            --follow-imports=skip \
-            src/data_agent/sandbox_runtime.py \
-            src/data_agent/sandbox_worker.py \
-            src/data_agent/tools/_sandbox.py \
-            src/data_agent/prompts.py \
-            src/data_agent/privacy.py
+          python -m mypy src/data_agent
 
       - name: Run tests
         # kaleido 无头渲染在 CI 上偶发挂起且无法被信号超时中断；
@@ -116,6 +106,38 @@ jobs:
           python -m pytest -n 4 \
             --cov=data_agent --cov-report=term-missing --cov-report=xml \
             --cov-fail-under=97
+
+  eval:
+    name: Agent eval (offline deterministic gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install -e .
+
+      - name: Run offline Agent eval gate
+        # 脚本化模型驱动真实 LangGraph/工具链；8 条必须全部通过。
+        # 不读取真实 LLM Key，不访问外部模型 API；非零退出直接使 job 失败。
+        env:
+          LANGSMITH_TRACING: "false"
+          DEEPSEEK_API_KEY: ""
+          OPENAI_API_KEY: ""
+        run: |
+          data-agent-eval run-offline \
+            --suite eval/examples/suite.json \
+            --output "$RUNNER_TEMP/offline-results.jsonl" \
+            --min-cases 8 \
+            --min-accuracy 1.0
 
   frontend:
     name: Frontend (typecheck + test + build)

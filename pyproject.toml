@@ -35,6 +35,7 @@ dependencies = [
   "rich>=15.0.0,<16",
   "keyring==25.7.0",
   "boto3>=1.43.121,<2",
+  "prometheus-client>=0.23,<1",
 ]
 
 [project.optional-dependencies]
@@ -44,6 +45,7 @@ dev = [
   "pytest-timeout>=2.4.0,<3",
   "pytest-xdist>=3.8.0,<4",
   "ruff>=0.17.3,<0.18",
+  "mypy>=1.18,<2",
   "httpx>=0.28.1,<1",
   # test_e2e_data_types.py::test_pdf_file_load 用 reportlab 生成真实 PDF 文件；
   # 不在运行时依赖里，仅测试需要。
@@ -79,6 +81,34 @@ markers = ["ci_required: 标记需要 CI 环境才能运行的用例（本地缺
 # timeout_method="thread" 让超时以普通失败形式报出用例名，便于下次直接定位。
 timeout = 240
 timeout_method = "thread"
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+# numpy 2.x 的 site-packages stubs 使用 Python 3.12 type 语法；门禁只解析
+# 本项目源码，第三方导入按 untyped 处理，确保 Python 3.11 runner 可运行。
+no_site_packages = true
+no_strict_optional = true
+allow_untyped_defs = true
+allow_untyped_calls = true
+follow_imports = "skip"
+# 全量 src/data_agent 门禁第一阶段：保留原有宽松策略，并暂时屏蔽
+# 15 个历史模块已登记的推断误报/标注债；语法、未定义名、导入与未覆盖
+# 错误码仍在整个包上阻塞 CI。后续按文件逐个移出此列表以收紧。
+disable_error_code = [
+  "var-annotated",
+  "import-untyped",
+  "no-redef",
+  "call-overload",
+  "misc",
+  "dict-item",
+  "arg-type",
+  "assignment",
+  "operator",
+  "index",
+  "attr-defined",
+  "has-type",
+]
 
 [tool.ruff]
 line-length = 100

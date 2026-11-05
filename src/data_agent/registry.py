@@ -28,6 +28,13 @@ from typing import Any
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
+from data_agent._runtime_config import (  # noqa: F401
+    has_runtime_scope,
+    runtime_settings,
+    runtime_settings_lock,
+    runtime_settings_snapshot,
+    update_runtime_settings,
+)
 from data_agent.agent import AnalysisResult
 from data_agent.config import AgentSettings
 from data_agent.credentials import get_saved_api_key, save_api_key
@@ -90,8 +97,7 @@ def _save_runtime_api_key(value: str, persist_key: bool) -> bool:
     Returns True when persistence succeeded (or was not requested), False when
     the OS credential backend is unavailable so the key only lives in memory.
     """
-    with runtime_settings_lock:
-        runtime_settings["api_key"] = value
+    update_runtime_settings(api_key=value)
     if not persist_key:
         return True
     return save_api_key(value)
@@ -611,12 +617,8 @@ registry = SessionRegistry(
     bootstrap_settings.session_ttl_hours,
     storage=session_storage,
 )
-runtime_settings = {
-    "api_key": "",
-    "thinking_enabled": None,
-    "reasoning_effort": None,
-}
-runtime_settings_lock = threading.RLock()
+# runtime_settings / runtime_settings_lock 从 _runtime_config 导入并继续 re-export，
+# 兼容旧调用方；HTTP 请求的实际覆盖项保存在其客户端作用域中。
 analysis_slots = threading.BoundedSemaphore(bootstrap_settings.max_concurrent_analyses)
 
 
@@ -625,14 +627,15 @@ analysis_slots = threading.BoundedSemaphore(bootstrap_settings.max_concurrent_an
 # ---------------------------------------------------------------------------
 def _effective_settings() -> AgentSettings:
     settings = AgentSettings.from_env(provider="deepseek")
-    with runtime_settings_lock:
-        settings.api_key = (
-            str(runtime_settings["api_key"] or "") or settings.api_key or get_saved_api_key()
-        )
-        if runtime_settings["thinking_enabled"] is not None:
-            settings.thinking_enabled = bool(runtime_settings["thinking_enabled"])
-        if runtime_settings["reasoning_effort"] is not None:
-            settings.reasoning_effort = str(runtime_settings["reasoning_effort"])
+    overrides = runtime_settings_snapshot()
+    # OS keyring 是单用户桌面时代的进程级存储，不能让一个 Web 客户端
+    # 读到另一个客户端保存的 Key；无作用域的旧调用仍保持原回退行为。
+    saved_key = "" if has_runtime_scope() else get_saved_api_key()
+    settings.api_key = str(overrides["api_key"] or "") or settings.api_key or saved_key
+    if overrides["thinking_enabled"] is not None:
+        settings.thinking_enabled = bool(overrides["thinking_enabled"])
+    if overrides["reasoning_effort"] is not None:
+        settings.reasoning_effort = str(overrides["reasoning_effort"])
     return settings
 
 
