@@ -1,6 +1,6 @@
 # 数据分析 Agent 竞品调研与本项目路线图
 
-调研时间：2026 年 9 月
+调研时间：2026 年 9 月（初查）；2026 年 11 月 17 日（实地复核，见第六节）
 调研对象：WorkBuddy（腾讯）、Trae SOLO（字节跳动）、ChatGPT Advanced Data Analysis（OpenAI）、Julius AI、Copilot in Excel / Power BI Copilot（微软）、Tableau Agent & Pulse / FineBI（BI 侧）
 被评估对象：本项目 data-analysis-agent（下文简称"本项目"）
 
@@ -9,6 +9,8 @@
 > `postgres_source.py` 的 PostgreSQL 数据源，CI 内以真实 service 验证）；
 > MCP 数据面服务（`mcp_server.py`，stdio，供其他 Agent 安全访问数据）也已落地，
 > 以官方 SDK 客户端做协议互操作测试。尚余 Snowflake/BigQuery 等其余数仓驱动。
+> 2026-11 实地复核结论与路线图增量见第六节；正文（2026-09 初查）保留原状，
+> 过期数字以「2026-11 复核注」在原位标注、不静默改写。
 
 ---
 
@@ -77,6 +79,8 @@
 
 Julius、Tableau（Hosted MCP）、WorkBuddy（自定义 MCP）、Power BI 四家都能让分析直接在数据源上跑，不落文件。本项目目前**只能靠文件上传**：我通读了 `src/data_agent/` 全部 39 个 Python 文件，没有任何 `sqlalchemy`、`create_engine`、`psycopg`、`snowflake`、`bigquery` 痕迹，也没有 MCP 客户端。
 
+> **2026-11 复核注（原位改判）**：上文描述的是 2026-09 初查时点。当前 `src/data_agent/` 已有 88 个 Python 文件，SQLite / PostgreSQL 直连与 MCP 数据面服务均已落地（见顶部"落地进展"），"只能靠文件上传"不再成立；Snowflake/BigQuery 驱动仍未落地，该缺口维持。
+
 这件事的重要性被行业实践反复确认。2026 年 MCP 数据库访问已经形成明确参考架构：MCP server 暴露 `list_tables`、`describe_table`、`run_query`、`sample_rows` 四个精简工具，配专用只读角色（Snowflake 用 `TYPE=SERVICE` 用户 + RSA 密钥对；BigQuery 用 Job User + Data Viewer + Read Session User），再叠加行数上限、查询超时、方言校验、SQL 哈希审计，连接池配合数仓的自动挂起策略控制成本。
 
 对本项目的直接价值：一旦接上，`DataWorkspace.load()` 的入口就从"文件路径"扩展为"连接标识 + 查询"，下游的清洗、统计、图表、报告链路一行不用改——因为它们是围绕 pandas DataFrame 设计的。这是本项目现有架构少有的"改造收益比极高"的位置。
@@ -127,6 +131,8 @@ Trae 的技能市场（chart-visualization、data-analysis、consulting-analysis
 
 本项目已有 10 个受控工具，但仍是固定集合，**没有声明式的技能/插件层**。分析长报告类任务、行业特定口径、特定图表风格这类东西，适合同一个可声明、可加载的技能机制管理。
 
+> **2026-11 复核注（原位改判）**："10 个受控工具"为初稿笔误——`tools/builder.py` 工具清单与 `tests/test_agent.py` 的精确集合断言均为 11 个（含 `run_python_code`），与 3.7 节口径一致。技能/插件层仍缺，该结论维持。
+
 ### 3.9 权限治理 / 协作 / 联网搜索
 
 这三项对本项目当前阶段优先级靠后，但决定了能否进企业：FineBI 有行级列级权限、脱敏、血缘；Julius 有共享空间、评论、版本化 Notebook；本项目目前只有单一 `APP_ACCESS_TOKEN` 加滑动窗口限流，无用户体系。联网搜索方面，Julius 有 web search 与美股数据，WorkBuddy 有深度研究与金融数据连接器，本项目完全依赖上传文件，无法补充行业基准、汇率这类外部上下文。
@@ -145,7 +151,7 @@ Copilot in Excel 支持切换 Claude 与 GPT；Julius 支持 SQL/Python/R 与多
 2. **图表工程深度领先通用型产品。** 双引擎、十余种图表类型、明确定义的自动选图规则、极端值处理、暗色主题联动、PNG 导出、白话解读——这套东西通用 Agent 要靠临时写 matplotlib 代码，Trae 实测里甚至要用截图插 PPT。
 3. **数据接入的格式广度扎实。** CSV/TSV/Excel/JSON/JSONL/Parquet 全支持，加 PDF 表格提取、TXT、Word 表格；UTF-8/GB18030 编码探测、大文件分块流式读取、数值列自动降型。在"文件级"这个维度上不输任何一家，且明确避开了 ChatGPT 的 50MB 天花板。
 4. **统计方法边界清晰。** 描述统计、相关分析（含 Pearson p 值）、分组聚合、独立/配对 t 检验、ANOVA、卡方检验、线性回归（R²/RMSE/MAE）逐项列明。通用 Agent 不保证这些方法的质量与适用性检查。
-5. **工程完成度高于多数同类项目。** 733 项后端测试、CI 全绿（刚把后端作业从约 23 分钟压到约 1.5 分钟）、Docker 非 root + 健康检查、Render Blueprint、LangGraph Agent Server、LangSmith 全链路 Trace、本地/S3-R2 双持久化、keyring 存 Key、访问令牌 + 滑窗限流、SSE 15 秒心跳与断线自动恢复、断点续跑。这套底子意味着功能迭代可以快，而不是每次都在还技术债。
+5. **工程完成度高于多数同类项目。** 733 项后端测试、CI 全绿（刚把后端作业从约 23 分钟压到约 1.5 分钟）、Docker 非 root + 健康检查、Render Blueprint、LangGraph Agent Server、LangSmith 全链路 Trace、本地/S3-R2 双持久化、keyring 存 Key、访问令牌 + 滑窗限流、SSE 15 秒心跳与断线自动恢复、断点续跑。这套底子意味着功能迭代可以快，而不是每次都在还技术债。（2026-11 复核注：`def test_` 计数已达 1114 个，本行数字为 2026-09 时点。）
 6. **自主可控与私有化。** MIT 许可、可本地运行、模型可换、Key 自持。对大厂清一色托管 SaaS + 订阅 + 强制生态绑定（微软要 Fabric 容量、Tableau 要 Tableau+、WorkBuddy 强绑腾讯生态），这是实打实的差异化。
 
 ### 4.2 本项目的不足（按严重度排序）
@@ -157,7 +163,7 @@ Copilot in Excel 支持切换 Claude 与 GPT；Julius 支持 SQL/Python/R 与多
 | 高 → 部分已补 | 分析过程不可复用、不可调度 | 已实现 `recipe.py`：一次分析固化为 `analysis_recipe.json`，按上次工具参数重跑而不重新规划（前端"按配方重跑"）；定时调度仍缺 |
 | 高 → 已补 | 跨文件 join 不是一等能力 | 原状态：`.merge()` 仅出现在 builder.py 的内部元数据拼接；`pd.concat` 仅用于单文件分块读取与同文件多表提取。现已实现受控的 `join_datasets`（键校验 + 扇出护栏 + 未匹配键诊断） |
 | 中高 | 无主动洞察与推送 | 只有被动响应，无定时、无异常预警 |
-| 中高 → 部分已补 | 无 Word/PPT/PDF 原生导出 | 已实现 `report_export.py` 导出 Word / PPT（导出菜单下载）；PDF 尚未覆盖 |
+| 中高 → 部分已补 | 无 Word/PPT/PDF 原生导出 | 已实现 `report_export.py` 导出 Word / PPT（导出菜单下载）；PDF 尚未覆盖（2026-11 注：前端已有浏览器"打印/另存 PDF"入口，缺的是服务端原生 PDF 生成，表述由"暂缺"收窄为此） |
 | 中 | 报告级叙事编排弱 | 图表类型选择强，但多图构成论证链的能力不明显 |
 | 中 | 无技能/插件层 | 工具集为固定 11 项，无声明式扩展机制 |
 | 中 | 无联网搜索与外部数据 | 完全依赖上传文件 |
@@ -252,19 +258,129 @@ P0-2 与 P0-3 属于"在既有架构里加一层"，改动封闭、可用现有�
 
 ---
 
-## 六、定位建议
+## 六、竞品实地复核（2026-11-17）
+
+### 6.1 复核方式与可信度边界
+
+与 2026-09 初查（依赖二手评测与官网宣传页）不同，本次用自研爬虫（web-crawler）对六类产品的**官方一手页面**做了实地抓取与逐句核对：静态 HTTP 优先，被拦则换 TLS 指纹隐身（`--stealth`）或无头浏览器渲染（`--render-js`），遵守 robots、限速、不登录不绕过访问控制；每个站点的请求预算封顶，抓不到就如实记"无法核实"。每条结论均标注【原文】（逐字引文 + URL）或【推断】。原始抓取产物（HTML / 正文 txt / run_report）存于 `D:\XIAOMAO\Projects\web-crawler\.research\agent-data-analysis\`，不在本仓库入库。
+
+抓取可达性本身也是数据：docs.julius.ai 全站 HTTP 526（Cloudflare 证书故障）、tableau.com 对纯 HTTP / TLS 隐身 / 无头浏览器三层全部 403——这两家的部分能力本次**无法复核**，正文第二节中 Tableau 相关结论维持"单一来源"标注。
+
+### 6.2 抓取矩阵（页面级结果）
+
+| 站点 | 关键页面 | 结果 | 方式 |
+| --- | --- | --- | --- |
+| help.openai.com | Data analysis with ChatGPT（8437071） | 403 → **渲染成功**（45 行全文） | `--render-js` |
+| platform.openai.com | /docs/guides/tools | 200（28.6k 字） | 静态 |
+| docs.anthropic.com | Tool use overview | 200（11.5k 字；canonical 指向 platform.claude.com） | 静态 |
+| www.anthropic.com | /news 索引 | 200；全文检索 excel/spreadsheet **0 命中** | `--stealth` |
+| learn.microsoft.com | Power BI Copilot overview（页面自述 Last updated 2026-08-24） | 200（15.8k 字） | 静态 |
+| support.microsoft.com | Copilot in Excel get-started | 200（5.0k 字） | 静态 |
+| learn.microsoft.com | /en-us/dax/dax-copilot | 200（9.9k 字） | 静态 |
+| www.julius.ai | 首页 / chat-with-your-data / data-connectors | 200（`--stealth`；正文在 `<main>`，首 `<article>` 仅 111 字） | `--stealth` |
+| docs.julius.ai | 全站 | **HTTP 526**（`--stealth` 与渲染均失败） | — |
+| www.trae.ai / docs.trae.ai | 首页 / solo / solo/skills | 200；正文为内嵌 Quill delta JSON，需从 HTML 提取 | 静态 |
+| workbuddy.tencent.com | 首页 | JS 壳 → **渲染成功**（正文 + JSON-LD featureList） | 渲染 |
+| www.finebi.com | 首页 / 指标中心 / 数据连接 | 200（正文完整，UTF-8 中文无损） | 静态 |
+| www.tableau.com | /products/tableau-pulse | **403**（纯 HTTP、`--stealth`、渲染三层全失败） | — |
+| help.tableau.com | 旧 Pulse/Agent URL | **404**；help 根为 JS 跳转垫片（908B） | — |
+
+### 6.3 逐家复核结论（与 2026-09 初查的差异）
+
+#### ChatGPT 数据分析（OpenAI 官方帮助中心，2026-11-17 渲染全文）
+
+- 【原文】执行载体确认为"有状态的 Jupyter notebook 环境"，"can display pandas DataFrames as interactive tables"。
+- 【原文】交互式图表只覆盖四类："Interactive charts are supported for bar, line, pie, and scatter charts. Other chart types may be returned as static images."——本项目双引擎 12+ 图型的判断（4.1 第 2 条）**维持并加强**。
+- 【原文】沙箱隔离是官方口径："The Python environment used for data analysis cannot make external web requests or API calls."——与本项目"受控工具 + 只读 SQL"是两条路线（见 6.4 第 3 条）。
+- 【原文】官方承认的失败模式："ChatGPT may choose an analysis method or chart type that does not match your intent on the first try"；扫描件/图片表格 "may not reliably extract exact values"；官方建议 "review the generated code, outputs, and assumptions before relying on the result"。**2026-09 文档"给出看起来极其自信的错误答案"的判断，官方现在自己写了缓解指引**——本项目的事实抽取 + 逐数字核验（`facts.py` / `verification.py`）正是这个方向的工程化，差异化叙事可引用官方原文。
+- 【原文】数据接入：上传文件 + 连接源（"Google Drive, OneDrive, and SharePoint"）；未直连数据库——初查判断维持。
+
+#### OpenAI 平台工具面（platform.openai.com/docs/guides/tools）
+
+- 【原文】工具清单 10 项（Function calling / Web search / Remote MCP / **Skills** / Shell / Computer use / Image generation / File search / Tool search / Programmatic Tool Calling）；Shell 是 "Run shell commands in hosted containers"；Skills 是 "Upload and reuse versioned skill bundles"。平台层趋势明确：**托管执行 + 版本化技能包**——本项目 recipe（配方重跑）与未来的技能层方向与此一致。
+
+#### Anthropic（docs.anthropic.com Tool use overview）
+
+- 【原文】数据分析执行载体："Run Python and Bash code in a sandboxed container"，能力定位 "analyze data and generate files"。
+- 【原文】已知风险官方原话："might guess values you didn't supply"（参数缺失时臆造）。
+- 【无法证实】"Claude for Excel"：anthropic.com/news 全文检索 excel/spreadsheet 0 命中——2026-09 文档未收录此条，维持不引入；如需引用必须先找到官方一手页。
+
+#### 微软 Power BI Copilot（learn.microsoft.com，页面自述 2026-08-24 更新）
+
+- 【原文】语义模型准备是官方前置条件："Prepare your semantic model before you use Copilot... Without preparation, Copilot can misinterpret the data and return generic or inaccurate results."——3.3 节"语义层决定分析可信度"的判断被微软官方原话确认。
+- 【原文】门槛口径：F2+ 或 P1+ 容量（"Trial capacities and free SKUs aren't supported"）；租户级开关；主权云不支持；单条 prompt 上限 10,000 字符；同 prompt + 未变模型 24 小时内返回缓存答案。
+- 【原文】新增能力（2026-09 初查未覆盖）：独立 Copilot（全屏、跨 item 找数据）与应用内 Copilot 均为 preview，支持 "verified answers prepared by app authors"——人工策展问答对，与本项目指标登记的"口径统一"同思想，可作为 metrics 演化参考（别名/示例问答）。
+- 【原文】计费："Token consumption drives billing for Copilot in Fabric"，下游 DAX/刷新/订阅另计——成本结构判断维持。
+- 【原文】DAX Copilot 硬限制：模型超 500 表 / 1,000 列 / 3,000 度量 / 2,000 关系即降级；度量描述只用前 200 字符；执行是 Run → Keep/Discard，失败自动重试一次。
+- 【原文】主动推送唯一证据仍是"报表订阅可带 Copilot 摘要"（用户配置后推送），agent 自主监控未见——3.4 节判断维持。
+
+#### 微软 Excel Copilot（support.microsoft.com）
+
+- 【原文】三态工作流："three modes: edit, plan, or chat"，plan 模式 "creates a step-by-step plan" 供用户 "review and confirm" 后执行，执行中 "evaluate whether the outcome matches"；chat 模式只读不改工作簿。
+- 【原文】产出保持原生可编辑："Your content stays editable"，直接用 "tables, charts, PivotTables, and formulas"。
+- 【原文】技能沉淀：可把重复流程固化为 custom skill，甚至 "record a skill by demonstrating a task"（演示一遍即录制）——技能层（3.8）的第三家佐证。
+
+#### Julius AI（julius.ai，`--stealth` 实取）
+
+- 【原文】数据连接器清单实锤（data-connectors 页）：Postgres、Snowflake、BigQuery、MySQL、SQL Server、Supabase、Google Drive、OneDrive、Google Ads、Meta Ads，"No ETL, no setup scripts"——初查 3.1 节的连接器名单逐项确认；本项目 Postgres+SQLite 已落地、Snowflake/BigQuery 缺口的优先级判断维持。
+- 【原文】代码可见性："Every insight comes with the underlying code"——初查判断维持，且与本项目"SQL/工具参数可见 + 溯源链"同方向。
+- 【原文】合规："SOC 2 Type II"、"TX-RAMP"、"GDPR compliance actively in progress"、"your data never leaves your cloud"（厂商声明）。
+- 【不可得】docs.julius.ai 全站 526，官方文档本次无法取证；定时调度（Scheduled Runs）在已抓页面未见——初查表述维持"以 2026-09 资料为准"。
+
+#### Trae SOLO（docs.trae.ai，内嵌 JSON 实取）
+
+- 【原文】文档已改版为合并后的 "all-new TRAE"（"supports the entire development lifecycle"）——初查按"SOLO 独立端"描述的形态已过时，引用时注意。
+- 【原文】技能体系实锤：`SKILL.md` 定义技能（指令/脚本/资源），项目级 `.trae/skills/` 与全局 `~/.trae/skills` 目录，Marketplace 支持 zip/.skill 上传安装，"SOPs can be encapsulated as skills"，加载侧 "Dynamic on-demand loading" 省 token——3.8 节"声明式技能层"从评价变为可直接对标的设计（文件格式 + 双目录 + 市场 + 按需加载）。
+- 【原文】交付物："My Artifacts" 统一管理 "slide decks, documents, images, videos, reports"；Automation 承接重复任务（"generating reports"、"agents for continuous execution"）。
+- 【推断】数据分析本身仍是"Agent + 技能"泛化路线，无指标/语义层证据——与初查一致。
+
+#### WorkBuddy（腾讯，渲染后正文 + JSON-LD 实取）
+
+- 【原文】形态："全场景 AI 办公工作台"，"自主规划、调用工具、生成文件"。
+- 【原文】数据分析能力清单（页面 JSON-LD featureList）："Analyzes CSV and spreadsheet data"、"generates charts"、产出 "Word, Excel, PowerPoint, PDF or Markdown"。
+- 【原文】自动化与技能："Schedules recurring tasks hourly, daily, weekly"；"installable skills and Model Context Protocol (MCP) servers"。
+- 【原文】治理：RBAC + 操作审计；ISO 27001、SOC 2、等保三级；"pause high-risk operations for confirmation"。**初查 3.7 节"CW 系产品线里没有看到等价的业务级护栏"需要收窄：WorkBuddy 官方页宣称了高风险操作确认与审计，但清洗比例类硬护栏仍未见**——护栏差异化叙事保留，表述改为"官方页未见数据级硬护栏"。
+- 【推断】面向文件级办公分析，连接器以腾讯生态为主——初查判断维持。
+
+#### FineBI（帆软，静态全取）
+
+- 【原文】7.5 版本叙事："指标驱动的数据智能平台"、"AI原生数据分析平台"；指标中心、指标拆解树、语义模型、全链路血缘；"指标统一口径、复用、审批发布、血缘追溯"。
+- 【原文】连接器："支持连接50+数据库"、"一键获取100+应用数据源"，含 GaussDB / Kingbase / 达梦 / OceanBase / Gbase 8A / 星环等国产库。
+- 【改判】初查 2.6 节把 Data Agent 写成 "FineBINEXT 的 Data Agent"（FineBI 内置模块）；实抓页面显示 Data Agent 是**帆软另一 AI Agent 产品与 BI 7.5 对接**（"BI7.5支持对接帆软的AI Agent产品"），不是 FineBI 原生子模块——归因修正：FineBI 的 AI 价值依附指标中心底座这一判断不变，但"Data Agent 闭环"是产品族协同而非内置能力。
+- 【推断】"AI 问数效果取决于指标与权限建设"——与本项目 metrics.json 的定位互为印证。
+
+#### Tableau（2026-11 无法复核）
+
+营销站三层全 403、help 站旧 URL 全 404 且改为 JS 垫片。本次**不新增任何 Tableau 能力断言**；第二节中 Pulse / Agent / Hosted MCP 相关表述全部维持"2026-09 二手来源、单一来源"标注，待有官方一手页再复核。
+
+### 6.4 对路线图的增量影响（按优先级）
+
+1. **定时调度（P1）优先级上调，证据变硬**：WorkBuddy "Schedules recurring tasks hourly, daily, weekly" + Trae Automation +（2026-09 口径的）Tableau Pulse/Julius Scheduled Runs——四家均把"自动化重复分析"当一等能力，本项目 recipe 已有重跑语义，补"定时触发 + 失败告警"是当前最短路径。
+2. **指标语义层（P0-2 已落地）继续加厚**：FineBI 7.5 全链路血缘与审批发布、Power BI verified answers、微软官方"不准备语义模型就误读数据"——轻量版 metrics.json 之后，值得补两件小事：指标定义支持"已验证示例"（verified example：输入 → 期望输出，规划与核验两处都能用），以及把 metrics 文件纳入溯源链（口径本身可审计）。
+3. **执行路线差异要写成叙事**：ChatGPT 官方明确沙箱禁外呼、Anthropic/OpenAI 平台走托管容器——"沙箱一把梭"是大厂主线；本项目"受控工具 + 只读 SQL + 逐数字核验"是结构上不同的第二条路，且官方建议"review the generated code"与本项目的溯源/核验能力一一对应。定位章节的"每一步都能被验证"可以直接引用官方原文背书。
+4. **Snowflake/BigQuery 驱动（P0-1 尾巴）维持待办**：Julius 连接器清单确认了需求真实性，但仍受"无真实凭证就无法验证"约束，节奏不变。
+5. **技能层（P2）有了可抄的作业**：Trae 的 SKILL.md + 项目/全局双目录 + 按需加载是完整设计；本项目 recipe → 技能的自然演化路径是"把 recipe 里的工具参数模板抽成可版本化文件"，不必新起炉灶。
+6. **Excel/PPT 之外的交付**：WorkBuddy 官方页把 PDF 列为交付物之一；本项目服务端 PDF 生成仍是纯增量，优先级不变（中高）。
+7. **中文/多语言是相对机会**：Power BI 官方 "multilingual use isn't officially supported"——本项目全中文报告 + 白话解读在中文业务场景是结构性优势，可写进定位。
+8. **Claude for Excel 不引入**：官方站无法证实，按"无可证不收录"处理。
+
+---
+
+## 七、定位建议
 
 不建议把"补成 Julius 或 Tableau"当目标，那样会在数据连接广度和治理深度上同时和资源充足的大厂拼消耗，赢面很小。
 
 本项目真正的位置是：**面向业务团队的可控型数据分析工作台**。可控性——计划审阅、受控工具、安全护栏、断点续跑、私有化部署、模型可换——已经落地为代码事实，而不是路线图承诺，这是通用型大厂产品结构上做不到的：它们的黑盒决策链是为了降低门槛而刻意选择的，改不动。而数据库直连、指标口径、流程复用、主动洞察这几项，属于工程问题，补上就是完整的竞争力。
 
-一句话：**别在"什么都能做"上竞争，在"每一步都能被验证、被解释、被推翻"上竞争。** 后者才是数据分析场景真正的采购理由。
+一句话：**别在"什么都能做"上竞争，在"每一步都能被验证、被解释、被推翻"上竞争。** 后者才是数据分析场景真正的采购理由。2026-11 复核给这个定位补了官方背书：ChatGPT 官方让用户 "review the generated code, outputs, and assumptions before relying on the result"，微软把语义模型准备写成前置条件——"可验证"不是差异化修辞，是两家头部厂商自己承认的前置需求。
 
 ---
 
 ## 附：事实来源
 
 产品能力与数据均取自公开资料，重点结论均有两处以上来源或官方文档支撑。
+
+### 2026-09 初查（二手评测与官方宣传页）
 
 - Trae SOLO：量子位实测（36Kr，2026-04-03）；CSDN 转载（2026-03-31）；Trae 战略分析师《不止是写代码｜如何用 TRAE 进行复杂数据分析》（火山引擎开发者社区，2026-02-09）；腾讯新闻实测（2026-04-08）；Trae 官网 trae.cn
 - ChatGPT Advanced Data Analysis：Coursera 官方说明；letdataspeak 2026 实操指南；datafield.dev《Working with AI Tools Effectively》
@@ -273,3 +389,18 @@ P0-2 与 P0-3 属于"在既有架构里加一层"，改动封闭、可用现有�
 - Copilot in Excel / Power BI Copilot：Microsoft Learn《Copilot in Excel》培训模块；Microsoft Support FAQ；products.office.com/excel；IT168《AI+BI 工具怎么选》（2026-06-24）；beyondtheanalytics（2026-04）
 - Tableau / FineBI：IT168 同篇横向评测；beyondtheanalytics；diffstudy 2026 对比；thesys.dev 对比
 - MCP 数据库访问参考架构：InfiniSynapse《MCP for Databases: A 2026 Guide to Agent Data Access》；dataworkers.io《MCP Data Stack》；querio.ai 实操指南；mcprepo.ai 集成指南
+
+### 2026-11 实地复核（官方一手页面，web-crawler 实抓；原始产物在 web-crawler 仓库 `.research/agent-data-analysis/`）
+
+- help.openai.com/en/articles/8437071-data-analysis-with-chatgpt（渲染全文，"Updated: 28 days ago"）
+- platform.openai.com/docs/guides/tools（工具清单 / Shell hosted containers / Skills versioned bundles 原文）
+- docs.anthropic.com/en/docs/build-with-claude/tool-use/overview（code execution sandbox / "might guess values" 原文；canonical：platform.claude.com）
+- www.anthropic.com/news（索引全文检索 excel/spreadsheet 0 命中 → Claude for Excel 不收录）
+- learn.microsoft.com/en-us/power-bi/create-reports/copilot-introduction（容量门槛 / 语义模型准备 / verified answers / token 计费 / 24h 缓存原文，页面自述 2026-08-24 更新）
+- learn.microsoft.com/en-us/dax/dax-copilot（500 表等降级阈值 / 200 字符描述截断 / Run→Keep 原文）
+- support.microsoft.com/en-us/Excel/copilot/get-started-with-copilot-in-excel（edit/plan/chat 三态 / 原生对象 / custom skill 录制原文）
+- www.julius.ai/product/data-connectors 与 /product/chat-with-your-data（连接器清单 / "Every insight comes with the underlying code" / SOC 2 原文；docs.julius.ai 全站 HTTP 526 未取得）
+- docs.trae.ai/solo 与 /solo/skills（all-new TRAE 改版 / SKILL.md / .trae/skills 双目录 / Marketplace / SOP 技能化原文，正文取自内嵌 Quill delta JSON）
+- workbuddy.tencent.com（渲染后正文与 JSON-LD：CSV 分析 / Word/PPT/PDF/Markdown 交付 / 每日周定期任务 / skills+MCP / RBAC+审计 / ISO27001·SOC2·等保三级 原文）
+- www.finebi.com 首页与 /functions/indicator-center、/functions/data-connect（7.5 指标中心 / 审批发布 / 全链路血缘 / 50+ 数据库含国产库 原文）
+- 可达性负证据：www.tableau.com 三层 403、help.tableau.com 旧 URL 404（Tableau 结论维持单一来源标注）

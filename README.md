@@ -199,6 +199,7 @@ AWS_SECRET_ACCESS_KEY=<your-secret-access-key>
 - **本进程是一个信任域。** 单一 `APP_ACCESS_TOKEN` 能列出并打开 `runs/` 下全部会话。团队共用一台机器时必须设令牌，也不要把不同客户的数据放进同一个服务。
 - **默认先审阅计划。** `⌘/Ctrl+Enter` 与主按钮「生成计划」只出步骤；确认后再批准执行。「跳过审阅」才会直接跑。
 - **指标要登记才会按同一口径算。** 工作台「业务口径」或 `DATA_AGENT_METRICS_PATH` 写入 `metrics.json`，表达式必须使用真实列名（如 `sales - returns`）。分析时会调用 `compute_registered_metrics`，报告里的「核验附录」默认收起。
+- **经营简报可以独立复算。** 工作台「简报核验」读取原始订单 CSV，核对销售额、销量和订单数，提供核验版简报及证据下载。见 [参赛演示说明](docs/wuxi-trusted-ai-challenge.md)。
 - **SQLite 大表不会整表进内存。** 超过 10 万行只载入前 10 万行；全量请用 `query_database` 聚合后再 `adopt`。CSV 也可用该工具，表名为 `data`。
 - **换新数据重跑：** 报告上的「按配方重跑」读取 `analysis_recipe.json`，按上次工具参数执行，不重新规划。
 - **给业务的文件：** 导出菜单可下载 Word / PPT；「分析溯源 (.json)」给出报告对应的数据集、工具调用与产物哈希链及复核结果。
@@ -256,6 +257,6 @@ CLI、部署），含异常分支与降级路径；CI 中以 `DATA_AGENT_SKIP_KA
 ## 深入文档
 
 - [docs/engineering-notes.md](docs/engineering-notes.md) — 工程笔记：已验证的工程事实与踩坑记录（大数据图表可读性方案、可访问性校准方法、性能与体积预算、沙箱/隐私/指标模块设计要点、平台差异实证）。
-- [docs/competitive-analysis.md](docs/competitive-analysis.md) — 竞品分析：与同类数据分析 Agent 产品的定位与能力对比。
+- [docs/competitive-analysis.md](docs/competitive-analysis.md) — 竞品分析：与同类数据分析 Agent 产品的定位与能力对比（2026-09 初查 + 2026-11 官方一手页实地复核，含抓取矩阵与可达性负证据）。
 - [docs/agent-eval.md](docs/agent-eval.md) — 发布前评测：配对结果格式、McNemar 精确检验、成本/延迟护栏、ledger 校验与 CI 接法。
 - [docs/analysis-provenance.md](docs/analysis-provenance.md) — 分析溯源：哈希链格式、API 与离线复核方法、信任边界。

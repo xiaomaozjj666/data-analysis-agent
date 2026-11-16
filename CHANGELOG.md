@@ -11,6 +11,15 @@
 
 ### 新增
 
+- **竞品实地复核（2026-11-17）**：用 web-crawler 对六类竞品的官方一手页面实地
+  抓取与逐句核对（OpenAI 帮助中心经无头浏览器渲染取得全文、Julius 经 TLS 隐身
+  取得连接器与代码可见性原文、WorkBuddy 渲染后取得 JSON-LD 能力清单、FineBI
+  全文实取；Tableau 三层全 403 如实记为"无法复核"）。`docs/competitive-analysis.md`
+  新增第六节：抓取矩阵、逐家复核结论（原文/推断分标）、路线图增量影响——定时
+  调度证据变硬（WorkBuddy/Trae/Julius/Pulse 四家）、语义层被微软官方前置条件
+  背书、技能层有了 Trae SKILL.md 完整设计可对标、FineBI Data Agent 归属改判、
+  Claude for Excel 按无可证不收录。过期数字（文件数 39→88、测试 733→1114、
+  工具数口径）以"2026-11 复核注"原位标注；来源附录按初查/复核分组。
 - **发布前评测闸门 `data-agent-eval`**：读取同一套用例的基线与候选结果（JSONL /
   JSON 数组），做配对 McNemar 精确检验、Wilson 区间与成本/延迟护栏，输出
   `accept` / `reject` / `inconclusive` 三态裁决并以 `0/1/2` 退出码接入 CI；裁决可
