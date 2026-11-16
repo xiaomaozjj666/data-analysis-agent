@@ -18,7 +18,7 @@ dependencies = [
   "scipy>=1.17.1,<2",
   "scikit-learn>=1.9.1,<2",
   "plotly>=7.1.0,<8",
-  "kaleido>=1.5.0,<2",
+  "kaleido>=1.5.1,<2",
   "openpyxl>=3.1.5,<4",
   "xlrd>=2.0.2,<3",
   "pyarrow>=26.0.1,<27",
@@ -34,7 +34,7 @@ dependencies = [
   "typer>=0.29.1,<1",
   "rich>=15.0.0,<16",
   "keyring==25.7.0",
-  "boto3>=1.44.1,<2",
+  "boto3>=1.44.2,<2",
   "prometheus-client>=0.26.0,<1",
 ]
 
