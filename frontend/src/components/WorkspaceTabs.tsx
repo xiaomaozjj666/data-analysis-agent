@@ -1,6 +1,5 @@
-import { BarChart3, FileSpreadsheet, Table2 } from "lucide-react";
-
-export type WorkspaceTab = "analysis" | "data" | "artifacts";
+import { BarChart3, FileSpreadsheet, ShieldCheck, Table2 } from "lucide-react";
+import type { WorkspaceTab } from "../types";
 
 interface WorkspaceTabsProps {
   activeTab: WorkspaceTab;
@@ -8,14 +7,13 @@ interface WorkspaceTabsProps {
   onSelectTab: (tab: WorkspaceTab) => void;
 }
 
-// 工作区三视图切换（分析 / 数据 / 产物）。提取自 App.tsx 的 tabs nav，
-// 行为不变：ARIA tablist 语义 + roving tabindex + 左右箭头循环切换，
-// 屏幕阅读器可正确识别。
+// 保留 ARIA tablist、roving tabindex 和左右箭头循环切换。
 export default function WorkspaceTabs({ activeTab, artifactCount, onSelectTab }: WorkspaceTabsProps) {
   const tabs: { id: WorkspaceTab; label: string; icon: typeof BarChart3; focusNext: WorkspaceTab; focusPrev: WorkspaceTab }[] = [
-    { id: "analysis", label: "分析", icon: BarChart3, focusNext: "data", focusPrev: "artifacts" },
+    { id: "analysis", label: "分析", icon: BarChart3, focusNext: "data", focusPrev: "audit" },
     { id: "data", label: "数据", icon: Table2, focusNext: "artifacts", focusPrev: "analysis" },
-    { id: "artifacts", label: "产物", icon: FileSpreadsheet, focusNext: "analysis", focusPrev: "data" },
+    { id: "artifacts", label: "产物", icon: FileSpreadsheet, focusNext: "audit", focusPrev: "data" },
+    { id: "audit", label: "简报核验", icon: ShieldCheck, focusNext: "analysis", focusPrev: "artifacts" },
   ];
   return (
     <nav className="tabs" role="tablist" aria-label="工作区视图">

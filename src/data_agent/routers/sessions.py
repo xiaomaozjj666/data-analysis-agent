@@ -20,7 +20,9 @@ from uuid import uuid4
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import Response, StreamingResponse
+from pydantic import BaseModel, Field
 
+from data_agent._registry_payloads import _AUDIT_SAMPLE_SALES_CSV
 from data_agent.registry import _SAMPLE_SALES_CSV, _session_payload
 
 router = APIRouter()
@@ -51,13 +53,17 @@ async def create_session(file: Annotated[UploadFile, File()]) -> dict[str, Any]:
     session_id = f"api_{uuid4().hex[:12]}"
     workspace = DataWorkspace(settings.runs_dir, session_id=session_id)
     try:
-        saved = workspace.save_upload_stream(file.filename or "dataset.csv", file.file, settings.max_upload_bytes)
+        saved = workspace.save_upload_stream(
+            file.filename or "dataset.csv", file.file, settings.max_upload_bytes
+        )
         if saved.stat().st_size == 0:
             raise ValueError("上传文件为空。")
         workspace.load(saved)
         rows, columns = len(workspace.dataframe), len(workspace.dataframe.columns)
         if rows > settings.max_rows or rows * columns > settings.max_cells:
-            raise ValueError(f"数据规模超过限制：最多 {settings.max_rows:,} 行或 {settings.max_cells:,} 个单元格。")
+            raise ValueError(
+                f"数据规模超过限制：最多 {settings.max_rows:,} 行或 {settings.max_cells:,} 个单元格。"
+            )
     except Exception as exc:
         # pd.read_parquet 损坏文件抛 pyarrow.ArrowInvalid，pd.read_excel 抛
         # openpyxl.exceptions.InvalidFileException，都不在 ValueError/OSError 子类内。
@@ -74,7 +80,7 @@ async def create_session(file: Annotated[UploadFile, File()]) -> dict[str, Any]:
 
 
 @router.post("/api/sessions/sample", status_code=201)
-async def create_sample_session() -> dict[str, Any]:
+async def create_sample_session(audit: bool = False) -> dict[str, Any]:
     """用内置销售示例数据创建会话，供新用户快速体验。"""
     from data_agent import api
     from data_agent.workspace import DataWorkspace
@@ -82,10 +88,15 @@ async def create_sample_session() -> dict[str, Any]:
     settings = api.bootstrap_settings
     session_id = f"api_{uuid4().hex[:12]}"
     workspace = DataWorkspace(settings.runs_dir, session_id=session_id)
+    filename, sample_csv = (
+        ("sample_sales_audit.csv", _AUDIT_SAMPLE_SALES_CSV)
+        if audit
+        else ("sample_sales.csv", _SAMPLE_SALES_CSV)
+    )
     try:
         saved = workspace.save_upload_stream(
-            "sample_sales.csv",
-            io.BytesIO(_SAMPLE_SALES_CSV.encode("utf-8")),
+            filename,
+            io.BytesIO(sample_csv.encode("utf-8")),
             settings.max_upload_bytes,
         )
         workspace.load(saved)
@@ -101,6 +112,37 @@ def get_session(session_id: str) -> dict[str, Any]:
     from data_agent import api
 
     return _session_payload(session_id, api.registry.get(session_id))
+
+
+class SalesAuditRequest(BaseModel):
+    draft: str = Field(min_length=1, max_length=6000)
+    confirm_full_table: bool = False
+
+
+@router.post("/api/sessions/{session_id}/sales-audit")
+def sales_audit(session_id: str, payload: SalesAuditRequest) -> dict[str, Any]:
+    """Recalculate against the uploaded CSV, independently of the analysis state."""
+    from data_agent import api
+    from data_agent.sales_audit import audit_sales_brief
+
+    workspace = api.registry.get(session_id).workspace
+    source = workspace.source_path
+    if (
+        source is None
+        or source.suffix.lower() != ".csv"
+        or workspace.input_dir.resolve() not in source.resolve().parents
+    ):
+        raise HTTPException(status_code=422, detail="经营简报核验需要会话上传的原始 CSV。")
+    if not payload.draft.strip():
+        raise HTTPException(status_code=422, detail="请输入待核验的简报草稿。")
+    try:
+        return audit_sales_brief(
+            source, payload.draft, confirm_full_table=payload.confirm_full_table
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=422, detail="无法读取原始 CSV，请重新上传数据。") from exc
 
 
 @router.delete("/api/sessions/{session_id}", status_code=204)
@@ -284,14 +326,10 @@ async def import_session(file: Annotated[UploadFile, File()]) -> dict[str, Any]:
                 for member in members:
                     member_target = (root / member.filename).resolve()
                     if member_target != root and root not in member_target.parents:
-                        raise HTTPException(
-                            status_code=400, detail="归档包含不安全路径。"
-                        )
+                        raise HTTPException(status_code=400, detail="归档包含不安全路径。")
                     total_size += member.file_size
                     if total_size > _MAX_UNCOMPRESSED_BYTES:
-                        raise HTTPException(
-                            status_code=400, detail="归档解压后过大（上限 1GB）。"
-                        )
+                        raise HTTPException(status_code=400, detail="归档解压后过大（上限 1GB）。")
                 bundle.extractall(root)
         except zipfile.BadZipFile as exc:
             shutil.rmtree(root, ignore_errors=True)

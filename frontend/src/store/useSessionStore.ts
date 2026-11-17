@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Session } from "../types";
+import type { Session, WorkspaceTab } from "../types";
 import type { Updater } from "./types";
 
 // === 会话 slice ===
@@ -7,11 +7,11 @@ import type { Updater } from "./types";
 // 切换历史会话后恢复而非每次回到"分析"，减少重复点击。
 interface SessionState {
   session: Session | null;
-  activeTab: "analysis" | "data" | "artifacts";
-  lastActiveTab: "analysis" | "data" | "artifacts";
+  activeTab: WorkspaceTab;
+  lastActiveTab: WorkspaceTab;
   setSession: (updater: Updater<Session | null>) => void;
-  setActiveTab: (tab: "analysis" | "data" | "artifacts") => void;
-  setLastActiveTab: (tab: "analysis" | "data" | "artifacts") => void;
+  setActiveTab: (tab: WorkspaceTab) => void;
+  setLastActiveTab: (tab: WorkspaceTab) => void;
 }
 
 export const useSessionStore = create<SessionState>((set) => ({

@@ -8,12 +8,10 @@ type TabId = "analysis" | "data" | "artifacts";
 type SetState<T> = (v: T | ((prev: T) => T)) => void;
 
 interface UseShortcutsDeps {
-  // Esc 关闭预览模态框 / 设置面板
+  // 设置弹窗打开时，由原生 dialog 处理按键。
   previewItem: Artifact | null;
   keyOpen: boolean;
   closeArtifactPreview: () => void;
-  setKeyOpen: SetState<boolean>;
-  setApiKey: (v: string) => void;
   // 全局快捷键：Cmd+K / Cmd+B / Cmd+. / ? / T / 1-3
   running: boolean;
   chatRunning: boolean;
@@ -27,25 +25,21 @@ interface UseShortcutsDeps {
 }
 
 // 键盘快捷键 hook：合并原 App.tsx 中两处 keydown useEffect——
-//   1. Esc 关闭预览模态框或设置面板（原 deps [previewItem, keyOpen]）
+//   1. Esc 关闭预览模态框
 //   2. 全局快捷键 Cmd+K/Cmd+B/Cmd+./?/T/1-3（原 deps [running, chatRunning, toggleTheme]）
 // 行为与原实现完全一致。依赖数组刻意保持原样，不添加 stopAnalysis/stopFollowUp
 // 等每次渲染都重建的函数，避免 keydown 监听每帧重绑定（那会改变行为）。
 function useShortcuts(deps: UseShortcutsDeps): void {
   const {
-    previewItem, keyOpen, closeArtifactPreview, setKeyOpen, setApiKey,
+    previewItem, keyOpen, closeArtifactPreview,
     running, chatRunning, stopAnalysis, stopFollowUp, toggleTheme,
     setCommandOpen, setHistoryExpanded, setHelpOpen, setActiveTab,
   } = deps;
 
-  // Esc 键关闭预览模态框或设置面板（P0-4）。原 effect 仅依赖 [previewItem, keyOpen]；
-  // closeArtifactPreview/setKeyOpen/setApiKey 均为稳定引用，省略与原行为一致。
   useEffect(() => {
-    if (!previewItem && !keyOpen) return;
+    if (!previewItem || keyOpen) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      if (previewItem) closeArtifactPreview();
-      else if (keyOpen) { setKeyOpen(false); setApiKey(""); }
+      if (event.key === "Escape" && !document.fullscreenElement) closeArtifactPreview();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -58,7 +52,9 @@ function useShortcuts(deps: UseShortcutsDeps): void {
   // 每次渲染重建，加入依赖会让监听每帧重绑定并改变闭包刷新时机；它们内部已
   // 读取最新 running/chatRunning，故受控的闭包刷新不会产生行为偏差。
   useEffect(() => {
+    if (keyOpen) return;
     const onKey = (event: KeyboardEvent) => {
+      if (document.fullscreenElement) return;
       const target = event.target as HTMLElement | null;
       const isTyping = !!target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
       const meta = event.metaKey || event.ctrlKey;
@@ -103,7 +99,7 @@ function useShortcuts(deps: UseShortcutsDeps): void {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // 依赖与原 App.tsx 保持一致；stopAnalysis/stopFollowUp 刻意省略。
-  }, [running, chatRunning, toggleTheme]);
+  }, [running, chatRunning, toggleTheme, keyOpen]);
 }
 
 export default useShortcuts;

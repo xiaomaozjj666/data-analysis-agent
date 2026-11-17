@@ -8,6 +8,8 @@ export type SSEEventType =
   | "cancelled" | "error" | "heartbeat" | "chat_chunk" | "chat_done"
   | "plan_ready" | "step_progress";
 
+export type WorkspaceTab = "analysis" | "data" | "artifacts" | "audit";
+
 // 分析结果
 // 注意：流式渲染阶段会构造部分字段的对象（仅 response + artifacts + plan +
 // completed_steps），完整 trace / dataset_profile 由 complete 帧或历史恢复时填充，
@@ -161,6 +163,8 @@ export interface Settings {
   max_plan_steps: number;
   max_tool_calls_per_step: number;
   langsmith_tracing?: boolean;
+  langsmith_status?: "configured" | "missing_key" | "key_unconfirmed" | "local" | "disabled";
+  langsmith_project?: string | null;
   storage_status?: string;
   warning?: string;
   // 服务端上传大小上限（字节）；旧后端无此字段时前端回退本地默认值

@@ -31,15 +31,11 @@
   .sidebar-section { margin-top: 14px; }
   .sidebar-spacer { display: none; }
   .provider-block { margin-top: 10px; }
-  /* 移动端不隐藏 storage-status，对象存储降级提示需要可见。 */
-  .sidebar-foot { display: none; }
   /* 移动端 model-line 扁平化：去掉卡片边框/阴影，改为分隔线样式节省空间 */
   .model-line { min-height: 42px; padding: 6px 2px; border: 0; border-top: 1px solid var(--border-muted); border-radius: 0; background: transparent; box-shadow: none; }
   .model-line:hover { background: var(--control-hover); box-shadow: none; transform: none; }
-  /* 移动端 storage-status 扁平化 */
-  .storage-status { margin-top: 0; padding: 8px 2px 0; border: 0; border-top: 1px solid var(--border-muted); border-radius: 0; background: transparent; box-shadow: none; }
-  .storage-status:hover { box-shadow: none; }
-  .settings-form { position: fixed; left: 12px; right: 12px; bottom: 12px; width: auto; }
+  .sidebar-foot, .storage-status { margin-top: 0; padding: 8px 2px; border: 0; border-top: 1px solid var(--border-muted); border-radius: 0; background: transparent; box-shadow: none; }
+  .sidebar-foot:hover, .storage-status:hover { box-shadow: none; transform: none; }
   .app-main { padding: 0 12px 36px; }
   .topbar { height: 52px; border-radius: 0; box-shadow: none; }
   .breadcrumb strong { max-width: 42vw; }

@@ -189,6 +189,7 @@
 }
 .empty-sample-button:disabled { cursor: not-allowed; opacity: 0.6; }
 .empty-sample-button svg { flex-shrink: 0; }
+.empty-audit-button { color: var(--accent-fg); }
 
 /* 上传进度条：主 CTA 下方展示真实上传百分比 + 取消入口 */
 .empty-upload-progress {

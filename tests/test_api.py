@@ -10,6 +10,7 @@ from collections import deque
 from pathlib import Path
 from uuid import uuid4
 
+import httpx
 import pytest
 from conftest import _skip_kaleido
 from fastapi.testclient import TestClient
@@ -80,7 +81,9 @@ def _isolate_runtime(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(api, "bootstrap_settings", settings)
     monkeypatch.setattr(api, "registry", registry)
     monkeypatch.setattr(api, "session_storage", LocalSessionStorage())
-    monkeypatch.setattr(api, "analysis_slots", threading.BoundedSemaphore(settings.max_concurrent_analyses))
+    monkeypatch.setattr(
+        api, "analysis_slots", threading.BoundedSemaphore(settings.max_concurrent_analyses)
+    )
     # 速率限制器使用全局 request_buckets 字典累积请求，跨测试不清空会导致
     # 后续使用默认 rate_limit_per_minute=30 的测试文件（如 test_dashboard）
     # 被前序测试的残余请求阻塞，返回 429。每个测试开始时清空桶以确保隔离。
@@ -105,6 +108,64 @@ def test_health_and_upload_session(tmp_path, monkeypatch):
     assert payload["profile"]["rows"] == 2
     assert payload["profile"]["columns"] == 2
     assert payload["preview"][0]["region"] == "East"
+
+
+def test_sales_audit_recalculates_original_csv_and_withholds_unsupported(tmp_path, monkeypatch):
+    _isolate_runtime(tmp_path, monkeypatch)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    client = TestClient(api.app)
+    content = b"order_id,sales,quantity\n001,0.10,1\n001,0.20,2\n1,5.00,1\n"
+    upload = client.post("/api/sessions", files={"file": ("sales.csv", content, "text/csv")})
+    assert upload.status_code == 201
+    session_id = upload.json()["id"]
+    workspace = api.registry.get(session_id).workspace
+    workspace.dataframe.loc[:, "sales"] = 10
+    request = {
+        "draft": "销售额合计：5.30 元\n\n销量合计：4 件\n订单数：4 笔\n市场份额：37%",
+    }
+    audit = client.post(f"/api/sessions/{session_id}/sales-audit", json=request)
+    assert audit.status_code == 200
+    result = audit.json()
+    assert result["summary"] == {"verified": 2, "conflict": 1, "unsupported": 1}
+    assert result["claims"][2]["line"] == 4
+    assert result["claims"][2]["recalculated"] == "2 笔"
+    assert result["source"]["preview"][0]["order_id"] == "001"
+    assert result["source"]["rows"] == 3
+    assert "订单数：2 笔" in result["corrected_brief"]
+    assert "37%" not in result["corrected_brief"]
+    assert result["claims"][3]["text"] == "市场份额：37%"
+    assert workspace.source_path.read_bytes() == content
+    assert workspace.dataframe["sales"].tolist() == [10, 10, 10]
+
+
+def test_sales_audit_sample_and_missing_columns(tmp_path, monkeypatch):
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    sample = client.post("/api/sessions/sample").json()
+    draft = {"draft": "订单数：20 笔"}
+    result = client.post(f"/api/sessions/{sample['id']}/sales-audit", json=draft)
+    assert result.status_code == 200
+    assert result.json()["summary"]["verified"] == 1
+
+    upload = client.post("/api/sessions", files={"file": ("bad.csv", b"x,y\n1,2\n", "text/csv")})
+    malformed = client.post(f"/api/sessions/{upload.json()['id']}/sales-audit", json=draft)
+    assert malformed.status_code == 422
+    assert "order_id" in malformed.json()["detail"]
+
+
+def test_roadshow_sample_distinguishes_detail_rows_from_orders(tmp_path, monkeypatch):
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    sample = client.post("/api/sessions/sample?audit=true")
+    assert sample.status_code == 201
+    data = sample.json()
+    assert data["filename"] == "sample_sales_audit.csv"
+    draft = {"draft": "销售额合计：17224.00 元\n销量合计：462 件\n订单数：462 笔\n市场份额：37%"}
+    result = client.post(f"/api/sessions/{data['id']}/sales-audit", json=draft).json()
+    assert result["summary"] == {"verified": 2, "conflict": 1, "unsupported": 1}
+    source = result["source"]
+    assert source["preview"][0]["order_id"] == source["preview"][1]["order_id"]
+    assert result["claims"][2]["recalculated"] == f"{source['rows'] - 1} 笔"
 
 
 def test_analyze_endpoint_returns_plan(tmp_path, monkeypatch):
@@ -416,7 +477,9 @@ def test_transformed_data_does_not_shadow_cleaned_data(tmp_path, monkeypatch):
     tools = {item.name: item for item in build_tools(record.workspace)}
 
     tools["clean_data"].invoke({"drop_duplicates": True})
-    tools["transform_data"].invoke({"filter_column": "region", "filter_operator": "eq", "filter_value": "East"})
+    tools["transform_data"].invoke(
+        {"filter_column": "region", "filter_operator": "eq", "filter_value": "East"}
+    )
 
     artifacts = client.get(f"/api/sessions/{uploaded['id']}").json()["artifacts"]
     dataset_names = [item["name"] for item in artifacts if item["kind"] == "dataset"]
@@ -446,7 +509,14 @@ def test_sse_stream_emits_progress_and_heartbeat(tmp_path, monkeypatch):
     class SlowAgent:
         """Mimics DataAnalysisAgent.stream: emits one progress + one finalize."""
 
-        def __init__(self, workspace, settings, cancel_event=None, progress_callback=None, event_callback=None):
+        def __init__(
+            self,
+            workspace,
+            settings,
+            cancel_event=None,
+            progress_callback=None,
+            event_callback=None,
+        ):
             self.workspace = workspace
             self.progress_callback = progress_callback
             self.event_callback = event_callback
@@ -460,14 +530,17 @@ def test_sse_stream_emits_progress_and_heartbeat(tmp_path, monkeypatch):
             # Force a heartbeat by sleeping past the 15s timeout would be too
             # slow; instead patch the heartbeat timeout via monkeypatch below.
             time.sleep(0.1)
-            yield {"node": "finalize", "data": {
-                "response": "done",
-                "trace": [],
-                "artifacts": list(self.workspace.artifacts),
-                "dataset_profile": self.workspace.profile(),
-                "plan": [],
-                "completed_steps": [],
-            }}
+            yield {
+                "node": "finalize",
+                "data": {
+                    "response": "done",
+                    "trace": [],
+                    "artifacts": list(self.workspace.artifacts),
+                    "dataset_profile": self.workspace.profile(),
+                    "plan": [],
+                    "completed_steps": [],
+                },
+            }
 
         def run(self, query, history=None, resume_from=None):
             for _update in self.stream(query, history=history, resume_from=resume_from):
@@ -494,16 +567,20 @@ def test_sse_stream_emits_progress_and_heartbeat(tmp_path, monkeypatch):
         events = []
         for line in response.iter_lines():
             if line.startswith("event: "):
-                events.append(line[len("event: "):])
+                events.append(line[len("event: ") :])
 
     assert "started" in events
     assert "progress" in events
     assert "complete" in events
-    manifest = json.loads((tmp_path / "runs" / uploaded["id"] / "session.json").read_text(encoding="utf-8"))
+    manifest = json.loads(
+        (tmp_path / "runs" / uploaded["id"] / "session.json").read_text(encoding="utf-8")
+    )
     assert manifest["analysis_status"] == "completed"
     assert manifest["last_result"]["response"] == "done"
 
-    restored = api.SessionRegistry(tmp_path / "runs", max_sessions=10, ttl_hours=24).get(uploaded["id"])
+    restored = api.SessionRegistry(tmp_path / "runs", max_sessions=10, ttl_hours=24).get(
+        uploaded["id"]
+    )
     assert restored.analysis_status == "completed"
     assert restored.last_result is not None
     assert restored.last_result.response == "done"
@@ -725,7 +802,14 @@ def test_chat_stream_appends_followup_to_chat_history(tmp_path, monkeypatch):
     chat_response_text = "华东区销售额 100，是唯一有数据的区域。"
 
     class ChatAgent:
-        def __init__(self, workspace, settings, cancel_event=None, progress_callback=None, event_callback=None):
+        def __init__(
+            self,
+            workspace,
+            settings,
+            cancel_event=None,
+            progress_callback=None,
+            event_callback=None,
+        ):
             self.workspace = workspace
             self.event_callback = event_callback
             self._last_usage = None
@@ -748,7 +832,7 @@ def test_chat_stream_appends_followup_to_chat_history(tmp_path, monkeypatch):
         events = []
         for line in response.iter_lines():
             if line.startswith("event: "):
-                events.append(line[len("event: "):])
+                events.append(line[len("event: ") :])
 
     # 必须收到 started + chat_chunk + chat_done 事件
     assert "started" in events
@@ -848,9 +932,7 @@ def test_rename_session_persists_title_and_falls_back_on_empty(tmp_path, monkeyp
     session_id = uploaded["id"]
 
     # 设置自定义标题
-    rename_resp = client.patch(
-        f"/api/sessions/{session_id}", json={"title": "我的销售分析"}
-    )
+    rename_resp = client.patch(f"/api/sessions/{session_id}", json={"title": "我的销售分析"})
     assert rename_resp.status_code == 200
     assert rename_resp.json()["title"] == "我的销售分析"
 
@@ -932,7 +1014,9 @@ def test_tool_trace_callback_emits_step_progress_with_context():
     from data_agent.callbacks import ToolTraceCallback
 
     events: list[tuple[str, dict]] = []
-    cb = ToolTraceCallback(lambda event, payload: events.append((event, payload)), step_index=2, total_steps=4)
+    cb = ToolTraceCallback(
+        lambda event, payload: events.append((event, payload)), step_index=2, total_steps=4
+    )
 
     cb.on_tool_start({"name": "run_python"}, "print(1)", run_id="r1")
     progress = [payload for event, payload in events if event == "step_progress"]
@@ -944,7 +1028,9 @@ def test_tool_trace_callback_emits_step_progress_with_context():
         "total_steps": 4,
     }
     # tool_call 事件与 step_progress 成对推送
-    assert any(event == "tool_call" and payload["name"] == "run_python" for event, payload in events)
+    assert any(
+        event == "tool_call" and payload["name"] == "run_python" for event, payload in events
+    )
 
     # 连续调用：进度按 20%/次 递增并封顶 90%
     for i in range(6):
@@ -1151,7 +1237,9 @@ def test_import_session_works_with_relative_runs_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(api, "bootstrap_settings", settings)
     monkeypatch.setattr(api, "registry", registry)
     monkeypatch.setattr(api, "session_storage", LocalSessionStorage())
-    monkeypatch.setattr(api, "analysis_slots", threading.BoundedSemaphore(settings.max_concurrent_analyses))
+    monkeypatch.setattr(
+        api, "analysis_slots", threading.BoundedSemaphore(settings.max_concurrent_analyses)
+    )
     api.request_buckets.clear()
 
     client = TestClient(api.app)
@@ -1275,6 +1363,99 @@ def test_get_settings_returns_runtime_config(tmp_path, monkeypatch):
     assert "reasoning_effort" in payload
     assert "max_upload_bytes" in payload
     assert "storage_backend" in payload
+
+
+@pytest.mark.parametrize(
+    ("tracing", "key", "status"),
+    [
+        (False, "test-langsmith-secret", "disabled"),
+        ("local", None, "local"),
+        (True, None, "key_unconfirmed"),
+        (True, "your-langsmith-api-key", "missing_key"),
+        (True, "test-langsmith-secret", "configured"),
+    ],
+)
+def test_settings_distinguish_langsmith_modes(tmp_path, monkeypatch, tracing, key, status):
+    _isolate_runtime(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "data_agent.routers.settings.langsmith_utils.tracing_is_enabled", lambda: tracing
+    )
+    monkeypatch.setattr("data_agent.routers.settings.langsmith_utils.get_api_key", lambda _: key)
+    monkeypatch.setattr(
+        "data_agent.routers.settings.langsmith_utils.get_tracer_project", lambda: "probe"
+    )
+    response = TestClient(api.app).get("/api/settings")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["langsmith_status"] == status
+    assert payload["langsmith_tracing"] is (tracing is True)
+    assert payload["langsmith_project"] == "probe"
+    if key:
+        assert key not in response.text
+
+
+@pytest.mark.parametrize(
+    ("upstream", "status"),
+    [
+        (httpx.Response(200, json={"data": [{"id": "deepseek-flash"}]}), 200),
+        (httpx.Response(200, text="<html>unexpected</html>"), 502),
+        (httpx.Response(401, json={"error": "bad key"}), 401),
+        (httpx.Response(429), 429),
+        (httpx.ReadTimeout("timed out"), 504),
+        (httpx.ConnectError("connection failed"), 502),
+    ],
+)
+def test_model_connection_probes_provider_without_changing_settings(
+    tmp_path, monkeypatch, upstream, status
+):
+    _isolate_runtime(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        api,
+        "_effective_settings",
+        lambda: AgentSettings(api_key="", base_url="https://model.invalid/v1/"),
+    )
+
+    async def get_models(self, url, *, headers):
+        assert url == "https://model.invalid/v1/models"
+        assert headers == {"Authorization": "Bearer test-only-probe-key"}
+        assert self.timeout.connect > 0
+        if isinstance(upstream, Exception):
+            raise upstream
+        return upstream
+
+    monkeypatch.setattr("data_agent.routers.settings.httpx.AsyncClient.get", get_models)
+    monkeypatch.setattr(
+        api, "_save_runtime_api_key", lambda *_: pytest.fail("Probe must not save the key.")
+    )
+    client = TestClient(api.app)
+    response = client.post("/api/settings/test", json={"api_key": "test-only-probe-key"})
+    assert response.status_code == status
+    assert "test-only-probe-key" not in response.text
+    assert client.get("/api/settings").json()["configured"] is False
+    assert client.post("/api/settings/test", json={}).status_code == 422
+
+
+def test_model_connection_rejects_malformed_password_without_echo(tmp_path, monkeypatch):
+    _isolate_runtime(tmp_path, monkeypatch)
+    monkeypatch.setattr("data_agent.config.load_dotenv", lambda *_a, **_kw: False)
+    monkeypatch.setattr(
+        "data_agent.routers.settings.httpx.AsyncClient.get",
+        lambda *_a, **_kw: pytest.fail("Unexpected probe."),
+    )
+    client = TestClient(api.app)
+    marker = "synthetic-only-credential"
+    for body in (
+        {"api_key": marker * 100},
+        {"api_key": {"value": marker}},
+        {"api_key": marker + "密"},
+        [marker],
+    ):
+        response = client.post("/api/settings/test", json=body)
+        assert response.status_code == 422
+        assert marker not in response.text
+    malformed = client.post("/api/settings/test", content=f'{{"api_key":"{marker}')
+    assert malformed.status_code == 422
+    assert marker not in malformed.text
 
 
 def test_update_settings_persists_thinking_and_reasoning(tmp_path, monkeypatch):
@@ -1418,7 +1599,8 @@ def test_download_non_html_artifact_returns_file(tmp_path, monkeypatch):
     tools["export_data"].invoke({"format": "csv", "filename": "cleaned_final"})
 
     dataset = next(
-        item for item in client.get(f"/api/sessions/{uploaded['id']}").json()["artifacts"]
+        item
+        for item in client.get(f"/api/sessions/{uploaded['id']}").json()["artifacts"]
         if item["kind"] == "dataset"
     )
     response = client.get(dataset["download_url"])
@@ -1483,7 +1665,9 @@ def test_edit_chart_regenerates_html(tmp_path, monkeypatch):
     edited = next(a for a in session["artifacts"] if a["name"] == chart["name"])
     assert edited["description"] == "新标题"
     manifest = api.registry._manifest_path(api.registry.get(session_id))
-    assert json.loads(manifest.read_text(encoding="utf-8"))["artifacts"][0]["description"] == "新标题"
+    assert (
+        json.loads(manifest.read_text(encoding="utf-8"))["artifacts"][0]["description"] == "新标题"
+    )
 
 
 def test_edit_chart_description_sync_survives_persist_failure(tmp_path, monkeypatch):
@@ -1561,7 +1745,8 @@ def test_preview_non_html_returns_415(tmp_path, monkeypatch):
     tools = {item.name: item for item in build_tools(record.workspace)}
     tools["export_data"].invoke({"format": "csv", "filename": "cleaned_final"})
     dataset = next(
-        item for item in client.get(f"/api/sessions/{uploaded['id']}").json()["artifacts"]
+        item
+        for item in client.get(f"/api/sessions/{uploaded['id']}").json()["artifacts"]
         if item["kind"] == "dataset"
     )
     response = client.get(f"/api/sessions/{uploaded['id']}/artifacts/{dataset['name']}/preview")
@@ -1914,8 +2099,7 @@ def test_repair_unterminated_plotly_script_fixes_legacy_bug():
 
     # 4. 含数据转义但结构正确的文件（如 ECharts option JSON）：原样返回
     healthy_with_escaped = (
-        "<script>echarts.init();var o='<\\/script>';</script>"
-        "<script>(function(){})();</script>"
+        "<script>echarts.init();var o='<\\/script>';</script><script>(function(){})();</script>"
     )
     assert _repair_unterminated_plotly_script(healthy_with_escaped) == healthy_with_escaped
 
@@ -2043,7 +2227,9 @@ def test_echarts_json_endpoint_returns_option(tmp_path, monkeypatch):
     record = api.registry.get(session_id)
     stem = "柱状图_1"
     (record.workspace.artifacts_dir / f"{stem}.echarts.json").write_text(
-        json.dumps({"series": [{"type": "bar", "data": [1, 2, 3]}], "xAxis": {"data": ["A", "B", "C"]}}),
+        json.dumps(
+            {"series": [{"type": "bar", "data": [1, 2, 3]}], "xAxis": {"data": ["A", "B", "C"]}}
+        ),
         encoding="utf-8",
     )
     response = client.get(f"/api/sessions/{session_id}/artifacts/{stem}.html/echarts-json")
@@ -2061,9 +2247,7 @@ def test_echarts_json_endpoint_500_on_corrupt_file(tmp_path, monkeypatch):
     (record.workspace.artifacts_dir / "柱状图_1.echarts.json").write_text(
         "{not valid json", encoding="utf-8"
     )
-    response = client.get(
-        f"/api/sessions/{session_id}/artifacts/柱状图_1.html/echarts-json"
-    )
+    response = client.get(f"/api/sessions/{session_id}/artifacts/柱状图_1.html/echarts-json")
     assert response.status_code == 500
 
 
@@ -2073,9 +2257,7 @@ def test_echarts_json_endpoint_404_without_data_file(tmp_path, monkeypatch):
     client = TestClient(api.app)
     session_id = _create_chart_session(client)
     chart = _first_chart_artifact(client, session_id)
-    response = client.get(
-        f"/api/sessions/{session_id}/artifacts/{chart['name']}/echarts-json"
-    )
+    response = client.get(f"/api/sessions/{session_id}/artifacts/{chart['name']}/echarts-json")
     assert response.status_code == 404
 
 
@@ -2100,8 +2282,10 @@ def test_plotly_json_endpoint_returns_figure(tmp_path, monkeypatch):
     stem = "柱状图_1"
     (record.workspace.artifacts_dir / f"{stem}.plotly.json").write_text(
         json.dumps(
-            {"data": [{"type": "scatter", "x": [1, 2, 3], "y": [2, 3, 4]}],
-             "layout": {"title": {"text": "sales_by_region"}}}
+            {
+                "data": [{"type": "scatter", "x": [1, 2, 3], "y": [2, 3, 4]}],
+                "layout": {"title": {"text": "sales_by_region"}},
+            }
         ),
         encoding="utf-8",
     )
@@ -2120,9 +2304,7 @@ def test_plotly_json_endpoint_500_on_corrupt_file(tmp_path, monkeypatch):
     (record.workspace.artifacts_dir / "柱状图_1.plotly.json").write_text(
         "{not valid json", encoding="utf-8"
     )
-    response = client.get(
-        f"/api/sessions/{session_id}/artifacts/柱状图_1.html/plotly-json"
-    )
+    response = client.get(f"/api/sessions/{session_id}/artifacts/柱状图_1.html/plotly-json")
     assert response.status_code == 500
 
 
@@ -2134,13 +2316,10 @@ def test_plotly_json_endpoint_404_without_data_file(tmp_path, monkeypatch):
     record = api.registry.get(uploaded["id"])
     tools = {item.name: item for item in build_tools(record.workspace)}
     tools["create_visualization"].invoke(
-        {"chart_type": "bar", "x": "region", "y": "sales",
-         "title": "r", "chart_engine": "echarts"}
+        {"chart_type": "bar", "x": "region", "y": "sales", "title": "r", "chart_engine": "echarts"}
     )
     chart = _first_chart_artifact(client, uploaded["id"])
-    response = client.get(
-        f"/api/sessions/{uploaded['id']}/artifacts/{chart['name']}/plotly-json"
-    )
+    response = client.get(f"/api/sessions/{uploaded['id']}/artifacts/{chart['name']}/plotly-json")
     assert response.status_code == 404
 
 
@@ -2171,14 +2350,12 @@ def test_plotly_json_endpoint_decodes_typed_arrays(tmp_path, monkeypatch):
     (record.workspace.artifacts_dir / "柱状图_1.plotly.json").write_text(
         fig.to_json(), encoding="utf-8"
     )
-    response = client.get(
-        f"/api/sessions/{session_id}/artifacts/柱状图_1.html/plotly-json"
-    )
+    response = client.get(f"/api/sessions/{session_id}/artifacts/柱状图_1.html/plotly-json")
     assert response.status_code == 200
     trace = response.json()["data"][0]
-    assert isinstance(trace["x"], list)      # 已解码为普通数组
-    assert len(trace["x"]) == 2500           # 且已抽样
-    assert abs(trace["x"][0]) < 1e-3         # 数值正确（从 0 起）
+    assert isinstance(trace["x"], list)  # 已解码为普通数组
+    assert len(trace["x"]) == 2500  # 且已抽样
+    assert abs(trace["x"][0]) < 1e-3  # 数值正确（从 0 起）
     assert isinstance(trace["y"], list)
     assert len(trace["y"]) == 2500
 
@@ -2194,25 +2371,25 @@ def test_echarts_json_supports_big_datasets_by_sampling(tmp_path, monkeypatch):
     session_id = _create_chart_session(client)
     record = api.registry.get(session_id)
     (record.workspace.artifacts_dir / "柱状图_1.echarts.json").write_text(
-        json.dumps({
-            "series": [
-                {"type": "scatter", "data": [[i, i * 2] for i in range(300_000)]},
-                {"type": "heatmap", "data": [[0, 0, i] for i in range(60)]},
-                {"type": "bar", "data": [1] * 3000},
-            ],
-        }),
+        json.dumps(
+            {
+                "series": [
+                    {"type": "scatter", "data": [[i, i * 2] for i in range(300_000)]},
+                    {"type": "heatmap", "data": [[0, 0, i] for i in range(60)]},
+                    {"type": "bar", "data": [1] * 3000},
+                ],
+            }
+        ),
         encoding="utf-8",
     )
-    response = client.get(
-        f"/api/sessions/{session_id}/artifacts/柱状图_1.html/echarts-json"
-    )
+    response = client.get(f"/api/sessions/{session_id}/artifacts/柱状图_1.html/echarts-json")
     assert response.status_code == 200
     option = response.json()
     series = option["series"]
     assert len(series[0]["data"]) == 2500
-    assert series[0]["data"][0] == [0, 0]          # 等距保留首端
-    assert len(series[1]["data"]) == 60            # 热力图不抽样（缺格破图）
-    assert len(series[2]["data"]) == 3000          # bar 不抽样
+    assert series[0]["data"][0] == [0, 0]  # 等距保留首端
+    assert len(series[1]["data"]) == 60  # 热力图不抽样（缺格破图）
+    assert len(series[2]["data"]) == 3000  # bar 不抽样
 
 
 def test_plotly_json_supports_big_datasets_by_sampling(tmp_path, monkeypatch):
@@ -2223,28 +2400,32 @@ def test_plotly_json_supports_big_datasets_by_sampling(tmp_path, monkeypatch):
     session_id = _create_chart_session(client)
     record = api.registry.get(session_id)
     (record.workspace.artifacts_dir / "柱状图_1.plotly.json").write_text(
-        json.dumps({
-            "data": [
-                {"type": "scatter", "x": list(range(5000)), "y": list(range(5000)),
-                 "marker": {"color": ["#4E79A7"] * 5000}},
-                {"type": "box", "x": ["A"] * 8000, "y": list(range(8000))},
-                {"type": "heatmap", "z": [[1.0] * 30 for _ in range(30)]},
-            ],
-        }),
+        json.dumps(
+            {
+                "data": [
+                    {
+                        "type": "scatter",
+                        "x": list(range(5000)),
+                        "y": list(range(5000)),
+                        "marker": {"color": ["#4E79A7"] * 5000},
+                    },
+                    {"type": "box", "x": ["A"] * 8000, "y": list(range(8000))},
+                    {"type": "heatmap", "z": [[1.0] * 30 for _ in range(30)]},
+                ],
+            }
+        ),
         encoding="utf-8",
     )
-    response = client.get(
-        f"/api/sessions/{session_id}/artifacts/柱状图_1.html/plotly-json"
-    )
+    response = client.get(f"/api/sessions/{session_id}/artifacts/柱状图_1.html/plotly-json")
     assert response.status_code == 200
     traces = response.json()["data"]
     assert len(traces[0]["x"]) == 2500
     assert len(traces[0]["y"]) == 2500
     assert len(traces[0]["marker"]["color"]) == 2500
-    assert traces[0]["x"][:3] == [0, 2, 4]         # 下标同步（等距）
-    assert len(traces[1]["y"]) == 2000             # 8000 点 → step=4 → 2000
+    assert traces[0]["x"][:3] == [0, 2, 4]  # 下标同步（等距）
+    assert len(traces[1]["y"]) == 2000  # 8000 点 → step=4 → 2000
     assert len(traces[1]["x"]) == 2000
-    assert len(traces[2]["z"]) == 30               # 矩阵型不动
+    assert len(traces[2]["z"]) == 30  # 矩阵型不动
 
 
 def test_thumb_sampling_helpers_edge_cases():
@@ -2257,14 +2438,14 @@ def test_thumb_sampling_helpers_edge_cases():
 
     opt = {"series": [{"type": "scatter", "data": [1, 2, 3]}, "junk"]}
     _sample_echarts_option_for_thumb(opt)
-    assert opt["series"][0]["data"] == [1, 2, 3]   # 小数据不动
-    _sample_echarts_option_for_thumb({})            # 无 series
+    assert opt["series"][0]["data"] == [1, 2, 3]  # 小数据不动
+    _sample_echarts_option_for_thumb({})  # 无 series
     _sample_echarts_option_for_thumb({"series": None})
     _sample_echarts_option_for_thumb("not-a-dict")  # type: ignore[arg-type]
 
     fig = {"data": [{"type": "scatter", "x": [1, 2], "y": [3]}, "junk"]}
     _sample_plotly_figure_for_thumb(fig)
-    assert fig["data"][0]["x"] == [1, 2]           # 未超上限不动
+    assert fig["data"][0]["x"] == [1, 2]  # 未超上限不动
     _sample_plotly_figure_for_thumb({})
     _sample_plotly_figure_for_thumb({"data": None})
     _sample_plotly_figure_for_thumb("not-a-dict")  # type: ignore[arg-type]
@@ -2388,23 +2569,37 @@ def test_analyze_stream_releases_lock_on_first_frame_disconnect(tmp_path, monkey
     # 快速完成式 Agent：stream() 立即返回 finalize，worker 的 finally 会释放锁。
     # 即使客户端在首帧后断开，worker 也已快速完成或被 C1 修复路径兜底释放。
     class FastAgent:
-        def __init__(self, workspace, settings, cancel_event=None, progress_callback=None, event_callback=None):
+        def __init__(
+            self,
+            workspace,
+            settings,
+            cancel_event=None,
+            progress_callback=None,
+            event_callback=None,
+        ):
             self.workspace = workspace
 
         def stream(self, query, history=None, resume_from=None, plan_only=False):
-            yield {"node": "finalize", "data": {
-                "response": "done",
-                "trace": [],
-                "artifacts": list(self.workspace.artifacts),
-                "dataset_profile": self.workspace.profile(),
-                "plan": [],
-                "completed_steps": [],
-            }}
+            yield {
+                "node": "finalize",
+                "data": {
+                    "response": "done",
+                    "trace": [],
+                    "artifacts": list(self.workspace.artifacts),
+                    "dataset_profile": self.workspace.profile(),
+                    "plan": [],
+                    "completed_steps": [],
+                },
+            }
 
         def run(self, query, history=None, resume_from=None):
             return AnalysisResult(
-                response="done", trace=[], artifacts=[],
-                dataset_profile=self.workspace.profile(), plan=[], completed_steps=[],
+                response="done",
+                trace=[],
+                artifacts=[],
+                dataset_profile=self.workspace.profile(),
+                plan=[],
+                completed_steps=[],
             )
 
     monkeypatch.setattr(api, "DataAnalysisAgent", FastAgent)
@@ -2458,7 +2653,14 @@ def test_chat_stream_releases_lock_on_first_frame_disconnect(tmp_path, monkeypat
 
     # 快速完成式追问 Agent
     class FastChatAgent:
-        def __init__(self, workspace, settings, cancel_event=None, progress_callback=None, event_callback=None):
+        def __init__(
+            self,
+            workspace,
+            settings,
+            cancel_event=None,
+            progress_callback=None,
+            event_callback=None,
+        ):
             self.workspace = workspace
             self._last_usage = None
             self._last_reasoning = ""
@@ -2504,23 +2706,37 @@ def test_lock_release_allows_subsequent_analysis_after_disconnect(tmp_path, monk
 
     # 首次分析用的快速 Agent
     class FirstFastAgent:
-        def __init__(self, workspace, settings, cancel_event=None, progress_callback=None, event_callback=None):
+        def __init__(
+            self,
+            workspace,
+            settings,
+            cancel_event=None,
+            progress_callback=None,
+            event_callback=None,
+        ):
             self.workspace = workspace
 
         def stream(self, query, history=None, resume_from=None, plan_only=False):
-            yield {"node": "finalize", "data": {
-                "response": "done",
-                "trace": [],
-                "artifacts": list(self.workspace.artifacts),
-                "dataset_profile": self.workspace.profile(),
-                "plan": [],
-                "completed_steps": [],
-            }}
+            yield {
+                "node": "finalize",
+                "data": {
+                    "response": "done",
+                    "trace": [],
+                    "artifacts": list(self.workspace.artifacts),
+                    "dataset_profile": self.workspace.profile(),
+                    "plan": [],
+                    "completed_steps": [],
+                },
+            }
 
         def run(self, query, history=None, resume_from=None):
             return AnalysisResult(
-                response="done", trace=[], artifacts=[],
-                dataset_profile=self.workspace.profile(), plan=[], completed_steps=[],
+                response="done",
+                trace=[],
+                artifacts=[],
+                dataset_profile=self.workspace.profile(),
+                plan=[],
+                completed_steps=[],
             )
 
     monkeypatch.setattr(api, "DataAnalysisAgent", FirstFastAgent)
@@ -2591,10 +2807,17 @@ def test_analyze_stream_c1_fix_releases_lock_when_worker_start_fails(tmp_path, m
             pass
 
         def stream(self, *args, **kwargs):
-            yield {"node": "finalize", "data": {
-                "response": "done", "trace": [], "artifacts": [],
-                "dataset_profile": {}, "plan": [], "completed_steps": [],
-            }}
+            yield {
+                "node": "finalize",
+                "data": {
+                    "response": "done",
+                    "trace": [],
+                    "artifacts": [],
+                    "dataset_profile": {},
+                    "plan": [],
+                    "completed_steps": [],
+                },
+            }
 
     monkeypatch.setattr(api, "DataAnalysisAgent", DummyAgent)
 
@@ -2655,11 +2878,20 @@ def test_analyze_stream_forwards_event_callback_events(tmp_path, monkeypatch):
     uploaded = _upload_csv_session(client, content=b"region,sales\nEast,100\n")
 
     monkeypatch.setattr(
-        api, "_effective_settings", lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs")
+        api,
+        "_effective_settings",
+        lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs"),
     )
 
     class EmittingAgent:
-        def __init__(self, workspace, settings, cancel_event=None, progress_callback=None, event_callback=None):
+        def __init__(
+            self,
+            workspace,
+            settings,
+            cancel_event=None,
+            progress_callback=None,
+            event_callback=None,
+        ):
             self.workspace = workspace
             self.event_callback = event_callback
 
@@ -2686,11 +2918,20 @@ def test_analyze_stream_complete_still_emitted_when_persist_fails(tmp_path, monk
     uploaded = _upload_csv_session(client, content=b"region,sales\nEast,100\n")
 
     monkeypatch.setattr(
-        api, "_effective_settings", lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs")
+        api,
+        "_effective_settings",
+        lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs"),
     )
 
     class StubAgent:
-        def __init__(self, workspace, settings, cancel_event=None, progress_callback=None, event_callback=None):
+        def __init__(
+            self,
+            workspace,
+            settings,
+            cancel_event=None,
+            progress_callback=None,
+            event_callback=None,
+        ):
             self.workspace = workspace
             self._last_usage = {}
             self._last_reasoning = ""
@@ -2723,7 +2964,9 @@ def test_analyze_stream_cancelled_emitted_when_persist_fails(tmp_path, monkeypat
     uploaded = _upload_csv_session(client, content=b"region,sales\nEast,100\n")
 
     monkeypatch.setattr(
-        api, "_effective_settings", lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs")
+        api,
+        "_effective_settings",
+        lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs"),
     )
 
     class CancellingAgent:
@@ -2757,7 +3000,9 @@ def test_analyze_stream_error_emitted_when_persist_fails(tmp_path, monkeypatch, 
     uploaded = _upload_csv_session(client, content=b"region,sales\nEast,100\n")
 
     monkeypatch.setattr(
-        api, "_effective_settings", lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs")
+        api,
+        "_effective_settings",
+        lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs"),
     )
 
     class FailingAgent:
@@ -2798,11 +3043,20 @@ def test_analyze_stream_cancel_error_path(tmp_path, monkeypatch):
     uploaded = _upload_csv_session(client, content=b"region,sales\nEast,100\n")
 
     monkeypatch.setattr(
-        api, "_effective_settings", lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs")
+        api,
+        "_effective_settings",
+        lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs"),
     )
 
     class SlowAgent:
-        def __init__(self, workspace, settings, cancel_event=None, progress_callback=None, event_callback=None):
+        def __init__(
+            self,
+            workspace,
+            settings,
+            cancel_event=None,
+            progress_callback=None,
+            event_callback=None,
+        ):
             self.workspace = workspace
             self.cancel_event = cancel_event
 
@@ -2827,7 +3081,9 @@ def test_analyze_stream_cancel_error_path(tmp_path, monkeypatch):
     session_id = uploaded["id"]
 
     try:
-        with client.stream("POST", f"/api/sessions/{session_id}/analyze/stream", json={"task": "x"}) as resp:
+        with client.stream(
+            "POST", f"/api/sessions/{session_id}/analyze/stream", json={"task": "x"}
+        ) as resp:
             for line in resp.iter_lines():
                 if line.startswith("event: started"):
                     break
@@ -2839,7 +3095,9 @@ def test_analyze_stream_cancel_error_path(tmp_path, monkeypatch):
     while record.run_lock.locked() and time.time() < deadline:
         time.sleep(0.1)
     # worker 感知取消并写入 cancelled 终态，证明 CancelledError 分支 set 了 event
-    assert record.analysis_status == "cancelled", "CancelledError 路径应 set cancel_event 并取消 worker"
+    assert record.analysis_status == "cancelled", (
+        "CancelledError 路径应 set cancel_event 并取消 worker"
+    )
     assert not record.run_lock.locked(), "worker 退出后 run_lock 应被释放"
     assert api.analysis_slots.acquire(blocking=False)
     api.analysis_slots.release()
@@ -2852,7 +3110,9 @@ def test_analyze_stream_first_frame_disconnect_persist_failure(tmp_path, monkeyp
     uploaded = _upload_csv_session(client, content=b"region,sales\nEast,100\n")
 
     monkeypatch.setattr(
-        api, "_effective_settings", lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs")
+        api,
+        "_effective_settings",
+        lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs"),
     )
 
     class DummyAgent:
@@ -2909,7 +3169,9 @@ def test_chat_stream_emits_heartbeat_when_idle(tmp_path, monkeypatch):
     api.registry.persist(session_id, record)
 
     monkeypatch.setattr(
-        api, "_effective_settings", lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs")
+        api,
+        "_effective_settings",
+        lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs"),
     )
 
     class SlowChatAgent:
@@ -2926,11 +3188,13 @@ def test_chat_stream_emits_heartbeat_when_idle(tmp_path, monkeypatch):
     # 缩短 wait_for 超时强制心跳
     monkeypatch.setattr("data_agent.api.asyncio.wait_for", _short_wait_for)
 
-    with client.stream("POST", f"/api/sessions/{session_id}/chat/stream", json={"task": "追问"}) as resp:
+    with client.stream(
+        "POST", f"/api/sessions/{session_id}/chat/stream", json={"task": "追问"}
+    ) as resp:
         events = []
         for line in resp.iter_lines():
             if line.startswith("event: "):
-                events.append(line[len("event: "):])
+                events.append(line[len("event: ") :])
     assert "heartbeat" in events
     assert "chat_done" in events
 
@@ -2947,11 +3211,20 @@ def test_chat_stream_cancel_error_path(tmp_path, monkeypatch):
     api.registry.persist(session_id, record)
 
     monkeypatch.setattr(
-        api, "_effective_settings", lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs")
+        api,
+        "_effective_settings",
+        lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs"),
     )
 
     class ChatAgent:
-        def __init__(self, workspace, settings, cancel_event=None, progress_callback=None, event_callback=None):
+        def __init__(
+            self,
+            workspace,
+            settings,
+            cancel_event=None,
+            progress_callback=None,
+            event_callback=None,
+        ):
             self._last_usage = {}
             self._last_reasoning = ""
             self.cancel_event = cancel_event
@@ -2978,7 +3251,9 @@ def test_chat_stream_cancel_error_path(tmp_path, monkeypatch):
     monkeypatch.setattr(api.asyncio, "wait_for", cancel_first)
 
     try:
-        with client.stream("POST", f"/api/sessions/{session_id}/chat/stream", json={"task": "追问"}) as resp:
+        with client.stream(
+            "POST", f"/api/sessions/{session_id}/chat/stream", json={"task": "追问"}
+        ) as resp:
             for line in resp.iter_lines():
                 if line.startswith("event: started"):
                     break
@@ -3007,7 +3282,9 @@ def test_chat_stream_first_frame_disconnect_releases_lock_when_start_fails(tmp_p
     api.registry.persist(session_id, record)
 
     monkeypatch.setattr(
-        api, "_effective_settings", lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs")
+        api,
+        "_effective_settings",
+        lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs"),
     )
 
     class DummyChatAgent:
@@ -3029,7 +3306,9 @@ def test_chat_stream_first_frame_disconnect_releases_lock_when_start_fails(tmp_p
     monkeypatch.setattr(threading.Thread, "start", failing_start)
 
     try:
-        with client.stream("POST", f"/api/sessions/{session_id}/chat/stream", json={"task": "追问"}) as resp:
+        with client.stream(
+            "POST", f"/api/sessions/{session_id}/chat/stream", json={"task": "追问"}
+        ) as resp:
             for line in resp.iter_lines():
                 if line.startswith("event: started"):
                     break
@@ -3078,7 +3357,9 @@ def test_analyze_stream_first_frame_disconnect_swallows_release_errors(tmp_path,
     uploaded = _upload_csv_session(client, content=b"region,sales\nEast,100\n")
 
     monkeypatch.setattr(
-        api, "_effective_settings", lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs")
+        api,
+        "_effective_settings",
+        lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs"),
     )
 
     class DummyAgent:
@@ -3131,7 +3412,9 @@ def test_analyze_stream_first_frame_disconnect_swallows_lock_release_error(tmp_p
     uploaded = _upload_csv_session(client, content=b"region,sales\nEast,100\n")
 
     monkeypatch.setattr(
-        api, "_effective_settings", lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs")
+        api,
+        "_effective_settings",
+        lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs"),
     )
 
     class DummyAgent:
@@ -3191,7 +3474,9 @@ def test_chat_stream_persist_failure_logged(tmp_path, monkeypatch, caplog):
     api.registry.persist(session_id, record)
 
     monkeypatch.setattr(
-        api, "_effective_settings", lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs")
+        api,
+        "_effective_settings",
+        lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs"),
     )
 
     class ChatAgent:
@@ -3210,7 +3495,9 @@ def test_chat_stream_persist_failure_logged(tmp_path, monkeypatch, caplog):
     monkeypatch.setattr(api.registry, "persist", failing_persist)
 
     with caplog.at_level(logging.ERROR, logger="data_agent.routers.analysis"):
-        with client.stream("POST", f"/api/sessions/{session_id}/chat/stream", json={"task": "追问"}) as resp:
+        with client.stream(
+            "POST", f"/api/sessions/{session_id}/chat/stream", json={"task": "追问"}
+        ) as resp:
             text = b"".join(resp.iter_bytes()).decode("utf-8")
     assert "event: chat_done" in text
     assert "Failed to persist chat state" in caplog.text
@@ -3230,7 +3517,9 @@ def test_chat_stream_cancelled_persist_failure_logged(tmp_path, monkeypatch, cap
     api.registry.persist(session_id, record)
 
     monkeypatch.setattr(
-        api, "_effective_settings", lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs")
+        api,
+        "_effective_settings",
+        lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs"),
     )
 
     class CancellingChatAgent:
@@ -3248,7 +3537,9 @@ def test_chat_stream_cancelled_persist_failure_logged(tmp_path, monkeypatch, cap
     monkeypatch.setattr(api.registry, "persist", failing_persist)
 
     with caplog.at_level(logging.ERROR, logger="data_agent.routers.analysis"):
-        with client.stream("POST", f"/api/sessions/{session_id}/chat/stream", json={"task": "追问"}) as resp:
+        with client.stream(
+            "POST", f"/api/sessions/{session_id}/chat/stream", json={"task": "追问"}
+        ) as resp:
             text = b"".join(resp.iter_bytes()).decode("utf-8")
     assert "event: cancelled" in text
     assert "Failed to persist cancelled chat state" in caplog.text
@@ -3266,7 +3557,9 @@ def test_chat_stream_first_frame_disconnect_swallows_release_error(tmp_path, mon
     api.registry.persist(session_id, record)
 
     monkeypatch.setattr(
-        api, "_effective_settings", lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs")
+        api,
+        "_effective_settings",
+        lambda: AgentSettings(api_key="test", runs_dir=tmp_path / "runs"),
     )
 
     class DummyChatAgent:
@@ -3306,7 +3599,9 @@ def test_chat_stream_first_frame_disconnect_swallows_release_error(tmp_path, mon
 
     # 完整读取：worker.start() 抛错 → 兜底释放（异常被吞）→ 错误继续传播
     try:
-        with client.stream("POST", f"/api/sessions/{session_id}/chat/stream", json={"task": "追问"}) as resp:
+        with client.stream(
+            "POST", f"/api/sessions/{session_id}/chat/stream", json={"task": "追问"}
+        ) as resp:
             for _line in resp.iter_lines():
                 pass
     except Exception:
@@ -3315,6 +3610,7 @@ def test_chat_stream_first_frame_disconnect_swallows_release_error(tmp_path, mon
     # 探针：chat worker 的 start 必须被调用过，且兜底路径必须调用过 release
     assert calls["n"] >= 1, "请求未执行（chat worker.start 未被调用）"
     assert BrokenLock.released["n"] >= 1, "兜底路径未执行 run_lock.release"
+
 
 def test_stream_cancel_handler_warns_when_worker_still_alive(tmp_path, monkeypatch, caplog):
     """取消处理器在 worker 未于等待窗口内退出时必须记录 warning。
@@ -3364,8 +3660,6 @@ def test_stream_cancel_handler_warns_when_worker_still_alive(tmp_path, monkeypat
     release.set()
     worker.join(timeout=5)
     assert not worker.is_alive()
-
-
 
 
 def test_access_token_non_ascii_rejected_not_500(monkeypatch):

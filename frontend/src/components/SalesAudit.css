@@ -1,0 +1,165 @@
+.sales-audit {
+  display: grid;
+  gap: 16px;
+  margin-top: 20px;
+  line-height: 1.55;
+}
+
+.sales-audit-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 20px;
+  background: var(--accent-subtle);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+}
+
+.sales-audit-header > svg {
+  flex: none;
+  color: var(--accent-fg);
+}
+.sales-audit-showcase-action { margin-inline-start: auto; }
+
+.sales-audit h2,
+.sales-audit h3,
+.sales-audit p {
+  margin: 0;
+}
+
+.sales-audit h2 { font-size: 22px; }
+.sales-audit h3 { font-size: 16px; }
+.sales-audit p, .sales-audit small { color: var(--fg-muted); }
+
+.sales-audit-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
+  align-items: start;
+  gap: 16px;
+}
+
+.sales-audit-card {
+  min-width: 0;
+  padding: 18px;
+  background: var(--canvas-default);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+}
+
+.sales-audit-card > :not(:first-child) { margin-top: 10px; }
+
+.sales-audit textarea {
+  display: block;
+  width: 100%;
+  resize: vertical;
+  padding: 12px;
+  background: var(--canvas-subtle);
+  color: var(--fg-default);
+  font: inherit;
+  line-height: 1.7;
+  white-space: pre;
+  overflow-wrap: normal;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+}
+
+.sales-audit-actions, .sales-audit-claim-heading, .sales-audit-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.sales-audit-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
+}
+
+.sales-audit-actions button:not(.primary) {
+  border: 1px solid var(--border-strong);
+  background: var(--canvas-default);
+  color: var(--fg-default);
+}
+
+.sales-audit-actions button:not(.primary):hover { background: var(--canvas-subtle); }
+.sales-audit-actions button:disabled { opacity: 0.65; }
+.sales-audit .sales-audit-error { color: var(--danger-fg); }
+.sales-audit .sales-audit-demo-note { color: var(--accent-fg); }
+.sales-audit-locate {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--accent-fg);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.sales-audit-claim-heading {
+  justify-content: space-between;
+  overflow-wrap: anywhere;
+}
+
+.sales-audit-claims {
+  list-style: none;
+  padding: 0;
+  margin-bottom: 0;
+}
+
+.sales-audit-claims > li {
+  padding: 10px 0;
+  border-top: 1px solid var(--border-default);
+}
+
+.sales-audit-verdict {
+  flex: none;
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+  background: var(--canvas-inset);
+  color: var(--fg-default);
+  font-size: 12px;
+}
+
+.sales-audit-verified { background: var(--success-subtle); }
+.sales-audit-conflict { background: var(--danger-subtle); }
+
+.sales-audit-comparison {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sales-audit-comparison > span:first-child { color: var(--fg-muted); }
+.sales-audit-evidence summary { cursor: pointer; font-weight: 600; }
+.sales-audit-table { overflow-x: auto; }
+.sales-audit-table table { width: 100%; border-collapse: collapse; }
+.sales-audit-table :is(th, td) {
+  padding: 6px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-default);
+}
+.sales-audit-table td:nth-child(2) { white-space: pre-wrap; }
+
+.sales-audit pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin-bottom: 0;
+}
+
+.sales-audit-report {
+  padding: 12px;
+  background: var(--canvas-subtle);
+  border-radius: var(--radius-md);
+  font: inherit;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 760px) {
+  .sales-audit-grid { grid-template-columns: minmax(0, 1fr); }
+}

@@ -15,7 +15,6 @@ interface UseAuthBootstrapDeps {
   setSettings: (v: Settings) => void;
   setEffort: (v: string) => void;
   setThinking: (v: boolean) => void;
-  setKeyOpen: (v: boolean) => void;
   setError: (v: string) => void;
   fetchHistory: () => void;
   authReady: boolean;
@@ -30,7 +29,7 @@ interface UseAuthBootstrapDeps {
 function useAuthBootstrap(deps: UseAuthBootstrapDeps): void {
   const {
     setAuthRequired, setAuthenticated, setAuthReady,
-    setSettings, setEffort, setThinking, setKeyOpen, setError,
+    setSettings, setEffort, setThinking, setError,
     fetchHistory, authReady, authRequired, authenticated,
   } = deps;
 
@@ -52,7 +51,6 @@ function useAuthBootstrap(deps: UseAuthBootstrapDeps): void {
           setSettings(value);
           setEffort(value.reasoning_effort);
           setThinking(value.thinking_enabled);
-          setKeyOpen(!value.configured);
         }
         setAuthReady(true);
       })

@@ -30,6 +30,7 @@ import EmptyWorkspace from "./components/EmptyWorkspace";
 import HistoryPanel from "./components/HistoryPanel";
 import PlanPanel from "./components/PlanPanel";
 import PreviewModal from "./components/PreviewModal";
+import SalesAudit, { SALES_BRIEF_TASK } from "./components/SalesAudit";
 import SettingsPanel from "./components/SettingsPanel";
 import TaskBox from "./components/TaskBox";
 import WorkspaceTabs from "./components/WorkspaceTabs";
@@ -53,12 +54,11 @@ import useDownloads from "./hooks/useDownloads";
 import useHistorySync from "./hooks/useHistorySync";
 import useScrollProgress from "./hooks/useScrollProgress";
 import useSessionMutations from "./hooks/useSessionMutations";
-import useSettingsPanel from "./hooks/useSettingsPanel";
 import useShortcuts from "./hooks/useShortcuts";
 import useTabPersistence from "./hooks/useTabPersistence";
 import useTheme from "./hooks/useTheme";
 import useTimer from "./hooks/useTimer";
-import { useAnalysisStore, useAppStore } from "./store/useAppStore";
+import { useAnalysisStore, useAppStore, useSessionStore } from "./store/useAppStore";
 import type {
   AnalysisResult,
   CommandAction,
@@ -82,6 +82,14 @@ const DataTable = React.lazy(() => import("./components/DataTable"));
 const ReportView = React.lazy(() => import("./components/ReportView"));
 const CommandPalette = React.lazy(() => import("./components/CommandPalette"));
 const HelpPanel = React.lazy(() => import("./components/HelpPanel"));
+const LANGSMITH_STATUS = {
+  configured: { label: "追踪已配置", dot: "online" },
+  missing_key: { label: "缺少密钥", dot: "warning" },
+  key_unconfirmed: { label: "密钥待核对", dot: "warning" },
+  local: { label: "仅本地追踪", dot: "" },
+  disabled: { label: "追踪关闭", dot: "" },
+  unknown: { label: "状态未知", dot: "" },
+};
 // Suspense 懒加载占位：补齐 fallback={null} 的加载态（FIND-UX-001~004），
 // 复用 skeleton-shimmer 动画，不改组件 props 语义、不新增用户可见功能。
 const LazyFallback = () => (
@@ -110,11 +118,9 @@ function App() {
     setAuthenticated,
     setAuthReady,
     // 配置（apiKey/effort/thinking 的编辑逻辑已移至 SettingsPanel；
-    // setSettings/setEffort/setThinking 仍供 useAuthBootstrap 初始化，
-    // setApiKey 供 useShortcuts 的 Esc 清空逻辑使用）
+    // setSettings/setEffort/setThinking 仍供 useAuthBootstrap 初始化）
     settings,
     setSettings,
-    setApiKey,
     setEffort,
     setThinking,
     // 会话
@@ -158,8 +164,7 @@ function App() {
     errorExpanded,
     setError,
     setErrorExpanded,
-    // Key UI（showKey 已移至 SettingsPanel；keyOpen/setKeyOpen 供
-    // useSettingsPanel / useShortcuts / 命令面板动作使用）
+    // Key UI（showKey 已移至 SettingsPanel；keyOpen/setKeyOpen 供快捷键与命令面板使用）
     keyOpen,
     setKeyOpen,
     // 工具调用时间线（toolTrace）：ReAct 执行器内部每次工具调用实时推送，
@@ -216,11 +221,16 @@ function App() {
     setHelpOpen,
   } = useAppStore();
 
+  const traceStatus = settings?.langsmith_status
+    ?? (settings ? settings.langsmith_tracing ? "configured" : "disabled" : "unknown");
+  const traceIndicator = LANGSMITH_STATUS[traceStatus];
+
   // refs 保持局部状态：useRef 不迁移到 store（控制器、缓存、闭包内
   // 读取的最新值不需要触发重渲染）。
   // 分析 / 追问 / 预览相关 ref 已随逻辑提取至 useAnalysisRunner /
   // useChatRunner / useArtifactPreview，这里仅保留 App.tsx 仍直接使用的 ref。
   const fileInput = useRef<HTMLInputElement>(null);
+  const auditDemoSession = useRef<string | null>(null);
   const taskInput = useRef<HTMLTextAreaElement>(null);
   const retryController = useRef<AbortController | null>(null);
   // 上传取消控制器：大文件上传过程中用户可点"取消上传"中断 XHR
@@ -273,6 +283,8 @@ function App() {
         method: "POST",
         timeoutMs: 300000,
       });
+      if (useSessionStore.getState().session?.id !== session.id) return;
+      setSession((current) => current ? { ...current, last_result: payload } : current);
       setResult(payload);
       if (payload.plan) setPlan(payload.plan);
       if (payload.completed_steps) setCompleted(payload.completed_steps);
@@ -281,7 +293,7 @@ function App() {
     } finally {
       setReplayBusy(false);
     }
-  }, [session, replayBusy, running, setResult, setPlan, setCompleted, setActiveTab, setTask, lastTaskRef]);
+  }, [session, replayBusy, running, setResult, setSession, setPlan, setCompleted, setActiveTab, setTask, lastTaskRef]);
 
   const focusPlanPanel = useCallback(() => {
     setActiveTab("analysis");
@@ -316,9 +328,6 @@ function App() {
     sidebarTouchY.current = null;
   };
 
-  // 设置面板点击外部关闭（提取至 useSettingsPanel）。
-  useSettingsPanel(keyOpen, setKeyOpen);
-
   // Scroll 进度指示器：顶栏底部品牌色进度条。
   useScrollProgress();
 
@@ -342,7 +351,6 @@ function App() {
     setSettings,
     setEffort,
     setThinking,
-    setKeyOpen,
     setError,
     fetchHistory,
     authReady,
@@ -467,15 +475,13 @@ function App() {
   // 若每次渲染都创建新函数，memo 比较失败，ArtifactCenter 仍然每次重渲染。
   // useCallback 让函数身份稳定，memo 才能真正跳过无关重渲染。
   // openArtifactPreview / closeArtifactPreview 已提取至 useArtifactPreview。
-  // 键盘快捷键：Esc 关闭预览/设置 + 全局 Cmd+K/Cmd+B/Cmd+./?/T/1-3（提取至 useShortcuts）。
+  // 键盘快捷键：Esc 关闭预览 + 全局 Cmd+K/Cmd+B/Cmd+./?/T/1-3（提取至 useShortcuts）。
   // closeArtifactPreview / stopAnalysis / stopFollowUp 由 useArtifactPreview /
   // useAnalysisRunner / useChatRunner 返回（hook 在上方已调用），此处可直接引用。
   useShortcuts({
     previewItem,
     keyOpen,
     closeArtifactPreview,
-    setKeyOpen,
-    setApiKey,
     running,
     chatRunning,
     stopAnalysis,
@@ -565,7 +571,8 @@ function App() {
   //  - empty-workspace:extra-files  —— 多文件拖入时，首个文件已走主上传路径，
   //    其余文件在此顺序创建独立会话（数据分析常需对比多表）
   useEffect(() => {
-    const onLoadSample = async () => {
+    const onLoadSample = async (event: Event) => {
+      const auditDemo = (event as CustomEvent<{ auditDemo?: boolean }>).detail?.auditDemo === true;
       setUploading(true);
       setError("");
       closeArtifactPreview();
@@ -577,10 +584,12 @@ function App() {
       setCurrentNodeTitle("");
       setRetryOffer(null);
       try {
-        const value = await api<Session>("/api/sessions/sample", {
+        const value = await api<Session>(auditDemo ? "/api/sessions/sample?audit=true" : "/api/sessions/sample", {
           method: "POST",
         });
+        auditDemoSession.current = auditDemo ? value.id : null;
         setSession(value);
+        if (auditDemo) setActiveTab("audit");
         startedAtRef.current =
           (value as Session & { analysis_started_at?: number | null })
             .analysis_started_at ?? null;
@@ -985,12 +994,12 @@ function App() {
         {/* 分析引擎区块：model-line + 设置面板，已提取至 SettingsPanel 组件 */}
         <SettingsPanel />
 
-        <div className="sidebar-foot">
+        <div className="sidebar-foot" title={settings?.langsmith_project || undefined}>
           <span>
-            <i className={settings?.langsmith_tracing ? "online" : ""} />
+            <i aria-hidden="true" className={traceIndicator.dot} />
             LangSmith
           </span>
-          <small>{settings?.langsmith_tracing ? "追踪开启" : "本地模式"}</small>
+          <small>{traceIndicator.label}</small>
         </div>
         <div className="storage-status">
           <span>
@@ -1269,34 +1278,54 @@ function App() {
               </button>
             </section>
 
-            {/* task-box 常驻顶部：无论切到哪个 tab 都能直接发起新分析（提取至 TaskBox） */}
-            <TaskBox
-              task={task}
-              running={running}
-              stopping={stopping}
-              awaitingApproval={awaitingApproval}
-              configured={!!settings?.configured}
-              hasSession={!!session}
-              currentNodeTitle={currentNodeTitle}
-              elapsedSeconds={elapsedSeconds}
-              onTaskChange={setTask}
-              onRun={() => startAnalysis()}
-              onRunPlanReview={() => startAnalysis(task, null, true)}
-              onStop={stopAnalysis}
-              onFocusPlan={focusPlanPanel}
-              taskInputRef={taskInput}
-            />
-            {session && <MetricsEditor sessionId={session.id} />}
-            {!settings?.configured && (
-              <p className="composer-note">请先在左侧配置 DeepSeek API Key。</p>
-            )}
+            {activeTab !== "audit" && <>
+              <TaskBox
+                task={task}
+                running={running}
+                stopping={stopping}
+                awaitingApproval={awaitingApproval}
+                configured={!!settings?.configured}
+                hasSession={!!session}
+                currentNodeTitle={currentNodeTitle}
+                elapsedSeconds={elapsedSeconds}
+                onTaskChange={setTask}
+                onRun={() => startAnalysis()}
+                onRunPlanReview={() => startAnalysis(task, null, true)}
+                onStop={stopAnalysis}
+                onFocusPlan={focusPlanPanel}
+                taskInputRef={taskInput}
+              />
+              <MetricsEditor sessionId={session.id} />
+              {!settings?.configured && (
+                <p className="composer-note">请先在左侧配置 DeepSeek API Key。</p>
+              )}
+            </>}
 
-            {/* tabs 紧贴 task-box 下方：切换分析/数据/产物三个视图（提取至 WorkspaceTabs） */}
             <WorkspaceTabs
               activeTab={activeTab}
               artifactCount={session.artifacts?.length || 0}
               onSelectTab={setActiveTab}
             />
+
+            <section
+              id="tabpanel-audit"
+              role="tabpanel"
+              aria-labelledby="tab-audit"
+              tabIndex={0}
+              hidden={activeTab !== "audit"}
+            >
+              <SalesAudit
+                key={session.id}
+                sessionId={session.id}
+                filename={session.filename}
+                initialDemo={auditDemoSession.current === session.id}
+                report={running && session.id === runningSessionIdRef.current ? undefined : session.last_result?.response}
+                onPrepareDraft={settings?.configured && !running && !awaitingApproval ? () => {
+                  setTask(SALES_BRIEF_TASK);
+                  setActiveTab("analysis");
+                } : undefined}
+              />
+            </section>
 
             {activeTab === "analysis" && (
               <div

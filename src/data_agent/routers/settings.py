@@ -11,12 +11,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
+from langsmith import utils as langsmith_utils
 
 from data_agent._runtime_config import has_runtime_scope, update_runtime_settings
+from data_agent.config import DEEPSEEK_BASE_URL
 from data_agent.credentials import delete_saved_api_key
 from data_agent.middleware import _check_access, _is_loopback_host
 from data_agent.observability import render_metrics
@@ -88,6 +92,16 @@ def get_settings() -> dict[str, Any]:
 
     settings = api._effective_settings()
     storage_status = api.session_storage.healthcheck()
+    tracing = langsmith_utils.tracing_is_enabled()
+    if tracing is True:
+        key = langsmith_utils.get_api_key(None)
+        if key is None:
+            # SDK profiles and self-hosted endpoints can work without an environment key.
+            langsmith_status = "key_unconfirmed"
+        else:
+            langsmith_status = "missing_key" if key == "your-langsmith-api-key" else "configured"
+    else:
+        langsmith_status = "local" if tracing == "local" else "disabled"
     return {
         "provider": "deepseek",
         "model": settings.model,
@@ -95,8 +109,9 @@ def get_settings() -> dict[str, Any]:
         "configured": bool(settings.api_key),
         "thinking_enabled": settings.thinking_enabled,
         "reasoning_effort": settings.reasoning_effort,
-        "langsmith_tracing": os.getenv("LANGSMITH_TRACING", "false").lower() == "true",
-        "langsmith_project": os.getenv("LANGSMITH_PROJECT", "data-analysis-agent"),
+        "langsmith_tracing": tracing is True,
+        "langsmith_status": langsmith_status,
+        "langsmith_project": langsmith_utils.get_tracer_project(),
         "storage_backend": api.session_storage.backend,
         "persistent_storage": api.session_storage.persistent,
         "storage_status": storage_status.get("status", "unknown"),
@@ -111,6 +126,50 @@ def get_settings() -> dict[str, Any]:
         "max_plan_steps": settings.max_plan_steps,
         "max_tool_calls_per_step": settings.max_tool_calls_per_step,
     }
+
+
+@router.post("/api/settings/test")
+async def test_model_connection(request: Request) -> dict[str, str]:
+    from data_agent import api
+
+    # Avoid validation responses containing the submitted plaintext credential.
+    try:
+        payload = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="请求格式错误。") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="请求格式错误。")
+    submitted = payload.get("api_key")
+    if submitted is not None and not isinstance(submitted, str):
+        raise HTTPException(status_code=422, detail="API Key 格式不正确。")
+    settings = api._effective_settings()
+    key = submitted.strip() if submitted is not None else settings.api_key
+    if not key:
+        raise HTTPException(status_code=422, detail="请先输入 DeepSeek API Key。")
+    if len(key) > 2048 or not all(33 <= ord(char) <= 126 for char in key):
+        raise HTTPException(status_code=422, detail="API Key 格式不正确。")
+    base_url = (settings.base_url or DEEPSEEK_BASE_URL).rstrip("/")
+    try:
+        async with asyncio.timeout(8), httpx.AsyncClient(timeout=7) as client:
+            response = await client.get(
+                f"{base_url}/models", headers={"Authorization": f"Bearer {key}"}
+            )
+    except (TimeoutError, httpx.TimeoutException) as exc:
+        raise HTTPException(status_code=504, detail="连接模型服务超时，请检查网络后重试。") from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail="无法访问模型服务，请检查网络。") from exc
+    if response.status_code in (401, 403):
+        raise HTTPException(status_code=401, detail="模型服务拒绝了此 API Key，请核对后重试。")
+    if response.status_code == 429:
+        raise HTTPException(status_code=429, detail="模型服务限流，请稍后重试。")
+    if response.is_success:
+        try:
+            result = response.json()
+        except ValueError:
+            result = None
+        if isinstance(result, dict) and isinstance(result.get("data"), list):
+            return {"message": "模型服务连接成功。"}
+    raise HTTPException(status_code=502, detail="模型服务未返回有效的模型列表。")
 
 
 @router.put("/api/settings")

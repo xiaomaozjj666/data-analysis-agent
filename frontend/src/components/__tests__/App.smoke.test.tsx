@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // App 渲染冒烟测试：鉴权引导 → 主壳（侧栏 + 空工作台）完整挂载。
@@ -76,15 +76,26 @@ describe("App 渲染冒烟", () => {
         return Promise.resolve({
           provider: "deepseek",
           model: "deepseek-chat",
-          configured: true,
+          configured: false,
           thinking_enabled: false,
           reasoning_effort: "medium",
           max_iterations: 24,
           max_plan_steps: 8,
           max_tool_calls_per_step: 6,
-          langsmith_tracing: false,
+          langsmith_tracing: true,
+          langsmith_status: "missing_key",
           storage_status: "ok",
           max_upload_bytes: 52_428_800,
+        });
+      }
+      if (url === "/api/sessions/sample?audit=true") {
+        return Promise.resolve({
+          id: "sample",
+          filename: "sample_sales_audit.csv",
+          preview: [],
+          profile: { rows: 21, columns: 8 },
+          artifacts: [],
+          analysis_status: "idle",
         });
       }
       if (url.startsWith("/api/sessions")) {
@@ -109,6 +120,17 @@ describe("App 渲染冒烟", () => {
     ).toBeInTheDocument();
     // 历史列表拉取已被触发（鉴权通过后 fetchHistory）
     expect(apiMock).toHaveBeenCalledWith("/api/sessions?limit=30");
+    expect(screen.getByText("缺少密钥")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "模型设置" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "体验简报核验" }));
+    expect(await screen.findByRole("tab", { name: "简报核验", selected: true })).toBeInTheDocument();
+    const showcase = screen.getByRole("region", { name: "有据经营简报路演" });
+    expect(showcase).toHaveTextContent("462");
+    expect(showcase).toHaveTextContent("运行核验后揭晓");
+    fireEvent.click(screen.getByRole("button", { name: "草稿工作台" }));
+    const draft = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "简报草稿" });
+    expect(draft.value).toContain("订单数：462 笔");
     },
     // 整壳挂载是本套件里最重的用例，耗时随机器负载波动极大：热机约 7s，
     // 12 个 jsdom worker 并行 + 机器同时跑别的重活时实测超过 30s，

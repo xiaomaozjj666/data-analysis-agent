@@ -1,5 +1,5 @@
 import React, { useCallback, useRef, useState } from "react";
-import { Braces, FileSpreadsheet, LoaderCircle, Sparkles, Table2, Upload } from "lucide-react";
+import { Braces, FileSpreadsheet, LoaderCircle, ShieldCheck, Sparkles, Table2, Upload } from "lucide-react";
 import { motion } from "motion/react";
 import DotField from "./rb/DotField";
 import Aurora from "./rb/Aurora";
@@ -117,7 +117,7 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
 
   // 键盘可达性：Enter / Space 触发上传，让不用鼠标的用户也能操作
   const handleSectionKeyDown = useCallback((e: React.KeyboardEvent<HTMLElement>) => {
-    if (uploading) return;
+    if (uploading || e.currentTarget !== e.target) return;
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       onUpload();
@@ -125,8 +125,8 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
   }, [onUpload, uploading]);
 
   // 示例数据快速开始：通知 App.tsx 调用 /api/sessions/sample
-  const handleLoadSample = useCallback(() => {
-    window.dispatchEvent(new CustomEvent("empty-workspace:load-sample"));
+  const handleLoadSample = useCallback((auditDemo: boolean) => {
+    window.dispatchEvent(new CustomEvent("empty-workspace:load-sample", { detail: { auditDemo } }));
   }, []);
 
   return (
@@ -206,12 +206,21 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
           <button
             type="button"
             className="empty-sample-button"
-            onClick={handleLoadSample}
+            onClick={() => handleLoadSample(false)}
             disabled={uploading}
             aria-label="加载示例数据体验"
           >
             <Sparkles size={13} />
             加载示例数据体验
+          </button>
+          <button
+            type="button"
+            className="empty-sample-button empty-audit-button"
+            onClick={() => handleLoadSample(true)}
+            disabled={uploading}
+          >
+            <ShieldCheck size={14} />
+            体验简报核验
           </button>
         </div>
         {/* 上传进度条 + 取消：仅在上传中且有真实进度时展示。

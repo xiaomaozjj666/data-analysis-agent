@@ -309,7 +309,7 @@ function useAnalysisRunner(deps: UseAnalysisRunnerDeps): UseAnalysisRunnerResult
           }
         },
         [SSE_EVENT_TYPES.FINALIZE]: () => {
-          if (session.id === runningSessionIdRef.current) {
+          if (session.id === useSessionStore.getState().session?.id) {
             setCurrentNodeTitle("正在汇总最终报告");
             // finalize 阶段开始输出报告正文，思考过程已结束，关闭 streaming
             setReasoningStreaming(false);
@@ -322,7 +322,7 @@ function useAnalysisRunner(deps: UseAnalysisRunnerDeps): UseAnalysisRunnerResult
           // 流式报告：逐字追加，用户看着报告逐字写出，而不是等 30-60 秒看完整报告。
           // 节流：不直接 setResult（每个 token 触发 ReactMarkdown 全量重解析 AST），
           // 而是写入 ref 缓冲，80ms 批量刷新一次。长报告（5000+ 字）在低端设备更流畅。
-          if (session.id === runningSessionIdRef.current) {
+          if (session.id === useSessionStore.getState().session?.id) {
             reportBufferRef.current += (data.chunk || "");
             if (reportFlushTimerRef.current == null) {
               reportFlushTimerRef.current = window.setTimeout(() => {
@@ -330,10 +330,12 @@ function useAnalysisRunner(deps: UseAnalysisRunnerDeps): UseAnalysisRunnerResult
                 if (reportBufferRef.current) {
                   const buffered = reportBufferRef.current;
                   reportBufferRef.current = "";
-                  setResult((prev) => prev
-                    ? { ...prev, response: buffered }
-                    : { response: buffered, artifacts: [], plan, completed_steps: completed }
-                  );
+                  if (session.id === useSessionStore.getState().session?.id) {
+                    setResult((prev) => prev
+                      ? { ...prev, response: buffered }
+                      : { response: buffered, artifacts: [], plan, completed_steps: completed }
+                    );
+                  }
                 }
               }, 80);
             }
@@ -364,7 +366,7 @@ function useAnalysisRunner(deps: UseAnalysisRunnerDeps): UseAnalysisRunnerResult
           // complete 帧仍需记录 completedPayload，以便结束后 setRunning(false)
           // 和刷新 history，让历史列表反映新状态（即使用户已切到历史会话）。
           completedPayload = data;
-          if (session.id === runningSessionIdRef.current) {
+          if (session.id === useSessionStore.getState().session?.id) {
             // 清除节流定时器并丢弃缓冲：complete 帧的 data 是权威最终结果，
             // pending flush 不得覆盖它。
             if (reportFlushTimerRef.current != null) {
@@ -375,8 +377,10 @@ function useAnalysisRunner(deps: UseAnalysisRunnerDeps): UseAnalysisRunnerResult
             setResult(data);
             setPlan(data.plan || []);
             setCompleted(data.completed_steps || []);
-            // 乐观更新 artifacts，refresh 失败时仍能看到产物。
-            setSession((current) => (current ? { ...current, artifacts: data.artifacts || [] } : current));
+            // 刷新失败时仍保留已完成的报告和产物，供当前会话展示与核验。
+            setSession((current) => current?.id === session.id
+              ? { ...current, last_result: data, artifacts: data.artifacts || [] }
+              : current);
             setCurrentNodeTitle("");
             // 思考过程与用量收尾：complete 帧可能携带最终 reasoning / usage。
             setReasoningStreaming(false);
@@ -423,10 +427,9 @@ function useAnalysisRunner(deps: UseAnalysisRunnerDeps): UseAnalysisRunnerResult
       if (completedPayload) {
         // 仅在用户仍在查看运行 session 时才 refresh + 更新 UI；用户切换到
         // 历史会话后不需要把当前 session 的最新状态刷到 UI（历史会话有自己的数据）。
-        const stillViewingRunningSession = session.id === runningSessionIdRef.current;
         try {
           const refreshed = await api<Session & { analysis_started_at?: number | null }>(`/api/sessions/${session.id}`);
-          if (stillViewingRunningSession) {
+          if (session.id === useSessionStore.getState().session?.id) {
             setSession(refreshed);
             // 用服务端精确的 started_at / elapsed_seconds 校正客户端估算，
             // 消除时钟漂移带来的 1 秒以内误差。
@@ -438,7 +441,7 @@ function useAnalysisRunner(deps: UseAnalysisRunnerDeps): UseAnalysisRunnerResult
         } catch {
           // refresh 失败时保留 complete 帧的乐观更新，不阻塞用户；
           // 但产物列表可能不全，给出轻提示而非静默吞掉。
-          if (stillViewingRunningSession) {
+          if (session.id === useSessionStore.getState().session?.id) {
             setError("分析已完成，但同步最新会话数据失败，产物列表可能不完整；可在历史列表重新选择该会话刷新。");
           }
         }
