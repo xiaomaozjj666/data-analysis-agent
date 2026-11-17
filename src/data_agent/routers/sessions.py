@@ -137,7 +137,10 @@ def sales_audit(session_id: str, payload: SalesAuditRequest) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail="请输入待核验的简报草稿。")
     try:
         return audit_sales_brief(
-            source, payload.draft, confirm_full_table=payload.confirm_full_table
+            source,
+            payload.draft,
+            confirm_full_table=payload.confirm_full_table,
+            max_rows=api.bootstrap_settings.max_rows,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
