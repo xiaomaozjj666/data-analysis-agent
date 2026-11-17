@@ -20,9 +20,11 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+import psutil
 from langchain_core.tools import BaseTool, tool
 
 import data_agent as _data_agent_pkg
@@ -59,11 +61,18 @@ _CHILD_EXCEPTIONS: dict[str, type[BaseException]] = {
 def _kill_process(proc: subprocess.Popen[bytes]) -> None:
     if proc.poll() is not None:
         return
+    workers = []
+    if sys.platform == "win32":
+        # venv 的启动器可能先退出，真正的解释器还持有临时工作目录。
+        with suppress(psutil.NoSuchProcess, psutil.AccessDenied):
+            workers = psutil.Process(proc.pid).children()
     proc.kill()
     try:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
         proc.wait()
+    if workers:
+        psutil.wait_procs(workers, timeout=5)
 
 
 def _raise_child_error(payload: dict[str, Any]) -> None:
@@ -191,8 +200,6 @@ def _execute_in_subprocess(code: str, frame: Any) -> dict[str, Any]:
         deadline = time.monotonic() + float(_SANDBOX_TIMEOUT_SECONDS)
         child_ps = None
         try:
-            import psutil
-
             child_ps = psutil.Process(proc.pid)
         except Exception:
             child_ps = None
