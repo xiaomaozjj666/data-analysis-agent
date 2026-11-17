@@ -8,7 +8,7 @@ services:
     plan: free
     buildCommand: |
       cd frontend && npm ci && npm run build && cd ..
-      pip install .
+      pip install . "reportlab>=5.1,<6"
     startCommand: uvicorn data_agent.api:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
     # 不声明 region：它是不可变字段，声明值与服务现状不一致时 sync 会失败。

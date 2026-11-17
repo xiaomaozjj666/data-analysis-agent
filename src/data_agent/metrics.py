@@ -152,6 +152,22 @@ def save_workspace_metrics(root: str | Path, payload: Any) -> list[MetricDefinit
     return definitions
 
 
+def metrics_file_for_workspace(root: str | Path) -> Path | None:
+    """返回当前会话生效的指标定义文件路径（没有则返回 ``None``）。
+
+    解析顺序与 :func:`load_metrics_for_workspace` 相同：先看
+    ``DATA_AGENT_METRICS_PATH`` 指向的全局文件，再看工作区根目录的
+    ``metrics.json``。溯源链用它把"本次分析用了哪份口径"一并哈希入链。
+    """
+    configured = os.environ.get(METRICS_PATH_ENV, "").strip()
+    if configured:
+        configured_path = Path(configured).expanduser()
+        if configured_path.is_file():
+            return configured_path
+    workspace_file = Path(root).expanduser() / METRICS_FILENAME
+    return workspace_file if workspace_file.is_file() else None
+
+
 def load_metrics_for_workspace(root: str | Path) -> list[MetricDefinition]:
     """加载适用于当前会话的指标定义。
 
@@ -163,16 +179,7 @@ def load_metrics_for_workspace(root: str | Path) -> list[MetricDefinition]:
         ValueError: 找到了定义文件但内容不合法。此处刻意不降级为"忽略并继续"：
             分析会用错误的口径得出看似正常的结论，比直接失败代价大得多。
     """
-    configured = os.environ.get(METRICS_PATH_ENV, "").strip()
-    candidate: Path | None = None
-    if configured:
-        configured_path = Path(configured).expanduser()
-        if configured_path.is_file():
-            candidate = configured_path
-    if candidate is None:
-        workspace_file = Path(root).expanduser() / METRICS_FILENAME
-        if workspace_file.is_file():
-            candidate = workspace_file
+    candidate = metrics_file_for_workspace(root)
     if candidate is None:
         return []
     try:
@@ -328,12 +335,18 @@ def compute_metrics_on_frame(
         try:
             series = evaluate_metric_expression(frame, item.expression)
             numeric = pd.to_numeric(series, errors="coerce")
-            entry.update(
-                status="ok",
-                sum=float(numeric.sum(skipna=True)),
-                mean=float(numeric.mean()) if numeric.notna().any() else None,
-                non_null=int(numeric.notna().sum()),
-            )
+            non_null = int(numeric.notna().sum())
+            if non_null == 0:
+                # 全空列不能当作 0：那会让下游把「没有数据」误读成「值为 0」，
+                # 定时任务还会拿它和真实基线比出假异常。
+                entry.update(status="error", error="列中没有有效数值", non_null=0)
+            else:
+                entry.update(
+                    status="ok",
+                    sum=float(numeric.sum(skipna=True)),
+                    mean=float(numeric.mean()),
+                    non_null=non_null,
+                )
         except Exception as exc:  # noqa: BLE001 — 单条失败不影响其余指标
             entry.update(status="error", error=str(exc))
         results.append(entry)

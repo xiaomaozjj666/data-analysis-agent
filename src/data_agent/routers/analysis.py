@@ -14,9 +14,11 @@ VERBATIM 迁移，仅把 ``registry`` / ``_effective_settings`` / ``analysis_slo
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import threading
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -47,6 +49,23 @@ _CLIENT_ERROR_MAX_CHARS = 300
 WORKER_EXIT_TIMEOUT = 5.0
 
 
+
+def _snapshot_metrics(root: Path) -> dict[str, Any] | None:
+    """分析开始前固定指标定义文件的内容哈希（防分析期间被改写）。"""
+    from data_agent.metrics import metrics_file_for_workspace
+
+    path = metrics_file_for_workspace(root)
+    if path is None:
+        return None
+    raw = path.read_bytes()
+    return {
+        "name": path.name,
+        "path": str(path),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "size": len(raw),
+    }
+
+
 def _record_provenance(
     record: SessionRecord,
     result: AnalysisResult,
@@ -58,6 +77,8 @@ def _record_provenance(
     from data_agent import __version__, provenance
 
     try:
+        from data_agent.metrics import metrics_file_for_workspace
+
         provenance.record_analysis(
             record.workspace.root,
             task=task,
@@ -65,6 +86,8 @@ def _record_provenance(
             trace=result.trace,
             artifacts=result.artifacts,
             dataset_path=record.workspace.source_path,
+            metrics_path=metrics_file_for_workspace(record.workspace.root),
+            metrics_snapshot=getattr(record, "metrics_snapshot", None),
             provider=getattr(settings, "provider", ""),
             model=getattr(settings, "model", ""),
             code_version=__version__,
@@ -73,7 +96,9 @@ def _record_provenance(
         logger.exception("Failed to record provenance for session %s", record.session_id)
 
 
-async def _await_worker_exit(worker: threading.Thread, loop: asyncio.AbstractEventLoop, timeout: float) -> bool:
+async def _await_worker_exit(
+    worker: threading.Thread, loop: asyncio.AbstractEventLoop, timeout: float
+) -> bool:
     """Poll worker.is_alive() without blocking the event loop.
 
     ``threading.Thread.join`` is a blocking call; invoking it directly in a
@@ -142,16 +167,31 @@ def _client_error_detail(exc: Exception) -> str:
 #: 用关键词而非 isinstance 判断：避免强依赖 openai 异常类层级（LangChain
 #: 可能包装/转换异常），且对未来更换 SDK 版本更鲁棒。
 _ERROR_CLASSIFY_RULES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
-    ("model_timeout", "模型响应超时，可能是网络波动或服务繁忙，稍后重试通常可恢复",
-     ("apitimeouterror", "timed out", "timeout", "超时")),
-    ("quota_exhausted", "模型账户余额不足，请充值后重试",
-     ("insufficient balance", "insufficient_quota", "error code: 402", "余额不足")),
-    ("rate_limited", "请求触发模型限流，请稍等片刻再重试",
-     ("ratelimiterror", "rate limit", "error code: 429", "too many requests")),
-    ("auth_failed", "API Key 无效或已过期，请在设置中重新配置",
-     ("authenticationerror", "invalid api key", "error code: 401", "unauthorized")),
-    ("connection_failed", "无法连接模型服务，请检查网络或 base_url 配置",
-     ("apiconnectionerror", "connection error", "connect timeout", "name resolution")),
+    (
+        "model_timeout",
+        "模型响应超时，可能是网络波动或服务繁忙，稍后重试通常可恢复",
+        ("apitimeouterror", "timed out", "timeout", "超时"),
+    ),
+    (
+        "quota_exhausted",
+        "模型账户余额不足，请充值后重试",
+        ("insufficient balance", "insufficient_quota", "error code: 402", "余额不足"),
+    ),
+    (
+        "rate_limited",
+        "请求触发模型限流，请稍等片刻再重试",
+        ("ratelimiterror", "rate limit", "error code: 429", "too many requests"),
+    ),
+    (
+        "auth_failed",
+        "API Key 无效或已过期，请在设置中重新配置",
+        ("authenticationerror", "invalid api key", "error code: 401", "unauthorized"),
+    ),
+    (
+        "connection_failed",
+        "无法连接模型服务，请检查网络或 base_url 配置",
+        ("apiconnectionerror", "connection error", "connect timeout", "name resolution"),
+    ),
 )
 
 
@@ -179,7 +219,9 @@ def _error_payload(exc: Exception, *, prefix: str = "") -> dict[str, str]:
     return {"message": message, "code": code, "hint": hint}
 
 
-def _safe_emit(loop: asyncio.AbstractEventLoop, queue: asyncio.Queue, item: tuple[str, Any] | None) -> None:
+def _safe_emit(
+    loop: asyncio.AbstractEventLoop, queue: asyncio.Queue, item: tuple[str, Any] | None
+) -> None:
     """跨线程安全推送 SSE 事件到事件循环的队列。
 
     loop.call_soon_threadsafe 在事件循环已关闭时抛 RuntimeError（进程关闭、
@@ -243,6 +285,7 @@ def analyze(session_id: str, request: AnalyzeRequest) -> dict[str, Any]:
     record.cancel_event.clear()
     record.set_running()
     record.current_task = request.task
+    record.metrics_snapshot = _snapshot_metrics(record.workspace.root)
     try:
         agent = api.DataAnalysisAgent(record.workspace, settings, cancel_event=record.cancel_event)
         result = agent.run(request.task, history=history, resume_from=request.resume_from)
@@ -295,6 +338,7 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
     record.cancel_event.clear()
     record.set_running()
     record.current_task = request.task
+    record.metrics_snapshot = _snapshot_metrics(record.workspace.root)
 
     # 并发槽与 run_lock 的释放必须**幂等**：worker 的 finally 与 SSE 生成器的
     # finally 都可能走到释放逻辑（客户端在 worker.start() 前后断开的时序不同），
@@ -368,13 +412,20 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
                 record.pending_plan = plan_payload.get("plan", [])
                 record.set_awaiting_approval()
                 api.registry.persist(session_id, record)
-                _safe_emit(loop, queue, ("plan_ready", {
-                    "plan": plan_payload.get("plan", []),
-                    "objective": plan_payload.get("objective", ""),
-                    # "fallback" = 模型没给出结构化计划，用的是内置模板；
-                    # 前端据此提示用户，避免"看起来正常但模型没参与"。
-                    "source": plan_payload.get("plan_source", "model"),
-                }))
+                _safe_emit(
+                    loop,
+                    queue,
+                    (
+                        "plan_ready",
+                        {
+                            "plan": plan_payload.get("plan", []),
+                            "objective": plan_payload.get("objective", ""),
+                            # "fallback" = 模型没给出结构化计划，用的是内置模板；
+                            # 前端据此提示用户，避免"看起来正常但模型没参与"。
+                            "source": plan_payload.get("plan_source", "model"),
+                        },
+                    ),
+                )
             else:
                 if final_payload is None:
                     raise RuntimeError("工作流没有返回最终结果。")
@@ -475,9 +526,7 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
                 try:
                     api.registry.persist(session_id, record)
                 except Exception:
-                    logger.exception(
-                        "Failed to persist abort state for session %s", session_id
-                    )
+                    logger.exception("Failed to persist abort state for session %s", session_id)
 
     return StreamingResponse(
         generate(),
@@ -556,7 +605,9 @@ async def chat_stream(session_id: str, request: AnalyzeRequest) -> StreamingResp
             try:
                 api.registry.persist(session_id, record)
             except Exception:
-                logger.exception("Failed to persist cancelled chat state for session %s", session_id)
+                logger.exception(
+                    "Failed to persist cancelled chat state for session %s", session_id
+                )
             _safe_emit(loop, queue, ("cancelled", {"message": "追问已取消。"}))
         except Exception as exc:
             logger.exception("Chat worker failed for session %s", session_id)
@@ -638,7 +689,10 @@ def cancel_analysis(session_id: str) -> dict[str, str]:
     try:
         api.registry.persist(session_id, record)
     except Exception:
-        logger.exception("Failed to persist cancelling status for %s — may show stale state on restart", session_id)
+        logger.exception(
+            "Failed to persist cancelling status for %s — may show stale state on restart",
+            session_id,
+        )
     return {"status": "cancelling"}
 
 
@@ -677,7 +731,10 @@ def replay_analysis(session_id: str) -> dict[str, Any]:
         replay = replay_recipe(record.workspace, recipe, tools)
         report = replay_report_markdown(replay)
         facts = extract_facts(
-            [{"type": "tool_result", "name": item["name"], "detail": item.get("detail")} for item in replay["calls"]]
+            [
+                {"type": "tool_result", "name": item["name"], "detail": item.get("detail")}
+                for item in replay["calls"]
+            ]
         )
         appendix = render_facts_markdown(facts)
         if appendix:
@@ -725,11 +782,36 @@ def download_report_docx(session_id: str) -> Response:
     record = api.registry.get(session_id)
     if record.last_result is None:
         raise HTTPException(status_code=404, detail="当前会话还没有分析报告。")
-    payload = build_docx("数据分析报告", record.last_result.response, _chart_images(record.workspace))
+    payload = build_docx(
+        "数据分析报告", record.last_result.response, _chart_images(record.workspace)
+    )
     return Response(
         content=payload,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         headers={"Content-Disposition": 'attachment; filename="analysis-report.docx"'},
+    )
+
+
+@router.get("/api/sessions/{session_id}/report.pdf")
+def download_report_pdf(session_id: str) -> Response:
+    from data_agent import api
+    from data_agent.report_export import build_pdf
+
+    record = api.registry.get(session_id)
+    if record.last_result is None:
+        raise HTTPException(status_code=404, detail="当前会话还没有分析报告。")
+    try:
+        payload = build_pdf(
+            "数据分析报告", record.last_result.response, _chart_images(record.workspace)
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 — 版式/字体异常的兜底，避免裸 500
+        raise HTTPException(status_code=500, detail=f"PDF 生成失败：{str(exc)[:200]}") from exc
+    return Response(
+        content=payload,
+        media_type="application/pdf",
+        headers={"Content-Disposition": 'attachment; filename="analysis-report.pdf"'},
     )
 
 
@@ -741,7 +823,9 @@ def download_report_pptx(session_id: str) -> Response:
     record = api.registry.get(session_id)
     if record.last_result is None:
         raise HTTPException(status_code=404, detail="当前会话还没有分析报告。")
-    payload = build_pptx("数据分析报告", record.last_result.response, _chart_images(record.workspace))
+    payload = build_pptx(
+        "数据分析报告", record.last_result.response, _chart_images(record.workspace)
+    )
     return Response(
         content=payload,
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",

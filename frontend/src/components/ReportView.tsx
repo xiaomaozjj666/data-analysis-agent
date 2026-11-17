@@ -552,7 +552,7 @@ const ReportView = React.memo(function ReportView({
     }
   }, [sessionId, provenanceBusy]);
 
-  const exportOffice = useCallback(async (kind: "docx" | "pptx") => {
+  const exportOffice = useCallback(async (kind: "docx" | "pptx" | "pdf") => {
     if (!sessionId) return;
     try {
       const response = await fetch(`${API_URL}/api/sessions/${sessionId}/report.${kind}`, {
@@ -569,7 +569,8 @@ const ReportView = React.memo(function ReportView({
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = kind === "docx" ? "分析报告.docx" : "分析汇报.pptx";
+      a.download =
+        kind === "docx" ? "分析报告.docx" : kind === "pptx" ? "分析汇报.pptx" : "分析报告.pdf";
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -680,6 +681,9 @@ const ReportView = React.memo(function ReportView({
                     </button>
                     <button type="button" role="menuitem" className="export-item" onClick={() => void exportOffice("pptx")}>
                       <FileSpreadsheet size={13} />PPT (.pptx)
+                    </button>
+                    <button type="button" role="menuitem" className="export-item" onClick={() => void exportOffice("pdf")}>
+                      <FileText size={13} />PDF (.pdf)
                     </button>
                   </>
                 )}

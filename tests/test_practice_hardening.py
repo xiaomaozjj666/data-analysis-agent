@@ -45,7 +45,9 @@ def test_ttest_ind_compares_two_groups_not_two_columns():
     grouped = run_statistical_analysis(frame, "ttest_ind", group_by="region", target="sales")
     assert grouped["comparison"] == "two_groups"
     assert grouped["p_value"] < 0.05
-    series = run_statistical_analysis(frame.assign(other=frame["sales"] + 1), "ttest_ind", columns=["sales", "other"])
+    series = run_statistical_analysis(
+        frame.assign(other=frame["sales"] + 1), "ttest_ind", columns=["sales", "other"]
+    )
     assert series["comparison"] == "two_series"
     assert "不是" in series["note"]
 
@@ -66,7 +68,9 @@ def test_correlation_includes_bonferroni():
 
 def test_rolling_and_pct_change():
     frame = pd.DataFrame({"sales": [10.0, 20.0, 30.0, 40.0]})
-    rolled = run_statistical_analysis(frame, "rolling", columns=["sales"], window=2, aggregation="mean")
+    rolled = run_statistical_analysis(
+        frame, "rolling", columns=["sales"], window=2, aggregation="mean"
+    )
     assert rolled["window"] == 2
     changed = run_statistical_analysis(frame, "pct_change", columns=["sales"], periods=1)
     assert changed["periods"] == 1
@@ -102,7 +106,9 @@ def test_compute_registered_metrics_tool(tmp_path):
 
 
 def test_query_database_on_csv_session(workspace):
-    payload = json.loads(_tools(workspace)["query_database"].invoke({"sql": "SELECT COUNT(*) AS n FROM data"}))
+    payload = json.loads(
+        _tools(workspace)["query_database"].invoke({"sql": "SELECT COUNT(*) AS n FROM data"})
+    )
     assert payload["row_count"] == 1
     empty = json.loads(_tools(workspace)["query_database"].invoke({"sql": ""}))
     assert empty["tables"][0]["table"] == "data"
@@ -127,7 +133,13 @@ def test_mask_sample_records_keeps_row_count():
 
 def test_facts_appendix_from_tool_trace():
     facts = extract_facts(
-        [{"type": "tool_result", "name": "statistical_analysis", "detail": json.dumps({"p_value": 0.01, "sample_size": 12})}]
+        [
+            {
+                "type": "tool_result",
+                "name": "statistical_analysis",
+                "detail": json.dumps({"p_value": 0.01, "sample_size": 12}),
+            }
+        ]
     )
     text = render_facts_markdown(facts)
     assert "0.01" in text
@@ -143,7 +155,12 @@ def test_recipe_replay_invokes_inspect(tmp_path):
         task="检查",
         plan=[],
         completed_steps=[
-            {"id": "inspect", "title": "检查", "status": "ok", "tool_calls": [{"name": "inspect_data", "args": {"sample_rows": 2}}]}
+            {
+                "id": "inspect",
+                "title": "检查",
+                "status": "ok",
+                "tool_calls": [{"name": "inspect_data", "args": {"sample_rows": 2}}],
+            }
         ],
         fingerprint={"rows": 3, "columns": ["sales"]},
     )
@@ -167,7 +184,12 @@ def test_replay_endpoint_generates_downloadable_verification(tmp_path, monkeypat
             task="检查",
             plan=[],
             completed_steps=[
-                {"id": "inspect", "title": "检查", "status": "ok", "tool_calls": [{"name": "inspect_data", "args": {"sample_rows": 2}}]}
+                {
+                    "id": "inspect",
+                    "title": "检查",
+                    "status": "ok",
+                    "tool_calls": [{"name": "inspect_data", "args": {"sample_rows": 2}}],
+                }
             ],
             fingerprint={"rows": 3, "columns": ["sales"]},
         ),
@@ -182,9 +204,16 @@ def test_replay_endpoint_generates_downloadable_verification(tmp_path, monkeypat
     assert response.status_code == 200
     assert "结论核验" in response.json()["response"]
     assert "verification" in {item["kind"] for item in response.json()["artifacts"]}
-    saved = json.loads((workspace.artifacts_dir / "report-verification.json").read_text(encoding="utf-8"))
+    saved = json.loads(
+        (workspace.artifacts_dir / "report-verification.json").read_text(encoding="utf-8")
+    )
     assert saved["summary"]["total"] >= 1
-    assert TestClient(api_module.app).get("/api/sessions/replay-proof/artifacts/report-verification.json").status_code == 200
+    assert (
+        TestClient(api_module.app)
+        .get("/api/sessions/replay-proof/artifacts/report-verification.json")
+        .status_code
+        == 200
+    )
 
 
 def test_office_export_bytes_are_zip_packages():
@@ -193,6 +222,16 @@ def test_office_export_bytes_are_zip_packages():
     pptx = build_pptx("测试报告", markdown)
     assert docx[:2] == b"PK"
     assert pptx[:2] == b"PK"
+
+
+def test_pdf_export_produces_pdf_bytes():
+    pytest.importorskip("reportlab")
+    from data_agent.report_export import build_pdf
+
+    markdown = "## 结论速览\n- 收入上升\n\n## 注意事项与建议\n- 核对口径"
+    payload = build_pdf("测试报告", markdown)
+    assert payload.startswith(b"%PDF")
+    assert len(payload) > 1000
 
 
 def test_read_default_table_caps_large_sqlite(tmp_path, monkeypatch):
@@ -242,6 +281,10 @@ def test_report_export_endpoints(tmp_path, monkeypatch):
     assert pptx.status_code == 200
     assert docx.content[:2] == b"PK"
     assert pptx.content[:2] == b"PK"
+    if pytest.importorskip("reportlab"):
+        pdf = client.get("/api/sessions/exp/report.pdf")
+        assert pdf.status_code == 200
+        assert pdf.content.startswith(b"%PDF")
     missing = client.post("/api/sessions/exp/replay")
     assert missing.status_code == 404
 
@@ -521,10 +564,10 @@ def test_validate_select_semicolon_guard_and_quoted_semicolons():
     with pytest.raises(ValueError, match="单条"):
         validate_select("SELECT 1; SELECT 2")
     with pytest.raises(ValueError, match="单条"):
-        validate_select("SELECT 'a\\\'b'; DROP TABLE t")
+        validate_select("SELECT 'a\\'b'; DROP TABLE t")
     assert validate_select("SELECT ';' AS s") == "SELECT ';' AS s"
     assert validate_select('SELECT "a;b" AS x') == 'SELECT "a;b" AS x'
-    assert validate_select("SELECT 'a\\\'b' AS x") == "SELECT 'a\\\'b' AS x"
+    assert validate_select("SELECT 'a\\'b' AS x") == "SELECT 'a\\'b' AS x"
 
 
 def test_to_json_safe_renders_custom_driver_types():
@@ -537,3 +580,62 @@ def test_to_json_safe_renders_custom_driver_types():
     assert to_json_safe(datetime(2024, 1, 1, 12, 0)) == "2024-01-01 12:00:00"
     assert to_json_safe(Decimal("1.5")) == "1.5"
     assert to_json_safe(b"\x00\x01") == "<blob:2 bytes>"
+
+
+def test_pdf_handles_tall_image(tmp_path):
+    """超长图不能把整份 PDF 撑爆（reportlab LayoutError）。"""
+    pytest.importorskip("reportlab")
+    pytest.importorskip("PIL")
+    from PIL import Image as PILImage
+
+    from data_agent.report_export import build_pdf
+
+    path = tmp_path / "tall.png"
+    PILImage.new("RGB", (200, 4000), "white").save(path)
+    payload = build_pdf("测试报告", "## 结论\n- 含超长图", [path])
+    assert payload.startswith(b"%PDF")
+
+
+def test_sections_ignore_headings_inside_code_fence():
+    from data_agent.report_export import _sections
+
+    markdown = "## 结论\n正文\n```\n## 不是标题\n```\n## 建议\n- ok"
+    titles = [title for title, _ in _sections(markdown)]
+    assert titles == ["结论", "建议"]
+
+
+def test_pdf_covers_bullet_heading_and_blank_lines(tmp_path):
+    """PDF 渲染覆盖列表、子标题与空行分支。"""
+    pytest.importorskip("reportlab")
+    from data_agent.report_export import build_pdf
+
+    markdown = "## 结论\n\n- 第一条\n* 第二条\n### 子标题\n普通段落\n"
+    payload = build_pdf("测试报告", markdown)
+    assert payload.startswith(b"%PDF")
+
+
+def test_pdf_skips_non_image_and_broken_image(tmp_path):
+    """非图片与坏图不应中断整份导出。"""
+    pytest.importorskip("reportlab")
+    from data_agent.report_export import build_pdf
+
+    text_file = tmp_path / "note.txt"
+    text_file.write_text("not an image", encoding="utf-8")
+    broken = tmp_path / "broken.png"
+    broken.write_bytes(b"not a real png")
+    payload = build_pdf("测试报告", "## 结论\n- ok", [text_file, broken])
+    assert payload.startswith(b"%PDF")
+
+
+def test_sections_handles_blank_chunks():
+    from data_agent.report_export import _sections
+
+    assert _sections("   \n\n") == []
+    assert _sections("## \n\n## 标题\n内容")[0][0] == "报告"
+
+
+def test_sections_skips_leading_blank_chunk():
+    from data_agent.report_export import _sections
+
+    titles = [title for title, _ in _sections("   \n## 第一节\n正文")]
+    assert titles == ["第一节"]

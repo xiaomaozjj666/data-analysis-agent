@@ -35,7 +35,7 @@ import pandas as pd
 import plotly.express as px
 from langchain_core.tools import BaseTool, tool
 
-from data_agent import postgres_source, sqlite_source
+from data_agent import data_sources, sqlite_source
 from data_agent.chart_sampling import (
     _EMBED_MAX_POINTS,
     sample_plotly_figure_for_embed,
@@ -144,7 +144,16 @@ def _apply_plotly_nice_ticks(
     try:
         axis_ranges = scale_details.get("axis_ranges", {}) or {}
         # Y 轴（数值型图表都有，scatter_3d 的 y 轴也需要 nice ticks）
-        if y and chart_type in {"bar", "line", "area", "scatter", "scatter_3d", "histogram", "box", "violin"}:
+        if y and chart_type in {
+            "bar",
+            "line",
+            "area",
+            "scatter",
+            "scatter_3d",
+            "histogram",
+            "box",
+            "violin",
+        }:
             y_range = axis_ranges.get("y")
             if y_range:
                 vmin, vmax = float(y_range[0]), float(y_range[1])
@@ -243,7 +252,9 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         drop_duplicates: bool = True,
         trim_strings: bool = True,
         normalize_column_names: bool = False,
-        missing_strategy: Literal["none", "drop", "mean", "median", "mode", "forward_fill", "backward_fill"] = "none",
+        missing_strategy: Literal[
+            "none", "drop", "mean", "median", "mode", "forward_fill", "backward_fill"
+        ] = "none",
         parse_numeric: bool = False,
         datetime_columns: list[str] | None = None,
         outlier_method: Literal["none", "iqr", "zscore"] = "none",
@@ -268,11 +279,17 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             dataset never collapses to a meaningless sample.
         """
         df = workspace.dataframe.copy()
-        before = {"rows": len(df), "columns": len(df.columns), "missing": int(df.isna().sum().sum())}
+        before = {
+            "rows": len(df),
+            "columns": len(df.columns),
+            "missing": int(df.isna().sum().sum()),
+        }
         changes: list[str] = []
 
         if normalize_column_names:
-            df, columns, datetime_columns, changed = _normalize_column_names(df, columns, datetime_columns)
+            df, columns, datetime_columns, changed = _normalize_column_names(
+                df, columns, datetime_columns
+            )
             if changed:
                 changes.append("normalized column names")
 
@@ -316,7 +333,9 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         workspace.dataframe = df.reset_index(drop=True)
         output = workspace.save_dataframe("cleaned_data.csv")
         after = {"rows": len(df), "columns": len(df.columns), "missing": int(df.isna().sum().sum())}
-        return json_text({"status": "ok", "before": before, "after": after, "changes": changes, "output": output})
+        return json_text(
+            {"status": "ok", "before": before, "after": after, "changes": changes, "output": output}
+        )
 
     @tool
     def transform_data(
@@ -341,7 +360,9 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                 raise ValueError("使用筛选时 filter_value 不能为空。")
             series = df[filter_column]
             if filter_operator == "contains":
-                mask = series.astype("string").str.contains(str(filter_value), case=False, na=False, regex=False)
+                mask = series.astype("string").str.contains(
+                    str(filter_value), case=False, na=False, regex=False
+                )
             elif filter_operator == "in":
                 if not isinstance(filter_value, list):
                     raise ValueError("in 操作需要列表类型 filter_value。")
@@ -498,7 +519,23 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
 
     @tool
     def create_visualization(
-        chart_type: Literal["auto", "bar", "line", "area", "scatter", "scatter_3d", "histogram", "box", "violin", "pie", "heatmap", "correlation_heatmap", "scatter_matrix", "sunburst", "treemap"] = "auto",
+        chart_type: Literal[
+            "auto",
+            "bar",
+            "line",
+            "area",
+            "scatter",
+            "scatter_3d",
+            "histogram",
+            "box",
+            "violin",
+            "pie",
+            "heatmap",
+            "correlation_heatmap",
+            "scatter_matrix",
+            "sunburst",
+            "treemap",
+        ] = "auto",
         x: str | None = None,
         y: str | None = None,
         color: str | None = None,
@@ -569,9 +606,17 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         was_auto = chart_type == "auto"
         if was_auto:
             chart_type = _infer_chart_type(
-                _raw_df, x=x, y=y, color=color, z=z, size=size,
-                values=values, path_columns=path_columns, dimensions=dimensions,
-                aggregation=aggregation, top_n=top_n,
+                _raw_df,
+                x=x,
+                y=y,
+                color=color,
+                z=z,
+                size=size,
+                values=values,
+                path_columns=path_columns,
+                dimensions=dimensions,
+                aggregation=aggregation,
+                top_n=top_n,
             )
             # 纯分类计数场景（仅给 x、无 y）：自动用 count 聚合，避免空 series。
             if chart_type == "bar" and y is None and aggregation == "none":
@@ -579,12 +624,7 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             # 没有 color 分组、且 x 含重复类别（如 product×channel 但没传 color）
             # 时，柱图会出现重复类别导致错乱，自动按 x 求和聚合对齐到每类一行。
             # 注：aggregation 仅对 bar/line/area 生效，饼图的重复聚合在下方单独处理。
-            if (
-                chart_type == "bar"
-                and y is not None
-                and aggregation == "none"
-                and not color
-            ):
+            if chart_type == "bar" and y is not None and aggregation == "none" and not color:
                 non_null = _raw_df[x].dropna() if x else pd.Series(dtype=object)
                 if len(non_null) > non_null.nunique():
                     aggregation = "sum"
@@ -599,7 +639,9 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                 if candidate in (x, y):
                     continue
                 candidate_col = _raw_df[candidate]
-                if pd.api.types.is_numeric_dtype(candidate_col) or pd.api.types.is_datetime64_any_dtype(candidate_col):
+                if pd.api.types.is_numeric_dtype(
+                    candidate_col
+                ) or pd.api.types.is_datetime64_any_dtype(candidate_col):
                     continue
                 try:
                     n_unique = int(candidate_col.nunique(dropna=True))
@@ -690,20 +732,35 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         # 避免白跑一次 Plotly 构建（scatter_3d 缺 z 时还会被 Plotly 校验误拦）===
         if chart_engine == "echarts":
             from data_agent.echarts_engine import _render_echarts
-            return json_text(_render_echarts(
-                workspace, df,
-                chart_type=chart_type, x=x, y=y, color=color, z=z, size=size,
-                values=values, path_columns=path_columns, dimensions=dimensions,
-                aggregation=aggregation, title=title, bins=bins,
-                display_title=display_title, stem=stem,
-                chart_type_source="auto" if was_auto else "explicit",
-                export_png=export_png,
-                stacked=stacked,
-            ))
+
+            return json_text(
+                _render_echarts(
+                    workspace,
+                    df,
+                    chart_type=chart_type,
+                    x=x,
+                    y=y,
+                    color=color,
+                    z=z,
+                    size=size,
+                    values=values,
+                    path_columns=path_columns,
+                    dimensions=dimensions,
+                    aggregation=aggregation,
+                    title=title,
+                    bins=bins,
+                    display_title=display_title,
+                    stem=stem,
+                    chart_type_source="auto" if was_auto else "explicit",
+                    export_png=export_png,
+                    stacked=stacked,
+                )
+            )
         # === Plotly 原有渲染逻辑（默认分支，保持不变）===
         # Plotly title 支持 HTML 子集，需 escape 防止 LLM 输出注入 <b>/<i> 等标签
         # 改变样式。与 ECharts 分支的 escape(title) 保持一致。
         from html import escape as _html_escape
+
         common = {
             "data_frame": df,
             "title": _html_escape(display_title),
@@ -717,7 +774,11 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         density_scale: dict[str, Any] | None = None
         if chart_type == "scatter" and x and y:
             density_view, density_scale = _density_view_for(
-                df, x=x, y=y, color=color, scale_mode=scale_mode,
+                df,
+                x=x,
+                y=y,
+                color=color,
+                scale_mode=scale_mode,
             )
         # 统计图（直方图/箱线图）服务端聚合的元信息：只有这两个分支会赋值，
         # 其余图型保持 None（下游据此决定是否追加说明与响应字段）。
@@ -740,7 +801,11 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                         lines.append(f"样本数：{int(row[_SAMPLE_COUNT_COLUMN])}")
                         hover_lines.append("<br>".join(lines))
                     else:
-                        missing_label = "无样本" if aggregation in {"mean", "median", "min", "max"} else "无记录"
+                        missing_label = (
+                            "无样本"
+                            if aggregation in {"mean", "median", "min", "max"}
+                            else "无记录"
+                        )
                         hover_lines.append(f"{x_label_hover}：{row[x]}<br>{missing_label}")
                 df[_HOVER_TEXT_COLUMN] = hover_lines
                 custom_data = [_SAMPLE_COUNT_COLUMN, _HAS_RECORDS_COLUMN, _HOVER_TEXT_COLUMN]
@@ -754,10 +819,15 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         elif chart_type == "scatter":
             if density_view is not None:
                 fig = density_figure(
-                    df, x=x, y=y, color=color, view=density_view,
+                    df,
+                    x=x,
+                    y=y,
+                    color=color,
+                    view=density_view,
                     x_label=labels.get(x, _human_column_label(x)),
                     y_label=labels.get(y, _human_column_label(y)),
-                    title=common["title"], colors=_CHART_COLORS,
+                    title=common["title"],
+                    colors=_CHART_COLORS,
                 )
             else:
                 fig = px.scatter(**common, x=x, y=y, color=color, size=size, trendline=None)
@@ -770,19 +840,31 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             if len(df) > STAT_AGG_THRESHOLD:
                 # 大数据：服务端分箱，纵轴仍是真实记录数（不是抽样估计）
                 binned = _plotly_binned_histogram(
-                    df, x=x, bins=bins, colors=_CHART_COLORS, color=color,
-                    labels=labels, title=common["title"],
+                    df,
+                    x=x,
+                    bins=bins,
+                    colors=_CHART_COLORS,
+                    color=color,
+                    labels=labels,
+                    title=common["title"],
                 )
                 if binned is not None:
                     fig, stat_agg = binned
                     stat_agg["kind"] = "histogram"
             if stat_agg is None:
-                fig = px.histogram(**common, x=x, color=color, nbins=max(2, min(bins, 200)), marginal="box")
+                fig = px.histogram(
+                    **common, x=x, color=color, nbins=max(2, min(bins, 200)), marginal="box"
+                )
         elif chart_type == "box":
             if len(df) > STAT_AGG_THRESHOLD and y:
                 stats_fig = _plotly_box_from_stats(
-                    df, x=x, y=y, colors=_CHART_COLORS, color=color,
-                    labels=labels, title=common["title"],
+                    df,
+                    x=x,
+                    y=y,
+                    colors=_CHART_COLORS,
+                    color=color,
+                    labels=labels,
+                    title=common["title"],
                 )
                 if stats_fig is not None:
                     fig, stat_agg = stats_fig
@@ -804,15 +886,27 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             if not x or not y or not values:
                 raise ValueError("heatmap 需要 x、y、values。")
             pivot = df.pivot_table(index=y, columns=x, values=values, aggfunc="mean")
-            fig = px.imshow(pivot, text_auto=True, aspect="auto", title=title, color_continuous_scale="RdBu_r")
+            fig = px.imshow(
+                pivot, text_auto=True, aspect="auto", title=title, color_continuous_scale="RdBu_r"
+            )
         elif chart_type == "correlation_heatmap":
             numeric = _numeric_columns(df, dimensions)
             corr = df[numeric].corr()
-            fig = px.imshow(corr, text_auto=".2f", aspect="auto", title=title or "Correlation heatmap", color_continuous_scale="RdBu_r", zmin=-1, zmax=1)
+            fig = px.imshow(
+                corr,
+                text_auto=".2f",
+                aspect="auto",
+                title=title or "Correlation heatmap",
+                color_continuous_scale="RdBu_r",
+                zmin=-1,
+                zmax=1,
+            )
         elif chart_type == "scatter_matrix":
             numeric = _numeric_columns(df, dimensions)
             if len(numeric) > _SCATTER_MATRIX_MAX_DIMENSIONS:
-                raise ValueError(f"scatter_matrix 最多支持 {_SCATTER_MATRIX_MAX_DIMENSIONS} 个维度，请缩小 dimensions。")
+                raise ValueError(
+                    f"scatter_matrix 最多支持 {_SCATTER_MATRIX_MAX_DIMENSIONS} 个维度，请缩小 dimensions。"
+                )
             # SPLOM 降采样：N 维 × M 行产生 N² 个子图，每个 trace 含全量 M 行。
             # 8 维 10 万行 = 64 个 trace × 10 万点 = 640 万点负载，浏览器会卡死。
             # 与 ECharts SPLOM 的 400 行抽样保持一致，超过则均匀抽样。
@@ -837,7 +931,7 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         if density_view is not None:
             # 密度图：视口范围在聚合前已按"主体尺度"确定，网格只覆盖该范围，
             # 不能再交给 _apply_outlier_scale_controls 追加"全量视图"按钮
-            #（网格没有覆盖范围外的数据，切过去只会看到角落一小块）。
+            # （网格没有覆盖范围外的数据，切过去只会看到角落一小块）。
             scale_details = density_scale
         else:
             scale_details = _apply_outlier_scale_controls(fig, chart_type, scale_mode)
@@ -912,7 +1006,11 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         # 若 _apply_outlier_scale_controls 已设置范围，优先用其范围计算 nice ticks。
         _apply_plotly_nice_ticks(fig, chart_type, x, y, scale_details)
         if chart_type == "bar":
-            fig.update_traces(marker_line_color="rgba(16,42,42,0.16)", marker_line_width=0.8, selector={"type": "bar"})
+            fig.update_traces(
+                marker_line_color="rgba(16,42,42,0.16)",
+                marker_line_width=0.8,
+                selector={"type": "bar"},
+            )
             if aggregation != "none" and _HOVER_TEXT_COLUMN in df.columns:
                 # 用预计算的 hover 文本（customdata[2]），避免无记录 bar 显示 nan。
                 # customdata 结构：[sample_count, has_records, hover_text]
@@ -924,8 +1022,9 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                 fig.update_xaxes(categoryorder="total descending")
             # 堆叠柱（stacked=True）与分组柱：Plotly 用 barmode 表达，
             # 与 ECharts 分支的 series.stack 语义一致。
-            fig.update_layout(bargap=0.26, bargroupgap=0.08,
-                              barmode="stack" if stacked else "group")
+            fig.update_layout(
+                bargap=0.26, bargroupgap=0.08, barmode="stack" if stacked else "group"
+            )
         elif chart_type == "scatter" and density_view is None:
             # 点径与透明度随点数分档（与 ECharts 分支同一张表，见 scatter_point_style）：
             # 固定 9px/0.82 在几千点以上就会糊成一团实心色块，分组色互相覆盖，
@@ -956,24 +1055,32 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                     r_value = structure.get("r")
                     if trend:
                         trend_name = f"趋势线 r={r_value:.2f}" if r_value is not None else "趋势线"
-                        fig.add_trace(go.Scatter(
-                            x=[trend[0], trend[2]], y=[trend[1], trend[3]],
-                            mode="lines", name=trend_name,
-                            line={"color": "#E15759", "width": 2.5},
-                            hoverinfo="skip",
-                        ))
+                        fig.add_trace(
+                            go.Scatter(
+                                x=[trend[0], trend[2]],
+                                y=[trend[1], trend[3]],
+                                mode="lines",
+                                name=trend_name,
+                                line={"color": "#E15759", "width": 2.5},
+                                hoverinfo="skip",
+                            )
+                        )
                     if structure.get("mean_y") is not None:
                         fig.add_hline(
-                            y=structure["mean_y"], line_dash="dash",
-                            line_color="#9aa0a6", line_width=1.2,
+                            y=structure["mean_y"],
+                            line_dash="dash",
+                            line_color="#9aa0a6",
+                            line_width=1.2,
                             annotation_text=f"y 均值 {structure['mean_y']:,.1f}",
                             annotation_position="top right",
                             annotation_font={"size": 10, "color": "#6b7280"},
                         )
                     if structure.get("mean_x") is not None:
                         fig.add_vline(
-                            x=structure["mean_x"], line_dash="dash",
-                            line_color="#9aa0a6", line_width=1.2,
+                            x=structure["mean_x"],
+                            line_dash="dash",
+                            line_color="#9aa0a6",
+                            line_width=1.2,
                             annotation_text=f"x 均值 {structure['mean_x']:,.1f}",
                             annotation_position="top right",
                             annotation_font={"size": 10, "color": "#6b7280"},
@@ -986,12 +1093,18 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             finalize_density_layout(fig, density_view)
         html_path = workspace.artifacts_dir / f"{stem}.html"
         shared_plotly = workspace.ensure_plotly_bundle()
-        relative_script = shared_plotly.relative_to(workspace.artifacts_dir).as_posix() if shared_plotly else None
+        relative_script = (
+            shared_plotly.relative_to(workspace.artifacts_dir).as_posix() if shared_plotly else None
+        )
         # Plotly 白话解读：与 ECharts _auto_interpret 语义对齐。密度图的解读
         # 换了编码语义（颜色读记录数、没有可框选的离散点），单独生成。
         if density_view is not None:
             interpretation = density_interpretation(
-                df, view=density_view, x=x, y=y, color=color,
+                df,
+                view=density_view,
+                x=x,
+                y=y,
+                color=color,
                 title=display_title,
                 x_label=labels.get(x, _human_column_label(x)),
                 y_label=labels.get(y, _human_column_label(y)),
@@ -1005,15 +1118,22 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                 )
         else:
             interpretation = _plotly_auto_interpret(
-                df, chart_type=chart_type, x=x, y=y, color=color,
-                aggregation=aggregation, title=display_title,
+                df,
+                chart_type=chart_type,
+                x=x,
+                y=y,
+                color=color,
+                aggregation=aggregation,
+                title=display_title,
             )
             if stat_agg is not None:
                 interpretation += _stat_agg_note(stat_agg)
             if (
                 chart_type == "scatter"
                 and density_view is None
-                and x and y and should_use_density(len(df))
+                and x
+                and y
+                and should_use_density(len(df))
             ):
                 # 密度视图只适用于"数值 × 数值"（阈值与密度视图一致：本该走
                 # 密度的那批数据，因为横轴是类别而退回逐点渲染）。这里不擅自
@@ -1034,7 +1154,11 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         # 解析、tab 内存却随点数线性增长）。完整数据不丢：全量 figure 仍写入
         # .plotly.json 产物。3D 散点（scatter3d 走 gl3d）此前不在名单里，
         # 30 万行时 HTML 要带 90 万个数字，是个漏掉的口子。
-        if chart_type in {"scatter", "scatter_3d", "line"} and len(df) > _EMBED_MAX_POINTS and density_view is None:
+        if (
+            chart_type in {"scatter", "scatter_3d", "line"}
+            and len(df) > _EMBED_MAX_POINTS
+            and density_view is None
+        ):
             sampled_dict, original_pts, embedded_pts = sample_plotly_figure_for_embed(
                 json.loads(fig_json_text), _EMBED_MAX_POINTS
             )
@@ -1054,8 +1178,8 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             interpretation_block = (
                 '<div class="plotly-interpretation">'
                 '<div class="plotly-interpretation-title">数据解读</div>'
-                f'{escape(interpretation)}'
-                '</div>'
+                f"{escape(interpretation)}"
+                "</div>"
             )
         if relative_script is not None:
             div = html_fig.to_html(
@@ -1160,9 +1284,13 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         return json_text(response)
 
     @tool
-    def export_data(format: Literal["csv", "xlsx", "parquet"] = "csv", filename: str = "analysis_result") -> str:
+    def export_data(
+        format: Literal["csv", "xlsx", "parquet"] = "csv", filename: str = "analysis_result"
+    ) -> str:
         """Export the current active dataset as CSV, Excel or Parquet and register the artifact."""
-        safe_stem = re.sub(r"[^\w\-\u4e00-\u9fff]", "_", Path(filename).stem)[:60] or "analysis_result"
+        safe_stem = (
+            re.sub(r"[^\w\-\u4e00-\u9fff]", "_", Path(filename).stem)[:60] or "analysis_result"
+        )
         path = workspace.save_dataframe(f"{safe_stem}.{format}")
         return json_text({"status": "ok", "rows": len(workspace.dataframe), "output": path})
 
@@ -1278,12 +1406,10 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             SQLite interrupts via progress handler, Postgres via statement_timeout.
           - At most 5000 rows and 500 columns per result.
         """
-        if source == "postgres":
-            driver = postgres_source
-            connection = driver.connect_readonly()
-            source_label = "postgres（环境变量配置的连接）"
-        elif source == "session":
-            database_path = sqlite_source.resolve_session_source(workspace.source_path, workspace.input_dir)
+        if source == "session":
+            database_path = sqlite_source.resolve_session_source(
+                workspace.source_path, workspace.input_dir
+            )
             if database_path is None:
                 driver = sqlite_source
                 connection = connect_from_frame(workspace.dataframe)
@@ -1293,10 +1419,9 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                 connection = driver.connect_readonly(database_path)
                 source_label = database_path.name
         else:
-            raise ValueError(
-                f"未知的 source「{source}」。可用值：session（会话内 SQLite 文件）、"
-                "postgres（由 DATA_AGENT_DATABASE_URL 配置的连接）。"
-            )
+            # 外部数据源统一走注册表：新增驱动只需在 data_sources 登记，
+            # 不必在工具、MCP、发现结果里各写一份分派。
+            driver, connection, source_label = data_sources.open_external(source)
         try:
             if not (sql or "").strip():
                 if source_label.startswith("活动数据集"):
@@ -1320,6 +1445,10 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                             }
                             for item in summary["tables"]
                         ],
+                        "available_sources": [
+                            item.name for item in data_sources.describe_sources() if item.configured
+                        ],
+                        "sources": [item.to_dict() for item in data_sources.describe_sources()],
                         "message": (
                             "先据此选择要查的表，再传 sql 查询；"
                             "需要把结果作为新的活动数据集时传 adopt=true。"

@@ -284,7 +284,9 @@ def test_record_provenance_failure_does_not_raise(tmp_path, monkeypatch):
     )
     result = SimpleNamespace(response=response, trace=[], artifacts=[])
     monkeypatch.setattr(
-        provenance, "record_analysis", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk"))
+        provenance,
+        "record_analysis",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk")),
     )
     _record_provenance(record, result, SimpleNamespace(provider="p", model="m"), task="t")
 
@@ -380,3 +382,93 @@ def test_provenance_endpoints(tmp_path, monkeypatch):
     document = exported.json()
     assert document["verification"]["ok"] is True
     assert document["summary"]["report_sha256"] == body["summary"]["report_sha256"]
+
+
+def test_metrics_definition_hashed_into_chain(tmp_path):
+    """指标口径文件入链：条目数 +1，篡改会被复核抓到。"""
+    workspace, response = _session_root(tmp_path)
+    metrics = workspace.root / "metrics.json"
+    metrics.write_text(
+        '{"metrics": [{"name": "净销售额", "description": "扣退货", "expression": "sales"}]}',
+        encoding="utf-8",
+    )
+    summary = _record(workspace, response, metrics_path=metrics)
+    assert summary["entries"] == 7  # meta + dataset + metrics + 2 tools + artifact + report
+
+    result = provenance.verify(workspace.root)
+    assert result["ok"] is True
+
+    metrics.write_text('{"metrics": []}', encoding="utf-8")
+    tampered = provenance.verify(workspace.root)
+    assert tampered["ok"] is False
+    assert any("指标定义哈希不匹配" in error for error in tampered["errors"])
+
+
+def test_missing_metrics_file_does_not_add_entry(tmp_path):
+    """路径指向不存在的文件时不写空条目，链长度保持原样。"""
+    workspace, response = _session_root(tmp_path)
+    summary = _record(workspace, response, metrics_path=workspace.root / "absent.json")
+    assert summary["entries"] == 6
+
+
+def test_metrics_snapshot_records_start_digest(tmp_path):
+    """分析开始前固定的口径快照优先于结束时的文件内容。"""
+    import hashlib
+
+    workspace, response = _session_root(tmp_path)
+    metrics = workspace.root / "metrics.json"
+    metrics.write_text(
+        '{"metrics": [{"name": "净销售额", "description": "扣退货", "expression": "sales"}]}',
+        encoding="utf-8",
+    )
+    raw = metrics.read_bytes()
+    snapshot = {
+        "name": metrics.name,
+        "path": str(metrics),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "size": len(raw),
+    }
+    summary = _record(workspace, response, metrics_snapshot=snapshot)
+    assert summary["entries"] == 7
+    assert provenance.verify(workspace.root)["ok"] is True
+
+    # 分析结束后文件被改：链上记录的是开始时的版本，复核应当报不一致。
+    metrics.write_text('{"metrics": []}', encoding="utf-8")
+    result = provenance.verify(workspace.root)
+    assert result["ok"] is False
+    assert any("指标定义哈希不匹配" in error for error in result["errors"])
+
+
+def test_metrics_path_external_fallback(tmp_path):
+    """没有开始快照时仍按 metrics_path 记录（外部文件走 external）。"""
+    workspace, response = _session_root(tmp_path)
+    external = tmp_path / "external-metrics.json"
+    external.write_text(
+        '{"metrics": [{"name": "净销售额", "description": "d", "expression": "sales"}]}',
+        encoding="utf-8",
+    )
+    summary = _record(workspace, response, metrics_path=external)
+    assert summary["entries"] == 7
+    result = provenance.verify(workspace.root)
+    assert result["ok"] is True
+
+
+def test_verify_reports_missing_metrics_file(tmp_path):
+    import hashlib
+
+    workspace, response = _session_root(tmp_path)
+    metrics = workspace.root / "metrics.json"
+    metrics.write_text('{"metrics": []}', encoding="utf-8")
+    raw = metrics.read_bytes()
+    snapshot = {
+        "name": metrics.name,
+        "path": str(metrics),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "size": len(raw),
+    }
+    _record(workspace, response, metrics_snapshot=snapshot)
+    metrics.unlink()
+    result = provenance.verify(workspace.root)
+    assert result["ok"] is False
+    assert any("指标定义文件缺失" in error for error in result["errors"])
+

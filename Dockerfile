@@ -19,7 +19,9 @@ WORKDIR /app
 # Install Python deps（必须先有 src/ 与 README，否则 pip install . 装不到包）
 COPY pyproject.toml README.md ./
 COPY src/ ./src/
-RUN pip install --no-cache-dir .
+# reportlab 是服务端 PDF 导出（report.pdf）的运行时依赖；当前 pyproject 只把它
+# 放在 dev extras，部署时显式安装，避免导出接口开箱 503。
+RUN pip install --no-cache-dir . "reportlab>=5.1,<6"
 
 # Copy built frontend from builder stage
 COPY --from=frontend /build/frontend/dist/ ./frontend/dist/

@@ -82,6 +82,8 @@ def record_analysis(
     trace: list[dict[str, Any]] | None = None,
     artifacts: list[dict[str, Any]] | None = None,
     dataset_path: str | Path | None = None,
+    metrics_path: str | Path | None = None,
+    metrics_snapshot: dict[str, Any] | None = None,
     provider: str = "",
     model: str = "",
     code_version: str = "",
@@ -130,6 +132,36 @@ def record_analysis(
                 data["external"] = True
                 data["path"] = str(dataset.resolve())
             add("dataset", dataset.name, data)
+
+    # 指标口径文件也入链：口径本身是结论的一部分，事后必须能回答"这次用的是
+    # 哪一版定义"。文件不存在/未登记时不写条目，保持既有链长度不变。
+    if metrics_snapshot:
+        # 调用方在分析**开始前**固定了路径、大小与哈希：避免分析期间有人改
+        # metrics.json 时，链上记录的口径与本次实际使用的不一致。
+        snapshot_path = Path(str(metrics_snapshot.get("path") or ""))
+        data = {
+            "sha256": str(metrics_snapshot.get("sha256") or ""),
+            "size": int(metrics_snapshot.get("size") or 0),
+        }
+        relative = _relative_to_root(snapshot_path, base) if snapshot_path else None
+        if relative is not None:
+            data["path"] = relative
+        else:
+            data["external"] = True
+            data["path"] = str(snapshot_path.resolve()) if snapshot_path else ""
+        name = str(metrics_snapshot.get("name") or snapshot_path.name or "metrics.json")
+        add("metrics", name, data)
+    elif metrics_path:
+        metrics_file = Path(metrics_path)
+        if metrics_file.is_file():
+            data = {"sha256": sha256_file(metrics_file), "size": metrics_file.stat().st_size}
+            relative = _relative_to_root(metrics_file, base)
+            if relative is not None:
+                data["path"] = relative
+            else:
+                data["external"] = True
+                data["path"] = str(metrics_file.resolve())
+            add("metrics", metrics_file.name, data)
 
     tool_calls = 0
     for item in trace or []:
@@ -291,6 +323,16 @@ def verify(root: str | Path) -> dict[str, Any]:
                 errors.append(f"数据集文件缺失：{name}")
             elif sha256_file(dataset) != data.get("sha256"):
                 errors.append(f"数据集哈希不匹配：{name}")
+        elif entry.get("type") == "metrics":
+            data = entry.get("data", {})
+            relative = data.get("path")
+            if not relative:
+                continue
+            metrics_file = Path(str(relative)) if data.get("external") else base / str(relative)
+            if not metrics_file.is_file():
+                errors.append(f"指标定义文件缺失：{relative}")
+            elif sha256_file(metrics_file) != data.get("sha256"):
+                errors.append(f"指标定义哈希不匹配：{relative}")
         elif entry.get("type") == "artifact":
             data = entry.get("data", {})
             relative = data.get("path")

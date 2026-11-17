@@ -1,4 +1,4 @@
-"""从分析报告 Markdown 生成 Word / PPT，供业务转发。"""
+"""从分析报告 Markdown 生成 Word / PPT / PDF，供业务转发。"""
 
 from __future__ import annotations
 
@@ -14,16 +14,30 @@ from pptx.util import Pt as PptPt
 
 
 def _sections(markdown: str) -> list[tuple[str, str]]:
+    """按 ``## `` 切分章节；围栏代码块里的 ``## `` 不当作标题。
+
+    报告会把工具原始输出放进代码围栏，输出里一旦出现 ``## ``，旧实现
+    会把它误切成一节，Word/PPT/PDF 三种导出都受影响。
+    """
     text = (markdown or "").strip()
     if not text:
         return []
-    parts = re.split(r"\n(?=## )", text)
+    parts: list[list[str]] = [[]]
+    in_fence = False
+    for line in text.splitlines():
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+        if not in_fence and line.startswith("## ") and parts[-1]:
+            parts.append([])
+        parts[-1].append(line)
     sections: list[tuple[str, str]] = []
-    for part in parts:
-        lines = part.strip().splitlines()
+    for lines in parts:
         if not lines:
             continue
-        title = re.sub(r"^#+\s*", "", lines[0]).strip() or "报告"
+        stripped = [line for line in lines if line.strip()]
+        if not stripped:
+            continue
+        title = re.sub(r"^#+\s*", "", stripped[0]).strip() or "报告"
         body = "\n".join(lines[1:]).strip()
         sections.append((title, body))
     return sections
@@ -49,7 +63,11 @@ def build_docx(title: str, markdown: str, chart_paths: list[Path] | None = None)
 
 def build_pptx(title: str, markdown: str, chart_paths: list[Path] | None = None) -> bytes:
     presentation = Presentation()
-    blank = presentation.slide_layouts[6] if len(presentation.slide_layouts) > 6 else presentation.slide_layouts[0]
+    blank = (
+        presentation.slide_layouts[6]
+        if len(presentation.slide_layouts) > 6
+        else presentation.slide_layouts[0]
+    )
     title_layout = presentation.slide_layouts[0]
     title_slide = presentation.slides.add_slide(title_layout)
     title_slide.shapes.title.text = title or "数据分析报告"
@@ -80,4 +98,109 @@ def build_pptx(title: str, markdown: str, chart_paths: list[Path] | None = None)
 
     buffer = io.BytesIO()
     presentation.save(buffer)
+    return buffer.getvalue()
+
+
+def build_pdf(title: str, markdown: str, chart_paths: list[Path] | None = None) -> bytes:
+    """从报告 Markdown 生成 PDF（reportlab，按需导入）。
+
+    运行时依赖：``reportlab``（开发/CI 环境已由 dev extras 安装；生产环境需
+    ``pip install reportlab``）。中文使用 reportlab 内置 CID 字体
+    ``STSong-Light``，不依赖外部字体文件。
+    """
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.units import cm
+        from reportlab.lib.utils import ImageReader
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+        from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer
+    except ImportError as exc:  # pragma: no cover - 依赖缺失环境
+        raise RuntimeError("PDF 导出需要 reportlab：pip install reportlab") from exc
+    from xml.sax.saxutils import escape
+
+    font_name = "STSong-Light"
+    if font_name not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(UnicodeCIDFont(font_name))
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "CnTitle", parent=styles["Title"], fontName=font_name, fontSize=20, leading=26
+    )
+    heading_style = ParagraphStyle(
+        "CnHeading",
+        parent=styles["Heading1"],
+        fontName=font_name,
+        fontSize=14,
+        leading=20,
+        spaceBefore=10,
+        spaceAfter=6,
+    )
+    body_style = ParagraphStyle(
+        "CnBody",
+        parent=styles["BodyText"],
+        fontName=font_name,
+        fontSize=10.5,
+        leading=16,
+        spaceAfter=4,
+    )
+    bullet_style = ParagraphStyle("CnBullet", parent=body_style, leftIndent=14, bulletIndent=4)
+
+    def _escape(text: str) -> str:
+        return escape(text.replace("\n", " ")).strip()
+
+    story: list[object] = [
+        Paragraph(_escape(title or "数据分析报告"), title_style),
+        Spacer(1, 0.4 * cm),
+    ]
+    sections = _sections(markdown) or [("报告", markdown or "暂无内容")]
+    for section_title, section_body in sections:
+        story.append(Paragraph(_escape(section_title), heading_style))
+        for raw in section_body.splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            if line.startswith(("- ", "* ")):
+                story.append(Paragraph(_escape(line[2:]), bullet_style, bulletText="•"))
+            elif line.startswith("#"):
+                story.append(Paragraph(_escape(line.lstrip("# ").strip()), heading_style))
+            else:
+                story.append(Paragraph(_escape(line), body_style))
+    for path in (chart_paths or [])[:8]:
+        if path.suffix.lower() not in {".png", ".jpg", ".jpeg"} or not path.is_file():
+            continue
+        try:
+            width_px, height_px = ImageReader(str(path)).getSize()
+        except Exception:  # noqa: BLE001 — 单张坏图不影响整份报告
+            continue
+        width = 16 * cm
+        height = width * height_px / width_px if width_px else width
+        # 超长图（如 800×4000 截图）按 A4 可用高度等比缩回，否则 reportlab
+        # 会在 document.build 抛 LayoutError 把整份导出变成 500。
+        max_height = A4[1] - 6 * cm
+        if height > max_height:
+            width = max_height * width_px / height_px if height_px else width
+            height = max_height
+        try:
+            image = Image(str(path), width=width, height=height)
+        except Exception:  # noqa: BLE001 — 单张坏图不影响整份报告
+            continue
+        story.extend(
+            [
+                Spacer(1, 0.3 * cm),
+                Paragraph(_escape(path.stem), body_style),
+                image,
+            ]
+        )
+    buffer = io.BytesIO()
+    document = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        title=title or "数据分析报告",
+        leftMargin=2 * cm,
+        rightMargin=2 * cm,
+        topMargin=2 * cm,
+        bottomMargin=2 * cm,
+    )
+    document.build(story)
     return buffer.getvalue()

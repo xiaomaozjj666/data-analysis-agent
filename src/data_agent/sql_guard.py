@@ -8,6 +8,7 @@ SQLite 与 Postgres 两个数据源共用这一层。驱动差异（连接方式
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 #: SQL 墙钟预算环境变量。默认 30 秒：5 秒会把合法的百成千行 JOIN/GROUP BY
@@ -55,29 +56,83 @@ FORBIDDEN_STATEMENTS: dict[str, str] = {
     "begin": "事务控制语句不允许使用",
     "commit": "事务控制语句不允许使用",
     "rollback": "事务控制语句不允许使用",
+    # 数仓常见但同样不属于只读查询的语句（BigQuery / Snowflake / Databricks）。
+    "merge": "MERGE 会写入或更新数仓表",
+    "call": "CALL 会执行存储过程",
+    "use": "USE 会改变会话上下文",
+    "set": "SET 会改变会话或系统配置",
+    "grant": "GRANT 会修改权限",
+    "revoke": "REVOKE 会修改权限",
+    "export": "EXPORT DATA 会写出数据",
+    "copy": "COPY 会在数据库与外部存储之间搬运数据",
+    "unload": "UNLOAD 会把数据导出到外部存储",
+    "declare": "DECLARE 会创建游标或变量",
+    "execute": "EXECUTE 会执行动态语句",
+    "prepare": "PREPARE 会创建可执行语句",
 }
 
 
+_DOLLAR_QUOTE_RE = re.compile(r"\$([A-Za-z_][A-Za-z_0-9]*)?\$")
+
+
 def _semicolon_outside_strings(statement: str) -> bool:
-    """字符串字面量之外是否还有分号（多语句）。"""
+    """字符串/注释/引用标识符之外是否还有分号（多语句）。
+
+    支持单引号、双引号、反引号标识符（BigQuery / Databricks / MySQL）、
+    美元引号字符串（Postgres ``$$...$$`` / ``$tag$...$tag$``）、行注释与块注释。
+    旧实现只跟踪单双引号，会把注释里的分号误判成多语句，也会漏掉反引号
+    与美元引号里的分号——两种都是真实的误放/误杀。
+    """
+    index = 0
+    length = len(statement)
     in_single = False
     in_double = False
-    escape = False
-    for char in statement:
-        if escape:
-            escape = False
+    in_backtick = False
+    dollar_tag = ""
+    while index < length:
+        char = statement[index]
+        if dollar_tag:
+            if statement.startswith(dollar_tag, index):
+                index += len(dollar_tag)
+                dollar_tag = ""
+            else:
+                index += 1
             continue
-        if char == "\\" and in_single:
-            escape = True
+        if in_single or in_double or in_backtick:
+            if char == "\\" and in_single:
+                index += 2
+                continue
+            if char == "'" and in_single:
+                in_single = False
+            elif char == '"' and in_double:
+                in_double = False
+            elif char == "`" and in_backtick:
+                in_backtick = False
+            index += 1
             continue
-        if char == "'" and not in_double:
-            in_single = not in_single
+        if char == "-" and statement.startswith("--", index):
+            newline = statement.find("\n", index)
+            index = length if newline == -1 else newline + 1
             continue
-        if char == '"' and not in_single:
-            in_double = not in_double
+        if char == "/" and statement.startswith("/*", index):
+            end = statement.find("*/", index + 2)
+            index = length if end == -1 else end + 2
             continue
-        if char == ";" and not in_single and not in_double:
+        if char == "$":
+            match = _DOLLAR_QUOTE_RE.match(statement, index)
+            if match:
+                dollar_tag = match.group(0)
+                index = match.end()
+                continue
+        if char == "'":
+            in_single = True
+        elif char == '"':
+            in_double = True
+        elif char == "`":
+            in_backtick = True
+        elif char == ";":
             return True
+        index += 1
     return False
 
 
@@ -143,9 +198,13 @@ def collect_rows(cursor: Any, limit: int) -> dict[str, Any]:
     return {"columns": columns, "rows": rows, "row_count": len(rows), "truncated": truncated}
 
 
-def quote_identifier(name: str) -> str:
-    """把表名/列名包成双引号标识符，内部双引号翻倍转义。
+def quote_identifier(name: str, dialect: str = "default") -> str:
+    """把表名/列名包成标识符；按方言选择引号并转义。
 
-    SQLite 与 Postgres 都用双引号引用标识符，因此两个驱动共用这一份实现。
+    SQLite / Postgres 用双引号；BigQuery / Databricks / MySQL 用反引号。
+    默认行为保持不变，新增方言只影响显式传参的调用方。
     """
+    dialect_key = (dialect or "default").strip().lower()
+    if dialect_key in {"bigquery", "databricks", "mysql", "hive", "spark"}:
+        return "`" + name.replace("`", "``") + "`"
     return '"' + name.replace('"', '""') + '"'

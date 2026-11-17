@@ -25,7 +25,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from data_agent import postgres_source, sqlite_source
+from data_agent import data_sources, sqlite_source
 from data_agent.config import AgentSettings
 from data_agent.registry import SessionRegistry
 from data_agent.serialization import json_text, to_jsonable
@@ -40,7 +40,6 @@ except ImportError:  # pragma: no cover - 可选依赖
 _INSTALL_HINT = '未安装 MCP SDK。请先安装：pip install ".[mcp]"。'
 
 #: 支持的会话来源。
-_VALID_SOURCES: tuple[str, ...] = ("session", "postgres")
 
 
 def _registry(settings: AgentSettings) -> SessionRegistry:
@@ -199,15 +198,17 @@ def create_server(settings: AgentSettings | None = None) -> Any:
         connection is read-only, so nothing can be modified. Results are capped
         at 5000 rows; this tool never mutates any session's active dataset.
         """
-        if source not in _VALID_SOURCES:
+        available_names = data_sources.source_names()
+        if source not in available_names:
             raise ToolError(
-                f"未知的 source「{source}」。可用值：{'、'.join(_VALID_SOURCES)}"
+                f"未知的 source「{source}」。可用值：{'、'.join(available_names)}"
                 "（session=会话内 SQLite 文件，postgres=环境变量配置的连接）。"
             )
-        if source == "postgres":
-            driver = postgres_source
-            connection = driver.connect_readonly()
-            source_label = "postgres（环境变量配置的连接）"
+        if source != "session":
+            try:
+                driver, connection, source_label = data_sources.open_external(source)
+            except ValueError as exc:
+                raise ToolError(str(exc)) from exc
         else:
             if not session_id.strip():
                 raise ToolError(
@@ -215,13 +216,17 @@ def create_server(settings: AgentSettings | None = None) -> Any:
                 )
             record = _session(session_id)
             workspace = record.workspace
-            database_path = sqlite_source.resolve_session_source(workspace.source_path, workspace.input_dir)
+            database_path = sqlite_source.resolve_session_source(
+                workspace.source_path, workspace.input_dir
+            )
             if database_path is None:
-                available = ["postgres"] if postgres_source.is_configured() else []
+                available = [
+                    item.name for item in data_sources.describe_sources() if item.configured
+                ]
                 raise ToolError(
-                    "该会话没有 SQLite 数据源（source=\"session\" 需要 .db/.sqlite 文件）。"
+                    '该会话没有 SQLite 数据源（source="session" 需要 .db/.sqlite 文件）。'
                     + (
-                        "环境变量已配置 PostgreSQL，请改用 source=\"postgres\"。"
+                        '环境变量已配置 PostgreSQL，请改用 source="postgres"。'
                         if available
                         else "也可改用 inspect_data 查看当前数据集。"
                     )
@@ -232,14 +237,15 @@ def create_server(settings: AgentSettings | None = None) -> Any:
         try:
             if not (sql or "").strip():
                 summary = driver.schema_summary(connection)
-                available_sources = ["session"]
-                if postgres_source.is_configured():
-                    available_sources.append("postgres")
+                available_sources = [
+                    item.name for item in data_sources.describe_sources() if item.configured
+                ]
                 return json_text(
                     {
                         "source": source_label,
                         "source_kind": source,
                         "available_sources": available_sources,
+                        "sources": [item.to_dict() for item in data_sources.describe_sources()],
                         "table_count": summary["table_count"],
                         "tables": [
                             {
@@ -264,9 +270,7 @@ def create_server(settings: AgentSettings | None = None) -> Any:
                 "truncated": result["truncated"],
             }
             if result["truncated"]:
-                payload["note"] = (
-                    f"结果超过 {limit} 行已截断，请先用聚合或过滤收敛结果。"
-                )
+                payload["note"] = f"结果超过 {limit} 行已截断，请先用聚合或过滤收敛结果。"
             return json_text(payload)
         except ValueError as exc:
             # 驱动层的校验信息（只读白名单、表不存在、超时预算等）都是
