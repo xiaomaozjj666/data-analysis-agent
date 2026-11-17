@@ -15,7 +15,9 @@
   抓取与逐句核对（OpenAI 帮助中心经无头浏览器渲染取得全文、Julius 经 TLS 隐身
   取得连接器与代码可见性原文、WorkBuddy 渲染后取得 JSON-LD 能力清单、FineBI
   全文实取；Tableau 营销站三层全 403，但帮助门户经渲染拿到官方 llms-full.txt
-  6.1MB 全量文档，Tableau 结论升级为一手）。`docs/competitive-analysis.md`
+  6.1MB 全量文档 + tableau.github.io/tableau-mcp 官方文档，Hosted MCP/OAuth 2.1
+  获一手确认；Julius 的 docs.julius.ai 子域 526，改走 julius.ai/docs 渲染入口 +
+  /docs/llms.txt 全量目录取回三页官方原文）。`docs/competitive-analysis.md`
   新增第六节：抓取矩阵、逐家复核结论（原文/推断分标）、路线图增量影响——定时
   调度证据变硬（WorkBuddy/Trae/Julius/Pulse 四家）、语义层被微软官方前置条件
   背书、技能层有了 Trae SKILL.md 完整设计可对标、FineBI Data Agent 归属改判、

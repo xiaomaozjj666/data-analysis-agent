@@ -264,7 +264,7 @@ P0-2 与 P0-3 属于"在既有架构里加一层"，改动封闭、可用现有�
 
 与 2026-09 初查（依赖二手评测与官网宣传页）不同，本次用自研爬虫（web-crawler）对六类产品的**官方一手页面**做了实地抓取与逐句核对：静态 HTTP 优先，被拦则换 TLS 指纹隐身（`--stealth`）或无头浏览器渲染（`--render-js`），遵守 robots、限速、不登录不绕过访问控制；每个站点的请求预算封顶，抓不到就如实记"无法核实"。每条结论均标注【原文】（逐字引文 + URL）或【推断】。原始抓取产物（HTML / 正文 txt / run_report）存于 `D:\XIAOMAO\Projects\web-crawler\.research\agent-data-analysis\`，不在本仓库入库。
 
-抓取可达性本身也是数据：docs.julius.ai 全站 HTTP 526（Cloudflare 证书故障），Julius 官方文档本次未取得；tableau.com 营销站对纯 HTTP / TLS 隐身 / 无头浏览器三层全部 403，但 **help.tableau.com 帮助门户经无头渲染可打开**，并通过它拿到 Tableau 官方 `llms-full.txt`（6.1 MB 单文件全量文档，220 处 "Tableau Agent"、53 处 "Tableau Pulse"）——Tableau 的结论因此从「二手单一来源」升级为「官方一手页」。
+抓取可达性本身也是数据，而「官方文档换个入口」往往就是解法：docs.julius.ai 子域全站 HTTP 526（Cloudflare 证书故障），但官方文档实际在 **julius.ai/docs**——渲染后直接给出 `/docs/llms.txt` 全量目录，按目录取回 Tools / Data Connectors / Containers 三页原文；tableau.com 营销站对纯 HTTP / TLS 隐身 / 无头浏览器三层全部 403，但 **help.tableau.com 帮助门户经无头渲染可打开**，并拿到 Tableau 官方 `llms-full.txt`（6.1 MB 全量文档），其 MCP 章节又指向官方 `tableau.github.io/tableau-mcp/`（Hosted MCP / OAuth 2.1 原文）。Julius 与 Tableau 的结论因此都从「二手单一来源」升级为「官方一手页」。
 
 ### 6.2 抓取矩阵（页面级结果）
 
@@ -278,7 +278,10 @@ P0-2 与 P0-3 属于"在既有架构里加一层"，改动封闭、可用现有�
 | support.microsoft.com | Copilot in Excel get-started | 200（5.0k 字） | 静态 |
 | learn.microsoft.com | /en-us/dax/dax-copilot | 200（9.9k 字） | 静态 |
 | www.julius.ai | 首页 / chat-with-your-data / data-connectors | 200（`--stealth`；正文在 `<main>`，首 `<article>` 仅 111 字） | `--stealth` |
-| docs.julius.ai | 全站 | **HTTP 526**（`--stealth` 与渲染均失败） | — |
+| docs.julius.ai | 全站 | **HTTP 526**（证书故障，三个入口均失败） | — |
+| julius.ai/docs | 文档索引 + llms.txt | **渲染成功**；`/docs/llms.txt` 13 KB 全量目录 | `--render-js` |
+| julius.ai/docs/*.md | Tools / Data Connectors / Containers | 200（官方 Markdown 原文） | `--stealth` |
+| tableau.github.io/tableau-mcp | 官方 MCP 文档首页 | 200（Hosted MCP / OAuth 2.1 原文） | 静态 |
 | www.trae.ai / docs.trae.ai | 首页 / solo / solo/skills | 200；正文在内嵌 Quill delta JSON，爬虫 delta 解析后 0 字 → 1.8–2.5 万字符 | 静态 |
 | workbuddy.tencent.com | 首页 | JS 壳 → **渲染成功**（正文 + JSON-LD featureList） | 渲染 |
 | www.finebi.com | 首页 / 指标中心 / 数据连接 | 200（正文完整，UTF-8 中文无损） | 静态 |
@@ -321,12 +324,18 @@ P0-2 与 P0-3 属于"在既有架构里加一层"，改动封闭、可用现有�
 - 【原文】产出保持原生可编辑："Your content stays editable"，直接用 "tables, charts, PivotTables, and formulas"。
 - 【原文】技能沉淀：可把重复流程固化为 custom skill，甚至 "record a skill by demonstrating a task"（演示一遍即录制）——技能层（3.8）的第三家佐证。
 
-#### Julius AI（julius.ai，`--stealth` 实取）
+#### Julius AI（产品页 `--stealth` + 官方文档 `julius.ai/docs` 实取）
 
-- 【原文】数据连接器清单实锤（data-connectors 页）：Postgres、Snowflake、BigQuery、MySQL、SQL Server、Supabase、Google Drive、OneDrive、Google Ads、Meta Ads，"No ETL, no setup scripts"——初查 3.1 节的连接器名单逐项确认；本项目 Postgres+SQLite 已落地、Snowflake/BigQuery 缺口的优先级判断维持。
-- 【原文】代码可见性："Every insight comes with the underlying code"——初查判断维持，且与本项目"SQL/工具参数可见 + 溯源链"同方向。
-- 【原文】合规："SOC 2 Type II"、"TX-RAMP"、"GDPR compliance actively in progress"、"your data never leaves your cloud"（厂商声明）。
-- 【不可得】docs.julius.ai 全站 526，官方文档本次无法取证；定时调度（Scheduled Runs）在已抓页面未见——初查表述维持"以 2026-09 资料为准"。
+`docs.julius.ai` 子域 526 不可用，但官方文档实际在 **`julius.ai/docs`**：该页渲染后给出 `/docs/llms.txt` 全量目录（13 KB），按目录取回了 Tools / Data Connectors / Containers 三页官方原文。
+
+- 【原文】工具化执行："it calls tools: running code, querying data, researching the web, and building finished deliverables"；每步在聊天里可见并展开（"Generated code / Searched internet / Created slides"）——初查"代码可见可改"的判断获得官方原文支撑。
+- 【原文】代码工具："Julius writes **Python** or **R** and runs it in a secure cloud container… You can read the code, copy it, and see its output inline."；支持 apply patch（"surgical edits… with a diff of what changed"）。
+- 【原文】SQL 直连清单（官方文档）：PostgreSQL、MySQL、SQL Server、Snowflake、BigQuery、Supabase、Google Ads，另有独立页面覆盖 **Databricks**；"Julius writes and runs SQL against it directly"。产品页另列 Google Drive / OneDrive / Meta Ads。初查 3.1 节判断维持，且比初查多出 Databricks。
+- 【原文】查库前先探 schema："Julius can search the schema to find the right tables and columns, so it writes correct SQL instead of guessing."——这是本项目 `inspect_data` 之外值得补的交互（先看表结构再写查询）。
+- 【原文】模糊需求先反问："Julius may pause to ask you a quick clarifying question rather than guess"——与 Tableau Agent 的误读风险提示同方向。
+- 【原文】容器生命周期："all free and paid user containers are live for up to 1 hour of inactivity. After 1 hour… spun down."——初查"沙箱随会话结束重置"可精确化为「1 小时无活动回收」。
+- 【原文】合规（产品页）："SOC 2 Type II"、"TX-RAMP"、"GDPR compliance actively in progress"、"your data never leaves your cloud"（厂商声明）。
+- 【改判】定时调度：当前官方文档目录（llms.txt 全量条目）**没有任何 Scheduled Runs / recurring 页面**；初查"Julius 有 Scheduled Runs"降级为「2026-09 二手来源，2026-11 官方文档未提及」。
 
 #### Trae SOLO（docs.trae.ai，内嵌 JSON 实取）
 
@@ -361,14 +370,15 @@ P0-2 与 P0-3 属于"在既有架构里加一层"，改动封闭、可用现有�
 - 【原文】信任与计费：Cloud 侧建在 Einstein Trust Layer 上（数据不写入 LLM、不用于训练）；Server 侧直连 LLM 提供商、不走 Trust Layer；AI 功能当前 **unmetered**（不再消耗 credits）。
 - 【原文】Pulse："the metrics you create are used to generate insights about your data. These data insights are sent directly to users who follow the metrics"——"人找数据 → 数据找人"的官方定义；指标定义（metric definition）是核心对象，legacy metrics 已退役（Cloud 2024-02 / Server 2024.2，不自动迁移）。
 - 【原文】官方承认的限制：Pulse 与 multi-fact relationship 模型可能不兼容——"You may be prevented from creating a metric definition, or any metrics that are created may be blank. This is not expected behavior but there is no currently planned fix yet."；导出侧 Pulse 对象只进 PNG 快照、不进 PDF。
-- 【维护差】2026-09 初查中 "Hosted Tableau MCP / Agent Actions / 2026.2" 三条在本版 llms-full 中未检索到对应原文（可能属营销页/独立发布说明），**继续标单一来源**，不与上述一手结论混写。
+- 【原文】**Hosted Tableau MCP 成立**：llms-full 的 Slackbot 章节写明 "After you connect the Tableau Model Context Protocol (MCP) and Slackbot…"，并链接官方 `tableau.github.io/tableau-mcp/`；该官方文档站原文："Hosted Tableau MCP — Tableau MCP as a managed cloud service — no installation required. OAuth 2.1 secured and available to all Tableau Cloud customers."——初查的 Hosted MCP / OAuth 2.1 / 云托管三条全部获得一手确认。
+- 【维护差】2026-09 初查中 "Agent Actions" 与 "2026.2 推出" 两条在 llms-full 与 MCP 官方文档中均未检索到对应原文（可能是营销页/发布说明的时间线），**继续标单一来源**，不与上述一手结论混写。
 
 ### 6.4 对路线图的增量影响（按优先级）
 
-1. **定时调度与主动洞察（P1）优先级上调，证据变硬**：WorkBuddy "Schedules recurring tasks hourly, daily, weekly" + Trae Automation + **Tableau Pulse 官方原文**（"insights... sent directly to users who follow the metrics"）+ Julius Scheduled Runs——四家均把"自动化重复分析/主动推送"当一等能力。本项目 recipe 已有重跑语义、指标层已能算，补"定时触发 + 指标异常检测 + 推送"是当前最短路径；Tableau 的 multi-fact 限制也提醒我们：指标定义与数据模型不匹配时要显式拒绝，而不是产出空白指标。
+1. **定时调度与主动洞察（P1）优先级上调，证据变硬**：WorkBuddy "Schedules recurring tasks hourly, daily, weekly" + Trae Automation + **Tableau Pulse 官方原文**（"insights... sent directly to users who follow the metrics"）——三家一手确认把"自动化重复分析/主动推送"当一等能力；Julius 的 Scheduled Runs 在 2026-11 官方文档中已找不到，不再作为佐证。本项目 recipe 已有重跑语义、指标层已能算，补"定时触发 + 指标异常检测 + 推送"是当前最短路径；Tableau 的 multi-fact 限制也提醒我们：指标定义与数据模型不匹配时要显式拒绝，而不是产出空白指标。
 2. **指标语义层（P0-2 已落地）继续加厚**：FineBI 7.5 全链路血缘与审批发布、Power BI verified answers、微软官方"不准备语义模型就误读数据"——轻量版 metrics.json 之后，值得补两件小事：指标定义支持"已验证示例"（verified example：输入 → 期望输出，规划与核验两处都能用），以及把 metrics 文件纳入溯源链（口径本身可审计）。
 3. **执行路线差异要写成叙事**：ChatGPT 官方明确沙箱禁外呼、Anthropic/OpenAI 平台走托管容器——"沙箱一把梭"是大厂主线；本项目"受控工具 + 只读 SQL + 逐数字核验"是结构上不同的第二条路，且官方建议"review the generated code"与本项目的溯源/核验能力一一对应。定位章节的"每一步都能被验证"可以直接引用官方原文背书。
-4. **Snowflake/BigQuery 驱动（P0-1 尾巴）维持待办**：Julius 连接器清单确认了需求真实性，但仍受"无真实凭证就无法验证"约束，节奏不变。
+4. **Snowflake/BigQuery/Databricks 驱动（P0-1 尾巴）维持待办**：Julius 官方文档确认了 Snowflake / BigQuery / Databricks 的真实需求（连接器页 + SQL 直跑原文），但仍受"无真实凭证就无法验证"约束，节奏不变；可先做 schema 探查交互（Julius 的 "search the schema… instead of guessing" 是本项目 `inspect_data` 之后值得补的一步）。
 5. **技能层（P2）有了可抄的作业**：Trae 的 SKILL.md + 项目/全局双目录 + 按需加载是完整设计；本项目 recipe → 技能的自然演化路径是"把 recipe 里的工具参数模板抽成可版本化文件"，不必新起炉灶。
 6. **Excel/PPT 之外的交付**：WorkBuddy 官方页把 PDF 列为交付物之一；本项目服务端 PDF 生成仍是纯增量，优先级不变（中高）。
 7. **中文/多语言是相对机会**：Power BI 官方 "multilingual use isn't officially supported"——本项目全中文报告 + 白话解读在中文业务场景是结构性优势，可写进定位。
@@ -409,9 +419,10 @@ P0-2 与 P0-3 属于"在既有架构里加一层"，改动封闭、可用现有�
 - learn.microsoft.com/en-us/power-bi/create-reports/copilot-introduction（容量门槛 / 语义模型准备 / verified answers / token 计费 / 24h 缓存原文，页面自述 2026-08-24 更新）
 - learn.microsoft.com/en-us/dax/dax-copilot（500 表等降级阈值 / 200 字符描述截断 / Run→Keep 原文）
 - support.microsoft.com/en-us/Excel/copilot/get-started-with-copilot-in-excel（edit/plan/chat 三态 / 原生对象 / custom skill 录制原文）
-- www.julius.ai/product/data-connectors 与 /product/chat-with-your-data（连接器清单 / "Every insight comes with the underlying code" / SOC 2 原文；docs.julius.ai 全站 HTTP 526 未取得）
+- www.julius.ai/product/data-connectors 与 /product/chat-with-your-data（连接器清单 / "Every insight comes with the underlying code" / SOC 2 原文）
+- julius.ai/docs（渲染）与 /docs/llms.txt 全量目录；/docs/get-started/tools.md、/docs/data-connectors/overview.md、/docs/get-started/containers.md（工具化执行 / Python·R 容器 / SQL 直连含 Databricks / schema 先探 / 1 小时空闲回收原文；docs.julius.ai 子域 526 已被该入口绕过）
 - docs.trae.ai/solo 与 /solo/skills（all-new TRAE 改版 / SKILL.md / .trae/skills 双目录 / Marketplace / SOP 技能化原文，正文取自内嵌 Quill delta JSON）
 - workbuddy.tencent.com（渲染后正文与 JSON-LD：CSV 分析 / Word/PPT/PDF/Markdown 交付 / 每日周定期任务 / skills+MCP / RBAC+审计 / ISO27001·SOC2·等保三级 原文）
 - www.finebi.com 首页与 /functions/indicator-center、/functions/data-connect（7.5 指标中心 / 审批发布 / 全链路血缘 / 50+ 数据库含国产库 原文）
 - Tableau：help.tableau.com/current/pro/desktop/en-us/help.htm（门户经渲染取得 llms.txt 入口）；docs.salesforce.com/tableau/current/en-us/pro/llms-full.txt（6.1 MB 全量官方文档，Tableau Agent / Pulse / 指标定义 / 导出限制原文）
-- 可达性负证据：www.tableau.com 营销站三层 403、help.tableau.com 旧 Pulse/Agent URL 404；docs.julius.ai 全站 HTTP 526
+- 可达性负证据：www.tableau.com 营销站三层 403、help.tableau.com 旧 Pulse/Agent URL 404、docs.julius.ai 子域 526（均已用官方替代入口补证）；Claude for Excel 三个官方直连 URL 全部 404、新闻索引检索 0 命中
