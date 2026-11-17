@@ -123,13 +123,17 @@ def test_load_for_workspace_prefers_env_path(tmp_path, monkeypatch):
     global_dir = tmp_path / "global"
     global_dir.mkdir()
     (global_dir / METRICS_FILENAME).write_text(
-        json.dumps({"metrics": [{"name": "全局指标", "description": "来自全局配置"}]}, ensure_ascii=False),
+        json.dumps(
+            {"metrics": [{"name": "全局指标", "description": "来自全局配置"}]}, ensure_ascii=False
+        ),
         encoding="utf-8",
     )
     workspace_dir = tmp_path / "session"
     workspace_dir.mkdir()
     (workspace_dir / METRICS_FILENAME).write_text(
-        json.dumps({"metrics": [{"name": "会话指标", "description": "来自会话"}]}, ensure_ascii=False),
+        json.dumps(
+            {"metrics": [{"name": "会话指标", "description": "来自会话"}]}, ensure_ascii=False
+        ),
         encoding="utf-8",
     )
     monkeypatch.setenv(METRICS_PATH_ENV, str(global_dir / METRICS_FILENAME))
@@ -139,7 +143,9 @@ def test_load_for_workspace_prefers_env_path(tmp_path, monkeypatch):
 def test_load_for_workspace_falls_back_when_env_path_missing(tmp_path, monkeypatch):
     """环境变量指向的文件不存在时，退回工作区文件而不是报错。"""
     (tmp_path / METRICS_FILENAME).write_text(
-        json.dumps({"metrics": [{"name": "会话指标", "description": "来自会话"}]}, ensure_ascii=False),
+        json.dumps(
+            {"metrics": [{"name": "会话指标", "description": "来自会话"}]}, ensure_ascii=False
+        ),
         encoding="utf-8",
     )
     monkeypatch.setenv(METRICS_PATH_ENV, str(tmp_path / "gone.json"))
@@ -217,3 +223,64 @@ def test_render_truncates_overlong_fields():
     text = render_metric_context("分析", [_definition(description=long_text)])
     assert "…" in text
     assert len(text) < len(long_text)
+
+
+# ---------------------------------------------------------------------------
+# 已验证问法（examples）
+# ---------------------------------------------------------------------------
+
+
+def test_parse_accepts_examples_and_drops_blanks():
+    parsed = parse_metric_definitions(
+        [
+            {
+                "name": "净销售额",
+                "description": "扣除退货后的销售额",
+                "examples": ["本月净销售额是多少", "  ", "按区域看净销售"],
+            }
+        ]
+    )
+    assert parsed[0].examples == ("本月净销售额是多少", "按区域看净销售")
+
+
+def test_parse_rejects_non_list_examples():
+    with pytest.raises(ValueError, match="examples 必须是字符串数组"):
+        parse_metric_definitions(
+            [{"name": "n", "description": "d", "examples": "本月净销售额是多少"}]
+        )
+
+
+def test_serialize_roundtrips_examples(tmp_path):
+    from data_agent.metrics import save_workspace_metrics
+
+    definitions = save_workspace_metrics(
+        tmp_path,
+        {
+            "metrics": [
+                {
+                    "name": "净销售额",
+                    "description": "扣除退货后的销售额",
+                    "examples": ["本月净销售额是多少"],
+                }
+            ]
+        },
+    )
+    assert definitions[0].examples == ("本月净销售额是多少",)
+    reloaded = load_metric_definitions(tmp_path / METRICS_FILENAME)
+    assert reloaded[0].examples == ("本月净销售额是多少",)
+
+
+def test_render_includes_verified_examples():
+    text = render_metric_context(
+        "分析", [_definition(examples=("本月净销售额是多少", "按区域看净销售"))]
+    )
+    assert "已验证问法" in text
+    assert "本月净销售额是多少" in text
+    assert "按区域看净销售" in text
+
+
+def test_render_caps_examples_at_three():
+    examples = tuple(f"问题{i}" for i in range(5))
+    text = render_metric_context("分析", [_definition(examples=examples)])
+    assert "问题0" in text and "问题2" in text
+    assert "问题3" not in text

@@ -376,7 +376,7 @@ P0-2 与 P0-3 属于"在既有架构里加一层"，改动封闭、可用现有�
 ### 6.4 对路线图的增量影响（按优先级）
 
 1. **定时调度与主动洞察（P1）优先级上调，证据变硬**：WorkBuddy "Schedules recurring tasks hourly, daily, weekly" + Trae Automation + **Tableau Pulse 官方原文**（"insights... sent directly to users who follow the metrics"）——三家一手确认把"自动化重复分析/主动推送"当一等能力；Julius 的 Scheduled Runs 在 2026-11 官方文档中已找不到，不再作为佐证。本项目 recipe 已有重跑语义、指标层已能算，补"定时触发 + 指标异常检测 + 推送"是当前最短路径；Tableau 的 multi-fact 限制也提醒我们：指标定义与数据模型不匹配时要显式拒绝，而不是产出空白指标。
-2. **指标语义层（P0-2 已落地）继续加厚**：FineBI 7.5 全链路血缘与审批发布、Power BI verified answers、微软官方"不准备语义模型就误读数据"——轻量版 metrics.json 之后，值得补两件小事：指标定义支持"已验证示例"（verified example：输入 → 期望输出，规划与核验两处都能用），以及把 metrics 文件纳入溯源链（口径本身可审计）。
+2. **指标语义层（P0-2 已落地）继续加厚**：FineBI 7.5 全链路血缘与审批发布、Power BI verified answers、微软官方"不准备语义模型就误读数据"——轻量版 metrics.json 之后补了两步：**已验证问法 `examples` 已落地**（2026-11，规划提示词随口径注入，对标 verified answers）；把 metrics 文件纳入溯源链（口径本身可审计）仍待做。
 3. **执行路线差异要写成叙事**：ChatGPT 官方明确沙箱禁外呼、Anthropic/OpenAI 平台走托管容器——"沙箱一把梭"是大厂主线；本项目"受控工具 + 只读 SQL + 逐数字核验"是结构上不同的第二条路，且官方建议"review the generated code"与本项目的溯源/核验能力一一对应。定位章节的"每一步都能被验证"可以直接引用官方原文背书。
 4. **Snowflake/BigQuery/Databricks 驱动（P0-1 尾巴）维持待办**：Julius 官方文档确认了 Snowflake / BigQuery / Databricks 的真实需求（连接器页 + SQL 直跑原文），但仍受"无真实凭证就无法验证"约束，节奏不变；可先做 schema 探查交互（Julius 的 "search the schema… instead of guessing" 是本项目 `inspect_data` 之后值得补的一步）。
 5. **技能层（P2）有了可抄的作业**：Trae 的 SKILL.md + 项目/全局双目录 + 按需加载是完整设计；本项目 recipe → 技能的自然演化路径是"把 recipe 里的工具参数模板抽成可版本化文件"，不必新起炉灶。

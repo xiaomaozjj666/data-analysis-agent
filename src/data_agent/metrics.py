@@ -48,7 +48,11 @@ class MetricDefinition:
         description: 业务口径说明，回答"这个指标到底算什么"。
         expression: 可选的算式描述，例如 ``销售额 - 退货金额``。
         aliases: 可选别名，用于把用户口语说法映射到标准名称。
-        source_columns: 可选依赖字段列表。
+        source_columns: 可选依赖字段列表.
+        examples: 可选「已验证问法」——业务侧确认过、应当映射到该指标的问题
+            样例。规划阶段随口径一起注入，作用是让模型把口语问题对齐到已登记
+            的标准指标，而不是另起一个同名口径（对标 Power BI verified answers
+            的人工策展思路）。
     """
 
     name: str
@@ -56,6 +60,7 @@ class MetricDefinition:
     expression: str = ""
     aliases: tuple[str, ...] = ()
     source_columns: tuple[str, ...] = ()
+    examples: tuple[str, ...] = ()
 
 
 def _as_str_tuple(value: Any, *, field: str, index: int) -> tuple[str, ...]:
@@ -76,15 +81,16 @@ def _parse_entry(raw: Any, index: int) -> MetricDefinition:
         raise ValueError(f"metrics 第 {index + 1} 项缺少 name。")
     description = str(raw.get("description") or "").strip()
     if not description:
-        raise ValueError(
-            f"metrics 第 {index + 1} 项（{name}）缺少 description，无法判断口径含义。"
-        )
+        raise ValueError(f"metrics 第 {index + 1} 项（{name}）缺少 description，无法判断口径含义。")
     return MetricDefinition(
         name=name,
         description=description,
         expression=str(raw.get("expression") or "").strip(),
         aliases=_as_str_tuple(raw.get("aliases"), field="aliases", index=index),
-        source_columns=_as_str_tuple(raw.get("source_columns"), field="source_columns", index=index),
+        source_columns=_as_str_tuple(
+            raw.get("source_columns"), field="source_columns", index=index
+        ),
+        examples=_as_str_tuple(raw.get("examples"), field="examples", index=index),
     )
 
 
@@ -127,6 +133,7 @@ def serialize_metric_definitions(definitions: Sequence[MetricDefinition]) -> dic
                 "expression": item.expression,
                 "aliases": list(item.aliases),
                 "source_columns": list(item.source_columns),
+                "examples": list(item.examples),
             }
             for item in definitions
         ]
@@ -232,10 +239,15 @@ def render_metric_context(
             segment += f"；计算口径：{_truncate(item.expression)}"
         if item.source_columns:
             segment += f"；依赖字段：{'、'.join(item.source_columns)}"
+        if item.examples:
+            sample = "；".join(f"「{_truncate(example, 80)}」" for example in item.examples[:3])
+            segment += f"；已验证问法：{sample}"
         lines.append(segment)
     hidden = len(definitions) - len(selected)
     if hidden > 0:
-        lines.append(f"（另有 {hidden} 条已登记指标未在此列出；如分析涉及，请先在结论中说明口径来源。）")
+        lines.append(
+            f"（另有 {hidden} 条已登记指标未在此列出；如分析涉及，请先在结论中说明口径来源。）"
+        )
     return "\n".join(lines)
 
 
@@ -326,4 +338,3 @@ def compute_metrics_on_frame(
             entry.update(status="error", error=str(exc))
         results.append(entry)
     return results
-

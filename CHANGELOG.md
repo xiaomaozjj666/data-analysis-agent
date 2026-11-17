@@ -11,6 +11,11 @@
 
 ### 新增
 
+- **指标定义支持「已验证问法」`examples`**：`metrics.json` 的每条指标可登记
+  业务确认过的问题样例；规划阶段随口径一起注入提示词，让模型把口语问题对齐到
+  已登记的标准指标，而不是另起同名口径（对标 Power BI verified answers 的人工
+  策展思路，来源见 `docs/competitive-analysis.md` 第六节）。解析走既有严格校验
+  （非数组/空白项处理与 aliases 一致），序列化可往返，渲染最多列 3 条并截断。
 - **竞品实地复核（2026-11-17）**：用 web-crawler 对六类竞品的官方一手页面实地
   抓取与逐句核对（OpenAI 帮助中心经无头浏览器渲染取得全文、Julius 经 TLS 隐身
   取得连接器与代码可见性原文、WorkBuddy 渲染后取得 JSON-LD 能力清单、FineBI
