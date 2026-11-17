@@ -3,7 +3,8 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, call, patch
 
 import numpy as np
 import pandas as pd
@@ -712,6 +713,31 @@ def test_run_python_code_timeout(workspace, monkeypatch):
         assert "熔断" in str(exc)
     else:
         raise AssertionError("expected timeout to trip")
+
+
+def test_windows_sandbox_waits_for_interpreter_after_launcher_exit(monkeypatch):
+    from data_agent.tools import _sandbox
+
+    operations = Mock()
+    launcher = operations.launcher
+    launcher.pid = 123
+    launcher.poll.return_value = None
+    worker = object()
+    operations.process.return_value.children.return_value = [worker]
+    monkeypatch.setattr(_sandbox, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(_sandbox.psutil, "Process", operations.process)
+    monkeypatch.setattr(_sandbox.psutil, "wait_procs", operations.wait_procs)
+
+    _sandbox._kill_process(launcher)
+
+    assert operations.mock_calls == [
+        call.launcher.poll(),
+        call.process(123),
+        call.process().children(),
+        call.launcher.kill(),
+        call.launcher.wait(timeout=5),
+        call.wait_procs([worker], timeout=5),
+    ]
 
 
 # ---------------------------------------------------------------------------
