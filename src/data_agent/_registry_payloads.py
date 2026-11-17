@@ -321,7 +321,9 @@ def _artifact_file(session_id: str, filename: str) -> tuple[SessionRecord, Path]
 # 内置示例数据集：让新用户无需自备文件即可体验完整分析流程。
 # 采用销售主题的小型 CSV（订单/地区/品类/金额/数量/日期），覆盖数值、
 # 文本、日期三类字段，足以触发清洗、统计、图表等典型工具链。
-_SAMPLE_SALES_HEADER = "order_id,region,category,product,sales,quantity,order_date,customer_segment\n"
+_SAMPLE_SALES_HEADER = (
+    "order_id,region,category,product,sales,quantity,order_date,customer_segment\n"
+)
 _SAMPLE_SALES_REMAINING = (
     "1002,华南,办公用品,打印纸,320.0,10,2024-01-18,零售\n"
     "1003,华北,电子产品,机械键盘,890.0,3,2024-01-22,企业\n"
