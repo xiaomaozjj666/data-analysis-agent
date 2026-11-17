@@ -321,9 +321,8 @@ def _artifact_file(session_id: str, filename: str) -> tuple[SessionRecord, Path]
 # 内置示例数据集：让新用户无需自备文件即可体验完整分析流程。
 # 采用销售主题的小型 CSV（订单/地区/品类/金额/数量/日期），覆盖数值、
 # 文本、日期三类字段，足以触发清洗、统计、图表等典型工具链。
-_SAMPLE_SALES_CSV = (
-    "order_id,region,category,product,sales,quantity,order_date,customer_segment\n"
-    "1001,华东,电子产品,无线耳机,1280.5,2,2024-01-15,企业\n"
+_SAMPLE_SALES_HEADER = "order_id,region,category,product,sales,quantity,order_date,customer_segment\n"
+_SAMPLE_SALES_REMAINING = (
     "1002,华南,办公用品,打印纸,320.0,10,2024-01-18,零售\n"
     "1003,华北,电子产品,机械键盘,890.0,3,2024-01-22,企业\n"
     "1004,华东,家具,人体工学椅,2100.0,1,2024-02-03,政府\n"
@@ -343,4 +342,18 @@ _SAMPLE_SALES_CSV = (
     "1018,华南,家具,会议桌,2800.0,1,2024-05-03,企业\n"
     "1019,华东,电子产品,键盘膜,28.0,30,2024-05-09,零售\n"
     "1020,华北,办公用品,胶带,12.0,200,2024-05-15,零售\n"
+)
+
+_SAMPLE_SALES_CSV = (
+    _SAMPLE_SALES_HEADER
+    + "1001,华东,电子产品,无线耳机,1280.5,2,2024-01-15,企业\n"
+    + _SAMPLE_SALES_REMAINING
+)
+
+# 同一订单分成两条明细，保留原金额和销量，演示订单数须按订单号去重。
+_AUDIT_SAMPLE_SALES_CSV = (
+    _SAMPLE_SALES_HEADER
+    + "1001,华东,电子产品,无线耳机,980.5,1,2024-01-15,企业\n"
+    + "1001,华东,电子产品,耳机配件,300.0,1,2024-01-15,企业\n"
+    + _SAMPLE_SALES_REMAINING
 )
