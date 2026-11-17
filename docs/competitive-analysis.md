@@ -264,7 +264,7 @@ P0-2 与 P0-3 属于"在既有架构里加一层"，改动封闭、可用现有�
 
 与 2026-09 初查（依赖二手评测与官网宣传页）不同，本次用自研爬虫（web-crawler）对六类产品的**官方一手页面**做了实地抓取与逐句核对：静态 HTTP 优先，被拦则换 TLS 指纹隐身（`--stealth`）或无头浏览器渲染（`--render-js`），遵守 robots、限速、不登录不绕过访问控制；每个站点的请求预算封顶，抓不到就如实记"无法核实"。每条结论均标注【原文】（逐字引文 + URL）或【推断】。原始抓取产物（HTML / 正文 txt / run_report）存于 `D:\XIAOMAO\Projects\web-crawler\.research\agent-data-analysis\`，不在本仓库入库。
 
-抓取可达性本身也是数据：docs.julius.ai 全站 HTTP 526（Cloudflare 证书故障）、tableau.com 对纯 HTTP / TLS 隐身 / 无头浏览器三层全部 403——这两家的部分能力本次**无法复核**，正文第二节中 Tableau 相关结论维持"单一来源"标注。
+抓取可达性本身也是数据：docs.julius.ai 全站 HTTP 526（Cloudflare 证书故障），Julius 官方文档本次未取得；tableau.com 营销站对纯 HTTP / TLS 隐身 / 无头浏览器三层全部 403，但 **help.tableau.com 帮助门户经无头渲染可打开**，并通过它拿到 Tableau 官方 `llms-full.txt`（6.1 MB 单文件全量文档，220 处 "Tableau Agent"、53 处 "Tableau Pulse"）——Tableau 的结论因此从「二手单一来源」升级为「官方一手页」。
 
 ### 6.2 抓取矩阵（页面级结果）
 
@@ -279,11 +279,12 @@ P0-2 与 P0-3 属于"在既有架构里加一层"，改动封闭、可用现有�
 | learn.microsoft.com | /en-us/dax/dax-copilot | 200（9.9k 字） | 静态 |
 | www.julius.ai | 首页 / chat-with-your-data / data-connectors | 200（`--stealth`；正文在 `<main>`，首 `<article>` 仅 111 字） | `--stealth` |
 | docs.julius.ai | 全站 | **HTTP 526**（`--stealth` 与渲染均失败） | — |
-| www.trae.ai / docs.trae.ai | 首页 / solo / solo/skills | 200；正文为内嵌 Quill delta JSON，需从 HTML 提取 | 静态 |
+| www.trae.ai / docs.trae.ai | 首页 / solo / solo/skills | 200；正文在内嵌 Quill delta JSON，爬虫 delta 解析后 0 字 → 1.8–2.5 万字符 | 静态 |
 | workbuddy.tencent.com | 首页 | JS 壳 → **渲染成功**（正文 + JSON-LD featureList） | 渲染 |
 | www.finebi.com | 首页 / 指标中心 / 数据连接 | 200（正文完整，UTF-8 中文无损） | 静态 |
 | www.tableau.com | /products/tableau-pulse | **403**（纯 HTTP、`--stealth`、渲染三层全失败） | — |
-| help.tableau.com | 旧 Pulse/Agent URL | **404**；help 根为 JS 跳转垫片（908B） | — |
+| help.tableau.com | 旧 Pulse/Agent URL → 帮助门户根 | 旧 URL **404**；根页为 JS 垫片 → **渲染成功**（3.2k 字，且页面提供 llms.txt 入口） | `--render-js` |
+| docs.salesforce.com | /tableau/current/en-us/pro/llms-full.txt | 200（**6.1 MB 全量官方文档**；Agent/Pulse/metric 原文可检索） | 静态 |
 
 ### 6.3 逐家复核结论（与 2026-09 初查的差异）
 
@@ -302,7 +303,7 @@ P0-2 与 P0-3 属于"在既有架构里加一层"，改动封闭、可用现有�
 #### Anthropic（docs.anthropic.com Tool use overview）
 
 - 【原文】数据分析执行载体："Run Python and Bash code in a sandboxed container"，能力定位 "analyze data and generate files"。
-- 【原文】已知风险官方原话："might guess values you didn't supply"（参数缺失时臆造）。
+- 【原文】已知风险官方原话："Claude (particularly Claude Sonnet) might guess values you didn’t supply"（参数缺失时臆造；注意原文是弯引号，逐字引用以此为准）。
 - 【无法证实】"Claude for Excel"：anthropic.com/news 全文检索 excel/spreadsheet 0 命中——2026-09 文档未收录此条，维持不引入；如需引用必须先找到官方一手页。
 
 #### 微软 Power BI Copilot（learn.microsoft.com，页面自述 2026-08-24 更新）
@@ -344,18 +345,27 @@ P0-2 与 P0-3 属于"在既有架构里加一层"，改动封闭、可用现有�
 
 #### FineBI（帆软，静态全取）
 
-- 【原文】7.5 版本叙事："指标驱动的数据智能平台"、"AI原生数据分析平台"；指标中心、指标拆解树、语义模型、全链路血缘；"指标统一口径、复用、审批发布、血缘追溯"。
+- 【原文】7.5 版本叙事："指标驱动的数据智能平台"、"AI原生数据分析平台"；首页明确列出一手能力"指标中心、指标拆解树、语义模型、全链路血缘"，指标中心页补充"统一指标定义、口径、权限、血缘和复用关系"与审批发布。
 - 【原文】连接器："支持连接50+数据库"、"一键获取100+应用数据源"，含 GaussDB / Kingbase / 达梦 / OceanBase / Gbase 8A / 星环等国产库。
 - 【改判】初查 2.6 节把 Data Agent 写成 "FineBINEXT 的 Data Agent"（FineBI 内置模块）；实抓页面显示 Data Agent 是**帆软另一 AI Agent 产品与 BI 7.5 对接**（"BI7.5支持对接帆软的AI Agent产品"），不是 FineBI 原生子模块——归因修正：FineBI 的 AI 价值依附指标中心底座这一判断不变，但"Data Agent 闭环"是产品族协同而非内置能力。
 - 【推断】"AI 问数效果取决于指标与权限建设"——与本项目 metrics.json 的定位互为印证。
 
-#### Tableau（2026-11 无法复核）
+#### Tableau（官方帮助门户 + llms-full.txt，一手结论）
 
-营销站三层全 403、help 站旧 URL 全 404 且改为 JS 垫片。本次**不新增任何 Tableau 能力断言**；第二节中 Pulse / Agent / Hosted MCP 相关表述全部维持"2026-09 二手来源、单一来源"标注，待有官方一手页再复核。
+营销站 403，但官方帮助门户经无头渲染取得入口，并拿到 `llms-full.txt` 全量文档（`docs.salesforce.com/tableau/current/en-us/pro/llms-full.txt`，6.1 MB）。以下为原文口径：
+
+- 【原文】Tableau Agent 覆盖端侧：Desktop 2025.1+、Cloud、Server 2025.3+；能力是"Explore your data / Create visualizations / Create and explain calculations"，可按自然语言做时间序列分析、选图型、生成与解释计算字段（"What month had the largest growth..."、"Explain the 'Days to Ship Actual' calculation"）。
+- 【原文】Dashboard 内三能力：Dashboard Q&A（"What/Why" 追问，可下钻到数据源）、Dashboard Overview（扫描看板生成摘要）、Dashboard Insights（逐 viz 生成摘要洞察）。2026.3 起 Desktop 只能在 Dashboard settings 配置，且需 Tableau Cloud+ / Tableau+，Server 站点不可用；需同时授予 AI Access 与 Full Data Query 权限。
+- 【原文】洞察类型是受数据形态约束的："Not all insight types will be evaluated for all vizzes. For example time comparisons won't be available unless there's a continuous date dimension present."——这与本项目"图表解读只在数据支持时才下结论"同思路。
+- 【原文】官方最佳实践直接点出 LLM 误读风险："Duplicate field names... can confuse Tableau Agent"；瀑布图用 Gantt + 负值构造，"The LLM receives the negative measure and will therefore misconstrue the direction of the mark"——**厂商自己承认图表实现细节会误导模型**，可作为本项目"数据准备 + 受控工具 + 核验"路线的外部佐证。
+- 【原文】信任与计费：Cloud 侧建在 Einstein Trust Layer 上（数据不写入 LLM、不用于训练）；Server 侧直连 LLM 提供商、不走 Trust Layer；AI 功能当前 **unmetered**（不再消耗 credits）。
+- 【原文】Pulse："the metrics you create are used to generate insights about your data. These data insights are sent directly to users who follow the metrics"——"人找数据 → 数据找人"的官方定义；指标定义（metric definition）是核心对象，legacy metrics 已退役（Cloud 2024-02 / Server 2024.2，不自动迁移）。
+- 【原文】官方承认的限制：Pulse 与 multi-fact relationship 模型可能不兼容——"You may be prevented from creating a metric definition, or any metrics that are created may be blank. This is not expected behavior but there is no currently planned fix yet."；导出侧 Pulse 对象只进 PNG 快照、不进 PDF。
+- 【维护差】2026-09 初查中 "Hosted Tableau MCP / Agent Actions / 2026.2" 三条在本版 llms-full 中未检索到对应原文（可能属营销页/独立发布说明），**继续标单一来源**，不与上述一手结论混写。
 
 ### 6.4 对路线图的增量影响（按优先级）
 
-1. **定时调度（P1）优先级上调，证据变硬**：WorkBuddy "Schedules recurring tasks hourly, daily, weekly" + Trae Automation +（2026-09 口径的）Tableau Pulse/Julius Scheduled Runs——四家均把"自动化重复分析"当一等能力，本项目 recipe 已有重跑语义，补"定时触发 + 失败告警"是当前最短路径。
+1. **定时调度与主动洞察（P1）优先级上调，证据变硬**：WorkBuddy "Schedules recurring tasks hourly, daily, weekly" + Trae Automation + **Tableau Pulse 官方原文**（"insights... sent directly to users who follow the metrics"）+ Julius Scheduled Runs——四家均把"自动化重复分析/主动推送"当一等能力。本项目 recipe 已有重跑语义、指标层已能算，补"定时触发 + 指标异常检测 + 推送"是当前最短路径；Tableau 的 multi-fact 限制也提醒我们：指标定义与数据模型不匹配时要显式拒绝，而不是产出空白指标。
 2. **指标语义层（P0-2 已落地）继续加厚**：FineBI 7.5 全链路血缘与审批发布、Power BI verified answers、微软官方"不准备语义模型就误读数据"——轻量版 metrics.json 之后，值得补两件小事：指标定义支持"已验证示例"（verified example：输入 → 期望输出，规划与核验两处都能用），以及把 metrics 文件纳入溯源链（口径本身可审计）。
 3. **执行路线差异要写成叙事**：ChatGPT 官方明确沙箱禁外呼、Anthropic/OpenAI 平台走托管容器——"沙箱一把梭"是大厂主线；本项目"受控工具 + 只读 SQL + 逐数字核验"是结构上不同的第二条路，且官方建议"review the generated code"与本项目的溯源/核验能力一一对应。定位章节的"每一步都能被验证"可以直接引用官方原文背书。
 4. **Snowflake/BigQuery 驱动（P0-1 尾巴）维持待办**：Julius 连接器清单确认了需求真实性，但仍受"无真实凭证就无法验证"约束，节奏不变。
@@ -403,4 +413,5 @@ P0-2 与 P0-3 属于"在既有架构里加一层"，改动封闭、可用现有�
 - docs.trae.ai/solo 与 /solo/skills（all-new TRAE 改版 / SKILL.md / .trae/skills 双目录 / Marketplace / SOP 技能化原文，正文取自内嵌 Quill delta JSON）
 - workbuddy.tencent.com（渲染后正文与 JSON-LD：CSV 分析 / Word/PPT/PDF/Markdown 交付 / 每日周定期任务 / skills+MCP / RBAC+审计 / ISO27001·SOC2·等保三级 原文）
 - www.finebi.com 首页与 /functions/indicator-center、/functions/data-connect（7.5 指标中心 / 审批发布 / 全链路血缘 / 50+ 数据库含国产库 原文）
-- 可达性负证据：www.tableau.com 三层 403、help.tableau.com 旧 URL 404（Tableau 结论维持单一来源标注）
+- Tableau：help.tableau.com/current/pro/desktop/en-us/help.htm（门户经渲染取得 llms.txt 入口）；docs.salesforce.com/tableau/current/en-us/pro/llms-full.txt（6.1 MB 全量官方文档，Tableau Agent / Pulse / 指标定义 / 导出限制原文）
+- 可达性负证据：www.tableau.com 营销站三层 403、help.tableau.com 旧 Pulse/Agent URL 404；docs.julius.ai 全站 HTTP 526
