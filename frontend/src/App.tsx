@@ -223,7 +223,7 @@ function App() {
 
   const traceStatus = settings?.langsmith_status
     ?? (settings ? settings.langsmith_tracing ? "configured" : "disabled" : "unknown");
-  const traceIndicator = LANGSMITH_STATUS[traceStatus];
+  const traceIndicator = LANGSMITH_STATUS[traceStatus] ?? LANGSMITH_STATUS.unknown;
 
   // refs 保持局部状态：useRef 不迁移到 store（控制器、缓存、闭包内
   // 读取的最新值不需要触发重渲染）。

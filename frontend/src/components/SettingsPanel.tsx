@@ -107,7 +107,7 @@ function SettingsPanel() {
   return (
     <div className="provider-block">
       <span className="sidebar-label">分析引擎</span>
-      <button type="button" className="model-line" aria-haspopup="dialog" onClick={() => setKeyOpen(true)}>
+      <button type="button" className="model-line" aria-haspopup="dialog" aria-expanded={keyOpen} onClick={() => setKeyOpen(true)}>
         <span>
           <i className={settings?.configured ? "online" : ""} />
           <span><strong>{settings?.model || "deepseek-chat"}</strong><small>{settings?.configured ? "已配置" : "等待配置"}</small></span>

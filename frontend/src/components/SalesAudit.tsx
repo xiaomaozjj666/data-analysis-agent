@@ -258,6 +258,7 @@ export default function SalesAudit({ sessionId, filename, initialDemo, report, o
                 ref={draftInput}
                 id="sales-audit-draft"
                 aria-describedby="sales-audit-format"
+                aria-invalid={tooLong || undefined}
                 value={draft}
                 onChange={(event) => updateDraft(event.target.value)}
                 placeholder={"销售额合计：… 元\n销量合计：… 件\n订单数：… 笔"}

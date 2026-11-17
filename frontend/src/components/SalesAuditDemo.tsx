@@ -54,7 +54,8 @@ export default function SalesAuditDemo({
   const quantity = audit?.claims.find(claim => claim.metric === "销量合计" && claim.status === "verified");
 
   useEffect(() => {
-    heading.current?.focus();
+    // 仅在舞台实际可见时抢焦点，避免会话恢复/面板隐藏时把焦点拉走。
+    if (stage.current?.getClientRects().length) heading.current?.focus();
     function updateFullscreen() {
       setFullscreen(document.fullscreenElement === stage.current);
     }

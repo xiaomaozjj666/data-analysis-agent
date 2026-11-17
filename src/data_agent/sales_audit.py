@@ -1,4 +1,8 @@
-"""Recalculate a sales brief directly from the original CSV."""
+"""Recalculate a sales brief directly from the original CSV.
+
+金额允许负数（退款/冲销），订单号按原样去重（含尾随空格视为不同订单）。
+行数上限由调用方传入（复用上传时的工作区 max_rows），避免绕过导入护栏。
+"""
 
 from __future__ import annotations
 
@@ -29,10 +33,12 @@ _FENCE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
 _EVIDENCE_ROWS = 6
 
 
-def _read_sales(source: Path) -> tuple[dict[str, str], dict[str, Any]]:
+def _read_sales(
+    source: Path, *, max_rows: int | None = None
+) -> tuple[dict[str, str], dict[str, Any]]:
     digest = sha256_file(source)
     orders: set[str] = set()
-    sales_cents = units = rows = 0
+    sales_cents = units = row_count = 0
     preview = []
     try:
         with source.open(encoding="utf-8-sig", newline="") as handle:
@@ -40,27 +46,35 @@ def _read_sales(source: Path) -> tuple[dict[str, str], dict[str, Any]]:
             headers = reader.fieldnames or []
             if any(headers.count(column) != 1 for column in _COLUMNS):
                 raise ValueError("CSV 必须各有一列 order_id、sales、quantity。")
-            for rows, row in enumerate(reader, start=1):
+            for row_number, row in enumerate(reader, start=1):
+                if max_rows is not None and row_number > max_rows:
+                    raise ValueError(f"CSV 超过 {max_rows} 行上限，请拆分或先用筛选视图收敛。")
                 if None in row or any(value is None for value in row.values()):
-                    raise ValueError(f"第 {rows} 条记录的列数和表头不一致。")
+                    raise ValueError(f"第 {row_number} 条记录的列数和表头不一致。")
                 order = row["order_id"]
                 amount, quantity = row["sales"].strip(), row["quantity"].strip()
                 if not order.strip():
-                    raise ValueError(f"第 {rows} 条记录的 order_id 为空。")
+                    raise ValueError(f"第 {row_number} 条记录的 order_id 为空。")
                 if not _AMOUNT.fullmatch(amount):
-                    raise ValueError(f"第 {rows} 条记录的 sales 必须是元，最多两位小数。")
+                    raise ValueError(f"第 {row_number} 条记录的 sales 必须是元，最多两位小数。")
                 if not _INTEGER.fullmatch(quantity):
-                    raise ValueError(f"第 {rows} 条记录的 quantity 必须是非负整数。")
+                    raise ValueError(f"第 {row_number} 条记录的 quantity 必须是非负整数。")
                 sales_cents += int(Decimal(amount) * 100)
                 units += int(quantity)
                 orders.add(order)
-                if rows <= _EVIDENCE_ROWS:
+                row_count = row_number
+                if row_count <= _EVIDENCE_ROWS:
                     preview.append(
-                        {"record": rows, "order_id": order, "sales": amount, "quantity": quantity}
+                        {
+                            "record": row_count,
+                            "order_id": order,
+                            "sales": amount,
+                            "quantity": quantity,
+                        }
                     )
     except (UnicodeDecodeError, csv.Error) as exc:
         raise ValueError("核验使用 UTF-8 编码、逗号分隔的 CSV。请检查编码和引号。") from exc
-    if not rows:
+    if not row_count:
         raise ValueError("CSV 至少需要一条订单明细。")
     if digest != sha256_file(source):
         raise ValueError("核验期间源文件发生变化，请重试。")
@@ -73,7 +87,7 @@ def _read_sales(source: Path) -> tuple[dict[str, str], dict[str, Any]]:
     return metrics, {
         "filename": source.name,
         "sha256": digest,
-        "rows": rows,
+        "rows": row_count,
         "preview": preview,
     }
 
@@ -148,8 +162,9 @@ def audit_sales_brief(
     draft: str,
     *,
     confirm_full_table: bool = False,
+    max_rows: int | None = None,
 ) -> dict[str, Any]:
-    metrics, evidence = _read_sales(source)
+    metrics, evidence = _read_sales(source, max_rows=max_rows)
     claims, needs_scope_confirmation = _audit_claims(
         draft,
         metrics,

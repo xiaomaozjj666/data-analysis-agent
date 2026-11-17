@@ -78,3 +78,12 @@ def test_invalid_source_rows_block_the_report(sales_csv, row, message):
     sales_csv.write_text(f"order_id,sales,quantity\n{row}\n", encoding="utf-8")
     with pytest.raises(ValueError, match=message):
         audit_sales_brief(sales_csv, "订单数：1 笔")
+
+
+def test_row_limit_blocks_oversized_csv(sales_csv):
+    sales_csv.write_text(
+        "order_id,sales,quantity\n" + "".join(f"{index},1.00,1\n" for index in range(5)),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="行上限"):
+        audit_sales_brief(sales_csv, "订单数：5 笔", max_rows=3)

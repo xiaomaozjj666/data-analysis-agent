@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import type { Artifact } from "../types";
 
 // 与 store 的 Tab 类型保持一致（useSessionStore 中 activeTab 的字面量联合）。
-type TabId = "analysis" | "data" | "artifacts";
+type TabId = "analysis" | "data" | "artifacts" | "audit";
 
 // 与 store 的 Updater<T> 一致：setter 既接受直接值也接受 functional updater。
 type SetState<T> = (v: T | ((prev: T) => T)) => void;
@@ -12,7 +12,7 @@ interface UseShortcutsDeps {
   previewItem: Artifact | null;
   keyOpen: boolean;
   closeArtifactPreview: () => void;
-  // 全局快捷键：Cmd+K / Cmd+B / Cmd+. / ? / T / 1-3
+  // 全局快捷键：Cmd+K / Cmd+B / Cmd+. / ? / T / 1-4
   running: boolean;
   chatRunning: boolean;
   stopAnalysis: () => void;
@@ -46,7 +46,7 @@ function useShortcuts(deps: UseShortcutsDeps): void {
   }, [previewItem, keyOpen]);
 
   // 全局键盘快捷键：Cmd+K 命令面板、Cmd+B 折叠侧栏、Cmd+. 停止分析、
-  // ? 帮助、T 主题、1/2/3 切换 Tab。在 input/textarea/contenteditable 中
+  // ? 帮助、T 主题、1/2/3/4 切换 Tab。在 input/textarea/contenteditable 中
   // 按键时跳过单字符快捷键（? T 1 2 3），避免误触发；Cmd 组合键不受此限制。
   // 依赖数组保持原样 [running, chatRunning, toggleTheme]：stopAnalysis/stopFollowUp
   // 每次渲染重建，加入依赖会让监听每帧重绑定并改变闭包刷新时机；它们内部已
@@ -91,10 +91,11 @@ function useShortcuts(deps: UseShortcutsDeps): void {
         toggleTheme();
         return;
       }
-      // 1/2/3：切换分析/数据/产物 Tab
+      // 1/2/3/4：切换分析/数据/产物/简报核验 Tab
       if (event.key === "1" && !meta) { event.preventDefault(); setActiveTab("analysis"); return; }
       if (event.key === "2" && !meta) { event.preventDefault(); setActiveTab("data"); return; }
       if (event.key === "3" && !meta) { event.preventDefault(); setActiveTab("artifacts"); return; }
+      if (event.key === "4" && !meta) { event.preventDefault(); setActiveTab("audit"); return; }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

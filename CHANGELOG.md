@@ -11,6 +11,18 @@
 
 ### 新增
 
+- **经营简报核验（Sales Audit）**：新增 `POST /api/sessions/{id}/sales-audit`
+  与「简报核验」工作区 Tab。只读原始上传 CSV，按 `SUM(sales)` / `SUM(quantity)`
+  / `COUNT(DISTINCT order_id)` 复算，把草稿里的指标行逐条判为
+  verified / conflict / unsupported；重复指标、代码块与缩进示例不参与发布，
+  草稿含上下文时要求确认「全表范围」，确认后生成核验版简报。金额用 Decimal
+  精确到分、行数上限复用上传时 `max_rows`、读前读后 SHA-256 校验。含路演样例
+  （同一订单两条明细）与 `docs/wuxi-trusted-ai-challenge.md`。
+- **设置面板重构与连接测试**：设置面板改为原生 `<dialog>`（Esc/遮罩关闭、
+  焦点管理）；新增 `POST /api/settings/test` 只做连通性探测（不落盘、不回显
+  Key、错误分类 401/429/504/502）；`GET /api/settings` 细分 LangSmith 状态
+  （configured / missing_key / key_unconfirmed / local / disabled）；`httpx`
+  提升为运行时依赖。前端新增「简报核验」Tab 与 `4` 快捷键。
 - **数据源注册表 `data_sources.py`**：统一 session/postgres 的标签、只读保证
   等级（driver / server-confirmed）、超时机制与配置状态；`query_database` 与
   MCP `sql_query` 的发现结果新增 `sources`（含能力声明），并把此前只在 MCP
@@ -72,8 +84,17 @@
   verification 产物，自动进入溯源链。事实提取（`extract_facts`）同步升级为携带单位
   与可回放定位信息。
 
+### 变更
+
+- 首次启动且未配置 API Key 时不再自动弹出设置面板，由用户从侧栏「分析引擎」
+  主动打开（`useAuthBootstrap` 行为调整，相关冒烟测试已同步）。
+
 ### 修复
 
+- **修复 main 不可导入**：`3a9aed8` 漏提交 `_AUDIT_SAMPLE_SALES_CSV`，
+  `import data_agent.api` 直接 ImportError；已补常量并推送（`619b125`）。
+- **沙箱子进程清理**：Windows 下 venv 启动器先退出、派生解释器仍持有临时目录；
+  kill 前先收集子进程并在主进程退出后等待，减少清理失败与 ResourceWarning。
 - **定时任务/技能包/PDF 的评审修复**：dry-run 不再发 webhook、不再创建持久
   工作区；webhook 逐跳校验重定向（公网 302 到内网被拦），登记阶段不做 DNS；
   `run-due` 对坏 `last_run_at` 降级、失败写 `next_retry_at`（5 分钟后重试），
