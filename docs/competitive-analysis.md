@@ -103,9 +103,11 @@ Power BI、Tableau、FineBI 三家的 AI 全部建立在语义模型或指标中
 
 Julius 有 Scheduled Runs + 邮件/Slack 投递；Tableau Pulse 主动监测指标异常并推送；Power BI 有订阅与叙事摘要；FineBI 的 Data Agent 闭环里带主动预警。本项目是纯粹的"你问我才动"。
 
+> **2026-11 复核注**：本节初查时的"你问我才动"已不成立——`automation.py` 补齐了定时调度、指标异常检测与 webhook 推送的最小闭环（Julius 的 Scheduled Runs 则在 2026-11 官方文档中未再出现，见 6.4）。
+
 对本项目：产物已经存在 `runs/<session>/artifacts/`，持久化后端也已支持本地与 S3/R2 双路，加一层定时触发 + 异常检测 + 推送器的工程成本并不高。真正的难点在"检测什么算异常"——这又回到 3.3 的指标定义，指标层立起来之后异常检测才有稳定基准。
 
-### 3.5 交付形态（Word/PPT/PDF）—— 已补齐 Word/PPT，PDF 暂缺
+### 3.5 交付形态（Word/PPT/PDF）—— 三种均已补齐
 
 Trae 能直出 Word/PPT/PDF；WorkBuddy 有文档与 PPT 生成能力；Power BI 的叙事摘要可直接嵌进报表和邮件订阅。
 
@@ -160,12 +162,12 @@ Copilot in Excel 支持切换 Claude 与 GPT；Julius 支持 SQL/Python/R 与多
 | --- | --- | --- |
 | 致命 → 已补 | 无数据库/数仓直连，无 MCP 接入 | 数据库直连：SQLite 文件源 + PostgreSQL 数据源（`query_database`，只读 + 超时 + 行列护栏，CI 真实 service 验证）；MCP：数据面服务已落地（stdio，协议互操作测试）。Snowflake/BigQuery 等其余驱动仍待做（需可验证手段） |
 | 致命 → 已补 | 无指标语义层，跨会话口径漂移 | 原状态：口径由 LLM 现推，无任何指标定义文件。现已实现 `metrics.json` 登记 + 规划阶段注入 |
-| 高 → 部分已补 | 分析过程不可复用、不可调度 | 已实现 `recipe.py`：一次分析固化为 `analysis_recipe.json`，按上次工具参数重跑而不重新规划（前端"按配方重跑"）；定时调度仍缺 |
+| 高 → 已补 | 分析过程不可复用、不可调度 | 已实现 `recipe.py`（按上次工具参数重跑）与 `automation.py`（间隔/每日调度 + 异常检测 + webhook）。2026-11 复核注：初查行写的"定时调度仍缺"已被本次补齐 |
 | 高 → 已补 | 跨文件 join 不是一等能力 | 原状态：`.merge()` 仅出现在 builder.py 的内部元数据拼接；`pd.concat` 仅用于单文件分块读取与同文件多表提取。现已实现受控的 `join_datasets`（键校验 + 扇出护栏 + 未匹配键诊断） |
-| 中高 | 无主动洞察与推送 | 只有被动响应，无定时、无异常预警 |
-| 中高 → 部分已补 | 无 Word/PPT/PDF 原生导出 | 已实现 `report_export.py` 导出 Word / PPT（导出菜单下载）；PDF 尚未覆盖（2026-11 注：前端已有浏览器"打印/另存 PDF"入口，缺的是服务端原生 PDF 生成，表述由"暂缺"收窄为此） |
+| 中高 → 部分已补 | 无主动洞察与推送 | `automation.py` 已有定时运行、z-score/环比异常检测与 `alerts.jsonl` + webhook；仍未做异常归因、Slack/邮件等多渠道投递与看板巡检（2026-11 复核注） |
+| 中高 → 已补 | 无 Word/PPT/PDF 原生导出 | 已实现 `report_export.py` 导出 Word / PPT / **PDF**（2026-11 补齐服务端 PDF：reportlab + 内置 CID 中文字体；导出菜单与三个接口均可用） |
 | 中 | 报告级叙事编排弱 | 图表类型选择强，但多图构成论证链的能力不明显 |
-| 中 | 无技能/插件层 | 工具集为固定 11 项，无声明式扩展机制 |
+| 中 → 部分已补 | 无技能/插件层 | 工具集仍为固定 11 项；但 `skill.py` 已能把分析配方导出为 `SKILL.md + analysis_recipe.json + skill.json` 技能包并确定性重跑。技能市场式分发、项目/全局目录安装与按需加载仍未做（2026-11 复核注） |
 | 中 | 无联网搜索与外部数据 | 完全依赖上传文件 |
 | 低 | 无用户体系/权限治理/协作 | 仅单一 APP_ACCESS_TOKEN + 限流 |
 | 低 | 首启需自备 API Key | 无内置额度或托管模式 |
@@ -200,13 +202,13 @@ Copilot in Excel 支持切换 Claude 与 GPT；Julius 支持 SQL/Python/R 与多
 
 **P1-1 Word/PPT 导出——已落地**
 
-`report_export.py` 从现有结构化 Markdown 报告 + 图表资产生成 Word / PPT（python-docx / python-pptx），导出菜单直接下载。PDF 暂未覆盖，属纯增量。
+`report_export.py` 从现有结构化 Markdown 报告 + 图表资产生成 Word / PPT（python-docx / python-pptx），导出菜单直接下载。PDF 暂未覆盖，属纯增量。（2026-11 复核注：PDF 已补齐，`build_pdf` 用 reportlab + 内置 CID 中文字体，`report.pdf` 与导出菜单均可用。）
 
 **P1-2 分析流程可复用——重跑已落地，调度未做**
 
-`recipe.py` 把一次分析固化为 `analysis_recipe.json`（步骤 + 工具参数），前端"按配方重跑"按上次参数直接执行、不重新规划。定时执行与结果推送仍未做。
+`recipe.py` 把一次分析固化为 `analysis_recipe.json`（步骤 + 工具参数），前端"按配方重跑"按上次参数直接执行、不重新规划。定时执行与结果推送仍未做。（2026-11 复核注：定时执行与结果推送已由 `automation.py` 补齐最小闭环；下方 P1-3 保留初查原文。）
 
-**P1-3 主动洞察与异常推送**
+**P1-3 主动洞察与异常推送（2026-11 已落地最小闭环）**
 
 定时跑指标、检测异常与趋势变化、生成归因摘要、推送出去。对标 Tableau Pulse。做之前先把"什么算异常"用指标层定义清楚，否则推送会变成噪音。指标层现已支持可执行表达式（`compute_registered_metrics`），这一前置条件已就绪。
 
@@ -375,12 +377,12 @@ P0-2 与 P0-3 属于"在既有架构里加一层"，改动封闭、可用现有�
 
 ### 6.4 对路线图的增量影响（按优先级）
 
-1. **定时调度与主动洞察（P1）优先级上调，证据变硬**：WorkBuddy "Schedules recurring tasks hourly, daily, weekly" + Trae Automation + **Tableau Pulse 官方原文**（"insights... sent directly to users who follow the metrics"）——三家一手确认把"自动化重复分析/主动推送"当一等能力；Julius 的 Scheduled Runs 在 2026-11 官方文档中已找不到，不再作为佐证。本项目 recipe 已有重跑语义、指标层已能算，补"定时触发 + 指标异常检测 + 推送"是当前最短路径；Tableau 的 multi-fact 限制也提醒我们：指标定义与数据模型不匹配时要显式拒绝，而不是产出空白指标。
-2. **指标语义层（P0-2 已落地）继续加厚**：FineBI 7.5 全链路血缘与审批发布、Power BI verified answers、微软官方"不准备语义模型就误读数据"——轻量版 metrics.json 之后补了两步：**已验证问法 `examples` 已落地**（2026-11，规划提示词随口径注入，对标 verified answers）；把 metrics 文件纳入溯源链（口径本身可审计）仍待做。
+1. **定时调度与主动洞察（P1）最小闭环已落地**：WorkBuddy "Schedules recurring tasks hourly, daily, weekly" + Trae Automation + **Tableau Pulse 官方原文**（"insights... sent directly to users who follow the metrics"）——三家一手确认；Julius 的 Scheduled Runs 在 2026-11 官方文档中已找不到，不再作为佐证。本项目已实现 `automation.py`：间隔/每日调度、z-score 与环比异常检测、`alerts.jsonl` + webhook 推送、历史带口径哈希；仍未做的是异常归因、多渠道投递（Slack/邮件）与看板级巡检。Tableau 的 multi-fact 限制也提醒我们：指标定义与数据模型不匹配时要显式拒绝，而不是产出空白指标。
+2. **指标语义层（P0-2 已落地）继续加厚**：FineBI 7.5 全链路血缘与审批发布、Power BI verified answers、微软官方"不准备语义模型就误读数据"——轻量版 metrics.json 之后的两步均已落地（2026-11）：**已验证问法 `examples`**（规划提示词随口径注入，对标 verified answers）与**指标定义文件纳入溯源链**（`record_analysis(metrics_path=...)`，口径本身可审计）。
 3. **执行路线差异要写成叙事**：ChatGPT 官方明确沙箱禁外呼、Anthropic/OpenAI 平台走托管容器——"沙箱一把梭"是大厂主线；本项目"受控工具 + 只读 SQL + 逐数字核验"是结构上不同的第二条路，且官方建议"review the generated code"与本项目的溯源/核验能力一一对应。定位章节的"每一步都能被验证"可以直接引用官方原文背书。
-4. **Snowflake/BigQuery/Databricks 驱动（P0-1 尾巴）维持待办**：Julius 官方文档确认了 Snowflake / BigQuery / Databricks 的真实需求（连接器页 + SQL 直跑原文），但仍受"无真实凭证就无法验证"约束，节奏不变；可先做 schema 探查交互（Julius 的 "search the schema… instead of guessing" 是本项目 `inspect_data` 之后值得补的一步）。
-5. **技能层（P2）有了可抄的作业**：Trae 的 SKILL.md + 项目/全局双目录 + 按需加载是完整设计；本项目 recipe → 技能的自然演化路径是"把 recipe 里的工具参数模板抽成可版本化文件"，不必新起炉灶。
-6. **Excel/PPT 之外的交付**：WorkBuddy 官方页把 PDF 列为交付物之一；本项目服务端 PDF 生成仍是纯增量，优先级不变（中高）。
+4. **Snowflake/BigQuery/Databricks 驱动：按「无凭据不合入」维持待办，先落可验证前置**：Julius 官方文档确认了三个数仓的真实需求，但没有真实账号就无法验证鉴权、服务端只读与超时取消，贸然合入会制造假安全承诺。2026-11 已落地两个纯离线可验证的增量：`data_sources.py` 统一源注册表与只读保证等级（driver / server-confirmed），`sql_guard.py` 增加方言感知（反引号、美元引号、注释、数仓禁用语句）与 `quote_identifier(dialect=...)`；真实驱动只需补模块 + 注册 + 跳过式集成测试。
+5. **技能层（P2）导出已落地**：Trae 的 SKILL.md + 项目/全局双目录 + 按需加载是完整设计；本项目已实现 `skill.py`，把 recipe 导出为 `SKILL.md + analysis_recipe.json + skill.json` 并可确定性重跑。仍未做的是技能市场式分发、项目级/全局目录安装与按需加载。
+6. **Excel/PPT 之外的交付（已完成）**：WorkBuddy 官方页把 PDF 列为交付物之一；本项目已补服务端 PDF（reportlab，内置 CID 中文字体），`report.pdf` 接口与前端导出菜单同步上线。
 7. **中文/多语言是相对机会**：Power BI 官方 "multilingual use isn't officially supported"——本项目全中文报告 + 白话解读在中文业务场景是结构性优势，可写进定位。
 8. **Claude for Excel 不引入**：官方站无法证实，按"无可证不收录"处理。
 

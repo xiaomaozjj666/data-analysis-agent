@@ -60,20 +60,23 @@ flowchart LR
 - **受控数据工具集**（11 个内置工具）：数据检查、格式修复、安全清洗、非破坏性筛选视图、跨源合并、数据库查询、登记指标计算、统计分析、图表生成、数据导出、受限 Python 沙箱。
 - **MCP 数据面服务**：把会话发现、数据集载入、结构探查与只读 SQL 以 MCP 标准开放给其他 Agent，护栏同源、传输 stdio（详见"快速开始"）。
   - 跨源合并带连接键校验与行数膨胀护栏：键不存在、键类型不一致导致一行都匹配不上、键不唯一导致行数被放大数倍，三种情况一律拒绝执行并说明原因；结果同时给出未匹配键数量与一对多放大警告，避免把扇出后的行数当作原始记录数。合并结果会成为新的活动数据集，行数基线同步重置。
-  - 数据库查询面向两类数据源：上传的 **SQLite** 文件，以及环境变量 `DATA_AGENT_DATABASE_URL` 配置的 **PostgreSQL**（驱动按需安装：`pip install ".[postgres]"`）。**只读**（SQLite 以 `mode=ro` 打开、Postgres 在服务端设置 `default_transaction_read_only`，写入在驱动/服务端即被拒绝），只接受 `SELECT` / `WITH` 语句；单条查询默认 30 秒墙钟预算（`DATA_AGENT_SQL_TIMEOUT_SECONDS`，1–120；SQLite 用 progress handler 中断、Postgres 用服务端 `statement_timeout`），结果上限 5000 行、500 列。空 `sql` 调用可一次拿到可用数据源与全库表结构；传 `adopt=true` 可把查询结果接管为活动数据集，后续统计与图表直接在其上工作。
+  - 数据库查询面向两类数据源：上传的 **SQLite** 文件，以及环境变量 `DATA_AGENT_DATABASE_URL` 配置的 **PostgreSQL**（驱动按需安装：`pip install ".[postgres]"`）。**只读**（SQLite 以 `mode=ro` 打开、Postgres 在服务端设置 `default_transaction_read_only`，写入在驱动/服务端即被拒绝），只接受 `SELECT` / `WITH` 语句；单条查询默认 30 秒墙钟预算（`DATA_AGENT_SQL_TIMEOUT_SECONDS`，1–120；SQLite 用 progress handler 中断、Postgres 用服务端 `statement_timeout`），结果上限 5000 行、500 列。空 `sql` 调用可一次拿到可用数据源、各源的只读保证等级（`readonly_guarantee`：driver / server-confirmed）与全库表结构；传 `adopt=true` 可把查询结果接管为活动数据集，后续统计与图表直接在其上工作。
   - 清洗带安全护栏：缺失值删除比例超过 50% 会拒绝执行，主数据行数始终不低于原始行数的 20%。
   - 统计方法覆盖描述统计、相关分析（含 Pearson p 值）、分组聚合、独立/配对 t 检验、ANOVA、卡方检验、线性回归（R² / RMSE / MAE）。
 - **指标口径登记（可选）**：在会话目录放置 `metrics.json`，或用 `DATA_AGENT_METRICS_PATH` 指定一份全局定义，登记指标的标准名称、别名、口径说明、算式与**已验证问法**（`examples`：业务确认过的问题样例，随口径一起注入，让模型把口语问题对齐到标准指标，对标 Power BI verified answers 的人工策展思路）；规划阶段会把相关定义注入提示词，避免同一指标在不同会话被各自定义为不同口径。未提供定义文件时该特性完全不生效，行为与原来一致。
+- **定时分析任务与主动告警（最小闭环）**：`python -m data_agent.automation` 按间隔或每日 `HH:MM` 运行任务——加载数据、计算登记指标、用 z-score 与环比在历史窗口上做确定性异常检测，告警先落 `alerts.jsonl` 再按需 POST webhook；支持 `add`（创建/更新任务）、`run-due`（供 cron / Windows 任务计划调用）、`run`、`list`、`remove` 与前台 `loop`。样本不足（默认 <3）不下结论，单任务失败不阻断批次，历史每行带指标定义哈希。见 [docs/automation.md](docs/automation.md)。
+- **分析技能包导出**：把会话的 `analysis_recipe.json` 导出为 `SKILL.md + analysis_recipe.json + skill.json` 技能包（对标 Trae SKILL.md 设计），可分发、可版本化；`python -m data_agent.skill run --bundle … --data …` 按配方确定性重跑，不调用 LLM。覆盖已有目录需显式 `--force`。见 [docs/skills.md](docs/skills.md)。
 - **双图表引擎**（Plotly + ECharts）：共享同一套数据准备逻辑，支持折线、柱状、面积图、散点（含 3D）、直方图、箱线图、小提琴图、饼图、热力图、相关热力图、散点矩阵、旭日图、矩形树图；自动选图、散点图自动叠加 OLS 趋势线（标注 r 值）与双轴均值象限参考线、极端值自动检测与主体尺度/全量视图切换、暗色主题联动、PNG 导出、数据驱动的白话解读。
 - **大数据图表的可读性**：几十万行时"每点一个标记"的散点会因 alpha 饱和糊成一团（实测 30 万点全是同色噪点）。**散点 ≥ 2 万行自动切换为密度视图**：服务端聚合成网格（单格约 7px）、用分档颜色表达每格记录数（档位图例直接给出"1 / 2–4 / 5–9 …"的记录数区间）、零记录格完全透明，并在有分组时按分组拆成共享色标的分面面板（类别用分面表达、颜色只表达密度）；无分组时补顶部/右侧边缘直方图（jointplot 布局）、趋势线、均值参考线与最外围原始点。判定"是否真有聚集"会先扣掉均匀随机点云的统计涨落，没有聚集就直说。**放大后想看具体记录**：图上带一层默认隐藏的分层抽样原始点，Plotly 用右上角按钮、ECharts 用图例开关一键叠加（名字与解读都写明是抽样、条数，完整数据在同名 JSON）。直方图 ≥ 5 万行改为服务端分箱（纵轴仍是真实记录数）、箱线图改为服务端五数概括、小提琴图与 3D 散点分层抽样（3D 会把"已抽样 N/M 点"写在副标题上）——**同一批图表 HTML 体积从 3~12MB 降到 20~200KB**，密度视图是精确聚合而非抽样，完整数据始终保留在同名 JSON 产物里。折线/面积按 **LTTB（Largest-Triangle-Three-Buckets）保峰降采样**（数值轴与类目轴都覆盖），短促尖峰不会被等距抽样抹掉。
 - **可访问性**：全站文字对比度按 WCAG AA 校准并用浏览器计算样式实测（浅/暗两主题 × 起始页/工作台/产物/历史/命令面板/预览模态），三级文字阶梯与"实心强调色"分令牌管理（白字压底专用 `--accent-solid`，避免暗色下提亮的品牌色当背景时只有 3.5:1）；滑块、按钮、卡片均带 hover/active 反馈与键盘焦点环。
+- **Word / PPT / PDF 原生导出**：`report.docx` / `report.pptx` / `report.pdf` 三个接口从同一份结构化 Markdown 报告生成；PDF 用 reportlab（内置 CID 中文字体，无外部字体依赖），前端导出菜单同步新增「PDF (.pdf)」。PDF 运行时需 `pip install reportlab`（开发/CI 环境已由 dev extras 安装），缺失时接口返回 503 并给出安装提示。
 - **多格式数据接入**：CSV / TSV / Excel / JSON / JSONL / Parquet、SQLite（`.db` / `.sqlite` / `.sqlite3`，上传后默认载入行数最多的表，其余表由数据库查询工具访问），以及 PDF 表格提取、TXT、Word 表格；自动探测编码（UTF-8 / GB18030）与分隔符，大文件分块流式读取，数值列自动降级数据类型以节省内存。
 - **全流程 Web 工作台**：文件上传（含进度与取消）、数据概览指标、分析任务与预设模板、计划审阅/批准、实时步骤与工具调用进度（SSE + 15 秒心跳）、随时取消分析、报告生成后的多轮追问、产物中心（预览/对比/PNG/批量下载）、历史会话（重命名/删除/导出 ZIP/导入）、命令面板与快捷键、深浅主题、移动端适配。
 - **断点续跑与自动恢复**：分析中断后可从已完成的步骤继续，无需重跑；前端支持 SSE 断线自动恢复与一键重试。
 - **安全与访问控制**：可选访问令牌（`APP_ACCESS_TOKEN`）、滑动窗口速率限制、CORS / GZip / 安全响应头；API Key 通过操作系统凭据库（keyring）保存，不落明文文件。
 - **会话持久化**：本地或 S3 兼容对象存储（如 Cloudflare R2）双后端，会话按 session id 自动归档/恢复，带路径穿越防护。
 - **可观测与部署**：LangSmith 全链路 Trace（规划、每次工具调用、重规划、汇总）；LangGraph Agent Server 部署；Dockerfile（非 root 用户 + 健康检查）；Render Blueprint 一键部署；GitHub Actions 自动 CI。
-- **可复核的分析溯源与逐结论核验**：每次分析在会话目录生成哈希链，覆盖任务元信息、数据集、逐条工具调用、产物文件与报告正文；finalize/replay 另将正文数字逐项判为 `verified` / `conflict` / `unsupported`，在报告追加结论核验表并生成可下载的 `report-verification.json`，按 trace 序号和 JSON Pointer 定位证据。见 [docs/analysis-provenance.md](docs/analysis-provenance.md)。
+- **可复核的分析溯源与逐结论核验**：每次分析在会话目录生成哈希链，覆盖任务元信息、数据集、指标定义文件、逐条工具调用、产物文件与报告正文；finalize/replay 另将正文数字逐项判为 `verified` / `conflict` / `unsupported`，在报告追加结论核验表并生成可下载的 `report-verification.json`，按 trace 序号和 JSON Pointer 定位证据。见 [docs/analysis-provenance.md](docs/analysis-provenance.md)。
 - **发布前质量闸门（可选）**：`data-agent-eval compare` 对同一套用例的基线与候选结果做配对 McNemar 精确检验，同时检查成本与延迟回归，给出接受 / 拒绝 / 证据不足三态裁决，并写入可校验的哈希链 ledger。见 [docs/agent-eval.md](docs/agent-eval.md)。
 
 ## 技术栈
@@ -215,8 +218,12 @@ src/data_agent/
   config.py          环境变量驱动的运行时配置
   nodes/             LangGraph 节点（validate/plan/execute/replan/finalize）
   tools/             ReAct 工具集（检查/清洗/转换/合并/数据库/统计/可视化/导出/沙箱）
-  metrics.py         指标口径登记（可选，规划阶段注入）
-  provenance.py      分析溯源哈希链（数据集 / 工具 / 产物 / 报告）
+  metrics.py         指标口径登记（可选，规划阶段注入；含已验证问法）
+  data_sources.py    数据源注册表（只读保证等级 / 发现列表 / 外部源连接）
+  automation.py      定时分析任务（调度 / 指标异常检测 / 告警推送）
+  report_export.py   报告导出（Word / PPT / PDF；PDF 按需 reportlab）
+  skill.py           分析配方 → 技能包导出与确定性重跑
+  provenance.py      分析溯源哈希链（数据集 / 指标定义 / 工具 / 产物 / 报告）
   verification.py    逐结论确定性核验与 JSON 报告（verified/conflict/unsupported）
   evalkit/           发布前评测闸门（McNemar / Wilson / ledger / CLI）
   sqlite_source.py   只读 SQLite 数据源（表发现 / 结构描述 / 受限查询）
@@ -235,7 +242,7 @@ tests/               pytest 测试
 
 ## 部署
 
-- **Docker**：根目录 `Dockerfile` 两阶段构建（Node 构建前端 + Python 运行时），以非 root 用户运行并带健康检查。容器监听 `0.0.0.0`，必须设置 `APP_ACCESS_TOKEN`，否则进程启动即报错退出。
+- **Docker**：根目录 `Dockerfile` 两阶段构建（Node 构建前端 + Python 运行时），以非 root 用户运行并带健康检查。容器监听 `0.0.0.0`，必须设置 `APP_ACCESS_TOKEN`，否则进程启动即报错退出。Dockerfile / Render 构建命令会额外安装 `reportlab`，保证 `report.pdf` 开箱可用；自行部署时若未安装，该接口返回 503 并提示安装。
 - **访问令牌**：监听非环回地址（如 Docker / Render 的 `0.0.0.0`）时必须设置 `APP_ACCESS_TOKEN`；本地 `127.0.0.1` 开发可留空。
 - **LangSmith**：`langgraph.json` 导出 `data_analysis_agent` 图，可直接创建 LangSmith Deployment；数据集通过 `dataset_id` 或受控 `dataset_path` 提供。
 - **Render**：根目录 `render.yaml` 提供 Blueprint 一键部署（Free 档可直接同步成功）。首次创建 Blueprint 需在 Render 控制台批准首次同步——状态为 `Created` 时 `autoSync` 不生效，批准后推送才会自动同步；文件内注释含 Starter 及以上档位启用持久磁盘的完整配置。Free 实例休眠后容器存储会清空，长期保存数据请启用 S3/R2 后端。
@@ -258,5 +265,7 @@ CLI、部署），含异常分支与降级路径；CI 中以 `DATA_AGENT_SKIP_KA
 
 - [docs/engineering-notes.md](docs/engineering-notes.md) — 工程笔记：已验证的工程事实与踩坑记录（大数据图表可读性方案、可访问性校准方法、性能与体积预算、沙箱/隐私/指标模块设计要点、平台差异实证）。
 - [docs/competitive-analysis.md](docs/competitive-analysis.md) — 竞品分析：与同类数据分析 Agent 产品的定位与能力对比（2026-09 初查 + 2026-11 官方一手页实地复核，含抓取矩阵与可达性负证据）。
+- [docs/automation.md](docs/automation.md) — 定时分析：任务定义、调度命令、异常判定与告警产物、cron/任务计划接法。
+- [docs/skills.md](docs/skills.md) — 技能包：从配方导出 SKILL.md、确定性重跑与边界。
 - [docs/agent-eval.md](docs/agent-eval.md) — 发布前评测：配对结果格式、McNemar 精确检验、成本/延迟护栏、ledger 校验与 CI 接法。
 - [docs/analysis-provenance.md](docs/analysis-provenance.md) — 分析溯源：哈希链格式、API 与离线复核方法、信任边界。

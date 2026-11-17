@@ -21,8 +21,9 @@ runs/<session_id>/
 {"seq":0,"type":"meta","name":"analysis","data":{...},"prev":"","hash":"..."}
 {"seq":1,"type":"dataset","name":"sales.csv","data":{"path":"input/sales.csv","sha256":"...","size":2048},"prev":"<上一条 hash>","hash":"..."}
 {"seq":2,"type":"tool","name":"run_sql","data":{"kind":"tool_call","detail":"SELECT ...","detail_sha256":"...","chars":42},"prev":"...","hash":"..."}
-{"seq":3,"type":"artifact","name":"chart.html","data":{"path":"artifacts/chart.html","sha256":"...","size":8192},"prev":"...","hash":"..."}
-{"seq":4,"type":"report","name":"analysis-report","data":{"sha256":"...","chars":1234},"prev":"...","hash":"..."}
+{"seq":3,"type":"metrics","name":"metrics.json","data":{"path":"metrics.json","sha256":"...","size":512},"prev":"...","hash":"..."}
+{"seq":4,"type":"artifact","name":"chart.html","data":{"path":"artifacts/chart.html","sha256":"...","size":8192},"prev":"...","hash":"..."}
+{"seq":5,"type":"report","name":"analysis-report","data":{"sha256":"...","chars":1234},"prev":"...","hash":"..."}
 ```
 
 各类型的 `data`：
@@ -32,6 +33,7 @@ runs/<session_id>/
 | `meta` | `task_sha256` / `task_chars` / `provider` / `model` / `code_version` / `created_at` | 任务原文只存哈希与长度，不落盘 |
 | `dataset` | `sha256` / `size` / `path` 或 `external` | 分析实际载入的数据文件 |
 | `tool` | `kind` / `detail` / `detail_sha256` / `chars` | `trace` 里的工具调用与结果，逐条入链 |
+| `metrics` | `sha256` / `size` / `path` 或 `external` | 本次分析生效的指标定义文件（分析开始前固定快照，防止中途改口径） |
 | `artifact` | `kind` / `description` / `path` 或 `external` / `sha256` / `size` | 图表、导出数据等产物 |
 | `report` | `sha256` / `chars` | 最终 Markdown 报告正文 |
 
@@ -69,12 +71,14 @@ curl -OJ -H "Authorization: Bearer $APP_ACCESS_TOKEN" \
 
 ## 复核
 
-服务端复核会做四件事：
+服务端复核会做五件事：
 
 1. 重算每条 `hash`，并检查 `prev` 是否等于上一条 `hash`；
 2. 对照 `provenance.json`：条目数与根哈希必须一致；
-3. 重新计算数据集与产物文件的 sha256，报告缺失或哈希不匹配；
-4. 读取 `session.json` 的 `last_result.response`，与 `report` 条目比对。
+3. 重新计算数据集文件的 sha256，报告缺失或哈希不匹配；
+4. 重新计算指标定义文件（`metrics` 条目）的 sha256，报告缺失或哈希不匹配；
+5. 重新计算产物文件 sha256，并读取 `session.json` 的 `last_result.response`
+   与 `report` 条目比对。
 
 API：
 

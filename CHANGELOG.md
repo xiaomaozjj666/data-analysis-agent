@@ -11,6 +11,32 @@
 
 ### 新增
 
+- **数据源注册表 `data_sources.py`**：统一 session/postgres 的标签、只读保证
+  等级（driver / server-confirmed）、超时机制与配置状态；`query_database` 与
+  MCP `sql_query` 的发现结果新增 `sources`（含能力声明），并把此前只在 MCP
+  出现的 `available_sources` 补齐到工具侧。外部源分派收敛到
+  `open_external()`，新增驱动只需注册一次。
+- **方言感知 SQL 护栏**：多语句扫描支持注释、反引号标识符（BigQuery /
+  Databricks / MySQL）与美元引号字符串（Postgres），修复「注释里的分号被
+  误判为多语句」与「反引号内分号被漏判」；禁用语句表扩充 MERGE / CALL /
+  EXPORT / COPY / UNLOAD / GRANT / SET / USE 等数仓写操作；
+  `quote_identifier(name, dialect=...)` 支持反引号方言（默认行为不变）。
+- **服务端 PDF 导出**：`build_pdf` 从同一份结构化报告生成 PDF（reportlab +
+  内置 CID 中文字体 `STSong-Light`，无外部字体依赖），新增
+  `GET /api/sessions/{id}/report.pdf` 与前端导出菜单「PDF (.pdf)」。运行时
+  依赖 reportlab（开发/CI 由 dev extras 提供；缺失时接口返回 503 并提示安装）。
+- **定时分析任务 `automation.py`（最小闭环）**：按 `interval_minutes` 或本地
+  `daily_at HH:MM` 调度；加载数据 → 与 `compute_registered_metrics` 同源地调用 `metrics.compute_metrics_on_frame` →
+  历史窗口上的 z-score / 环比异常检测 → `alerts.jsonl` + 可选 webhook POST。
+  `python -m data_agent.automation` 提供 add/list/remove/run/run-due/loop；
+  样本不足（默认 <3）不下结论，单任务失败不阻断批次，历史每行带指标定义哈希。
+  见 `docs/automation.md`。webhook 带 SSRF 防护：仅 http/https、禁止内嵌账号密码、
+  IP/域名解析命中内网/环回/链路本地/保留地址时拒绝发送（配置与发送两阶段校验）。
+- **分析技能包导出 `skill.py`**：把 `analysis_recipe.json` 导出为
+  `SKILL.md + analysis_recipe.json + skill.json` 技能包；`run --bundle --data`
+  按配方确定性重跑（不调用 LLM）。覆盖已有目录需显式 `--force`。见 `docs/skills.md`。
+- **指标定义文件纳入溯源链**：`record_analysis` 新增 `metrics_path`，把本次生效的
+  `metrics.json` 哈希写入链并参与 `verify()`；文件缺失时不写空条目，链长度不变。
 - **指标定义支持「已验证问法」`examples`**：`metrics.json` 的每条指标可登记
   业务确认过的问题样例；规划阶段随口径一起注入提示词，让模型把口语问题对齐到
   已登记的标准指标，而不是另起同名口径（对标 Power BI verified answers 的人工
@@ -24,7 +50,7 @@
   获一手确认；Julius 的 docs.julius.ai 子域 526，改走 julius.ai/docs 渲染入口 +
   /docs/llms.txt 全量目录取回三页官方原文）。`docs/competitive-analysis.md`
   新增第六节：抓取矩阵、逐家复核结论（原文/推断分标）、路线图增量影响——定时
-  调度证据变硬（WorkBuddy/Trae/Julius/Pulse 四家）、语义层被微软官方前置条件
+  调度证据变硬（WorkBuddy/Trae/Pulse 三家一手；Julius 改判为单一二手来源）、语义层被微软官方前置条件
   背书、技能层有了 Trae SKILL.md 完整设计可对标、FineBI Data Agent 归属改判、
   Claude for Excel 按无可证不收录。过期数字（文件数 39→88、测试 733→1114、
   工具数口径）以"2026-11 复核注"原位标注；来源附录按初查/复核分组。
@@ -48,6 +74,13 @@
 
 ### 修复
 
+- **定时任务/技能包/PDF 的评审修复**：dry-run 不再发 webhook、不再创建持久
+  工作区；webhook 逐跳校验重定向（公网 302 到内网被拦），登记阶段不做 DNS；
+  `run-due` 对坏 `last_run_at` 降级、失败写 `next_retry_at`（5 分钟后重试），
+  不再整批中止或每秒空转；同任务加跨进程锁；异常检测补零基线规则，全空指标
+  记 `partial` 而不是当 0；历史只与相同 `metrics_sha256` 比较；PDF 超长图按
+  A4 高度缩回；技能包 `--force` 先备份后替换、重跑校验配方哈希；分析开始时
+  固定指标快照再写溯源。
 - **评测 / 溯源的输入校验收紧**：ledger 追加前先复核现有链，历史被改写或含
   非对象行时拒绝继续写入（不再在坏链上续写）；`cost_usd` / `latency_ms` 拒绝
   负数、NaN 与 Infinity；`session.json` 存在但无法解析或缺少报告正文时，溯源

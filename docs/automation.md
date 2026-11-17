@@ -1,0 +1,135 @@
+# 定时分析任务（Automation）
+
+把「同一条分析」变成按计划自动运行的任务：加载数据 → 计算登记指标 → 用确定性统计
+检测异常 → 落历史/告警，并按需 POST 到 webhook。目标是补上从「人找数据」到
+「数据找人」的最短路径（对标 WorkBuddy 周期任务、Trae Automation、Tableau Pulse）。
+
+> 设计边界：不引入调度框架、不在 Web 进程里起守护线程。定时由外部调度器
+> （cron / Windows 任务计划）调用 `run-due`，或前台 `loop` 模式；异常检测不调用 LLM。
+
+## 1. 前置条件
+
+1. 一份数据文件（CSV / Excel / Parquet / JSONL / SQLite 等，见工作区支持列表）。
+2. 一份 `metrics.json` 指标定义（`name` / `description` / `expression`；可选
+   `aliases`、`source_columns`、`examples`）。自动化只计算登记过的指标。
+3. Python 环境与项目依赖（`pip install -e ".[dev]"`）。
+
+## 2. 任务定义
+
+任务定义是 JSON，整体保存在 `<runs-dir>/automation/automations.json`（由 `add`
+写入，可直接编辑后重跑）。`--runs-dir` 默认取 `DATA_AGENT_RUNS_DIR` 或 `./runs`。
+
+```json
+{
+  "id": "daily-sales",
+  "name": "每日销售额巡检",
+  "dataset_path": "./data/sales.csv",
+  "metrics_path": "./data/metrics.json",
+  "interval_minutes": 60,
+  "metric_names": ["销售额"],
+  "zscore_threshold": 3.0,
+  "pct_change_threshold": 0.2,
+  "history_limit": 30,
+  "min_samples": 3,
+  "webhook_url": "https://example.invalid/alerts",
+  "enabled": true
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 必填，`[A-Za-z0-9_-]{1,64}` |
+| `name` | 必填，展示名 |
+| `dataset_path` | 必填，数据文件 |
+| `metrics_path` | 可选；缺省时找数据集同目录的 `metrics.json` |
+| `interval_minutes` / `daily_at` | **二选一**：间隔分钟数，或本地时间 `HH:MM` |
+| `metric_names` | 可选；只关注这些指标（默认全部）。写了未登记的指标名会让该任务失败 |
+| `zscore_threshold` | 默认 3.0，历史窗口上的 z-score 阈值 |
+| `pct_change_threshold` | 默认 0.2（20%），与上一次值的环比阈值 |
+| `history_limit` / `min_samples` | 默认 30 / 3；历史窗口与最少基线样本 |
+| `webhook_url` | 可选；告警 JSON POST 目标（安全规则见第 5 节） |
+| `enabled` | 默认 true；false 时不参与 `run-due` |
+
+## 3. 命令
+
+`--runs-dir` 是**全局参数，必须写在子命令之前**（argparse 限制）：
+
+```bash
+# 新增 / 更新任务（--spec 指向上面的 JSON 文件；也接受 {"automations": [...]}）
+python -m data_agent.automation --runs-dir ./runs add --spec ./automation.json
+
+# 查看任务
+python -m data_agent.automation --runs-dir ./runs list
+
+# 立即跑一次（--dry-run 只计算与检测：不写历史/告警、不推送、不建持久工作区）
+python -m data_agent.automation --runs-dir ./runs run --id daily-sales
+python -m data_agent.automation --runs-dir ./runs run --id daily-sales --dry-run
+
+# 跑所有到期任务（供 cron / 任务计划调用）
+python -m data_agent.automation --runs-dir ./runs run-due --no-notify
+
+# 前台轮询（Ctrl+C 退出；适合开发与演示）
+python -m data_agent.automation --runs-dir ./runs loop --poll-seconds 60
+```
+
+外部调度示例：
+
+```bash
+# cron：每 5 分钟检查一次是否有到期任务（先确保日志目录存在）
+mkdir -p runs/automation
+*/5 * * * * cd /srv/data-agent && python -m data_agent.automation run-due >> runs/automation/cron.log 2>&1
+```
+
+Windows 任务计划同理，动作写 `python -m data_agent.automation run-due`，起始目录设为项目根。
+
+## 4. 异常判定与产物
+
+对每个指标，取该任务最近 `history_limit` 条**相同口径版本**的成功历史值作为基线
+（历史行带 `metrics_sha256`；口径文件一变，基线自动重置，不与旧口径混比）：
+
+- 基线样本数 < `min_samples`：不判定（首次运行不会误报）。
+- `|z-score| >= zscore_threshold`：标记；
+- `|(当前 - 上一次) / |上一次|| >= pct_change_threshold`：标记；
+- 基线标准差为 0 且上一次为 0、当前非零：标记「基线为 0，当前值非零」；
+- 指标表达式失败或整列无有效数值：该指标不进基线、不参与告警，整次运行标
+  `partial`，错误写进 `metric_errors` 与历史行的 `errors`。
+
+产物位于 `<runs-dir>/automation/<id>/`：
+
+| 文件 | 内容 |
+| --- | --- |
+| `history.jsonl` | 每次运行的 `at` / 各指标值 / `errors` / **指标定义文件哈希** |
+| `alerts.jsonl` | 触发的异常（指标、值、基线均值/标准差、z、环比、原因），行级还有 `at`/`task_id` |
+| `state.json` | `last_run_at` / `last_attempt_at` / `last_status`（ok/partial/error）/ `last_alerts` / `last_errors` / `metrics_sha256` / webhook 失败原因 / `next_retry_at` |
+| `.lock` | 任务级锁文件（跨进程互斥，防止 cron 与手动运行重复推送） |
+
+运行还会创建 `<runs-dir>/automation_workspaces/<id>/` 作为只读工作副本；它只是
+工具执行时的临时工作区，可安全清理（任务下次运行会重建）。
+
+`run` / `run-due` 的结果 JSON 包含：`metrics`（逐指标状态/汇总值）、
+`metric_errors`、`alerts`、`notified`、`webhook_error`、`history_samples`、
+`metrics_file`、`metrics_sha256`、`dry_run`；拿不到锁时返回
+`{"skipped": "locked"}`。
+
+## 5. 失败、并发与 webhook 安全
+
+- **推送顺序**：先写历史与 `alerts.jsonl`，再尝试 webhook；推送失败把错误写入
+  `state.json.last_webhook_error`，告警本身不丢，任务状态不回滚。
+- **单任务失败隔离**：`run-due` 对每个任务独立 try；失败写
+  `last_status=error` / `last_error` / `next_retry_at`（默认 5 分钟后重试），
+  不影响同批其他任务。任务定义文件本身非法时整批不执行（刻意 fail-fast，
+  避免静默跳过配置错误）。
+- **并发**：同一任务用跨进程锁串行化；拿不到锁的运行直接跳过（`skipped=locked`），
+  不会重复写历史或重复推送。
+- **webhook SSRF 防护**：只接受 http/https、禁止地址内嵌账号密码；IP 字面量在
+  登记阶段拒绝，域名在发送阶段解析并拒绝命中内网/环回/链路本地/保留地址；
+  **每一跳重定向都会重新校验**，公网地址 302 到内网会被拦截。
+  已知边界：未做 IP 钉扎，解析与连接之间仍存在 DNS rebinding 窗口——这是
+  尽力防护，不是完整隔离。
+- **dry-run 无副作用**：不写历史/告警/状态、不推送，也不创建持久工作区；
+  webhook 配置了也不会发。
+
+## 6. 边界
+
+- **不做归因**：异常只报告统计事实，不带原因解释；需要解释时用分析工作台追问。
+- **口径可追溯**：历史每行都带 `metrics_sha256`，事后能回答「这次用的是哪版口径」。

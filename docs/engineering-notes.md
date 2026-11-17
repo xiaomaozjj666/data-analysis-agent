@@ -268,3 +268,39 @@ CI 无这些变量不受影响。同族坑：某些受管环境里 pip 做**卸�
   语义模型准备前置、ChatGPT 沙箱禁外呼、DAX 元数据降级阈值）。抓取产物存
   web-crawler 仓库 `.research/agent-data-analysis/`（不入库），文档只留
   URL + 逐字引文，保持本仓库轻量且结论可回溯。
+
+## 2026-11 批次：定时任务 / 技能包 / PDF / 数据源注册表的工程事实
+
+本轮把竞品复核（`docs/competitive-analysis.md` 第六节）里可验证的缺口落成代码，
+沉淀几条跨模块取舍：
+
+- **automation 不引调度框架**：`run-due` 交给 cron / Windows 任务计划，`loop` 只做
+  前台演示；进程内不起守护线程，避免与 Web 生命周期纠缠。异常检测是纯统计
+  （z-score / 环比 / 零基线起跳），`min_samples` 默认 3，样本不足不下结论。
+- **推送顺序是"先落盘再发"**：`history.jsonl` 与 `alerts.jsonl` 先写，再 POST；
+  推送失败只写 `state.last_webhook_error`，不回滚任务状态。webhook 做两段校验：
+  登记阶段只拦 scheme/账号/IP 字面量（不做 DNS，避免解析阶段网络 I/O 与整份
+  任务列表加载失败）；发送阶段解析 DNS 并对**每一跳重定向**重新校验，防公网
+  地址 302 到内网/元数据地址。未做 IP 钉扎，DNS rebinding 仍是已知边界。
+- **失败隔离边界**：`run-due` 对每个任务的 due 判断与执行都包在独立 try 里，坏
+  `last_run_at` 按"从未运行"降级；失败写 `last_status=error` + `next_retry_at`
+  （默认 5 分钟），避免 loop 每秒重试。任务定义文件本身非法时整批 fail-fast，
+  这是刻意选择（静默跳过配置错误更危险）。
+- **同任务并发用跨进程锁**：`<task>/.lock`（Windows `msvcrt.locking` / POSIX
+  `flock`，非阻塞）；拿不到锁返回 `skipped=locked`，不重复写历史、不重复推送。
+- **口径版本化**：每次运行按加载时读到的**同一份字节**算 `metrics_sha256`，
+  历史只与相同哈希比较；口径文件一改基线自动重置。分析侧在开始前固定
+  `metrics_snapshot`（path/sha256/size）交给溯源，避免结束后才取哈希导致
+  "记录的口径 ≠ 实际用的口径"。
+- **skill 导出是"先备份再替换"**：`staging` 临时目录 + `os.replace`；覆盖时先把
+  旧目录改名为 `.bak-*`，替换失败回滚，避免 Windows 目标被占用时"旧包新包都没了"。
+  `run` 前校验 `skill.json.recipe_sha256`，分发包被改过直接失败；每次重跑用独立
+  临时工作区并清理，不再在 `runs/` 下累积 `skill-*` 目录。
+- **PDF 用 reportlab 可选运行时依赖**：内置 CID 中文字体 `STSong-Light`，无外部
+  字体文件；超长图按 A4 可用高度等比缩回（否则 `LayoutError` 会把导出变 500）；
+  缺依赖时 `build_pdf` 抛 `RuntimeError`，路由返回 503。Dockerfile / Render 构建
+  命令显式安装 reportlab，避免部署开箱 503。
+- **数据源先做可验证前置**：Snowflake / BigQuery / Databricks 无真实凭据不可验证，
+  按项目规矩不合入占位驱动；已落 `data_sources.py` 注册表（只读保证等级 / 超时
+  机制 / 标识符引号）与方言感知 SQL 护栏（注释、反引号、美元引号、数仓禁用语句、
+  `quote_identifier(dialect=...)`），真实驱动只差"模块 + 注册 + 跳过式集成测试"。
