@@ -158,8 +158,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Audit dependencies
-        run: npm audit --audit-level=high
+      - name: Audit dependencies (production)
+        # 生产依赖必须零已知漏洞。dev-only 传递依赖 picomatch 的 ReDoS
+        # （GHSA-fc5q-39xc-vjpf，vite/vitest → tinyglobby → fdir）目前没有已发布
+        # 修复版（4.0.7 为最新），且不进入产物；随 vite/vitest 上游更新复核。
+        run: npm audit --omit=dev --audit-level=high
 
       - name: Typecheck
         run: npm run typecheck
