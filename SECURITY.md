@@ -28,7 +28,7 @@ Data Analysis Agent 是一个基于 LangGraph 的数据分析工作台：上传�
 报告中建议包含：
 
 - 受影响的版本 / 提交号、Python / Node 版本与部署方式（本地 / Docker / Render）；
-- 是否配置了 `APP_ACCESS_TOKEN`、S3 / PostgreSQL / LangSmith 等外部存储；
+- 是否配置了 `APP_ACCESS_TOKEN` / `APP_VIEWER_TOKEN`、S3 / PostgreSQL / LangSmith 等外部存储；
 - 复现步骤或最小复现；
 - 影响说明，例如未授权访问、路径穿越、沙箱逃逸、SQL 只读绕过、会话或上传数据泄露；
 - 如有可能，附上修复建议。
@@ -38,6 +38,6 @@ Data Analysis Agent 是一个基于 LangGraph 的数据分析工作台：上传�
 ## 范围说明
 
 - 覆盖后端 API、React 前端、上传与解析链路、受限 Python 沙箱、只读 SQL / MCP 数据面，以及本地或 S3 兼容的会话存储。
-- 访问控制：未设置 `APP_ACCESS_TOKEN` 时服务只允许绑定环回地址，否则启动即失败；对外提供服务时必须设置令牌，并置于可信反向代理之后（见 `src/data_agent/middleware.py`）。
+- 访问控制：两个令牌都未设置时服务只允许绑定环回地址，否则启动即失败；`APP_ACCESS_TOKEN` 为全权，`APP_VIEWER_TOKEN` 仅允许 GET/HEAD（写请求 403），只配置后者时服务进入只读模式。对外提供服务时至少设置一个令牌，并置于可信反向代理之后（见 `src/data_agent/middleware.py`）。审计日志可选写入 `DATA_AGENT_AUDIT_LOG`。
 - 上传的数据集、会话与报告产物保存在 `DATA_AGENT_RUNS_DIR`（默认 `./runs`）或对象存储中，请自行负责目录权限、备份与清理。
 - 不覆盖：上传数据本身的合规性、LLM 供应商与第三方数据源，以及分析结论的正确性。
