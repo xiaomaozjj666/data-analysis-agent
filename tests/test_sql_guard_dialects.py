@@ -150,6 +150,26 @@ def test_estring_with_semicolon_inside_is_single_statement():
     assert validate_select("SELECT E'a;b' AS v") == "SELECT E'a;b' AS v"
 
 
+def test_doubled_quote_is_escaped_quote_inside_string():
+    """标准 SQL 的 '' 是串内转义引号：不关闭字符串、不产生多语句。"""
+    assert validate_select("SELECT 'it''s fine' AS x") == "SELECT 'it''s fine' AS x"
+    assert validate_select('SELECT "a""b" AS x') == 'SELECT "a""b" AS x'
+
+
+def test_doubled_quote_cannot_swallow_following_clause():
+    """双写引号后仍在串内的分号/关键字不得被误当成代码。
+
+    该语句在标准 SQL 里是一个完整字符串后接逗号表达式——分号属于字符串，
+    允许执行；而紧随字符串之外的危险函数仍必须被拦截。
+    """
+    assert (
+        validate_select("SELECT 'a''; DROP TABLE t' AS v")
+        == "SELECT 'a''; DROP TABLE t' AS v"
+    )
+    with pytest.raises(ValueError, match="不支持调用"):
+        validate_select("SELECT 'a''b', pg_read_file('/etc/passwd')")
+
+
 def test_normal_analytics_queries_still_allowed():
     for sql in (
         "WITH x AS (SELECT 1 AS n) SELECT * FROM x",

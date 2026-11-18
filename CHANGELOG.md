@@ -91,6 +91,16 @@
 
 ### 修复
 
+- **SQL 只读护栏第二轮加固**：反斜杠失步多语句（`SELECT 'x\'; DROP ...`）、
+  数据修改 CTE（`WITH ... DELETE/INSERT/UPDATE`）、`SELECT ... INTO` /
+  `INTO OUTFILE`、危险函数（`pg_read_file`、`pg_current_setting`、
+  `pg_advisory_*`、`pg_terminate_backend`、`load_extension` 等）全部拦截；
+  标准 SQL 与 MySQL 反斜杠语义、双写引号 `''` 双解释取并集（Postgres
+  `E'...'` 无法绕过）；合法查询（`/* c */ SELECT 1`、`SELECT/**/1`）不再误杀。
+- **定时任务可观测性**：坏 `state.json` 打 `state_corrupt` 标记并告警（不再
+  静默按「从未运行」重跑）；坏历史行计数告警；`history/alerts` JSONL 超 2MB
+  自动轮转；运行记录新增 `duration_ms`；webhook 记录 HTTP 状态码与耗时，
+  4xx/5xx 经 `HTTPError` 分支单独取码（此前失败场景看不到状态码）。
 - **销售核验支持 GB18030**：中文 Excel 常见的 GB18030 导出不再被拒；
   解码失败仍给出可操作提示（UTF-8/GB18030、逗号分隔）。
 - **metrics.json 原子写**：`save_workspace_metrics` 改为 tmp + rename，

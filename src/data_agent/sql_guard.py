@@ -145,6 +145,18 @@ def _scan_code_tokens_mode(statement: str, *, backslash_escapes: bool) -> list[s
             if backslash_escapes and char == "\\" and (in_single or in_double):
                 index += 2
                 continue
+            # 标准 SQL 的双写引号是「串内转义引号」：跳过两字符、留在串内。
+            # 若按「关闭 + 重开」处理，会把真实解析器认为仍在串内的内容当成
+            # 代码（或反之），与数据库的实际语义失步。
+            if in_single and statement.startswith("''", index):
+                index += 2
+                continue
+            if in_double and statement.startswith('""', index):
+                index += 2
+                continue
+            if in_backtick and statement.startswith("``", index):
+                index += 2
+                continue
             if char == "'" and in_single:
                 in_single = False
             elif char == '"' and in_double:
@@ -256,6 +268,18 @@ def _scan_semicolon(statement: str, *, backslash_escapes: bool) -> bool:
             continue
         if in_single or in_double or in_backtick:
             if backslash_escapes and char == "\\" and (in_single or in_double):
+                index += 2
+                continue
+            # 标准 SQL 的双写引号是「串内转义引号」：跳过两字符、留在串内。
+            # 若按「关闭 + 重开」处理，会把真实解析器认为仍在串内的内容当成
+            # 代码（或反之），与数据库的实际语义失步。
+            if in_single and statement.startswith("''", index):
+                index += 2
+                continue
+            if in_double and statement.startswith('""', index):
+                index += 2
+                continue
+            if in_backtick and statement.startswith("``", index):
                 index += 2
                 continue
             if char == "'" and in_single:
