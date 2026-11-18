@@ -557,3 +557,28 @@ def test_webhook_status_and_duration_recorded(tmp_path, monkeypatch):
     state = json.loads((automation.task_dir(runs, spec.id) / automation.STATE_FILENAME).read_text())
     assert state["last_webhook_status"] == 202
     assert isinstance(state["last_webhook_duration_ms"], int)
+
+
+def test_webhook_http_error_status_is_recorded(tmp_path, monkeypatch):
+    """4xx/5xx 走 HTTPError：状态码必须落盘（区分地址配错与对方故障）。"""
+    import urllib.error
+
+    spec = _make_spec(tmp_path, webhook_url="https://hooks.example.test/alert")
+    runs = tmp_path / "runs"
+    dataset = Path(spec.dataset_path)
+    base = datetime(2026, 11, 17, tzinfo=UTC)
+    for value in (100, 110, 90):
+        _write_dataset(dataset, value)
+        automation.run_automation(spec, runs, now=base)
+    _write_dataset(dataset, 1000)
+
+    def failing_post(request):
+        raise urllib.error.HTTPError(request.full_url, 422, "unprocessable", {}, None)
+
+    monkeypatch.setattr(automation, "_post_request", failing_post)
+    result = automation.run_automation(spec, runs, now=base + timedelta(days=1))
+
+    assert result["notified"] is False
+    assert result["webhook_status"] == 422
+    state = json.loads((automation.task_dir(runs, spec.id) / automation.STATE_FILENAME).read_text())
+    assert state["last_webhook_status"] == 422

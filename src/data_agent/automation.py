@@ -168,9 +168,7 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def _notify_result(
-    webhook_url: str, payload: dict[str, Any]
-) -> tuple[str | None, int | None, int]:
+def _notify_result(webhook_url: str, payload: dict[str, Any]) -> tuple[str | None, int | None, int]:
     """POST 告警到 webhook；返回 ``(错误文本, HTTP 状态码, 耗时 ms)``。
 
     成功时错误为 None。状态码/耗时用于事后判断「推没推出去、推了多久」——
@@ -197,6 +195,10 @@ def _notify_result(
             except (TypeError, ValueError):
                 code = None
             return None, code, int((time.monotonic() - started) * 1000)
+    except urllib.error.HTTPError as exc:
+        # HTTPError 是 URLError 子类：必须单独先接，否则 4xx/5xx 的状态码
+        # 会在通用分支里丢失（正是最需要区分配置错误与对方故障的时候）。
+        return str(exc)[:300], int(exc.code), int((time.monotonic() - started) * 1000)
     except (urllib.error.URLError, OSError, ValueError) as exc:
         return str(exc)[:300], None, int((time.monotonic() - started) * 1000)
 

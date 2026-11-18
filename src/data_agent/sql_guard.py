@@ -29,6 +29,7 @@ def query_time_budget_ms() -> int:
     seconds = min(max(seconds, _MIN_SQL_TIMEOUT_SECONDS), _MAX_SQL_TIMEOUT_SECONDS)
     return int(seconds * 1000)
 
+
 #: 单条查询返回的最大行数（硬上限，工具的 limit 参数只能更小）。
 MAX_RESULT_ROWS = 5_000
 
@@ -101,12 +102,29 @@ _DANGEROUS_FUNCTION_PREFIXES: tuple[str, ...] = ("pg_advisory",)
 
 
 def _scan_code_tokens(statement: str) -> list[str]:
-    """收集字符串/注释/引用标识符之外的单词 token（小写、保持顺序）。
+    """收集字符串/注释/引用标识符之外的单词 token（小写）。
 
-    与 :func:`_semicolon_outside_strings` 同一套作用域规则：只有真正会被
-    数据库执行的标识符才参与关键字判定，字符串里的 ``'INSERT'`` 或注释里的
-    ``-- DELETE`` 不触发误杀。
+    与分号扫描一样按**双解释**（标准 SQL / MySQL 反斜杠转义）各扫一遍并取
+    并集：Postgres 的 ``E'...'`` 字符串无条件使用反斜杠转义，只按标准解释
+    扫描会让 ``E'x\\''`` 之后的 ``pg_read_file(...)`` 被误当成字符串内容——
+    2026-11 评审实测：``SELECT E'x\\'', pg_read_file('/etc/passwd')`` 曾放行。
+    两种解释任一认定为「代码」的 token 都必须参与只读校验（fail closed）。
     """
+    strict = _scan_code_tokens_mode(statement, backslash_escapes=False)
+    escaped = _scan_code_tokens_mode(statement, backslash_escapes=True)
+    if strict == escaped:
+        return strict
+    merged = list(strict)
+    seen = set(strict)
+    for token in escaped:
+        if token not in seen:
+            merged.append(token)
+            seen.add(token)
+    return merged
+
+
+def _scan_code_tokens_mode(statement: str, *, backslash_escapes: bool) -> list[str]:
+    """按指定反斜杠语义收集 token（单/双引号字符串内视语义跳过）。"""
     tokens: list[str] = []
     index = 0
     length = len(statement)
@@ -124,6 +142,9 @@ def _scan_code_tokens(statement: str) -> list[str]:
                 index += 1
             continue
         if in_single or in_double or in_backtick:
+            if backslash_escapes and char == "\\" and (in_single or in_double):
+                index += 2
+                continue
             if char == "'" and in_single:
                 in_single = False
             elif char == '"' and in_double:
@@ -234,7 +255,7 @@ def _scan_semicolon(statement: str, *, backslash_escapes: bool) -> bool:
                 index += 1
             continue
         if in_single or in_double or in_backtick:
-            if backslash_escapes and char == "\\" and in_single:
+            if backslash_escapes and char == "\\" and (in_single or in_double):
                 index += 2
                 continue
             if char == "'" and in_single:
@@ -305,9 +326,7 @@ def validate_select(sql: str) -> str:
                 f"只允许只读查询：WITH 子句内不能包含 {write_hits[0].upper()}（会修改数据）。"
             )
     if "into" in tokens:
-        raise ValueError(
-            "只允许只读查询：SELECT ... INTO / INTO OUTFILE 会写库或写文件，不允许。"
-        )
+        raise ValueError("只允许只读查询：SELECT ... INTO / INTO OUTFILE 会写库或写文件，不允许。")
     dangerous = [
         token
         for token in tokens

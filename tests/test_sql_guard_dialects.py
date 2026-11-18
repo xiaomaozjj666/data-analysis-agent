@@ -129,6 +129,27 @@ def test_dangerous_names_inside_strings_or_comments_are_allowed():
     assert validate_select("SELECT 1 -- pg_read_file") == "SELECT 1 -- pg_read_file"
 
 
+def test_postgres_estring_backslash_cannot_bypass_checks():
+    """Postgres E'...' 无条件反斜杠转义：token 扫描必须双解释取并集。"""
+    with pytest.raises(ValueError, match="不支持调用"):
+        validate_select("SELECT E'x\\'' , pg_read_file('/etc/passwd')")
+    with pytest.raises(ValueError, match="修改数据"):
+        validate_select("WITH x AS (SELECT E'a\\'') DELETE FROM t")
+    with pytest.raises(ValueError, match="INTO"):
+        validate_select("SELECT E'a\\'' INTO new_t")
+
+
+def test_escaped_double_quote_multi_statement_rejected():
+    """MySQL/BigQuery 双引号串支持 \\" 转义；两种解释取并集后必须拒绝。"""
+    with pytest.raises(ValueError, match="只允许单条"):
+        validate_select('SELECT "a\\"x" ; DROP TABLE t')
+
+
+def test_estring_with_semicolon_inside_is_single_statement():
+    # E-string 内部的分号属于字符串，不是多语句
+    assert validate_select("SELECT E'a;b' AS v") == "SELECT E'a;b' AS v"
+
+
 def test_normal_analytics_queries_still_allowed():
     for sql in (
         "WITH x AS (SELECT 1 AS n) SELECT * FROM x",
