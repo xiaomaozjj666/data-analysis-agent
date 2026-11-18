@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import socket
+import threading
 import urllib.parse
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1033,3 +1035,91 @@ def test_delivery_fields_recorded_in_run(tmp_path, monkeypatch):
     state = json.loads((automation.task_dir(runs, spec.id) / automation.STATE_FILENAME).read_text())
     assert state["last_email_status"] == 250
     assert state["last_sms_status"] == 201
+
+
+class _RawSMTPServer(threading.Thread):
+    """最小 SMTP 服务器（纯 socket）：验证真实 smtplib 握手与邮件内容。
+
+    不使用替身类，因此能覆盖真实的 EHLO / MAIL FROM / RCPT TO / DATA 流程；
+    不启用 STARTTLS 与登录（`?starttls=0` + 无用户名），避免测试依赖证书。
+    """
+
+    def __init__(self) -> None:
+        super().__init__(daemon=True)
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._sock.bind(("127.0.0.1", 0))
+        self.port = int(self._sock.getsockname()[1])
+        self._sock.listen(1)
+        self.messages: list[str] = []
+
+    def run(self) -> None:  # pragma: no cover - 线程体由用例驱动
+        try:
+            conn, _ = self._sock.accept()
+        except OSError:
+            return
+        with conn:
+            reader = conn.makefile("rb")
+
+            def send(text: str) -> None:
+                conn.sendall((text + "\r\n").encode("utf-8"))
+
+            send("220 localhost SMTP ready")
+            in_data = False
+            buffer: list[str] = []
+            while True:
+                raw = reader.readline()
+                if not raw:
+                    break
+                line = raw.decode("utf-8", "replace").rstrip("\r\n")
+                if in_data:
+                    if line == ".":
+                        in_data = False
+                        self.messages.append("\n".join(buffer))
+                        buffer = []
+                        send("250 queued")
+                    else:
+                        buffer.append(line)
+                    continue
+                upper = line.upper()
+                if upper.startswith(("EHLO", "HELO")):
+                    send("250 localhost")
+                elif upper.startswith(("MAIL FROM", "RCPT TO", "RSET", "NOOP")):
+                    send("250 ok")
+                elif upper.startswith("DATA"):
+                    in_data = True
+                    send("354 end with .")
+                elif upper.startswith("QUIT"):
+                    send("221 bye")
+                    break
+                else:
+                    send("250 ok")
+
+    def close(self) -> None:
+        try:
+            self._sock.close()
+        except OSError:
+            pass
+
+
+def test_email_real_smtp_handshake(monkeypatch):
+    """真实 smtplib 走完整 SMTP 对话（不使用 smtplib 替身）。"""
+    server = _RawSMTPServer()
+    server.start()
+    monkeypatch.setenv(automation.SMTP_URL_ENV, f"smtp://127.0.0.1:{server.port}?starttls=0")
+    monkeypatch.setenv(automation.SMTP_FROM_ENV, "alerts@example.test")
+    try:
+        error, status, duration = automation._send_email_result(
+            ("ops@example.test",), "[data-agent] 巡检告警", "销售额异常：环比 +900%"
+        )
+    finally:
+        server.close()
+        server.join(timeout=3)
+
+    assert error is None, error
+    assert status == 250 and duration >= 0
+    assert server.messages, "SMTP 服务器没有收到 DATA"
+    wire = server.messages[0]
+    assert "To: ops@example.test" in wire
+    assert "Subject:" in wire
+    assert "From: alerts@example.test" in wire
