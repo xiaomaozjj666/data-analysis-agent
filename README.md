@@ -64,8 +64,8 @@ flowchart LR
   - 清洗带安全护栏：缺失值删除比例超过 50% 会拒绝执行，主数据行数始终不低于原始行数的 20%。
   - 统计方法覆盖描述统计、相关分析（含 Pearson p 值）、分组聚合、独立/配对 t 检验、ANOVA、卡方检验、线性回归（R² / RMSE / MAE）。
 - **指标口径登记（可选）**：在会话目录放置 `metrics.json`，或用 `DATA_AGENT_METRICS_PATH` 指定一份全局定义，登记指标的标准名称、别名、口径说明、算式与**已验证问法**（`examples`：业务确认过的问题样例，随口径一起注入，让模型把口语问题对齐到标准指标，对标 Power BI verified answers 的人工策展思路）；规划阶段会把相关定义注入提示词，避免同一指标在不同会话被各自定义为不同口径。未提供定义文件时该特性完全不生效，行为与原来一致。
-- **定时分析任务与主动告警（最小闭环）**：`python -m data_agent.automation` 按间隔或每日 `HH:MM` 运行任务——加载数据、计算登记指标、用 z-score 与环比在历史窗口上做确定性异常检测，告警先落 `alerts.jsonl` 再按需 POST webhook；支持 `add`（创建/更新任务）、`run-due`（供 cron / Windows 任务计划调用）、`run`、`list`、`remove` 与前台 `loop`。样本不足（默认 <3）不下结论，单任务失败不阻断批次，历史每行带指标定义哈希。见 [docs/automation.md](docs/automation.md)。
-- **分析技能包导出**：把会话的 `analysis_recipe.json` 导出为 `SKILL.md + analysis_recipe.json + skill.json` 技能包（对标 Trae SKILL.md 设计），可分发、可版本化；`python -m data_agent.skill run --bundle … --data …` 按配方确定性重跑，不调用 LLM。覆盖已有目录需显式 `--force`。见 [docs/skills.md](docs/skills.md)。
+- **定时分析任务与主动告警（最小闭环）**：`python -m data_agent.automation` 按间隔或每日 `HH:MM` 运行任务——加载数据、计算登记指标、用 z-score 与环比在历史窗口上做确定性异常检测，按阈值归一化严重度排序并生成 `attribution` 归因摘要（最大偏离指标、方向、是否同向），告警先落 `alerts.jsonl` 再按需 POST webhook；支持 `add`（创建/更新任务）、`run-due`（供 cron / Windows 任务计划调用）、`run`、`list`、`remove` 与前台 `loop`。样本不足（默认 <3）不下结论，单任务失败不阻断批次，历史每行带指标定义哈希。见 [docs/automation.md](docs/automation.md)。
+- **分析技能包导出与安装**：把会话的 `analysis_recipe.json` 导出为 `SKILL.md + analysis_recipe.json + skill.json` 技能包（对标 Trae SKILL.md 设计），可分发、可版本化；`python -m data_agent.skill run --bundle … --data …` 按配方确定性重跑，不调用 LLM；`install --scope project|global` 安装到 `.data-agent/skills` 或 `~/.data-agent/skills`（校验配方哈希、拒绝符号链接与越界 slug），`list` 输出带完整性状态的清单。覆盖已有目录/技能需显式 `--force`。见 [docs/skills.md](docs/skills.md)。
 - **双图表引擎**（Plotly + ECharts）：共享同一套数据准备逻辑，支持折线、柱状、面积图、散点（含 3D）、直方图、箱线图、小提琴图、饼图、热力图、相关热力图、散点矩阵、旭日图、矩形树图；自动选图、散点图自动叠加 OLS 趋势线（标注 r 值）与双轴均值象限参考线、极端值自动检测与主体尺度/全量视图切换、暗色主题联动、PNG 导出、数据驱动的白话解读。
 - **大数据图表的可读性**：几十万行时"每点一个标记"的散点会因 alpha 饱和糊成一团（实测 30 万点全是同色噪点）。**散点 ≥ 2 万行自动切换为密度视图**：服务端聚合成网格（单格约 7px）、用分档颜色表达每格记录数（档位图例直接给出"1 / 2–4 / 5–9 …"的记录数区间）、零记录格完全透明，并在有分组时按分组拆成共享色标的分面面板（类别用分面表达、颜色只表达密度）；无分组时补顶部/右侧边缘直方图（jointplot 布局）、趋势线、均值参考线与最外围原始点。判定"是否真有聚集"会先扣掉均匀随机点云的统计涨落，没有聚集就直说。**放大后想看具体记录**：图上带一层默认隐藏的分层抽样原始点，Plotly 用右上角按钮、ECharts 用图例开关一键叠加（名字与解读都写明是抽样、条数，完整数据在同名 JSON）。直方图 ≥ 5 万行改为服务端分箱（纵轴仍是真实记录数）、箱线图改为服务端五数概括、小提琴图与 3D 散点分层抽样（3D 会把"已抽样 N/M 点"写在副标题上）——**同一批图表 HTML 体积从 3~12MB 降到 20~200KB**，密度视图是精确聚合而非抽样，完整数据始终保留在同名 JSON 产物里。折线/面积按 **LTTB（Largest-Triangle-Three-Buckets）保峰降采样**（数值轴与类目轴都覆盖），短促尖峰不会被等距抽样抹掉。
 - **可访问性**：全站文字对比度按 WCAG AA 校准并用浏览器计算样式实测（浅/暗两主题 × 起始页/工作台/产物/历史/命令面板/预览模态），三级文字阶梯与"实心强调色"分令牌管理（白字压底专用 `--accent-solid`，避免暗色下提亮的品牌色当背景时只有 3.5:1）；滑块、按钮、卡片均带 hover/active 反馈与键盘焦点环。
@@ -223,7 +223,7 @@ src/data_agent/
   data_sources.py    数据源注册表（只读保证等级 / 发现列表 / 外部源连接）
   automation.py      定时分析任务（调度 / 指标异常检测 / 告警推送）
   report_export.py   报告导出（Word / PPT / PDF；PDF 按需 reportlab）
-  skill.py           分析配方 → 技能包导出与确定性重跑
+  skill.py           分析配方 → 技能包导出 / 安装 / 清单与确定性重跑
   provenance.py      分析溯源哈希链（数据集 / 指标定义 / 工具 / 产物 / 报告）
   verification.py    逐结论确定性核验与 JSON 报告（verified/conflict/unsupported）
   evalkit/           发布前评测闸门（McNemar / Wilson / ledger / CLI）

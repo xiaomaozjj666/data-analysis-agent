@@ -99,17 +99,37 @@ Windows 任务计划同理，动作写 `python -m data_agent.automation run-due`
 | 文件 | 内容 |
 | --- | --- |
 | `history.jsonl` | 每次运行的 `at` / 各指标值 / `errors` / **指标定义文件哈希** |
-| `alerts.jsonl` | 触发的异常（指标、值、基线均值/标准差、z、环比、原因），行级还有 `at`/`task_id` |
-| `state.json` | `last_run_at` / `last_attempt_at` / `last_status`（ok/partial/error）/ `last_alerts` / `last_errors` / `metrics_sha256` / webhook 失败原因 / `next_retry_at` |
+| `alerts.jsonl` | 触发的异常（指标、值、基线均值/标准差、z、环比、`direction`、`severity`、原因），行级还有 `at`/`task_id`/`attribution` |
+| `state.json` | `last_run_at` / `last_attempt_at` / `last_status`（ok/partial/error）/ `last_alerts` / `last_errors` / `metrics_sha256` / webhook 失败原因 / `last_alert_headline` / `next_retry_at` |
 | `.lock` | 任务级锁文件（跨进程互斥，防止 cron 与手动运行重复推送） |
 
 运行还会创建 `<runs-dir>/automation_workspaces/<id>/` 作为只读工作副本；它只是
 工具执行时的临时工作区，可安全清理（任务下次运行会重建）。
 
 `run` / `run-due` 的结果 JSON 包含：`metrics`（逐指标状态/汇总值）、
-`metric_errors`、`alerts`、`notified`、`webhook_error`、`history_samples`、
-`metrics_file`、`metrics_sha256`、`dry_run`；拿不到锁时返回
+`metric_errors`、`alerts`、`attribution`、`notified`、`webhook_error`、
+`history_samples`、`metrics_file`、`metrics_sha256`、`dry_run`；拿不到锁时返回
 `{"skipped": "locked"}`。
+
+### 4.1 归因摘要（`attribution`）
+
+多条告警会按**阈值归一化严重度**排序（z-score ÷ 阈值、环比 ÷ 阈值取大），
+输出一段确定性摘要，随结果、`alerts.jsonl` 和 webhook 一起发出：
+
+```json
+{
+  "headline": "订单数 下降（环比 -60.0%、z-score -4.10），为本次偏离最大的指标",
+  "top_metric": "订单数",
+  "max_severity": 3.0,
+  "count": 2,
+  "same_direction": false,
+  "directions": {"up": 1, "down": 1, "flat": 0},
+  "ranking": [{"metric": "订单数", "severity": 3.0, "direction": "down", "value": 40.0, "baseline_mean": 100.0}]
+}
+```
+
+`same_direction=true` 表示所有告警同向（通常指向数据源/口径整体变化，而非
+单个业务事件）；它只是统计事实，不构成因果结论。`ranking` 最多保留前 10 项。
 
 ## 5. 失败、并发与 webhook 安全
 
@@ -134,5 +154,6 @@ Windows 任务计划同理，动作写 `python -m data_agent.automation run-due`
 
 ## 6. 边界
 
-- **不做归因**：异常只报告统计事实，不带原因解释；需要解释时用分析工作台追问。
+- **归因只到统计层**：`attribution` 给出偏离排序、方向与同向判断，不推导业务
+  原因；需要解释时用分析工作台追问（参见 `docs/competitive-analysis.md` §6.4）。
 - **口径可追溯**：历史每行都带 `metrics_sha256`，事后能回答「这次用的是哪版口径」。

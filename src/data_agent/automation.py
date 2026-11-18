@@ -541,6 +541,18 @@ def detect_anomalies(
             # 零基线：方差为 0、环比无定义，但从 0 起跳本身就是需要关注的变化。
             reasons.append("基线为 0，当前值非零")
         if reasons:
+            # 阈值归一化后的严重度：z-score 与环比各自除以自己的阈值再取大，
+            # 这样「z=4 / 阈值 3」与「环比 60% / 阈值 20%」可以直接比大小，
+            # 不会因为两个指标量纲不同而总让其中一种原因霸榜。
+            ratios: list[float] = []
+            if zscore is not None:
+                ratios.append(abs(zscore) / spec.zscore_threshold)
+            if pct_change is not None:
+                ratios.append(abs(pct_change) / spec.pct_change_threshold)
+            if last == 0 and abs(numeric_value) > 1e-9:
+                # 零基线没有方差与环比，按「刚过阈值」计，至少不排在正常项后面。
+                ratios.append(1.0)
+            direction = "up" if numeric_value > mean else "down" if numeric_value < mean else "flat"
             alerts.append(
                 {
                     "metric": metric,
@@ -549,10 +561,63 @@ def detect_anomalies(
                     "baseline_stdev": stdev,
                     "zscore": zscore,
                     "pct_change": pct_change,
+                    "direction": direction,
+                    "severity": round(max(ratios, default=1.0), 4),
                     "reasons": reasons,
                 }
             )
     return alerts
+
+
+def summarize_alerts(alerts: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """把多条告警收敛成一段可读的归因摘要（不调用 LLM，全部可复算）。
+
+    输出回答三个问题：哪项偏离最大、偏离方向是什么、是不是所有指标一起动。
+    最后一项有实际诊断价值——全部同向通常意味着数据源/口径整体变化，单项
+    偏离更可能是该指标自身的业务事件；但这里只做排序与方向统计，不臆断原因。
+    """
+    if not alerts:
+        return None
+    ranked = sorted(
+        alerts,
+        key=lambda item: (-float(item.get("severity") or 0.0), -abs(float(item["value"]))),
+    )
+    top = ranked[0]
+    detail: list[str] = []
+    if top.get("pct_change") is not None:
+        detail.append(f"环比 {float(top['pct_change']):+.1%}")
+    if top.get("zscore") is not None:
+        detail.append(f"z-score {float(top['zscore']):+.2f}")
+    if not detail:
+        detail.append("超出设定阈值")
+    label = {"up": "上升", "down": "下降", "flat": "持平"}.get(
+        str(top.get("direction") or ""), "变化"
+    )
+    headline = f"{top['metric']} {label}（{'、'.join(detail)}），为本次偏离最大的指标"
+    directions = {"up": 0, "down": 0, "flat": 0}
+    for item in alerts:
+        key = str(item.get("direction") or "")
+        if key in directions:
+            directions[key] += 1
+    moved = [key for key, count in directions.items() if count and key != "flat"]
+    return {
+        "headline": headline,
+        "top_metric": top["metric"],
+        "max_severity": top.get("severity"),
+        "count": len(alerts),
+        "same_direction": len(moved) == 1,
+        "directions": directions,
+        "ranking": [
+            {
+                "metric": item["metric"],
+                "severity": item.get("severity"),
+                "direction": item.get("direction"),
+                "value": item["value"],
+                "baseline_mean": item.get("baseline_mean"),
+            }
+            for item in ranked[:10]
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -676,6 +741,7 @@ def _run_with_workspace(
         if row.get("metrics_sha256") in (None, metrics_sha256)
     ]
     alerts = detect_anomalies(current, history, spec)
+    attribution = summarize_alerts(alerts)
     ran_at = moment.isoformat(timespec="seconds")
     state_corrupt = _state_corrupt(runs_dir, spec.id)
     if state_corrupt:
@@ -690,6 +756,7 @@ def _run_with_workspace(
         "metrics": computed,
         "metric_errors": errors,
         "alerts": alerts,
+        "attribution": attribution,
         "notified": False,
         "webhook_error": None,
         "webhook_status": None,
@@ -722,7 +789,15 @@ def _run_with_workspace(
     if alerts:
         _append_jsonl(
             directory / ALERTS_FILENAME,
-            json.dumps({"at": ran_at, "task_id": spec.id, "alerts": alerts}, ensure_ascii=False),
+            json.dumps(
+                {
+                    "at": ran_at,
+                    "task_id": spec.id,
+                    "alerts": alerts,
+                    "attribution": attribution,
+                },
+                ensure_ascii=False,
+            ),
         )
     state = _read_state(runs_dir, spec.id)
     state.update(
@@ -735,6 +810,10 @@ def _run_with_workspace(
         }
     )
     state.pop("next_retry_at", None)
+    if attribution:
+        state["last_alert_headline"] = attribution["headline"]
+    else:
+        state.pop("last_alert_headline", None)
     if errors:
         state["last_errors"] = errors
     else:
@@ -751,6 +830,7 @@ def _run_with_workspace(
                 "task": {"id": spec.id, "name": spec.name},
                 "ran_at": ran_at,
                 "alerts": alerts,
+                "attribution": attribution,
             },
         )
     result["notified"] = bool(alerts and notify and spec.webhook_url and not webhook_error)

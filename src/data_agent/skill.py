@@ -37,6 +37,12 @@ MANIFEST_FILE = "skill.json"
 SKILL_VERSION = 1
 _MAX_NAME_CHARS = 64
 
+#: 安装目录约定：项目级放当前工作区，全局级放用户主目录；可用环境变量统一覆盖。
+SKILLS_DIRNAME = Path(".data-agent") / "skills"
+SKILLS_DIR_ENV = "DATA_AGENT_SKILLS_DIR"
+_SLUG_RE = re.compile(r"^[\w\u4e00-\u9fff-]{1,64}$")
+_SKILL_FILES = (SKILL_DOC, RECIPE_FILENAME, MANIFEST_FILE)
+
 
 def _slug(value: str) -> str:
     """把任务名转成文件系统安全的 slug（保留中英文与数字，其余折叠为 -）。"""
@@ -220,6 +226,168 @@ def export_skill(
     }
 
 
+def resolve_skills_root(scope: str = "project", *, root: str | Path | None = None) -> Path:
+    """解析技能安装目录。
+
+    优先级：显式 ``root`` > ``DATA_AGENT_SKILLS_DIR`` > 作用域默认目录。
+    项目级默认 ``<cwd>/.data-agent/skills``，全局级默认
+    ``~/.data-agent/skills``——与 export 的"输出任意目录"不同，安装必须落到
+    消费方（其他 Agent）会扫描的固定位置。
+    """
+    if scope not in {"project", "global"}:
+        raise ValueError("scope 只能是 project 或 global。")
+    if root is not None:
+        return Path(root).expanduser().resolve()
+    configured = os.environ.get(SKILLS_DIR_ENV, "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    base = Path.cwd() if scope == "project" else Path.home()
+    return (base / SKILLS_DIRNAME).resolve()
+
+
+def _load_bundle_contract(
+    bundle_dir: str | Path,
+) -> tuple[Path, dict[str, Any], dict[str, Any], str, str, dict[str, str]]:
+    """校验技能包三件套并返回 ``(目录, 配方, 清单, slug, 配方哈希, 原文)``。
+
+    安装是"把别人给的目录拷进本机技能路径"，因此这里按不可信输入处理：
+    只认约定文件、拒绝符号链接、slug 必须匹配安全字符集，配方哈希必须与
+    清单一致（否则安装即固化一份被篡改过的配方）。
+
+    三个文件的文本只读取一次并随返回值带出：校验与落盘必须基于同一份字节，
+    否则校验后、复制前被并发改写会装进一份没校验过的内容（TOCTOU）。
+    """
+    bundle = Path(bundle_dir).expanduser().resolve()
+    if not bundle.is_dir():
+        raise FileNotFoundError(f"技能包目录不存在：{bundle}")
+    texts: dict[str, str] = {}
+    for filename in _SKILL_FILES:
+        path = bundle / filename
+        if path.is_symlink():
+            raise ValueError(f"技能包文件不能是符号链接：{path}")
+        if not path.is_file():
+            raise FileNotFoundError(f"技能包缺少 {filename}：{path}")
+        texts[filename] = path.read_text(encoding="utf-8")
+    try:
+        recipe = json.loads(texts[RECIPE_FILENAME])
+        manifest = json.loads(texts[MANIFEST_FILE])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"技能包内的 JSON 无法解析：{exc}") from exc
+    if not isinstance(recipe, dict):
+        raise ValueError(f"{RECIPE_FILENAME} 必须是 JSON 对象。")
+    if not isinstance(manifest, dict):
+        raise ValueError(f"{MANIFEST_FILE} 必须是 JSON 对象。")
+    slug = str(manifest.get("slug") or "").strip()
+    if not _SLUG_RE.fullmatch(slug) or slug in {".", ".."}:
+        raise ValueError("skill.json 的 slug 缺失或包含不安全字符，拒绝安装。")
+    expected = str(manifest.get("recipe_sha256") or "").strip()
+    if not expected:
+        raise ValueError("skill.json 缺少 recipe_sha256，无法校验配方完整性。")
+    actual = _recipe_digest(recipe)
+    if expected != actual:
+        raise ValueError(
+            "技能包内的 analysis_recipe.json 与 skill.json 的配方哈希不一致，拒绝安装。"
+        )
+    return bundle, recipe, manifest, slug, actual, texts
+
+
+def install_skill(
+    bundle_dir: str | Path,
+    *,
+    scope: str = "project",
+    root: str | Path | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """把技能包安装到项目级/全局技能目录，返回安装摘要。
+
+    与 :func:`export_skill` 一样先写 staging 再整体替换，失败时回滚旧版本；
+    覆盖需要显式 ``force``——技能目录可能被其他 Agent 复用，静默覆盖会让
+    对方手里的旧版本凭空变化。
+    """
+    _bundle, _recipe, manifest, slug, digest, texts = _load_bundle_contract(bundle_dir)
+    target = resolve_skills_root(scope, root=root) / slug
+    target.parent.mkdir(parents=True, exist_ok=True)
+    replaced = target.exists()
+    if replaced and not force:
+        raise FileExistsError(f"技能已安装：{target}（确认覆盖请加 force）")
+    backup: Path | None = None
+    if replaced:
+        backup = target.with_name(f".{target.name}.bak-{uuid4().hex[:8]}")
+        os.replace(target, backup)
+    staging = Path(tempfile.mkdtemp(prefix=".install-", dir=target.parent))
+    try:
+        for filename in _SKILL_FILES:
+            _atomic_write_text(staging / filename, texts[filename])
+        os.replace(staging, target)
+    except Exception:
+        if backup is not None and backup.exists() and not target.exists():
+            os.replace(backup, target)
+        raise
+    else:
+        if backup is not None:
+            shutil.rmtree(backup, ignore_errors=True)
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+    return {
+        "path": str(target),
+        "scope": scope,
+        "name": str(manifest.get("name") or slug),
+        "slug": slug,
+        "version": manifest.get("version"),
+        "recipe_sha256": digest,
+        "tools": manifest.get("tools") or [],
+        "replaced": replaced,
+    }
+
+
+def list_skills(*, scope: str = "project", root: str | Path | None = None) -> dict[str, Any]:
+    """列出已安装技能并逐个校验完整性；坏包标记 ``valid=false`` 而不抛错。
+
+    列目录时必须容错：一个被改坏的技能不应让 ``list`` 整体失败，否则用户
+    反而看不到"哪个包坏了、坏在哪"。
+    """
+    base = resolve_skills_root(scope, root=root)
+    entries: list[dict[str, Any]] = []
+    if base.is_dir():
+        for child in sorted(base.iterdir(), key=lambda item: item.name.casefold()):
+            if child.is_symlink() or not child.is_dir() or child.name.startswith("."):
+                continue
+            entry: dict[str, Any] = {
+                "slug": child.name,
+                "path": str(child),
+                "name": child.name,
+                "version": None,
+                "valid": False,
+            }
+            try:
+                for filename in _SKILL_FILES:
+                    path = child / filename
+                    if path.is_symlink() or not path.is_file():
+                        raise ValueError(f"缺少或不是普通文件：{filename}")
+                manifest = json.loads((child / MANIFEST_FILE).read_text(encoding="utf-8"))
+                recipe = json.loads((child / RECIPE_FILENAME).read_text(encoding="utf-8"))
+                if not isinstance(manifest, dict) or not isinstance(recipe, dict):
+                    raise ValueError("skill.json / analysis_recipe.json 必须是 JSON 对象")
+                digest = _recipe_digest(recipe)
+                expected = str(manifest.get("recipe_sha256") or "").strip()
+                if not expected:
+                    raise ValueError("skill.json 缺少 recipe_sha256")
+                if expected != digest:
+                    raise ValueError("配方哈希与 skill.json 不一致")
+                entry.update(
+                    name=str(manifest.get("name") or child.name),
+                    version=manifest.get("version"),
+                    recipe_sha256=digest,
+                    tools=manifest.get("tools") or [],
+                    valid=True,
+                )
+            except (OSError, ValueError) as exc:
+                entry["error"] = str(exc)[:200]
+            entries.append(entry)
+    return {"root": str(base), "skills": entries}
+
+
 def run_bundle(bundle_dir: str | Path, data_path: str | Path) -> dict[str, Any]:
     """按导出的技能包重跑：加载数据 → 逐步调用配方工具。
 
@@ -272,10 +440,22 @@ def main(argv: list[str] | None = None) -> int:
     run = sub.add_parser("run", help="按技能包重跑（不需要 LLM）")
     run.add_argument("--bundle", required=True, help="技能包目录")
     run.add_argument("--data", required=True, help="数据文件路径")
+    install = sub.add_parser("install", help="把技能包安装到项目级/全局技能目录")
+    install.add_argument("--bundle", required=True, help="技能包目录")
+    install.add_argument("--scope", choices=("project", "global"), default="project")
+    install.add_argument("--root", help="自定义技能安装根目录（覆盖 scope 默认值）")
+    install.add_argument("--force", action="store_true", help="覆盖同 slug 的已安装技能")
+    listing = sub.add_parser("list", help="列出已安装技能并校验完整性")
+    listing.add_argument("--scope", choices=("project", "global"), default="project")
+    listing.add_argument("--root", help="自定义技能安装根目录（覆盖 scope 默认值）")
     args = parser.parse_args(argv)
     try:
         if args.command == "export":
             result = export_skill(args.session, args.out, name=args.name, force=args.force)
+        elif args.command == "install":
+            result = install_skill(args.bundle, scope=args.scope, root=args.root, force=args.force)
+        elif args.command == "list":
+            result = list_skills(scope=args.scope, root=args.root)
         else:
             result = run_bundle(args.bundle, args.data)
     except (OSError, ValueError) as exc:

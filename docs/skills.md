@@ -42,7 +42,45 @@ python -m data_agent.skill run --bundle ./skills/分析各区域销售趋势 --d
 重跑走 `recipe.replay_recipe`：按配方顺序调用工具，**不再调用规划器/LLM**。
 输出包含本次数据指纹与逐次工具调用结果，便于对比"导出时 vs 现在"。
 
-## 3. 边界
+## 3. 安装到项目级 / 全局技能目录
+
+导出目录可以放在任何地方；要让其他 Agent（或下一次会话）稳定找到技能，用
+`install` 把它复制进约定的技能根目录：
+
+```bash
+# 项目级：<cwd>/.data-agent/skills/<slug>/
+python -m data_agent.skill install --bundle ./skills/分析各区域销售趋势
+
+# 全局级：~/.data-agent/skills/<slug>/
+python -m data_agent.skill install --bundle ./skills/分析各区域销售趋势 --scope global
+
+# 自定义根目录（优先级最高，覆盖 scope 默认值与环境变量）
+python -m data_agent.skill install --bundle ./dist/skill --root ./my-skills
+python -m data_agent.skill list --root ./my-skills
+```
+
+`DATA_AGENT_SKILLS_DIR` 可统一覆盖项目级/全局级的默认根目录，适合把技能放进
+容器挂载卷或只读镜像层。
+
+安装与列出：
+
+```bash
+python -m data_agent.skill list
+# {"root": ".../.data-agent/skills",
+#  "skills": [{"slug": "...", "name": "...", "version": 1, "valid": true,
+#              "recipe_sha256": "...", "tools": ["inspect_data"], "path": "..."}]}
+```
+
+安装规则（把技能包当不可信输入处理）：
+
+- 只复制 `SKILL.md` / `analysis_recipe.json` / `skill.json` 三个约定文件；
+- 拒绝符号链接与缺失文件；
+- `slug` 必须匹配 `[A-Za-z0-9_\u4e00-\u9fff-]{1,64}`，防止 `../` 越界；
+- 安装前校验 `skill.json.recipe_sha256`，被篡改过的配方拒绝落盘；
+- 覆盖同名技能必须 `--force`；写入先落 staging 再整体替换，失败回滚旧版本；
+- `list` 对坏包只标记 `valid: false` 与 `error`，不会因一个坏包让整张清单失败。
+
+## 4. 边界
 
 - 固化的是**工具调用参数**，不是模型推理；结论解释仍需重新生成。
 - 重跑前会校验 `skill.json.recipe_sha256` 与 `analysis_recipe.json` 内容是否一致；

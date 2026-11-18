@@ -582,3 +582,100 @@ def test_webhook_http_error_status_is_recorded(tmp_path, monkeypatch):
     assert result["webhook_status"] == 422
     state = json.loads((automation.task_dir(runs, spec.id) / automation.STATE_FILENAME).read_text())
     assert state["last_webhook_status"] == 422
+
+
+# ---------------------------------------------------------------------------
+# 归因摘要：排序、方向与落盘
+# ---------------------------------------------------------------------------
+
+
+def test_summarize_alerts_ranks_by_threshold_normalized_severity():
+    alerts = [
+        {
+            "metric": "销售额",
+            "value": 120.0,
+            "baseline_mean": 100.0,
+            "zscore": 4.0,
+            "pct_change": 0.2,
+            "direction": "up",
+            "severity": 1.3333,
+            "reasons": ["z"],
+        },
+        {
+            "metric": "订单数",
+            "value": 40.0,
+            "baseline_mean": 100.0,
+            "zscore": None,
+            "pct_change": -0.6,
+            "direction": "down",
+            "severity": 3.0,
+            "reasons": ["pct"],
+        },
+    ]
+    summary = automation.summarize_alerts(alerts)
+    assert summary["top_metric"] == "订单数"
+    assert summary["max_severity"] == 3.0
+    assert summary["same_direction"] is False
+    assert summary["directions"] == {"up": 1, "down": 1, "flat": 0}
+    assert "订单数" in summary["headline"] and "下降" in summary["headline"]
+    assert [item["metric"] for item in summary["ranking"]] == ["订单数", "销售额"]
+
+
+def test_summarize_alerts_same_direction_and_empty():
+    assert automation.summarize_alerts([]) is None
+    alerts = [
+        {
+            "metric": name,
+            "value": 50.0,
+            "baseline_mean": 100.0,
+            "zscore": -5.0,
+            "pct_change": -0.5,
+            "direction": "down",
+            "severity": 2.5,
+            "reasons": ["z"],
+        }
+        for name in ("销售额", "订单数")
+    ]
+    summary = automation.summarize_alerts(alerts)
+    assert summary["same_direction"] is True
+    assert summary["directions"]["down"] == 2
+
+
+def test_attribution_is_written_to_alerts_webhook_and_state(tmp_path, monkeypatch):
+    spec = _make_spec(tmp_path, webhook_url="https://hooks.example.test/alert")
+    runs = tmp_path / "runs"
+    dataset = Path(spec.dataset_path)
+    base = datetime(2026, 11, 17, tzinfo=UTC)
+    for value in (100, 110, 90):
+        _write_dataset(dataset, value)
+        automation.run_automation(spec, runs, now=base)
+    _write_dataset(dataset, 1000)
+
+    calls: list[object] = []
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(
+        automation, "_post_request", lambda request: calls.append(request) or _Resp()
+    )
+    result = automation.run_automation(spec, runs, now=base + timedelta(days=1))
+
+    assert result["attribution"]["top_metric"] == "销售额"
+    assert "销售额" in result["attribution"]["headline"]
+    body = json.loads(calls[0].data.decode("utf-8"))
+    assert body["attribution"]["max_severity"] >= 3.0
+    alert_rows = [
+        json.loads(line)
+        for line in (automation.task_dir(runs, spec.id) / automation.ALERTS_FILENAME)
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip()
+    ]
+    assert alert_rows[-1]["attribution"]["count"] == 1
+    state = json.loads((automation.task_dir(runs, spec.id) / automation.STATE_FILENAME).read_text())
+    assert "销售额" in state["last_alert_headline"]

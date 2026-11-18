@@ -11,6 +11,15 @@
 
 ### 新增
 
+- **技能包安装与清单**：`skill.py` 新增 `install`（项目级 `.data-agent/skills`
+  或全局级 `~/.data-agent/skills`，`DATA_AGENT_SKILLS_DIR` 可覆盖）与 `list`。
+  安装按不可信输入处理：只复制三个约定文件、拒绝符号链接、slug 安全字符集、
+  校验 `recipe_sha256`，覆盖需 `--force` 且失败回滚旧版本；`list` 对坏包逐项
+  标记 `valid/error`。见 `docs/skills.md`。
+- **定时任务异常归因摘要**：告警新增阈值归一化的 `severity` 与 `direction`，
+  `run`/`run-due` 结果、`alerts.jsonl` 与 webhook 增加 `attribution`
+  （最大偏离指标、方向、`same_direction` 同向判断、Top-10 排名），
+  `state.json` 记录 `last_alert_headline`。归因只到统计层，不推导业务原因。
 - **经营简报核验（Sales Audit）**：新增 `POST /api/sessions/{id}/sales-audit`
   与「简报核验」工作区 Tab。只读原始上传 CSV，按 `SUM(sales)` / `SUM(quantity)`
   / `COUNT(DISTINCT order_id)` 复算，把草稿里的指标行逐条判为

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 
 import pytest
 
@@ -12,6 +14,10 @@ from data_agent.skill import (
     SKILL_DOC,
     build_skill_bundle,
     export_skill,
+    install_skill,
+    list_skills,
+    main,
+    resolve_skills_root,
 )
 from data_agent.workspace import DataWorkspace
 
@@ -241,3 +247,242 @@ def test_cli_reports_bundle_error(tmp_path, capsys):
     code = main(["run", "--bundle", str(tmp_path / "missing"), "--data", str(tmp_path / "x.csv")])
     assert code == 2
     assert "analysis_recipe.json" in capsys.readouterr().err
+
+
+def _installed_names(root):
+    payload = list_skills(root=root)
+    return [(item["slug"], item["valid"]) for item in payload["skills"]]
+
+
+def test_install_skill_copies_contract_and_lists_it(tmp_path):
+    workspace = _workspace_with_recipe(tmp_path)
+    exported = export_skill(workspace.root, tmp_path / "out")
+    bundle = tmp_path / "out" / exported["slug"]
+    target_root = tmp_path / "installed"
+
+    result = install_skill(bundle, root=target_root)
+
+    assert result["slug"] == exported["slug"]
+    assert result["replaced"] is False
+    assert result["scope"] == "project"
+    target = target_root / exported["slug"]
+    for filename in (SKILL_DOC, RECIPE_FILENAME, MANIFEST_FILE):
+        assert (target / filename).is_file()
+    listing = list_skills(root=target_root)
+    assert listing["root"] == str(target_root.resolve())
+    assert _installed_names(target_root) == [(exported["slug"], True)]
+    assert listing["skills"][0]["recipe_sha256"] == exported["recipe_sha256"]
+
+
+def test_install_refuses_overwrite_without_force(tmp_path):
+    workspace = _workspace_with_recipe(tmp_path)
+    exported = export_skill(workspace.root, tmp_path / "out")
+    bundle = tmp_path / "out" / exported["slug"]
+    target_root = tmp_path / "installed"
+    install_skill(bundle, root=target_root)
+
+    with pytest.raises(FileExistsError, match="force"):
+        install_skill(bundle, root=target_root)
+    replaced = install_skill(bundle, root=target_root, force=True)
+    assert replaced["replaced"] is True
+    assert _installed_names(target_root) == [(exported["slug"], True)]
+
+
+def test_install_rejects_tampered_recipe(tmp_path):
+    workspace = _workspace_with_recipe(tmp_path)
+    exported = export_skill(workspace.root, tmp_path / "out")
+    bundle = tmp_path / "out" / exported["slug"]
+    recipe_path = bundle / RECIPE_FILENAME
+    recipe = json.loads(recipe_path.read_text(encoding="utf-8"))
+    recipe["task"] = "被篡改的任务"
+    recipe_path.write_text(json.dumps(recipe, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="哈希不一致"):
+        install_skill(bundle, root=tmp_path / "installed")
+
+
+def test_install_rejects_unsafe_slug(tmp_path):
+    workspace = _workspace_with_recipe(tmp_path)
+    exported = export_skill(workspace.root, tmp_path / "out")
+    bundle = tmp_path / "out" / exported["slug"]
+    manifest_path = bundle / MANIFEST_FILE
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["slug"] = "../escape"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="slug"):
+        install_skill(bundle, root=tmp_path / "installed")
+    assert not (tmp_path / "installed" / ".." / "escape").exists()
+
+
+def test_install_rejects_symlinked_contract_file(tmp_path):
+    workspace = _workspace_with_recipe(tmp_path)
+    exported = export_skill(workspace.root, tmp_path / "out")
+    bundle = tmp_path / "out" / exported["slug"]
+    original = bundle / RECIPE_FILENAME
+    outside = tmp_path / "outside.json"
+    outside.write_text(original.read_text(encoding="utf-8"), encoding="utf-8")
+    original.unlink()
+    try:
+        original.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("当前平台不允许创建符号链接")
+    with pytest.raises(ValueError, match="符号链接"):
+        install_skill(bundle, root=tmp_path / "installed")
+
+
+def test_list_marks_corrupt_or_missing_skill_invalid(tmp_path):
+    root = tmp_path / "installed"
+    good = root / "good"
+    good.mkdir(parents=True)
+    bundle = build_skill_bundle({"task": "销售分析", "steps": []})
+    for filename, text in bundle.items():
+        (good / filename).write_text(text, encoding="utf-8")
+    broken = root / "broken"
+    broken.mkdir()
+    (broken / MANIFEST_FILE).write_text("{}", encoding="utf-8")
+
+    payload = list_skills(root=root)
+    by_slug = {item["slug"]: item for item in payload["skills"]}
+    assert by_slug["good"]["valid"] is True
+    assert by_slug["broken"]["valid"] is False
+    assert "缺少" in by_slug["broken"]["error"]
+
+
+def test_cli_install_and_list(tmp_path, capsys):
+    workspace = _workspace_with_recipe(tmp_path)
+    exported = export_skill(workspace.root, tmp_path / "out")
+    bundle = tmp_path / "out" / exported["slug"]
+    root = tmp_path / "cli-skills"
+
+    assert main(["install", "--bundle", str(bundle), "--root", str(root)]) == 0
+    installed = json.loads(capsys.readouterr().out)
+    assert installed["slug"] == exported["slug"]
+
+    assert main(["list", "--root", str(root)]) == 0
+    listing = json.loads(capsys.readouterr().out)
+    assert listing["skills"][0]["valid"] is True
+
+
+def test_skills_root_scope_and_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_AGENT_SKILLS_DIR", str(tmp_path / "env-skills"))
+    assert resolve_skills_root("project") == (tmp_path / "env-skills").resolve()
+    monkeypatch.delenv("DATA_AGENT_SKILLS_DIR")
+    explicit = tmp_path / "explicit"
+    assert resolve_skills_root("global", root=explicit) == explicit.resolve()
+    with pytest.raises(ValueError, match="scope"):
+        resolve_skills_root("elsewhere")
+
+
+def test_resolve_skills_root_default_project_dir(tmp_path, monkeypatch):
+    monkeypatch.delenv("DATA_AGENT_SKILLS_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    assert resolve_skills_root("project") == (tmp_path / ".data-agent" / "skills").resolve()
+    assert resolve_skills_root("global").is_absolute()
+
+
+def test_load_bundle_contract_rejects_bad_inputs(tmp_path):
+    from data_agent.skill import _load_bundle_contract
+
+    with pytest.raises(FileNotFoundError, match="不存在"):
+        _load_bundle_contract(tmp_path / "missing")
+
+    partial = tmp_path / "partial"
+    partial.mkdir()
+    (partial / SKILL_DOC).write_text("# x", encoding="utf-8")
+    with pytest.raises(FileNotFoundError, match="缺少"):
+        _load_bundle_contract(partial)
+
+    bad_json = tmp_path / "bad-json"
+    bad_json.mkdir()
+    for name in (SKILL_DOC, MANIFEST_FILE):
+        (bad_json / name).write_text("{}", encoding="utf-8")
+    (bad_json / RECIPE_FILENAME).write_text("{not json", encoding="utf-8")
+    with pytest.raises(ValueError, match="无法解析"):
+        _load_bundle_contract(bad_json)
+
+    non_dict = tmp_path / "non-dict"
+    non_dict.mkdir()
+    (non_dict / SKILL_DOC).write_text("# x", encoding="utf-8")
+    (non_dict / MANIFEST_FILE).write_text("{}", encoding="utf-8")
+    (non_dict / RECIPE_FILENAME).write_text("[]", encoding="utf-8")
+    with pytest.raises(ValueError, match="必须是 JSON 对象"):
+        _load_bundle_contract(non_dict)
+
+    (non_dict / MANIFEST_FILE).write_text("[]", encoding="utf-8")
+    with pytest.raises(ValueError, match="必须是 JSON 对象"):
+        _load_bundle_contract(non_dict)
+
+    (non_dict / MANIFEST_FILE).write_text('{"slug": "safe"}', encoding="utf-8")
+    (non_dict / RECIPE_FILENAME).write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="recipe_sha256"):
+        _load_bundle_contract(non_dict)
+
+
+def test_install_rolls_back_when_replace_fails(tmp_path, monkeypatch):
+    workspace = _workspace_with_recipe(tmp_path)
+    exported = export_skill(workspace.root, tmp_path / "out")
+    bundle = tmp_path / "out" / exported["slug"]
+    target_root = tmp_path / "installed"
+    install_skill(bundle, root=target_root)
+    target = target_root / exported["slug"]
+    before = (target / MANIFEST_FILE).read_text(encoding="utf-8")
+
+    import data_agent.skill as skill_module
+
+    real_replace = os.replace
+
+    def flaky(src, dst):
+        if Path(src).name.startswith(".install-") and Path(dst) == target:
+            raise OSError("disk full")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(skill_module.os, "replace", flaky)
+    with pytest.raises(OSError, match="disk full"):
+        install_skill(bundle, root=target_root, force=True)
+    assert (target / MANIFEST_FILE).read_text(encoding="utf-8") == before
+    assert not [item for item in target_root.iterdir() if item.name.startswith(".")]
+
+
+def test_list_skips_hidden_symlink_and_non_directory(tmp_path):
+    import data_agent.skill as skill_module
+
+    root = tmp_path / "installed"
+    root.mkdir()
+    (root / ".hidden").mkdir()
+    (root / "plain.txt").write_text("x", encoding="utf-8")
+    try:
+        (root / "link").symlink_to(tmp_path / "elsewhere")
+    except OSError:
+        # Windows 未开启开发者模式时创建符号链接需要额外特权；隐藏目录与
+        # 普通文件已经覆盖同一条跳过分支。
+        pass
+    assert skill_module.list_skills(root=root)["skills"] == []
+
+
+def test_list_reports_bad_manifest_variants(tmp_path):
+    root = tmp_path / "installed"
+    root.mkdir()
+    base = build_skill_bundle({"task": "t", "steps": []})
+
+    def write(slug, *, recipe_text=None, manifest_text=None):
+        target = root / slug
+        target.mkdir()
+        (target / SKILL_DOC).write_text(base[SKILL_DOC], encoding="utf-8")
+        (target / RECIPE_FILENAME).write_text(
+            recipe_text if recipe_text is not None else base[RECIPE_FILENAME],
+            encoding="utf-8",
+        )
+        (target / MANIFEST_FILE).write_text(
+            manifest_text if manifest_text is not None else base[MANIFEST_FILE],
+            encoding="utf-8",
+        )
+
+    write("non-dict", recipe_text="[]")
+    write("no-hash", manifest_text='{"slug": "no-hash"}')
+    write("mismatch", manifest_text=json.dumps({"slug": "mismatch", "recipe_sha256": "x"}))
+    by_slug = {item["slug"]: item for item in list_skills(root=root)["skills"]}
+    assert by_slug["non-dict"]["valid"] is False
+    assert "JSON 对象" in by_slug["non-dict"]["error"]
+    assert "缺少 recipe_sha256" in by_slug["no-hash"]["error"]
+    assert "不一致" in by_slug["mismatch"]["error"]
