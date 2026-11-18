@@ -44,13 +44,16 @@ function describeApiError(payload: unknown, status: number): string {
 }
 
 // 自定义错误类保留 HTTP status，让上层能区分 404（会话失效）等场景，
-// 而不是去解析 error.message 字符串。
+// 而不是去解析 error.message 字符串。retryAfter 来自 429 响应的
+// Retry-After 头，供「快速起草」展示需要等待的秒数。
 class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  retryAfter?: number;
+  constructor(message: string, status: number, retryAfter?: number) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    if (retryAfter !== undefined) this.retryAfter = retryAfter;
   }
 }
 
@@ -68,7 +71,14 @@ async function api<T = unknown>(path: string, options: ApiOptions = {}): Promise
     });
     const contentType = response.headers.get("content-type") || "";
     const payload: unknown = contentType.includes("application/json") ? await response.json() : await response.text();
-    if (!response.ok) throw new ApiError(describeApiError(payload, response.status), response.status);
+    if (!response.ok) {
+      const retryAfter = Number(response.headers.get("retry-after"));
+      throw new ApiError(
+        describeApiError(payload, response.status),
+        response.status,
+        Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined,
+      );
+    }
     return payload as T;
   } catch (err) {
     const error = err as Error;

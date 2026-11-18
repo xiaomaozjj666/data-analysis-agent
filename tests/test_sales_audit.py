@@ -103,3 +103,139 @@ def test_undecodable_csv_is_rejected(sales_csv):
     sales_csv.write_bytes(b"order_id,sales,quantity\n\xff\xfe\xff,1,1\n")
     with pytest.raises(ValueError, match="UTF-8 或 GB18030"):
         audit_sales_brief(sales_csv, "订单数：1 笔")
+
+# --- 加固用例：范围门 / 近似重复 / 别名 / 候选 / audit_id ---
+
+
+def test_scoped_metric_is_never_published_even_after_confirmation(sales_csv):
+    """「华东区订单数」不是全表口径，确认全表也不能放行。"""
+    draft = "华东区订单数：1 笔"
+    pending = audit_sales_brief(sales_csv, draft)
+    confirmed = audit_sales_brief(sales_csv, draft, confirm_full_table=True)
+    for result in (pending, confirmed):
+        assert result["summary"] == {"verified": 0, "conflict": 0, "unsupported": 1}
+        assert result["claims"][0]["status"] == "unsupported"
+        assert "范围" in result["claims"][0]["reason"]
+        assert result["corrected_brief"] is None
+
+
+@pytest.mark.parametrize("line", ["平均订单数：2 笔", "TOP 订单数：2 笔", "订单数（华东区）：2 笔"])
+def test_intent_and_group_qualifiers_are_not_full_table_claims(sales_csv, line):
+    result = audit_sales_brief(sales_csv, line, confirm_full_table=True)
+    assert result["summary"]["verified"] == 0
+    assert result["corrected_brief"] is None
+
+
+def test_near_duplicate_order_ids_only_warn(tmp_path):
+    path = tmp_path / "sales.csv"
+    path.write_text(
+        "order_id,sales,quantity\n001,1.00,1\n1,1.00,1\nA,1.00,1\na,1.00,1\n",
+        encoding="utf-8",
+    )
+    result = audit_sales_brief(path, "订单数：4 笔")
+    assert result["summary"]["verified"] == 1
+    codes = {warning["code"] for warning in result["warnings"]}
+    assert "near_duplicate_order_id" in codes
+    warning = next(w for w in result["warnings"] if w["code"] == "near_duplicate_order_id")
+    assert warning["total_groups"] == 2
+    assert "caveat" in result["claims"][0]
+
+
+def test_chinese_column_aliases_are_resolved(tmp_path):
+    path = tmp_path / "sales.csv"
+    path.write_text(
+        "订单号,金额,数量\nA,12.50,2\nB,-2.50,1\n", encoding="utf-8"
+    )
+    result = audit_sales_brief(path, "销售额合计：10.00 元\n销量合计：3 件\n订单数：2 笔")
+    assert result["summary"] == {"verified": 3, "conflict": 0, "unsupported": 0}
+
+
+def test_ambiguous_alias_columns_are_rejected(tmp_path):
+    path = tmp_path / "sales.csv"
+    path.write_text("order_id,sales,金额,quantity\nA,1,1,1\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="order_id"):
+        audit_sales_brief(path, "订单数：1 笔")
+
+
+def test_unknown_label_with_unit_offers_candidates(sales_csv):
+    result = audit_sales_brief(sales_csv, "营业额：10.00 元", confirm_full_table=True)
+    claim = result["claims"][0]
+    assert claim["status"] == "unsupported"
+    assert [item["metric"] for item in claim["candidates"]] == ["销售额合计", "客单价"]
+
+
+def test_average_order_value_uses_half_up_cents(tmp_path):
+    path = tmp_path / "sales.csv"
+    path.write_text(
+        "order_id,sales,quantity\nA,10.00,1\nB,0.01,1\nC,0.01,1\n", encoding="utf-8"
+    )
+    result = audit_sales_brief(path, "客单价：3.34 元")
+    assert result["summary"] == {"verified": 1, "conflict": 0, "unsupported": 0}
+
+
+def test_audit_id_binds_source_draft_and_confirmation(sales_csv):
+    draft = "订单数：1 笔"
+    first = audit_sales_brief(sales_csv, draft)
+    again = audit_sales_brief(sales_csv, draft)
+    assert first["audit_id"] == again["audit_id"]
+    assert first["audit_id"].startswith("aud-")
+    assert audit_sales_brief(sales_csv, draft + "\n")["audit_id"] != first["audit_id"]
+    assert (
+        audit_sales_brief(sales_csv, draft, confirm_full_table=True)["audit_id"]
+        != first["audit_id"]
+    )
+
+
+def test_recompute_uses_the_same_byte_snapshot(tmp_path, monkeypatch):
+    """哈希必须对应实际参与解析的字节，不能在读取后二次读盘。"""
+    from pathlib import Path as _Path
+
+    path = tmp_path / "sales.csv"
+    path.write_text("order_id,sales,quantity\nA,1.00,1\n", encoding="utf-8")
+    calls = {"n": 0}
+    original = _Path.read_bytes
+
+    def one_shot(self):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise AssertionError("核验不应二次读取源文件")
+        return original(self)
+
+    monkeypatch.setattr(_Path, "read_bytes", one_shot)
+    result = audit_sales_brief(path, "订单数：1 笔")
+    assert result["summary"] == {"verified": 1, "conflict": 0, "unsupported": 0}
+    assert calls["n"] == 1
+
+
+def test_crlf_draft_lines_are_parsed(sales_csv):
+    result = audit_sales_brief(sales_csv, "订单数：1 笔\r\n销量合计：9 件\r\n")
+    assert result["summary"] == {"verified": 2, "conflict": 0, "unsupported": 0}
+
+def test_summary_rows_and_blank_lines(sales_csv):
+    sales_csv.write_text(
+        "order_id,sales,quantity\nA,1.00,1\n合计,1.00,1\n", encoding="utf-8"
+    )
+    result = audit_sales_brief(sales_csv, "\n\n订单数：2 笔\n")
+    assert result["summary"]["verified"] == 1
+    codes = {warning["code"] for warning in result["warnings"]}
+    assert "summary_row" in codes
+
+
+def test_empty_csv_and_malformed_quotes_are_rejected(sales_csv):
+    sales_csv.write_text("order_id,sales,quantity\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="至少需要一条"):
+        audit_sales_brief(sales_csv, "订单数：1 笔")
+
+    sales_csv.write_text('order_id,sales,quantity\n"A,1,1\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="UTF-8 或 GB18030"):
+        audit_sales_brief(sales_csv, "订单数：1 笔")
+
+
+def test_intent_only_lines_are_context_not_metrics(sales_csv):
+    """意图词行是上下文；没有可发布的指标行时，不应弹「确认全表范围」。"""
+    result = audit_sales_brief(sales_csv, "同比增长：12%")
+    claim = result["claims"][0]
+    assert claim["status"] == "unsupported"
+    assert "统计范围" in claim["reason"]
+    assert result["needs_scope_confirmation"] is False
+    assert result["corrected_brief"] is None

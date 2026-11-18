@@ -94,7 +94,7 @@
 .sales-showcase .sales-showcase-intro p {
   margin-top: 7px;
   color: var(--stage-muted);
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .sales-showcase-compare {
@@ -138,7 +138,7 @@
 }
 .sales-showcase .sales-showcase-figure p {
   color: var(--stage-muted);
-  font-size: 12px;
+  font-size: 14px;
 }
 
 .sales-showcase-meter {
@@ -193,6 +193,26 @@
 .sales-showcase-result-cards h3 { display: flex; align-items: center; gap: 7px; }
 .sales-showcase-result-cards p { overflow-wrap: anywhere; }
 .sales-showcase-result-cards h3 svg { color: var(--accent-fg); flex: none; }
+
+/* 1366×768：收紧 hero 的垂直留白，让「复算并核验」按钮留在首屏。 */
+@media (max-height: 800px) {
+  .sales-showcase-layout { gap: 10px; }
+  .sales-showcase-hero {
+    gap: 10px;
+    padding: 14px 18px;
+    border-radius: 16px;
+  }
+  .sales-showcase-intro h2 { font-size: clamp(20px, 3.4cqw, 30px); }
+  .sales-showcase-intro p { margin-top: 4px; }
+  .sales-showcase-figure {
+    min-height: 104px;
+    padding: 10px 14px;
+  }
+  .sales-showcase-figure strong { font-size: clamp(26px, 6cqw, 52px); }
+  .sales-showcase-meter { margin-top: 8px; }
+  .sales-showcase-bar button,
+  .sales-showcase-tools button { min-height: 32px; padding: 5px 10px; }
+}
 
 @container (max-width: 610px) {
   .sales-showcase-hero { border-radius: 14px; }

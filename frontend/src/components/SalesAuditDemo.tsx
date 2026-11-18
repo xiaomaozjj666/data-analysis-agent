@@ -8,11 +8,13 @@ interface SalesAuditDemoProps {
   isExample: boolean;
   audit: AuditResult | null;
   busy: boolean;
+  confirming: boolean;
   confirmed: boolean;
   canRun: boolean;
   error: string;
   evidence: ReactNode;
   brief: ReactNode;
+  details?: ReactNode;
   onRun: () => void;
   onConfirm: () => void;
   onDownloadEvidence: () => void;
@@ -29,7 +31,7 @@ function orderCount(text?: string) {
 const formatCount = new Intl.NumberFormat("zh-CN");
 
 export default function SalesAuditDemo({
-  draft, isExample, audit, busy, confirmed, canRun, error, evidence, brief,
+  draft, isExample, audit, busy, confirming, confirmed, canRun, error, evidence, brief, details,
   onRun, onConfirm, onDownloadEvidence, onDownloadBrief, onEdit, onReset,
 }: SalesAuditDemoProps) {
   const stage = useRef<HTMLElement>(null);
@@ -161,13 +163,14 @@ export default function SalesAuditDemo({
                 </button>
               )}
               {audit?.corrected_brief && !confirmed && (
-                <button className="sales-showcase-primary" type="button" onClick={() => advance(onConfirm)}>
-                  <FileCheck2 size={17} />{audit.summary.conflict ? "确认更正并生成简报" : "生成核验版简报"}
+                <button className="sales-showcase-primary" type="button" disabled={confirming} onClick={() => advance(onConfirm)}>
+                  {confirming ? <LoaderCircle size={17} className="spin" /> : <FileCheck2 size={17} />}
+                  {confirming ? "正在确认…" : audit.summary.conflict ? "确认更正并生成简报" : "生成核验版简报"}
                 </button>
               )}
               {confirmed && (
                 <button className="sales-showcase-primary" type="button" onClick={onDownloadBrief}>
-                  <Download size={17} />下载简报
+                  <Download size={17} />下载核验版简报 (.md)
                 </button>
               )}
             </div>
@@ -201,9 +204,10 @@ export default function SalesAuditDemo({
               )}
             </div>
             {evidence}
+            {details}
             {brief}
             <div className="sales-audit-actions">
-              <button type="button" onClick={onDownloadEvidence}><Download size={16} />下载核验明细</button>
+              <button type="button" onClick={onDownloadEvidence}><Download size={16} />下载核验明细 (.json)</button>
             </div>
           </div>
         )}

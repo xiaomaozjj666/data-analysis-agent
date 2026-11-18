@@ -28,10 +28,13 @@
   confirm，逐条 `prev` / `hash` 串联，追加前先校验整链；新增
   `GET /api/sessions/{id}/sales-audit/ledger` 与
   `scripts/verify_audit_ledger.py`（校验链条；`--brief` 文件改 1 个字节即
-  退出码 1；`--source` 校验原始 CSV）。
-- **快速起草对照入口**：新增 `POST /api/sessions/{id}/sales-audit/quick-draft`，
-  不调用工具、关闭思考，直接让模型读表写三行指标；返回模型名、耗时、脱敏与
-  丢弃行数。提示词不提供去重口径或公式，仅作为核验器的对照输入。
+  退出码 1；`--source` 校验原始 CSV；`--trace` 校验快速起草轨迹）。
+- **快速起草对照入口与轨迹绑定**：新增
+  `POST /api/sessions/{id}/sales-audit/quick-draft`，不调用工具、关闭思考，直接
+  让模型读表写三行指标；返回模型名、耗时、脱敏、丢弃行数与轨迹哈希。提示词不
+  提供去重口径或公式，仅作为核验器的对照输入。轨迹写入
+  `draft_traces/<sha256>.json`，复算/确认接口可通过 `draft_trace_sha256` 校验
+  「模型原话 → 过滤后的草稿」逐字对应并绑定进 `audit_id` 与账本。
 - **Render 保活脚本**：新增 `scripts/keepalive.ps1`，按间隔 ping 健康检查地址
   并打印状态码与耗时，失败后继续下一轮。
 
@@ -39,7 +42,7 @@
 
 - README 与 `docs/wuxi-trusted-ai-challenge.md` 补充范围门、`audit_id`、服务端
   确认门、账本与离线校验命令、快速起草入口，并新增 90 秒路演脚本；测试徽章按
-  实测收集数（1636 项）更新为保守下限 1600+。
+  实测收集数（1648 项）更新为保守下限 1600+。
 - `render.yaml` 注释补充 Free 档 15 分钟休眠与 35–90 秒冷启动说明，以及
   `healthCheckPath` 在冷启动期间可能失败；未改动 region / disk 等不可变字段。
 

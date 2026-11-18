@@ -19,6 +19,11 @@ def _skip_kaleido() -> bool:
       仅跳过需要真实渲染出 PNG 的那一个。
 
     未设置且非 CI 时（本地已安装 kaleido 并希望真实验证 PNG 通道），不跳过。
+
+    说明：kaleido 1.5.1 存在"页面脚本尚未执行完就调用 kaleido_scopes"的竞态，
+    生产代码已通过 ``data_agent._kaleido_compat.install()`` 做就绪等待，本地真实
+    渲染稳定可用（见 ``tests/test_kaleido_compat.py``）。CI 仍然跳过真实渲染，
+    原因是无头 Chrome 偶发挂起，与该竞态无关，因此这里的判定逻辑保持不变。
     """
     return bool(os.environ.get("DATA_AGENT_SKIP_KALEIDO")) or bool(os.environ.get("CI"))
 

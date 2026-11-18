@@ -35,7 +35,7 @@ import pandas as pd
 import plotly.express as px
 from langchain_core.tools import BaseTool, tool
 
-from data_agent import data_sources, sqlite_source
+from data_agent import _kaleido_compat, data_sources, sqlite_source
 from data_agent.chart_sampling import (
     _EMBED_MAX_POINTS,
     sample_plotly_figure_for_embed,
@@ -1283,11 +1283,22 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         if export_png:
             png_path = workspace.artifacts_dir / f"{stem}.png"
             try:
+                # 惰性安装 kaleido 1.5.1 的就绪等待补丁（绕 kaleido_scopes 竞态）；
+                # 不在模块顶部装，避免导入时就加载 kaleido。
+                _kaleido_compat.install()
                 fig.write_image(png_path, width=1400, height=850, scale=1.5)
                 workspace.register_artifact(png_path, "image", title or chart_type)
                 response["png"] = png_path
-            except Exception as exc:  # Kaleido may need a local Chrome installation.
-                response["png_warning"] = f"PNG 导出失败，但 HTML 图表已生成：{exc}"
+            except Exception as exc:
+                # 区分"服务器环境缺失"（没装 kaleido / 没有 Chrome）与"渲染失败"：
+                # 前者给出可操作的安装提示，后者保留原始报错便于排查。
+                hint = _kaleido_compat.render_env_problem(exc)
+                if hint is not None:
+                    response["png_warning"] = (
+                        f"PNG 导出不可用（环境缺失），但 HTML 图表已生成：{hint}"
+                    )
+                else:
+                    response["png_warning"] = f"PNG 渲染失败，但 HTML 图表已生成：{exc}"
         return json_text(response)
 
     @tool
