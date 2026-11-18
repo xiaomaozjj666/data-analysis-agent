@@ -1223,13 +1223,20 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                 ),
             )
         else:
-            fig.write_html(html_path, include_plotlyjs=True, full_html=True)
+            # 内联 Plotly 的离线分支同样走 tmp + replace：进程中断时不会
+            # 留下半截 HTML 让预览 iframe 加载到损坏页面。
+            temp_html = html_path.with_name(html_path.name + ".tmp")
+            try:
+                fig.write_html(temp_html, include_plotlyjs=True, full_html=True)
+                temp_html.replace(html_path)
+            finally:
+                temp_html.unlink(missing_ok=True)
         workspace.register_artifact(html_path, "visualization", display_title)
         json_path = workspace.artifacts_dir / f"{stem}.plotly.json"
         # plotly write_json 不带 encoding 时在 Windows 上按 locale(cp936/GBK) 写文件，
         # 必须显式 UTF-8，否则后续 UTF-8 读取会 UnicodeDecodeError。
         # fig_json_text 在 div 生成前已序列化（完整 figure，非抽样副本）。
-        json_path.write_text(fig_json_text, encoding="utf-8")
+        _atomic_write_text(json_path, fig_json_text)
         workspace.register_artifact(json_path, "chart_data", "Plotly figure JSON")
 
         response: dict[str, Any] = {

@@ -241,7 +241,13 @@ class DataWorkspace:
         if Path(safe_name).suffix.lower() not in SUPPORTED_EXTENSIONS:
             raise ValueError(f"不支持的文件类型。支持：{', '.join(sorted(SUPPORTED_EXTENSIONS))}")
         destination = (self.input_dir / safe_name).resolve()
-        destination.write_bytes(content)
+        # 大文件写入被中断时不要把半截数据留在 input 目录里冒充完整上传。
+        temporary = destination.with_name(destination.name + ".part")
+        try:
+            temporary.write_bytes(content)
+            temporary.replace(destination)
+        finally:
+            temporary.unlink(missing_ok=True)
         return destination
 
     def save_upload_stream(self, filename: str, stream: Any, max_bytes: int) -> Path:
@@ -265,9 +271,10 @@ class DataWorkspace:
         if Path(safe_name).suffix.lower() not in SUPPORTED_EXTENSIONS:
             raise ValueError(f"不支持的文件类型。支持：{', '.join(sorted(SUPPORTED_EXTENSIONS))}")
         destination = (self.input_dir / safe_name).resolve()
+        temporary = destination.with_name(destination.name + ".part")
         total = 0
         try:
-            with destination.open("wb") as target:
+            with temporary.open("wb") as target:
                 while True:
                     chunk = stream.read(_UPLOAD_CHUNK_SIZE)
                     if not chunk:
@@ -276,8 +283,9 @@ class DataWorkspace:
                     if total > max_bytes:
                         raise ValueError(f"文件不能超过 {max_bytes // (1024 * 1024)}MB。")
                     target.write(chunk)
+            temporary.replace(destination)
         except Exception:
-            destination.unlink(missing_ok=True)
+            temporary.unlink(missing_ok=True)
             raise
         return destination
 
@@ -884,7 +892,8 @@ class DataWorkspace:
             return None
         bundle = (self.artifacts_dir / PLOTLY_BUNDLE_NAME).resolve()
         if not bundle.exists():
-            bundle.write_text(get_plotlyjs(), encoding="utf-8")
+            # 图表 HTML 引用这个本地 bundle；半截 JS 会让整个预览白屏。
+            _atomic_write_text(bundle, get_plotlyjs())
         return bundle
 
     def ensure_echarts_bundle(self) -> Path | None:

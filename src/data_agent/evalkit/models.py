@@ -133,4 +133,8 @@ def write_results(path: str | Path, suite: SuiteResult) -> None:
         if case.details:
             payload["details"] = case.details
         rows.append(json.dumps(payload, ensure_ascii=False, sort_keys=True))
-    target.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    # 评测结果会被 CI 门禁直接读取；中途中断留下半截 JSONL 会让门禁把
+    # "证据不全"误判成"用例失败"。tmp + replace 保证只出现完整文件。
+    temporary = target.with_name(target.name + ".tmp")
+    temporary.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    temporary.replace(target)
