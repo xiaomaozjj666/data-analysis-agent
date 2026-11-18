@@ -241,8 +241,9 @@ class DataWorkspace:
         if Path(safe_name).suffix.lower() not in SUPPORTED_EXTENSIONS:
             raise ValueError(f"不支持的文件类型。支持：{', '.join(sorted(SUPPORTED_EXTENSIONS))}")
         destination = (self.input_dir / safe_name).resolve()
-        # 大文件写入被中断时不要把半截数据留在 input 目录里冒充完整上传。
-        temporary = destination.with_name(destination.name + ".part")
+        # 大文件写入被中断时不要把半截数据留在 input 目录里冒充完整上传；
+        # 唯一后缀避免两个并发上传同名文件时互相截断对方的 .part。
+        temporary = destination.with_name(f"{destination.name}.{uuid4().hex[:8]}.part")
         try:
             temporary.write_bytes(content)
             temporary.replace(destination)
@@ -271,7 +272,7 @@ class DataWorkspace:
         if Path(safe_name).suffix.lower() not in SUPPORTED_EXTENSIONS:
             raise ValueError(f"不支持的文件类型。支持：{', '.join(sorted(SUPPORTED_EXTENSIONS))}")
         destination = (self.input_dir / safe_name).resolve()
-        temporary = destination.with_name(destination.name + ".part")
+        temporary = destination.with_name(f"{destination.name}.{uuid4().hex[:8]}.part")
         total = 0
         try:
             with temporary.open("wb") as target:
@@ -796,7 +797,8 @@ class DataWorkspace:
             for i, column in enumerate(df.columns)
         ]
         stats = {
-            "source": str(self.source_path) if self.source_path else None,
+            # 只给文件名：完整路径含服务器目录与本机用户名，且没有任何调用方读取它。
+            "source": self.source_path.name if self.source_path else None,
             "rows": len(df),
             "columns": len(df.columns),
             "duplicate_rows": int(df.duplicated().sum()),
@@ -1000,7 +1002,7 @@ class DataWorkspace:
         到损坏文件抛 ArrowInvalid、会话无法恢复。
         """
         path = self.root / WORKSPACE_STATE_NAME
-        temporary = path.with_suffix(".tmp")
+        temporary = path.with_name(f"{path.name}.{uuid4().hex[:8]}.tmp")
         self.dataframe.to_parquet(temporary, index=False)
         os.replace(temporary, path)
         return path

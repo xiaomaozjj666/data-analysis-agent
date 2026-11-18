@@ -466,11 +466,49 @@ def test_task_lock_prevents_concurrent_run(tmp_path):
     assert result.get("skipped") == "locked"
 
 
-def test_redirect_to_private_host_is_blocked():
-    handler = automation._SafeRedirectHandler()
-    with pytest.raises(Exception) as excinfo:
-        handler.redirect_request(None, None, 302, "Found", {}, "http://169.254.169.254/x")
-    assert "redirect blocked" in str(excinfo.value)
+def test_redirect_to_private_host_is_blocked(monkeypatch):
+    """DNS rebinding 窗口已关闭：钉扎用的解析结果本身就是校验对象。"""
+
+    import urllib.error
+
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        if host == "public.test":
+            ip = "93.184.216.34"
+        else:
+            ip = "169.254.169.254"
+        return [(automation.socket.AF_INET, 0, 0, "", (ip, port))]
+
+    monkeypatch.setattr(automation.socket, "getaddrinfo", fake_getaddrinfo)
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        automation._validated_sockaddrs("http://private.test/x")
+    assert "redirect blocked" in str(excinfo.value) and "内网" in str(excinfo.value)
+
+    class _Resp:
+        def __init__(self, status, headers=None):
+            self.status = status
+            self.headers = headers or {}
+
+        def read(self):
+            return b""
+
+    class _Conn:
+        def __init__(self, host, port, timeout=None):
+            pass
+
+        def request(self, method, path, body=None, headers=None):
+            pass
+
+        def getresponse(self):
+            # 公网入口 302 到内网元数据地址：钉扎路径在第二跳直接拒绝。
+            return _Resp(302, {"Location": "http://private.test/steal"})
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(automation.http_client, "HTTPConnection", _Conn)
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        automation._pinned_send("POST", "http://public.test/hook", b"{}", {})
+    assert "redirect blocked" in str(excinfo.value) and "内网" in str(excinfo.value)
 
 
 def test_parse_spec_does_not_resolve_dns(monkeypatch):

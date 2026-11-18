@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -215,3 +216,49 @@ def test_run_select_closes_cursor_even_if_close_fails():
 
     result = external_source.run_select(_Connection(), "SELECT 1 AS n", 5)
     assert result["rows"] == [[1]]
+
+
+def test_external_sqlite_runaway_query_is_interrupted(tmp_path, monkeypatch):
+    path = tmp_path / "big.db"
+    connection = sqlite3.connect(path)
+    connection.execute("CREATE TABLE big (x INTEGER)")
+    connection.executemany("INSERT INTO big VALUES (?)", [(i,) for i in range(20000)])
+    connection.commit()
+    connection.close()
+    monkeypatch.setenv(external_source.MODULE_ENV, "sqlite3")
+    monkeypatch.setenv(external_source.KWARGS_ENV, json.dumps({"database": path.as_posix()}))
+    monkeypatch.setenv(external_source.TIMEOUT_ENV, "1")
+    connection = external_source.connect_readonly()
+    started = time.perf_counter()
+    with pytest.raises(Exception) as excinfo:  # noqa: PT011 - sqlite 中止异常类型跨版本
+        external_source.run_select(
+            connection,
+            "SELECT count(*) FROM big a, big b",
+            10,
+        )
+    elapsed = time.perf_counter() - started
+    connection.close()
+    assert elapsed < 8.0
+    assert "interrupted" in str(excinfo.value).lower() or "预算" in str(excinfo.value)
+
+
+def test_external_thread_cap_bounds_non_interruptible_drivers():
+    import threading
+
+    class _SlowCursor:
+        def execute(self, sql):
+            time.sleep(5)
+
+        def close(self):
+            pass
+
+    class _SlowConnection:
+        def cursor(self):
+            return _SlowCursor()
+
+    started = time.perf_counter()
+    with pytest.raises(ValueError, match="墙钟预算"):
+        external_source.run_select(_SlowConnection(), "SELECT 1", 10, timeout_seconds=1)
+    assert time.perf_counter() - started < 4.0
+    # 守护线程被放弃：不能阻塞进程退出
+    assert threading.active_count() >= 1

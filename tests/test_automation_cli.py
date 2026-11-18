@@ -94,32 +94,97 @@ def test_notify_short_circuits_without_url():
     assert automation._notify("", {"a": 1}) is None
 
 
-def test_post_request_uses_redirect_safe_opener(monkeypatch):
-    captured = {}
+def test_post_request_pins_validated_ip_and_keeps_host_header(monkeypatch):
+    """IP 钉扎：连接用校验过的 IP，Host 头/超时/请求体原样透传。"""
+    import ipaddress
 
-    class _Opener:
-        def open(self, request, timeout=None):
-            captured["timeout"] = timeout
+    captured: dict = {}
 
-            class _Resp:
-                def __enter__(self):
-                    return self
+    class _Resp:
+        status = 200
 
-                def __exit__(self, *exc):
-                    return False
+        def __init__(self, headers=None):
+            self.headers = headers or {}
 
+        def read(self):
+            return b""
+
+    class _Conn:
+        instances: list[_Conn] = []
+
+        def __init__(self, host, port, timeout=None):
+            self.host = host
+            self.port = port
+            self.timeout = timeout
+            _Conn.instances.append(self)
+
+        def request(self, method, path, body=None, headers=None):
+            captured.update(method=method, path=path, body=body, headers=headers)
+
+        def getresponse(self):
             return _Resp()
 
-    def fake_build_opener(handler):
-        captured["handler"] = handler
-        return _Opener()
+        def close(self):
+            pass
 
-    monkeypatch.setattr(automation.urllib.request, "build_opener", fake_build_opener)
-    request = automation.urllib.request.Request("https://example.test/hook", data=b"{}")
-    with automation._post_request(request):
-        pass
-    assert captured["handler"] is automation._SafeRedirectHandler
-    assert captured["timeout"] == automation.WEBHOOK_TIMEOUT_SECONDS
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        ip = "93.184.216.34" if host == "example.test" else host
+        return [(automation.socket.AF_INET, 0, 0, "", (ip, port))]
+
+    monkeypatch.setattr(automation.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(automation.http_client, "HTTPConnection", _Conn)
+
+    request = automation.urllib.request.Request(
+        "http://example.test/hook", data=b"{}", headers={"Content-Type": "application/json"}
+    )
+    response = automation._post_request(request)
+    assert response.status == 200
+    conn = _Conn.instances[0]
+    assert conn.host == "93.184.216.34" and conn.port == 80
+    assert conn.timeout == automation.WEBHOOK_TIMEOUT_SECONDS
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/hook"
+    assert captured["body"] == b"{}"
+    assert captured["headers"]["host"] == "example.test"
+    assert captured["headers"]["content-type"] == "application/json"
+    assert ipaddress.ip_address(conn.host).is_global
+
+
+def test_post_request_follows_redirect_with_revalidation(monkeypatch):
+    captured_requests: list[dict] = []
+
+    class _Resp:
+        def __init__(self, status, headers=None):
+            self.status = status
+            self.headers = headers or {}
+
+        def read(self):
+            return b""
+
+    class _Conn:
+        def __init__(self, host, port, timeout=None):
+            captured_requests.append({"host": host, "path": None})
+
+        def request(self, method, path, body=None, headers=None):
+            captured_requests[-1].update(method=method, path=path)
+
+        def getresponse(self):
+            if len(captured_requests) == 1:
+                return _Resp(302, {"Location": "http://example.test/next"})
+            return _Resp(200)
+
+        def close(self):
+            pass
+
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        return [(automation.socket.AF_INET, 0, 0, "", ("93.184.216.34", port))]
+
+    monkeypatch.setattr(automation.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(automation.http_client, "HTTPConnection", _Conn)
+    request = automation.urllib.request.Request("http://example.test/hook", data=b"{}")
+    assert automation._post_request(request).status == 200
+    assert [item["path"] for item in captured_requests] == ["/hook", "/next"]
+    assert captured_requests[1]["method"] == "GET"  # 302 改写为 GET 且丢弃请求体
 
 
 def test_load_specs_rejects_non_list_payload(tmp_path):

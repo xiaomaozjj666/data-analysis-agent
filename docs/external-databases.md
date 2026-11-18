@@ -43,8 +43,10 @@ export DATA_AGENT_EXTERNAL_DB_KWARGS='{"project":"..."}'
 白名单模块：`sqlite3`、`snowflake.connector`、`databricks.sql`、
 `google.cloud.bigquery.dbapi`、`psycopg`；其他模块名拒绝导入，避免配置误填执行
 任意代码。`DATA_AGENT_EXTERNAL_DB_TIMEOUT_SECONDS`（1–120，默认取 SQL 预算）
-用于支持会话级超时的驱动（Snowflake 会执行 `ALTER SESSION SET
-STATEMENT_TIMEOUT_IN_SECONDS`）。
+是查询的墙钟预算，双层兜底：sqlite3 用 progress handler 执行中打断、psycopg
+设服务端 `statement_timeout`、Snowflake 执行 `ALTER SESSION SET
+STATEMENT_TIMEOUT_IN_SECONDS`；其余驱动（如 BigQuery DB-API）用工作线程
+join(timeout) 硬顶——服务端语句可能仍在跑，但调用方不会被无限期阻塞。
 
 ### 安全边界（务必读完）
 
