@@ -215,10 +215,11 @@ def test_validate_select_rejects_writing_statements(statement):
         validate_select(statement)
 
 
-def test_validate_select_rejects_comment_prefixed_statement():
-    """注释开头不能让语句绕进白名单。"""
-    with pytest.raises(ValueError, match="只允许 SELECT 或 WITH"):
-        validate_select("-- drop everything\nSELECT 1")
+def test_validate_select_skips_leading_comments_but_still_enforces_whitelist():
+    """注释不是可执行语句：跳过注释判定真实首词，但注释后的非查询语句仍拒绝。"""
+    assert validate_select("-- drop everything\nSELECT 1") == "-- drop everything\nSELECT 1"
+    with pytest.raises(ValueError, match="只允许只读查询"):
+        validate_select("-- note\nDROP TABLE t")
 
 
 def test_validate_select_rejects_unknown_leading_keyword():

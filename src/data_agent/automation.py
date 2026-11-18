@@ -24,6 +24,7 @@ import argparse
 import hashlib
 import ipaddress
 import json
+import logging
 import math
 import os
 import re
@@ -46,6 +47,8 @@ from data_agent._workspace_bundles import _atomic_write_text
 from data_agent.metrics import compute_metrics_on_frame, parse_metric_definitions
 from data_agent.workspace import DataWorkspace
 
+_log = logging.getLogger(__name__)
+
 AUTOMATION_DIRNAME = "automation"
 SPECS_FILENAME = "automations.json"
 HISTORY_FILENAME = "history.jsonl"
@@ -55,6 +58,10 @@ LOCK_FILENAME = ".lock"
 DEFAULT_HISTORY_LIMIT = 30
 DEFAULT_MIN_SAMPLES = 3
 WEBHOOK_TIMEOUT_SECONDS = 5.0
+#: 追加式 JSONL 的轮转阈值：超过则把旧文件改名为 ``*.1``（只保留一代）。
+#: history/alerts 是 append-only，长期 loop 运行会无限增长——history_limit
+#: 只限制读取窗口，不限制文件体积（2026-11 实测告警文件无轮转）。
+JSONL_ROTATE_BYTES = 2 * 1024 * 1024
 #: 失败后的重试间隔：避免 loop 模式每秒重试坏任务，也避免整批被一个坏任务拖住。
 RETRY_BACKOFF_MINUTES = 5
 
@@ -161,13 +168,19 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def _notify(webhook_url: str, payload: dict[str, Any]) -> str | None:
-    """POST 告警到 webhook；成功返回 None，失败返回错误文本（不抛异常）。"""
+def _notify_result(
+    webhook_url: str, payload: dict[str, Any]
+) -> tuple[str | None, int | None, int]:
+    """POST 告警到 webhook；返回 ``(错误文本, HTTP 状态码, 耗时 ms)``。
+
+    成功时错误为 None。状态码/耗时用于事后判断「推没推出去、推了多久」——
+    只有 ok/失败两个字段时，无法区分 4xx（地址/鉴权配错）与 5xx（对方故障）。
+    """
     if not webhook_url:
-        return None
+        return None, None, 0
     unsafe = validate_webhook_url(webhook_url)
     if unsafe:
-        return f"webhook 被拒绝：{unsafe}"
+        return f"webhook 被拒绝：{unsafe}", None, 0
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
         webhook_url,
@@ -175,11 +188,22 @@ def _notify(webhook_url: str, payload: dict[str, Any]) -> str | None:
         headers={"Content-Type": "application/json; charset=utf-8"},
         method="POST",
     )
+    started = time.monotonic()
     try:
-        with _post_request(request):
-            return None
+        with _post_request(request) as response:
+            status = getattr(response, "status", None) or getattr(response, "code", None)
+            try:
+                code = int(status) if status is not None else None
+            except (TypeError, ValueError):
+                code = None
+            return None, code, int((time.monotonic() - started) * 1000)
     except (urllib.error.URLError, OSError, ValueError) as exc:
-        return str(exc)[:300]
+        return str(exc)[:300], None, int((time.monotonic() - started) * 1000)
+
+
+def _notify(webhook_url: str, payload: dict[str, Any]) -> str | None:
+    """POST 告警到 webhook；成功返回 None，失败返回错误文本（不抛异常）。"""
+    return _notify_result(webhook_url, payload)[0]
 
 
 def _post_request(request: urllib.request.Request):
@@ -335,6 +359,30 @@ def _write_state(runs_dir: str | Path, task_id: str, state: dict[str, Any]) -> N
     _atomic_write_text(path, json.dumps(state, ensure_ascii=False, indent=2) + "\n")
 
 
+def _state_corrupt(runs_dir: str | Path, task_id: str) -> bool:
+    """state.json 是否存在但无法解析（读侧按「从未运行」降级，但要留痕）。"""
+    path = task_dir(runs_dir, task_id) / STATE_FILENAME
+    if not path.is_file():
+        return False
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True
+    return not isinstance(payload, dict)
+
+
+def _append_jsonl(path: Path, payload: str, *, rotate_bytes: int = JSONL_ROTATE_BYTES) -> None:
+    """追加一行 JSONL；文件超过阈值时先轮转成 ``*.1``（只保留一代）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if path.is_file() and path.stat().st_size > rotate_bytes:
+            os.replace(path, path.with_name(path.name + ".1"))
+    except OSError as exc:
+        _log.warning("could not rotate %s: %s", path.name, exc)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(payload + "\n")
+
+
 # ---------------------------------------------------------------------------
 # 调度
 # ---------------------------------------------------------------------------
@@ -380,15 +428,24 @@ def read_history(runs_dir: str | Path, task_id: str, limit: int) -> list[dict[st
     if not path.is_file():
         return []
     rows: list[dict[str, Any]] = []
+    skipped = 0
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         try:
             row = json.loads(line)
         except json.JSONDecodeError:
+            skipped += 1
             continue
         if isinstance(row, dict):
             rows.append(row)
+    if skipped:
+        # 坏行静默丢弃会让「历史上限」看起来莫名变小；留 warning 便于发现截断。
+        _log.warning(
+            "history for task %s contains %d unparsable line(s); they were ignored",
+            task_id,
+            skipped,
+        )
     return rows[-limit:] if limit > 0 else rows
 
 
@@ -593,6 +650,7 @@ def _run_with_workspace(
     dry_run: bool,
     notify: bool,
 ) -> dict[str, Any]:
+    started = time.monotonic()
     workspace.load(spec.dataset_path)
     computed = compute_metrics_on_frame(workspace.dataframe, definitions)
     current = {
@@ -617,6 +675,12 @@ def _run_with_workspace(
     ]
     alerts = detect_anomalies(current, history, spec)
     ran_at = moment.isoformat(timespec="seconds")
+    state_corrupt = _state_corrupt(runs_dir, spec.id)
+    if state_corrupt:
+        _log.warning(
+            "state.json for task %s is corrupt; treating it as never-run (last_run_at lost)",
+            spec.id,
+        )
     result: dict[str, Any] = {
         "id": spec.id,
         "name": spec.name,
@@ -626,35 +690,38 @@ def _run_with_workspace(
         "alerts": alerts,
         "notified": False,
         "webhook_error": None,
+        "webhook_status": None,
+        "webhook_duration_ms": None,
         "dry_run": dry_run,
         "history_samples": len(history),
         "metrics_file": str(metrics_path),
         "metrics_sha256": metrics_sha256,
+        "state_corrupt": state_corrupt,
+        "duration_ms": int((time.monotonic() - started) * 1000),
     }
     if dry_run:
         return result
 
     directory = task_dir(runs_dir, spec.id)
     directory.mkdir(parents=True, exist_ok=True)
-    with (directory / HISTORY_FILENAME).open("a", encoding="utf-8") as handle:
-        handle.write(
-            json.dumps(
-                {
-                    "at": ran_at,
-                    "metrics": current,
-                    "errors": errors,
-                    "metrics_sha256": metrics_sha256,
-                },
-                ensure_ascii=False,
-            )
-            + "\n"
-        )
+    _append_jsonl(
+        directory / HISTORY_FILENAME,
+        json.dumps(
+            {
+                "at": ran_at,
+                "metrics": current,
+                "errors": errors,
+                "metrics_sha256": metrics_sha256,
+                "duration_ms": result["duration_ms"],
+            },
+            ensure_ascii=False,
+        ),
+    )
     if alerts:
-        with (directory / ALERTS_FILENAME).open("a", encoding="utf-8") as handle:
-            handle.write(
-                json.dumps({"at": ran_at, "task_id": spec.id, "alerts": alerts}, ensure_ascii=False)
-                + "\n"
-            )
+        _append_jsonl(
+            directory / ALERTS_FILENAME,
+            json.dumps({"at": ran_at, "task_id": spec.id, "alerts": alerts}, ensure_ascii=False),
+        )
     state = _read_state(runs_dir, spec.id)
     state.update(
         {
@@ -673,8 +740,10 @@ def _run_with_workspace(
     _write_state(runs_dir, spec.id, state)
 
     webhook_error: str | None = None
+    webhook_status: int | None = None
+    webhook_duration_ms: int | None = None
     if alerts and notify and spec.webhook_url:
-        webhook_error = _notify(
+        webhook_error, webhook_status, webhook_duration_ms = _notify_result(
             spec.webhook_url,
             {
                 "task": {"id": spec.id, "name": spec.name},
@@ -684,10 +753,16 @@ def _run_with_workspace(
         )
     result["notified"] = bool(alerts and notify and spec.webhook_url and not webhook_error)
     result["webhook_error"] = webhook_error
+    result["webhook_status"] = webhook_status
+    result["webhook_duration_ms"] = webhook_duration_ms
     if webhook_error:
         state["last_webhook_error"] = webhook_error
     else:
         state.pop("last_webhook_error", None)
+    if webhook_duration_ms is not None:
+        # 只有真的尝试过推送才落这两个字段：区分「没配 webhook」与「推失败」。
+        state["last_webhook_status"] = webhook_status
+        state["last_webhook_duration_ms"] = webhook_duration_ms
     state["last_notified"] = result["notified"]
     _write_state(runs_dir, spec.id, state)
     return result

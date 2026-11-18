@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -476,3 +477,83 @@ def test_parse_spec_does_not_resolve_dns(monkeypatch):
     monkeypatch.setattr(automation.socket, "getaddrinfo", boom)
     spec = automation.parse_spec(_base_spec(webhook_url="https://hooks.example.test/alert"))
     assert spec.webhook_url == "https://hooks.example.test/alert"
+
+
+# ---------------------------------------------------------------------------
+# 可观测性：坏状态留痕、坏历史行计数、JSONL 轮转、webhook 状态与耗时
+# ---------------------------------------------------------------------------
+
+
+def test_history_row_records_duration(tmp_path):
+    spec = _make_spec(tmp_path)
+    runs = tmp_path / "runs"
+    result = automation.run_automation(spec, runs, now=datetime(2026, 11, 17, tzinfo=UTC))
+    assert isinstance(result["duration_ms"], int) and result["duration_ms"] >= 0
+    assert result["state_corrupt"] is False
+    row = automation.read_history(runs, spec.id, 10)[0]
+    assert "duration_ms" in row and isinstance(row["duration_ms"], int)
+
+
+def test_corrupt_state_is_flagged_and_logged(tmp_path, caplog):
+    spec = _make_spec(tmp_path)
+    runs = tmp_path / "runs"
+    directory = automation.task_dir(runs, spec.id)
+    directory.mkdir(parents=True)
+    (directory / automation.STATE_FILENAME).write_text("{not json", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="data_agent.automation"):
+        result = automation.run_automation(spec, runs, now=datetime(2026, 11, 17, tzinfo=UTC))
+
+    assert result["state_corrupt"] is True
+    assert any("corrupt" in record.message for record in caplog.records)
+
+
+def test_read_history_warns_about_corrupt_lines(tmp_path, caplog):
+    spec = _make_spec(tmp_path)
+    path = automation.task_dir(tmp_path / "runs", spec.id) / automation.HISTORY_FILENAME
+    path.parent.mkdir(parents=True)
+    path.write_text('{"at": "x", "metrics": {}}\nnot-json\n', encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="data_agent.automation"):
+        rows = automation.read_history(tmp_path / "runs", spec.id, 10)
+
+    assert len(rows) == 1
+    assert any("unparsable" in record.message for record in caplog.records)
+
+
+def test_jsonl_rotation_caps_growth(tmp_path):
+    path = tmp_path / "alerts.jsonl"
+    path.write_text("x" * 100, encoding="utf-8")
+    automation._append_jsonl(path, '{"a": 1}', rotate_bytes=50)
+    assert path.read_text(encoding="utf-8") == '{"a": 1}\n'
+    assert path.with_name("alerts.jsonl.1").read_text(encoding="utf-8") == "x" * 100
+
+
+def test_webhook_status_and_duration_recorded(tmp_path, monkeypatch):
+    spec = _make_spec(tmp_path, webhook_url="https://hooks.example.test/alert")
+    runs = tmp_path / "runs"
+    dataset = Path(spec.dataset_path)
+    base = datetime(2026, 11, 17, tzinfo=UTC)
+    for value in (100, 110, 90):
+        _write_dataset(dataset, value)
+        automation.run_automation(spec, runs, now=base)
+    _write_dataset(dataset, 1000)
+
+    class _Resp:
+        status = 202
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(automation, "_post_request", lambda request: _Resp())
+    result = automation.run_automation(spec, runs, now=base + timedelta(days=1))
+
+    assert result["notified"] is True
+    assert result["webhook_status"] == 202
+    assert isinstance(result["webhook_duration_ms"], int)
+    state = json.loads((automation.task_dir(runs, spec.id) / automation.STATE_FILENAME).read_text())
+    assert state["last_webhook_status"] == 202
+    assert isinstance(state["last_webhook_duration_ms"], int)
