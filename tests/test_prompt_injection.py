@@ -134,3 +134,12 @@ def test_finalize_prompt_requires_narrative_chain() -> None:
     en = PROMPTS["en"]["finalize_template"]
     assert "报告级叙事" in zh and "论证链" in zh
     assert "global conclusion" in en and "argument chain" in en
+
+
+def test_system_prompt_documents_web_search_and_external_source() -> None:
+    zh = PROMPTS["zh"]["system_prompt"]
+    en = PROMPTS["en"]["system_prompt"]
+    assert "web_search" in zh and "不可信" in zh
+    assert 'source="external"' in zh
+    assert "web_search" in en and "untrusted" in en
+    assert 'source="external"' in en
