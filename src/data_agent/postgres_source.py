@@ -45,8 +45,8 @@ except ImportError:  # pragma: no cover - 可选依赖
     psycopg = None  # type: ignore[assignment]
 
 _INSTALL_HINT = (
-    "未安装 PostgreSQL 驱动。请先安装：pip install \".[postgres]\""
-    "（或 pip install \"psycopg[binary]>=3.2,<4\"）。"
+    '未安装 PostgreSQL 驱动。请先安装：pip install ".[postgres]"'
+    '（或 pip install "psycopg[binary]>=3.2,<4"）。'
 )
 
 
@@ -138,7 +138,9 @@ def describe_table(connection: Any, table: str, schema: str = "public") -> list[
     ]
 
 
-def count_rows(connection: Any, table: str, schema: str = "public", budget_ms: int = _ROW_COUNT_BUDGET_MS) -> int:
+def count_rows(
+    connection: Any, table: str, schema: str = "public", budget_ms: int = _ROW_COUNT_BUDGET_MS
+) -> int:
     """统计单表行数；超时返回 -1，不让"看一眼结构"变成长任务。"""
     try:
         connection.execute(f"SET statement_timeout = {int(budget_ms)}")

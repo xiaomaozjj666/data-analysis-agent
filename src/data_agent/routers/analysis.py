@@ -49,7 +49,6 @@ _CLIENT_ERROR_MAX_CHARS = 300
 WORKER_EXIT_TIMEOUT = 5.0
 
 
-
 def _snapshot_metrics(root: Path) -> dict[str, Any] | None:
     """分析开始前固定指标定义文件的内容哈希（防分析期间被改写）。"""
     from data_agent.metrics import metrics_file_for_workspace

@@ -96,7 +96,9 @@ def resolve_source(root: Path, subdirs: tuple[Path, ...], name: str) -> Path:
     raise ValueError(f"工作区内找不到数据文件「{raw}」，可用文件：{listing}")
 
 
-def normalize_keys(left_on: list[str] | str, right_on: list[str] | str | None) -> tuple[list[str], list[str]]:
+def normalize_keys(
+    left_on: list[str] | str, right_on: list[str] | str | None
+) -> tuple[list[str], list[str]]:
     """把左右连接键规整为等长的字符串列表。
 
     ``right_on`` 省略时默认与 ``left_on`` 同名；两侧数量不一致直接报错，
@@ -309,7 +311,9 @@ def merge_datasets(
     )
     diagnostics["warnings"] = _build_warnings(diagnostics, how, right_keys)
     merged = merged.drop(columns=[indicator])
-    diagnostics["renamed_columns"] = _ambiguous_columns(left_frame, right_frame, left_keys, right_keys, suffixes)
+    diagnostics["renamed_columns"] = _ambiguous_columns(
+        left_frame, right_frame, left_keys, right_keys, suffixes
+    )
     return merged, diagnostics
 
 

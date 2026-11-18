@@ -24,7 +24,9 @@ def _normalize_column_names(
     normalized: list[str] = []
     seen: dict[str, int] = {}
     for value in original:
-        base = re.sub(r"[^\w\u4e00-\u9fff]+", "_", str(value).strip().lower()).strip("_") or "column"
+        base = (
+            re.sub(r"[^\w\u4e00-\u9fff]+", "_", str(value).strip().lower()).strip("_") or "column"
+        )
         seen[base] = seen.get(base, 0) + 1
         normalized.append(base if seen[base] == 1 else f"{base}_{seen[base]}")
     if normalized == original:
@@ -43,7 +45,9 @@ def _trim_string_columns(df: pd.DataFrame) -> int:
     """Trim leading/trailing whitespace on object/string columns in place."""
     string_columns = list(df.select_dtypes(include=["object", "string"]).columns)
     for column in string_columns:
-        df[column] = df[column].map(lambda value: value.strip() if isinstance(value, str) else value)
+        df[column] = df[column].map(
+            lambda value: value.strip() if isinstance(value, str) else value
+        )
     return len(string_columns)
 
 

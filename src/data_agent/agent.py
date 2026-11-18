@@ -200,7 +200,7 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
                 depth -= 1
                 if depth == 0:
                     try:
-                        parsed = json.loads(cleaned[start:index + 1])
+                        parsed = json.loads(cleaned[start : index + 1])
                     except json.JSONDecodeError:
                         break
                     return parsed if isinstance(parsed, dict) else None
@@ -254,10 +254,12 @@ class DataAnalysisAgent:
             middleware=[
                 _handle_tool_error,
                 ToolCallLimitMiddleware(
-                    run_limit=self.settings.max_tool_calls_per_step, exit_behavior="end",
+                    run_limit=self.settings.max_tool_calls_per_step,
+                    exit_behavior="end",
                 ),
                 ModelCallLimitMiddleware(
-                    run_limit=self.settings.max_iterations, exit_behavior="end",
+                    run_limit=self.settings.max_iterations,
+                    exit_behavior="end",
                 ),
             ],
             name="data_analysis_react_executor",
@@ -467,9 +469,7 @@ class DataAnalysisAgent:
         # 思考过程 + 用量：与 finalize 节点一致的回调注入，让追问也具备
         # reasoning_content 流式展示和 token 用量统计。
         reasoning_buffer: list[str] = []
-        reasoning_streamer = ReasoningStreamCallback(
-            self.event_callback, buffer=reasoning_buffer
-        )
+        reasoning_streamer = ReasoningStreamCallback(self.event_callback, buffer=reasoning_buffer)
         usage_acc = UsageAccumulator()
 
         result = self.react_agent.invoke(

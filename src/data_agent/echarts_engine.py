@@ -9,6 +9,7 @@
 调用入口：``_render_echarts(workspace, df, chart_type, ...)`` 返回与 Plotly
 分支结构一致的 response dict，``create_visualization`` 据此分派。
 """
+
 from __future__ import annotations
 
 import json
@@ -121,8 +122,7 @@ def _safe_value(value: Any) -> Any:
 def _rows_data(df: pd.DataFrame, cols: list[str]) -> list[list[Any]]:
     """按列抽取构建 series data：itertuples 比 iterrows 快一个数量级，
     大数据散点图的生成耗时从秒级降到毫秒级。"""
-    return [[_safe_value(v) for v in row]
-            for row in df[cols].itertuples(index=False, name=None)]
+    return [[_safe_value(v) for v in row] for row in df[cols].itertuples(index=False, name=None)]
 
 
 def _format_number(value: Any, *, precision: int = 2) -> str:
@@ -149,8 +149,13 @@ def _series_color(index: int) -> str:
 
 # === 坐标轴 nice ticks 工具 ===
 
+
 def _stacked_totals(
-    df: pd.DataFrame, *, x: str, y: str | None, color: str | None,
+    df: pd.DataFrame,
+    *,
+    x: str,
+    y: str | None,
+    color: str | None,
 ) -> list[float] | None:
     """按 x 汇总各 color 分组的 y 之和，供堆叠柱/堆叠面积的轴范围使用。"""
     if not (x and y and color) or x not in df.columns or y not in df.columns:
@@ -162,8 +167,14 @@ def _stacked_totals(
 
 
 def _echarts_value_axis(
-    df: pd.DataFrame, y: str | None, *, name: str, scale: bool = True,
-    values: list[float] | None = None, zero_base: bool = False, is_x: bool = False,
+    df: pd.DataFrame,
+    y: str | None,
+    *,
+    name: str,
+    scale: bool = True,
+    values: list[float] | None = None,
+    zero_base: bool = False,
+    is_x: bool = False,
 ) -> dict[str, Any]:
     """构建数值型 yAxis：应用 nice ticks 对齐刻度到 1/2/5/10 倍数，
     并用大数值自适应 formatter（万/亿）让坐标轴可读。
@@ -177,7 +188,10 @@ def _echarts_value_axis(
     信息，截断基线是常规做法。
     """
     base: dict[str, Any] = {
-        **_ECHARTS_BASE_AXIS, "type": "value", "name": name, "scale": scale,
+        **_ECHARTS_BASE_AXIS,
+        "type": "value",
+        "name": name,
+        "scale": scale,
         # 轴名位置分方向：Y 轴放顶端偏左（与刻度同一视觉列），X 轴居中放轴下方
         # ——数值轴当 X 用时若沿用 Y 的 "end" 定位，轴名会贴到绘图区最右侧被裁掉
         # （实测散点图右边缘只剩"销售"两个字）。
@@ -220,6 +234,7 @@ def _echarts_value_axis(
 
 # === 自动白话解读：纯数据驱动，不依赖 LLM ===
 
+
 def _auto_interpret(
     df: pd.DataFrame,
     *,
@@ -246,9 +261,16 @@ def _auto_interpret(
     所有解读避免统计术语，用业务语言表达。
     """
     try:
-        return _interpret_impl(df, chart_type=chart_type, x=x, y=y, color=color,
-                               aggregation=aggregation, title=title,
-                               density_view=density_view)
+        return _interpret_impl(
+            df,
+            chart_type=chart_type,
+            x=x,
+            y=y,
+            color=color,
+            aggregation=aggregation,
+            title=title,
+            density_view=density_view,
+        )
     except Exception:
         # 解读失败不影响图表生成，返回空字符串让前端不渲染解读区。
         return ""
@@ -268,19 +290,28 @@ def _interpret_impl(
 ) -> str:
     title_text = title or f"{_build_axis_label(x) or ''}与{_build_axis_label(y) or ''}分布"
     if chart_type in {"bar", "line", "area"} and x and y and len(df) > 0:
-        return _interpret_trend(df, chart_type=chart_type, x=x, y=y,
-                                color=color, aggregation=aggregation, title=title_text, stacked=stacked)
+        return _interpret_trend(
+            df,
+            chart_type=chart_type,
+            x=x,
+            y=y,
+            color=color,
+            aggregation=aggregation,
+            title=title_text,
+            stacked=stacked,
+        )
     if chart_type == "pie" and x and len(df) > 0:
         return _interpret_pie(df, x=x, title=title_text)
     if chart_type == "scatter" and density_view is not None and x and y and len(df) > 0:
-        return _density_interpretation(df, view=density_view, x=x, y=y,
-                                       color=color, title=title_text)
+        return _density_interpretation(
+            df, view=density_view, x=x, y=y, color=color, title=title_text
+        )
     if chart_type in {"scatter", "scatter_3d"} and x and y and len(df) > 0:
-        return _interpret_scatter(df, x=x, y=y, title=title_text,
-                                  is_3d=chart_type == "scatter_3d")
+        return _interpret_scatter(df, x=x, y=y, title=title_text, is_3d=chart_type == "scatter_3d")
     if chart_type in {"correlation_heatmap", "heatmap"} and len(df) > 0:
-        return _interpret_heatmap(df, title=title_text,
-                                  is_correlation=chart_type == "correlation_heatmap")
+        return _interpret_heatmap(
+            df, title=title_text, is_correlation=chart_type == "correlation_heatmap"
+        )
     if chart_type in {"box", "violin"} and x and y and len(df) > 0:
         return _interpret_box(df, x=x, y=y, title=title_text)
     if chart_type in {"sunburst", "treemap"} and len(df) > 0:
@@ -289,11 +320,24 @@ def _interpret_impl(
 
 
 def _interpret_trend(
-    df: pd.DataFrame, *, chart_type: str, x: str, y: str,
-    color: str | None, aggregation: str, title: str, stacked: bool = False,
+    df: pd.DataFrame,
+    *,
+    chart_type: str,
+    x: str,
+    y: str,
+    color: str | None,
+    aggregation: str,
+    title: str,
+    stacked: bool = False,
 ) -> str:
-    agg_label = {"mean": "平均", "median": "中位", "sum": "合计", "count": "计数",
-                 "min": "最小", "max": "最大"}.get(aggregation, "")
+    agg_label = {
+        "mean": "平均",
+        "median": "中位",
+        "sum": "合计",
+        "count": "计数",
+        "min": "最小",
+        "max": "最大",
+    }.get(aggregation, "")
     x_label = _build_axis_label(x)
     y_label = _build_axis_label(y)
 
@@ -317,8 +361,11 @@ def _interpret_trend(
 
     # 无分组：找最高最低、识别拐点；时间类目标签与轴一致（去 00:00:00 后缀）
     _time_labels = _format_time_categories(df[x])
-    _label_of = (dict(zip((str(v) for v in df[x].tolist()), _time_labels, strict=False))
-                 if _time_labels else {})
+    _label_of = (
+        dict(zip((str(v) for v in df[x].tolist()), _time_labels, strict=False))
+        if _time_labels
+        else {}
+    )
 
     def _fmt_x(v: Any) -> Any:
         return _label_of.get(str(v), v)
@@ -378,23 +425,23 @@ def _interpret_pie(df: pd.DataFrame, *, x: str, title: str) -> str:
     )
 
 
-def _interpret_scatter(df: pd.DataFrame, *, x: str, y: str, title: str,
-                       is_3d: bool = False) -> str:
+def _interpret_scatter(df: pd.DataFrame, *, x: str, y: str, title: str, is_3d: bool = False) -> str:
     if not pd.api.types.is_numeric_dtype(df[x]) or not pd.api.types.is_numeric_dtype(df[y]):
         return f"「{title}」展示{_build_axis_label(x)}与{_build_axis_label(y)}的分布关系，悬浮查看每个点明细。"
     corr = float(df[[x, y]].corr().iloc[0, 1])
     # 3D 图无框选功能，交互提示必须区分，避免误导用户找不到操作
-    hint = ("拖拽旋转视角、滚轮缩放可从不同角度观察分布。" if is_3d
-            else "滚轮缩放可查看密集区域，框选可隔离离群点。")
+    hint = (
+        "拖拽旋转视角、滚轮缩放可从不同角度观察分布。"
+        if is_3d
+        else "滚轮缩放可查看密集区域，框选可隔离离群点。"
+    )
     if math.isnan(corr):
-        return (f"「{title}」展示两变量分布，悬浮查看每个点明细，"
-                + ("拖拽旋转视角可从不同角度观察。" if is_3d else "框选可放大区域。"))
+        return f"「{title}」展示两变量分布，悬浮查看每个点明细，" + (
+            "拖拽旋转视角可从不同角度观察。" if is_3d else "框选可放大区域。"
+        )
     direction = "正向" if corr > 0 else "反向"
     strength = "强" if abs(corr) > 0.7 else "中等" if abs(corr) > 0.4 else "弱"
-    return (
-        f"「{title}」呈现{direction}{strength}相关（r={corr:.2f}），"
-        f"共{len(df)}个点。{hint}"
-    )
+    return f"「{title}」呈现{direction}{strength}相关（r={corr:.2f}），共{len(df)}个点。{hint}"
 
 
 def _interpret_heatmap(df: pd.DataFrame, *, title: str, is_correlation: bool = False) -> str:
@@ -455,7 +502,8 @@ def _interpret_box(df: pd.DataFrame, *, x: str, y: str, title: str) -> str:
         outlier_count += int(((vals < q1 - 1.5 * iqr) | (vals > q3 + 1.5 * iqr)).sum())
     outlier_text = (
         f"共识别出 {outlier_count} 个离群点（超出 1.5 倍四分位距，图中以独立圆点标出）"
-        if outlier_count else "各组未发现明显离群点"
+        if outlier_count
+        else "各组未发现明显离群点"
     )
     return (
         f"「{title}」中「{top_key}」的{y_label}中位数最高（{_format_number(medians.max())}），"
@@ -465,10 +513,7 @@ def _interpret_box(df: pd.DataFrame, *, x: str, y: str, title: str) -> str:
 
 
 def _interpret_hierarchy(df: pd.DataFrame, *, title: str) -> str:
-    return (
-        f"「{title}」以层级方式展示数据结构，点击节点可下钻/上卷，"
-        f"面积大小反映对应数值占比。"
-    )
+    return f"「{title}」以层级方式展示数据结构，点击节点可下钻/上卷，面积大小反映对应数值占比。"
 
 
 # === 11 种图表的 ECharts option 生成器 ===
@@ -516,8 +561,14 @@ def _format_time_categories(values: pd.Series) -> list[str] | None:
 
 
 def _echarts_bar(
-    df: pd.DataFrame, *, x: str, y: str | None, color: str | None,
-    aggregation: str, title: str, stacked: bool = False,
+    df: pd.DataFrame,
+    *,
+    x: str,
+    y: str | None,
+    color: str | None,
+    aggregation: str,
+    title: str,
+    stacked: bool = False,
 ) -> dict[str, Any]:
     """分组/堆叠柱状图：默认分组，color 维度自动展开为多系列。
 
@@ -527,8 +578,14 @@ def _echarts_bar(
     """
     x_label = _build_axis_label(x)
     y_label = _build_axis_label(y) if y else "计数"
-    agg_suffix = {"mean": "（平均）", "median": "（中位）", "sum": "（合计）",
-                  "count": "（计数）", "min": "（最小）", "max": "（最大）"}.get(aggregation, "")
+    agg_suffix = {
+        "mean": "（平均）",
+        "median": "（中位）",
+        "sum": "（合计）",
+        "count": "（计数）",
+        "min": "（最小）",
+        "max": "（最大）",
+    }.get(aggregation, "")
     # raw_keys 仅作非时间列的轴标签兜底；categories 仅作轴标签展示。
     # color 分组时聚合结果是 x×color 长表，x 每个层级重复 N 次，必须去重
     # （保持首现顺序），否则类目轴每月出现 N 次、系列值也被复制 N 遍。
@@ -537,20 +594,42 @@ def _echarts_bar(
     categories = _format_time_categories(pd.Series(axis_values_x)) or raw_keys
 
     base: dict[str, Any] = {
-        "title": {**_ECHARTS_BASE_TITLE, "text": title, "subtext": f"{x_label} × {y_label}{agg_suffix}"},
+        "title": {
+            **_ECHARTS_BASE_TITLE,
+            "text": title,
+            "subtext": f"{x_label} × {y_label}{agg_suffix}",
+        },
         "tooltip": {**_ECHARTS_BASE_TOOLTIP, "trigger": "axis", "axisPointer": {"type": "shadow"}},
         "legend": {**_ECHARTS_BASE_LEGEND},
         "grid": {**_ECHARTS_BASE_GRID},
         "toolbox": {**_ECHARTS_BASE_TOOLBOX},
         "color": _ECHARTS_PALETTE,
-        "xAxis": [{**_ECHARTS_BASE_AXIS, "type": "category", "data": categories, "name": x_label,
-                   **_ECHARTS_X_AXIS_NAME,
-                   "axisLabel": {**_ECHARTS_BASE_AXIS["axisLabel"], "hideOverlap": True,
-                                 "rotate": 30 if len(categories) > 8 else 0}}],
-        "yAxis": [_echarts_value_axis(
-            df, y, name=f"{y_label}{agg_suffix}", scale=False, zero_base=True,
-            values=_stacked_totals(df, x=x, y=y, color=color) if (stacked and color and y) else None,
-        )],
+        "xAxis": [
+            {
+                **_ECHARTS_BASE_AXIS,
+                "type": "category",
+                "data": categories,
+                "name": x_label,
+                **_ECHARTS_X_AXIS_NAME,
+                "axisLabel": {
+                    **_ECHARTS_BASE_AXIS["axisLabel"],
+                    "hideOverlap": True,
+                    "rotate": 30 if len(categories) > 8 else 0,
+                },
+            }
+        ],
+        "yAxis": [
+            _echarts_value_axis(
+                df,
+                y,
+                name=f"{y_label}{agg_suffix}",
+                scale=False,
+                zero_base=True,
+                values=_stacked_totals(df, x=x, y=y, color=color)
+                if (stacked and color and y)
+                else None,
+            )
+        ],
     }
 
     if color:
@@ -560,22 +639,34 @@ def _echarts_bar(
         for idx, level in enumerate(color_levels):
             sub = df[df[color] == level]
             # 用原始 x 值（非 str）reindex：datetime 轴用字符串键会对不上索引全部变 NaN
-            data = [_safe_value(v) for v in sub.set_index(x).reindex(axis_values_x)[y].tolist()] if y else []
-            series.append({
-                "name": str(level),
-                "type": "bar",
-                # 堆叠模式：同类目各系列叠起来，Y 轴按堆叠总和计算（下方 yAxis）
-                **({"stack": "Total", "barGap": "0%"} if stacked else {}),
-                "data": data,
-                "barMaxWidth": 32 if not stacked else 48,
-                "barGap": "20%" if not stacked else "0%",
-                "barCategoryGap": "30%",
-                "itemStyle": {
-                    "color": _build_linear_gradient(_series_color(idx)),
-                    "borderRadius": [4, 4, 0, 0],
-                },
-                "emphasis": {"itemStyle": {"color": _series_color(idx), "shadowBlur": 12, "shadowColor": _hex_to_rgba(_series_color(idx), 0.4)}},
-            })
+            data = (
+                [_safe_value(v) for v in sub.set_index(x).reindex(axis_values_x)[y].tolist()]
+                if y
+                else []
+            )
+            series.append(
+                {
+                    "name": str(level),
+                    "type": "bar",
+                    # 堆叠模式：同类目各系列叠起来，Y 轴按堆叠总和计算（下方 yAxis）
+                    **({"stack": "Total", "barGap": "0%"} if stacked else {}),
+                    "data": data,
+                    "barMaxWidth": 32 if not stacked else 48,
+                    "barGap": "20%" if not stacked else "0%",
+                    "barCategoryGap": "30%",
+                    "itemStyle": {
+                        "color": _build_linear_gradient(_series_color(idx)),
+                        "borderRadius": [4, 4, 0, 0],
+                    },
+                    "emphasis": {
+                        "itemStyle": {
+                            "color": _series_color(idx),
+                            "shadowBlur": 12,
+                            "shadowColor": _hex_to_rgba(_series_color(idx), 0.4),
+                        }
+                    },
+                }
+            )
         base["legend"]["data"] = [str(item) for item in color_levels]
         base["series"] = series
     else:
@@ -583,19 +674,33 @@ def _echarts_bar(
             base["series"] = []
         else:
             data = [_safe_value(v) for v in df[y].tolist()]
-            base["series"] = [{
-                "name": y_label,
-                "type": "bar",
-                "data": data,
-                "barMaxWidth": 48,
-                "barCategoryGap": "40%",
-                "itemStyle": {
-                    "color": _build_linear_gradient(_ECHARTS_PALETTE[0]),
-                    "borderRadius": [4, 4, 0, 0],
-                },
-                "emphasis": {"itemStyle": {"color": _ECHARTS_PALETTE[0], "shadowBlur": 12, "shadowColor": _hex_to_rgba(_ECHARTS_PALETTE[0], 0.4)}},
-                "label": {"show": len(categories) <= 12, "position": "top", "color": _ECHARTS_TEXT_SECONDARY, "fontSize": 11, "formatter": _ECHARTS_VALUE_LABEL_JS},
-            }]
+            base["series"] = [
+                {
+                    "name": y_label,
+                    "type": "bar",
+                    "data": data,
+                    "barMaxWidth": 48,
+                    "barCategoryGap": "40%",
+                    "itemStyle": {
+                        "color": _build_linear_gradient(_ECHARTS_PALETTE[0]),
+                        "borderRadius": [4, 4, 0, 0],
+                    },
+                    "emphasis": {
+                        "itemStyle": {
+                            "color": _ECHARTS_PALETTE[0],
+                            "shadowBlur": 12,
+                            "shadowColor": _hex_to_rgba(_ECHARTS_PALETTE[0], 0.4),
+                        }
+                    },
+                    "label": {
+                        "show": len(categories) <= 12,
+                        "position": "top",
+                        "color": _ECHARTS_TEXT_SECONDARY,
+                        "fontSize": 11,
+                        "formatter": _ECHARTS_VALUE_LABEL_JS,
+                    },
+                }
+            ]
 
     base["tooltip"]["formatter"] = _bar_tooltip_formatter(x_label, y_label, agg_suffix)
     return base
@@ -625,14 +730,24 @@ def _bar_tooltip_formatter(x_label: str, y_label: str, agg_suffix: str):
 
 
 def _echarts_line(
-    df: pd.DataFrame, *, x: str, y: str | None, color: str | None,
-    aggregation: str, title: str, area: bool = False,
+    df: pd.DataFrame,
+    *,
+    x: str,
+    y: str | None,
+    color: str | None,
+    aggregation: str,
+    title: str,
+    area: bool = False,
 ) -> dict[str, Any]:
     """折线/面积图：支持平滑、多系列、区间缩放。"""
     x_label = _build_axis_label(x)
     y_label = _build_axis_label(y) if y else "计数"
-    agg_suffix = {"mean": "（平均）", "median": "（中位）", "sum": "（合计）",
-                  "count": "（计数）"}.get(aggregation, "")
+    agg_suffix = {
+        "mean": "（平均）",
+        "median": "（中位）",
+        "sum": "（合计）",
+        "count": "（计数）",
+    }.get(aggregation, "")
     # raw_keys 仅作非时间列的轴标签兜底；categories 仅作轴标签展示，
     # 时间列按粒度智能格式化（月度→YYYY-MM，整日→YYYY-MM-DD）。
     # color 分组时聚合结果是 x×color 长表，x 每个层级重复 N 次，必须去重
@@ -651,25 +766,48 @@ def _echarts_line(
         axis_values = [0.0, *(float(v) for v in totals.tolist())]
 
     base: dict[str, Any] = {
-        "title": {**_ECHARTS_BASE_TITLE, "text": title, "subtext": f"{x_label} × {y_label}{agg_suffix}"},
+        "title": {
+            **_ECHARTS_BASE_TITLE,
+            "text": title,
+            "subtext": f"{x_label} × {y_label}{agg_suffix}",
+        },
         "tooltip": {**_ECHARTS_BASE_TOOLTIP, "trigger": "axis", "axisPointer": {"type": "line"}},
         "legend": {**_ECHARTS_BASE_LEGEND},
         "grid": {**_ECHARTS_BASE_GRID},
         "toolbox": {**_ECHARTS_BASE_TOOLBOX},
         "color": _ECHARTS_PALETTE,
-        "xAxis": [{**_ECHARTS_BASE_AXIS, "type": "category", "boundaryGap": False, "data": categories, "name": x_label,
-                   **_ECHARTS_X_AXIS_NAME,
-                   # hideOverlap：密集时间标签自动抽疏，避免重叠成墨团（ECharts v5 主流做法）
-                   "axisLabel": {**_ECHARTS_BASE_AXIS["axisLabel"], "hideOverlap": True}}],
+        "xAxis": [
+            {
+                **_ECHARTS_BASE_AXIS,
+                "type": "category",
+                "boundaryGap": False,
+                "data": categories,
+                "name": x_label,
+                **_ECHARTS_X_AXIS_NAME,
+                # hideOverlap：密集时间标签自动抽疏，避免重叠成墨团（ECharts v5 主流做法）
+                "axisLabel": {**_ECHARTS_BASE_AXIS["axisLabel"], "hideOverlap": True},
+            }
+        ],
         # 堆叠时 scale=False 从 0 起；非堆叠 scale=True 让 Y 轴自适应非零起点
-        "yAxis": [_echarts_value_axis(df, y, name=f"{y_label}{agg_suffix}",
-                                       scale=not stacked, values=axis_values)],
+        "yAxis": [
+            _echarts_value_axis(
+                df, y, name=f"{y_label}{agg_suffix}", scale=not stacked, values=axis_values
+            )
+        ],
         "dataZoom": [
             {"type": "inside", "start": 0, "end": 100},
-            {"type": "slider", "start": 0, "end": 100, "height": 22, "bottom": 16,
-             "borderColor": "transparent", "backgroundColor": "#eceef1",
-             "fillerColor": _hex_to_rgba(_ECHARTS_PALETTE[0], 0.12),
-             "handleStyle": {"color": _ECHARTS_PALETTE[0]}, "textStyle": {"color": _ECHARTS_TEXT_SECONDARY}},
+            {
+                "type": "slider",
+                "start": 0,
+                "end": 100,
+                "height": 22,
+                "bottom": 16,
+                "borderColor": "transparent",
+                "backgroundColor": "#eceef1",
+                "fillerColor": _hex_to_rgba(_ECHARTS_PALETTE[0], 0.12),
+                "handleStyle": {"color": _ECHARTS_PALETTE[0]},
+                "textStyle": {"color": _ECHARTS_TEXT_SECONDARY},
+            },
         ],
     }
 
@@ -720,7 +858,11 @@ def _echarts_line(
                 "showSymbol": len(categories) <= 60,
                 "sampling": "lttb",
                 "lineStyle": {"width": 3, "color": _ECHARTS_PALETTE[0]},
-                "itemStyle": {"color": _ECHARTS_PALETTE[0], "borderWidth": 2, "borderColor": "#fff"},
+                "itemStyle": {
+                    "color": _ECHARTS_PALETTE[0],
+                    "borderWidth": 2,
+                    "borderColor": "#fff",
+                },
                 "emphasis": {"focus": "series"},
             }
             # 峰谷标记 + 均值参考线（ECharts 官方折线示例标配）：单系列才加，
@@ -731,19 +873,25 @@ def _echarts_line(
                     "return Math.abs(v)>=10000?(v/10000).toFixed(1)+'\u4e07':v;}"
                 )
                 s["markPoint"] = {
-                    "symbol": "pin", "symbolSize": 42,
+                    "symbol": "pin",
+                    "symbolSize": 42,
                     "label": {"color": "#fff", "fontSize": 10, "formatter": _mark_value_js},
                     "itemStyle": {"color": _ECHARTS_PALETTE[0], "opacity": 0.88},
                     "data": [{"type": "max", "name": "峰值"}, {"type": "min", "name": "谷值"}],
                 }
                 s["markLine"] = {
-                    "silent": True, "symbol": "none",
+                    "silent": True,
+                    "symbol": "none",
                     "lineStyle": {"type": "dashed", "color": "#6b7280", "width": 1},
-                    "label": {"color": "#6b7280", "fontSize": 11, "position": "insideEndTop",
-                              "formatter": _JsFunction(
-                                  "function(p){var v=p.value;"
-                                  "return '\u5747\u503c '+(Math.abs(v)>=10000?(v/10000).toFixed(2)+'\u4e07':Math.round(v*100)/100);}"
-                              )},
+                    "label": {
+                        "color": "#6b7280",
+                        "fontSize": 11,
+                        "position": "insideEndTop",
+                        "formatter": _JsFunction(
+                            "function(p){var v=p.value;"
+                            "return '\u5747\u503c '+(Math.abs(v)>=10000?(v/10000).toFixed(2)+'\u4e07':Math.round(v*100)/100);}"
+                        ),
+                    },
                     "data": [{"type": "average", "name": "均值"}],
                 }
             if area:
@@ -754,7 +902,12 @@ def _echarts_line(
 
 
 def _append_structure_annotations(
-    base: dict[str, Any], df: pd.DataFrame, *, x: str, y: str, target: dict[str, Any],
+    base: dict[str, Any],
+    df: pd.DataFrame,
+    *,
+    x: str,
+    y: str,
+    target: dict[str, Any],
 ) -> None:
     """给散点主系列追加结构注记：OLS 趋势线 + 双轴均值象限线。
 
@@ -775,54 +928,80 @@ def _append_structure_annotations(
     if trend:
         x0, y0, x1, y1 = trend
         trend_label = f"趋势 r={r_value:.2f}" if r_value is not None else "趋势线"
-        mark_items.append([
-            {"coord": [x0, y0], "lineStyle": {"color": "#E15759", "width": 2.5},
-             "label": {"formatter": trend_label, "position": "insideEndTop",
-                       "color": "#E15759", "fontSize": 11, "fontWeight": 600}},
-            {"coord": [x1, y1]},
-        ])
+        mark_items.append(
+            [
+                {
+                    "coord": [x0, y0],
+                    "lineStyle": {"color": "#E15759", "width": 2.5},
+                    "label": {
+                        "formatter": trend_label,
+                        "position": "insideEndTop",
+                        "color": "#E15759",
+                        "fontSize": 11,
+                        "fontWeight": 600,
+                    },
+                },
+                {"coord": [x1, y1]},
+            ]
+        )
     mean_x, mean_y = structure.get("mean_x"), structure.get("mean_y")
     if mean_x is not None:
-        mark_items.append({
-            "xAxis": mean_x,
-            "lineStyle": {"color": "#9aa0a6", "width": 1.2, "type": "dashed", "opacity": 0.9},
-            # 竖线标签默认沿轴贴在最上端并旋转 90°，实测压在绘图区顶边、
-            # 与标题抢位且半截被裁。改成水平放在竖线下端上方（insideStartTop），
-            # 加白底衬垫，既读得清也不越界。
-            "label": {
-                "formatter": f"x 均值 {_format_number(mean_x)}",
-                "position": "insideStartTop", "rotate": 0,
-                "color": "#6b7280", "fontSize": 10,
-                "padding": [2, 4], "borderRadius": 3,
-                "backgroundColor": "rgba(255,255,255,0.82)",
-            },
-        })
+        mark_items.append(
+            {
+                "xAxis": mean_x,
+                "lineStyle": {"color": "#9aa0a6", "width": 1.2, "type": "dashed", "opacity": 0.9},
+                # 竖线标签默认沿轴贴在最上端并旋转 90°，实测压在绘图区顶边、
+                # 与标题抢位且半截被裁。改成水平放在竖线下端上方（insideStartTop），
+                # 加白底衬垫，既读得清也不越界。
+                "label": {
+                    "formatter": f"x 均值 {_format_number(mean_x)}",
+                    "position": "insideStartTop",
+                    "rotate": 0,
+                    "color": "#6b7280",
+                    "fontSize": 10,
+                    "padding": [2, 4],
+                    "borderRadius": 3,
+                    "backgroundColor": "rgba(255,255,255,0.82)",
+                },
+            }
+        )
     if mean_y is not None:
-        mark_items.append({
-            "yAxis": mean_y,
-            "lineStyle": {"color": "#9aa0a6", "width": 1.2, "type": "dashed", "opacity": 0.9},
-            # 横线标签放在线**左端内侧**（insideStartTop 会贴到绘图区左边界被裁），
-            # 白底衬垫保证压在点数上时也能读。
-            "label": {
-                "formatter": f"y 均值 {_format_number(mean_y)}",
-                # 右对齐锚在线的右端内侧：左对齐会从锚点向右延伸、越过绘图区被裁
-                "position": "insideEndTop", "align": "right",
-                "color": "#6b7280", "fontSize": 10,
-                "padding": [2, 4], "borderRadius": 3,
-                "backgroundColor": "rgba(255,255,255,0.82)",
-            },
-        })
+        mark_items.append(
+            {
+                "yAxis": mean_y,
+                "lineStyle": {"color": "#9aa0a6", "width": 1.2, "type": "dashed", "opacity": 0.9},
+                # 横线标签放在线**左端内侧**（insideStartTop 会贴到绘图区左边界被裁），
+                # 白底衬垫保证压在点数上时也能读。
+                "label": {
+                    "formatter": f"y 均值 {_format_number(mean_y)}",
+                    # 右对齐锚在线的右端内侧：左对齐会从锚点向右延伸、越过绘图区被裁
+                    "position": "insideEndTop",
+                    "align": "right",
+                    "color": "#6b7280",
+                    "fontSize": 10,
+                    "padding": [2, 4],
+                    "borderRadius": 3,
+                    "backgroundColor": "rgba(255,255,255,0.82)",
+                },
+            }
+        )
     if not mark_items:
         return
     existing = target.setdefault(
-        "markLine", {"silent": True, "symbol": "none", "label": {"color": "#6b7280", "fontSize": 11}},
+        "markLine",
+        {"silent": True, "symbol": "none", "label": {"color": "#6b7280", "fontSize": 11}},
     )
     existing.setdefault("data", []).extend(mark_items)
 
 
 def _echarts_scatter(
-    df: pd.DataFrame, *, x: str, y: str | None, color: str | None,
-    size: str | None, title: str,
+    df: pd.DataFrame,
+    *,
+    x: str,
+    y: str | None,
+    color: str | None,
+    size: str | None,
+    title: str,
 ) -> dict[str, Any]:
     """散点图：支持颜色分组、大小维度、视觉映射。"""
     x_label = _build_axis_label(x)
@@ -837,8 +1016,11 @@ def _echarts_scatter(
 
     base: dict[str, Any] = {
         "title": {**_ECHARTS_BASE_TITLE, "text": title, "subtext": f"{x_label} × {y_label}"},
-        "tooltip": {**_ECHARTS_BASE_TOOLTIP, "trigger": "item",
-                    "formatter": _scatter_tooltip_formatter(x_label, y_label, size)},
+        "tooltip": {
+            **_ECHARTS_BASE_TOOLTIP,
+            "trigger": "item",
+            "formatter": _scatter_tooltip_formatter(x_label, y_label, size),
+        },
         "legend": {**_ECHARTS_BASE_LEGEND},
         "grid": {**_ECHARTS_BASE_GRID},
         "toolbox": {**_ECHARTS_BASE_TOOLBOX},
@@ -868,25 +1050,28 @@ def _echarts_scatter(
         for idx, level in enumerate(color_levels):
             sub = df[df[color] == level]
             data = _rows_data(sub, data_cols)
-            series.append({
-                "name": str(level),
-                "type": "scatter",
-                "data": data,
-                # 超过阈值自动启用 large 模式：万级点量下浏览器仍能流畅交互
-                "large": True, "largeThreshold": 4000,
-                "symbolSize": _size_func(size, size_min, size_max) if size else base_symbol,
-                "itemStyle": {
-                    "color": _series_color(idx),
-                    "opacity": base_opacity,
-                    "borderWidth": base_border,
-                    "borderColor": "#fff",
-                    # 光晕只在点少时加：几千点以上每点一圈 shadow 既拖慢渲染、
-                    # 又让密集区糊成一片（点径缩小后尤其明显）。
-                    "shadowBlur": 4 if base_border else 0,
-                    "shadowColor": _hex_to_rgba(_series_color(idx), 0.3),
-                },
-                "emphasis": {"scale": 1.4, "itemStyle": {"opacity": 1, "shadowBlur": 10}},
-            })
+            series.append(
+                {
+                    "name": str(level),
+                    "type": "scatter",
+                    "data": data,
+                    # 超过阈值自动启用 large 模式：万级点量下浏览器仍能流畅交互
+                    "large": True,
+                    "largeThreshold": 4000,
+                    "symbolSize": _size_func(size, size_min, size_max) if size else base_symbol,
+                    "itemStyle": {
+                        "color": _series_color(idx),
+                        "opacity": base_opacity,
+                        "borderWidth": base_border,
+                        "borderColor": "#fff",
+                        # 光晕只在点少时加：几千点以上每点一圈 shadow 既拖慢渲染、
+                        # 又让密集区糊成一片（点径缩小后尤其明显）。
+                        "shadowBlur": 4 if base_border else 0,
+                        "shadowColor": _hex_to_rgba(_series_color(idx), 0.3),
+                    },
+                    "emphasis": {"scale": 1.4, "itemStyle": {"opacity": 1, "shadowBlur": 10}},
+                }
+            )
         base["legend"]["data"] = [str(item) for item in color_levels]
         # 结构注记挂主系列：趋势线 + 均值象限线（全量数据计算，跨组全局参考）
         _append_structure_annotations(base, df, x=x, y=y, target=series[0])
@@ -915,58 +1100,84 @@ def _echarts_scatter(
                     # x 轴（竖线）标线底端；避免量程被极端值拉大后
                     # 两条边界线贴近时标签文字互相重叠。
                     if bool((vals > hi).any()):
-                        mark_data.append({axis_key: hi, "label": {
-                            "formatter": f"{col_label} 正常上界 {_format_number(hi)}",
-                            "position": "insideEndTop" if axis_key == "yAxis" else "insideStartTop"}})
+                        mark_data.append(
+                            {
+                                axis_key: hi,
+                                "label": {
+                                    "formatter": f"{col_label} 正常上界 {_format_number(hi)}",
+                                    "position": "insideEndTop"
+                                    if axis_key == "yAxis"
+                                    else "insideStartTop",
+                                },
+                            }
+                        )
                     if bool((vals < lo).any()):
-                        mark_data.append({axis_key: lo, "label": {
-                            "formatter": f"{col_label} 正常下界 {_format_number(lo)}",
-                            "position": "insideEndBottom" if axis_key == "yAxis" else "insideStartBottom"}})
+                        mark_data.append(
+                            {
+                                axis_key: lo,
+                                "label": {
+                                    "formatter": f"{col_label} 正常下界 {_format_number(lo)}",
+                                    "position": "insideEndBottom"
+                                    if axis_key == "yAxis"
+                                    else "insideStartBottom",
+                                },
+                            }
+                        )
         n_outliers = int(outlier_mask.sum())
         if 0 < n_outliers <= max(1, int(len(df) * 0.2)):
             normal_df, outlier_df = df[~outlier_mask], df[outlier_mask]
         else:
             normal_df, outlier_df, mark_data = df, df.iloc[0:0], []
 
-        series = [{
-            "name": y_label,
-            "type": "scatter",
-            "data": _rows_data(normal_df, data_cols),
-            "large": True, "largeThreshold": 4000,
-            "symbolSize": _size_func(size, size_min, size_max) if size else base_symbol,
-            "itemStyle": {
-                "color": _ECHARTS_PALETTE[0],
-                "opacity": base_opacity,
-                "borderWidth": base_border,
-                "borderColor": "#fff",
-                "shadowBlur": 4 if base_border else 0,
-                "shadowColor": _hex_to_rgba(_ECHARTS_PALETTE[0], 0.3),
-            },
-            "emphasis": {"scale": 1.4, "itemStyle": {"opacity": 1, "shadowBlur": 10}},
-        }]
+        series = [
+            {
+                "name": y_label,
+                "type": "scatter",
+                "data": _rows_data(normal_df, data_cols),
+                "large": True,
+                "largeThreshold": 4000,
+                "symbolSize": _size_func(size, size_min, size_max) if size else base_symbol,
+                "itemStyle": {
+                    "color": _ECHARTS_PALETTE[0],
+                    "opacity": base_opacity,
+                    "borderWidth": base_border,
+                    "borderColor": "#fff",
+                    "shadowBlur": 4 if base_border else 0,
+                    "shadowColor": _hex_to_rgba(_ECHARTS_PALETTE[0], 0.3),
+                },
+                "emphasis": {"scale": 1.4, "itemStyle": {"opacity": 1, "shadowBlur": 10}},
+            }
+        ]
         if len(outlier_df):
             # 离群点要比普通点略大、略实，才能在密集点云里被看见；
             # 但同样随总点数收敛，避免几万个离群点把画面糊满。
-            series.append({
-                "name": "离群点",
-                "type": "scatter",
-                "data": _rows_data(outlier_df, data_cols),
-                "symbolSize": _size_func(size, size_min, size_max) if size else max(base_symbol + 3.0, 6.0),
-                "itemStyle": {
-                    "color": _ECHARTS_PALETTE[3],
-                    "opacity": min(0.92, base_opacity + 0.18),
-                    "borderWidth": 1.0,
-                    "borderColor": "#fff",
-                    "shadowBlur": 6 if base_border else 0,
-                    "shadowColor": _hex_to_rgba(_ECHARTS_PALETTE[3], 0.35),
-                },
-                "emphasis": {"scale": 1.5, "itemStyle": {"opacity": 1, "shadowBlur": 12}},
-                # 参考虚线挂在离群系列上：点击图例隐藏离群点时边界线同步隐藏
-                "markLine": {"silent": True, "symbol": "none",
-                             "lineStyle": {"type": "dashed", "color": "#6b7280", "width": 1},
-                             "label": {"color": "#6b7280", "fontSize": 11, "position": "insideEndTop"},
-                             "data": mark_data},
-            })
+            series.append(
+                {
+                    "name": "离群点",
+                    "type": "scatter",
+                    "data": _rows_data(outlier_df, data_cols),
+                    "symbolSize": _size_func(size, size_min, size_max)
+                    if size
+                    else max(base_symbol + 3.0, 6.0),
+                    "itemStyle": {
+                        "color": _ECHARTS_PALETTE[3],
+                        "opacity": min(0.92, base_opacity + 0.18),
+                        "borderWidth": 1.0,
+                        "borderColor": "#fff",
+                        "shadowBlur": 6 if base_border else 0,
+                        "shadowColor": _hex_to_rgba(_ECHARTS_PALETTE[3], 0.35),
+                    },
+                    "emphasis": {"scale": 1.5, "itemStyle": {"opacity": 1, "shadowBlur": 12}},
+                    # 参考虚线挂在离群系列上：点击图例隐藏离群点时边界线同步隐藏
+                    "markLine": {
+                        "silent": True,
+                        "symbol": "none",
+                        "lineStyle": {"type": "dashed", "color": "#6b7280", "width": 1},
+                        "label": {"color": "#6b7280", "fontSize": 11, "position": "insideEndTop"},
+                        "data": mark_data,
+                    },
+                }
+            )
             base["legend"]["data"] = [y_label, "离群点"]
             base["title"]["subtext"] = (
                 f"{x_label} × {y_label} · IQR 检出 {n_outliers} 个离群点（红色标出）"
@@ -1004,7 +1215,11 @@ def _scatter_tooltip_formatter(x_label: str, y_label: str, size: str | None):
     y_label_js = json.dumps(y_label, ensure_ascii=False)
     size_label = _build_axis_label(size) if size else None
     size_label_js = json.dumps(size_label, ensure_ascii=False) if size_label else "null"
-    size_line = f"html+='<span style=\"color:var(--tt-muted,#6b7280);\">'+{size_label_js}+'：</span><b>'+val[2]+'</b><br/>';" if size_label else ""
+    size_line = (
+        f"html+='<span style=\"color:var(--tt-muted,#6b7280);\">'+{size_label_js}+'：</span><b>'+val[2]+'</b><br/>';"
+        if size_label
+        else ""
+    )
     return _JsFunction(
         "function(params){"
         "var val=params.value;"
@@ -1195,7 +1410,12 @@ def _density_view_for(
 
 
 def _density_panel_structure(
-    df: pd.DataFrame, *, x: str, y: str, color: str | None, panel: DensityPanel,
+    df: pd.DataFrame,
+    *,
+    x: str,
+    y: str,
+    color: str | None,
+    panel: DensityPanel,
 ) -> dict[str, Any] | None:
     """某个密度面板对应原始记录的结构注记（趋势线端点、均值、皮尔逊 r）。
 
@@ -1225,8 +1445,13 @@ def _density_panel_title(panel: DensityPanel, structure: dict[str, Any] | None) 
 
 
 def _density_category_axis(
-    edges: np.ndarray, *, grid_index: int, show_labels: bool, interval: int = 0,
-    name: str | None = None, name_gap: float | None = None,
+    edges: np.ndarray,
+    *,
+    grid_index: int,
+    show_labels: bool,
+    interval: int = 0,
+    name: str | None = None,
+    name_gap: float | None = None,
 ) -> dict[str, Any]:
     """密度图类目轴：类目就是分箱（边界格式化成短标签）。
 
@@ -1305,37 +1530,55 @@ def _density_cells(grid: DensityGrid) -> list[Any]:
             x_index = int(column)
             count = int(row[x_index])
             value = [
-                x_index, row_index, count,
-                float(x_edges[x_index]), float(x_edges[x_index + 1]),
-                float(y_edges[row_index]), float(y_edges[row_index + 1]),
+                x_index,
+                row_index,
+                count,
+                float(x_edges[x_index]),
+                float(x_edges[x_index + 1]),
+                float(y_edges[row_index]),
+                float(y_edges[row_index + 1]),
             ]
             if row_index == peak_y and x_index == peak_x:
-                cells.append({
-                    "value": value,
-                    "itemStyle": {
-                        "borderColor": _DENSITY_ACCENT, "borderWidth": 1.5,
-                        "shadowBlur": 6, "shadowColor": "rgba(225,87,89,0.55)",
-                    },
-                    # 标签底/字色固定（白底 + 深红字，与 Plotly 分支的注记同款），
-                    # 两种主题下都清晰，因此显式给 color；暗色脚本只翻"亮色深格
-                    # 白字"那一种约定（见 _ECHARTS_DARK_MODE_SCRIPT）。
-                    "label": {
-                        "show": True, "position": "top", "distance": 4,
-                        "fontSize": 10, "fontWeight": 600, "color": "#B23A3C",
-                        "backgroundColor": "rgba(255,255,255,0.86)",
-                        "borderColor": _DENSITY_ACCENT, "borderWidth": 1,
-                        "borderRadius": 3, "padding": [2, 5],
-                        "formatter": f"最密 {format_number(count)} 条",
-                    },
-                })
+                cells.append(
+                    {
+                        "value": value,
+                        "itemStyle": {
+                            "borderColor": _DENSITY_ACCENT,
+                            "borderWidth": 1.5,
+                            "shadowBlur": 6,
+                            "shadowColor": "rgba(225,87,89,0.55)",
+                        },
+                        # 标签底/字色固定（白底 + 深红字，与 Plotly 分支的注记同款），
+                        # 两种主题下都清晰，因此显式给 color；暗色脚本只翻"亮色深格
+                        # 白字"那一种约定（见 _ECHARTS_DARK_MODE_SCRIPT）。
+                        "label": {
+                            "show": True,
+                            "position": "top",
+                            "distance": 4,
+                            "fontSize": 10,
+                            "fontWeight": 600,
+                            "color": "#B23A3C",
+                            "backgroundColor": "rgba(255,255,255,0.86)",
+                            "borderColor": _DENSITY_ACCENT,
+                            "borderWidth": 1,
+                            "borderRadius": 3,
+                            "padding": [2, 5],
+                            "formatter": f"最密 {format_number(count)} 条",
+                        },
+                    }
+                )
             else:
                 cells.append(value)
     return cells
 
 
 def _density_trend_series(
-    grid: DensityGrid, structure: dict[str, Any] | None, *, axis_index: int,
-    x_range: tuple[float, float], y_range: tuple[float, float],
+    grid: DensityGrid,
+    structure: dict[str, Any] | None,
+    *,
+    axis_index: int,
+    x_range: tuple[float, float],
+    y_range: tuple[float, float],
     min_r: float | None = None,
 ) -> dict[str, Any] | None:
     """面板趋势线：逐格给出趋势线的 y 位置（类目轴只接受整数下标）。
@@ -1398,8 +1641,16 @@ def _density_trend_series(
 
 
 def _density_extreme_series(
-    df: pd.DataFrame, *, x: str, y: str, color: str | None, panel: DensityPanel,
-    view: DensityView, axis_index: int, x_label: str, y_label: str,
+    df: pd.DataFrame,
+    *,
+    x: str,
+    y: str,
+    color: str | None,
+    panel: DensityPanel,
+    view: DensityView,
+    axis_index: int,
+    x_label: str,
+    y_label: str,
 ) -> dict[str, Any] | None:
     """最外围原始记录（原始点叠加层）。
 
@@ -1418,8 +1669,11 @@ def _density_extreme_series(
     if len(pair) < 10:
         return None
     raw_x, raw_y = extreme_points(
-        pair[x].to_numpy(dtype=float), pair[y].to_numpy(dtype=float),
-        x_range=view.x_range, y_range=view.y_range, top=_DENSITY_EXTREME_POINTS,
+        pair[x].to_numpy(dtype=float),
+        pair[y].to_numpy(dtype=float),
+        x_range=view.x_range,
+        y_range=view.y_range,
+        top=_DENSITY_EXTREME_POINTS,
     )
     if len(raw_x) == 0:
         return None
@@ -1427,8 +1681,12 @@ def _density_extreme_series(
     rounded_x = _round_significant(raw_x)
     rounded_y = _round_significant(raw_y)
     data = [
-        [_bin_index(float(x_value), grid.x_edges), _bin_index(float(y_value), grid.y_edges),
-         float(x_value), float(y_value)]
+        [
+            _bin_index(float(x_value), grid.x_edges),
+            _bin_index(float(y_value), grid.y_edges),
+            float(x_value),
+            float(y_value),
+        ]
         for x_value, y_value in zip(rounded_x, rounded_y, strict=True)
     ]
     x_label_js = json.dumps(x_label, ensure_ascii=False)
@@ -1447,21 +1705,28 @@ def _density_extreme_series(
             "borderWidth": 0.8,
         },
         "emphasis": {"scale": 1.6, "itemStyle": {"opacity": 1, "shadowBlur": 8}},
-        "tooltip": {"formatter": _JsFunction(
-            "function(p){" + _DENSITY_NUMBER_JS +
-            "var v=p.value;"
-            "return '<div style=\"font-weight:600;margin-bottom:6px;\">最外围记录（原始点）</div>'"
-            f"+'<span style=\"color:var(--tt-muted,#6b7280);\">'+{x_label_js}+'：</span><b>'+_dn(v[2])+'</b><br/>'"
-            f"+'<span style=\"color:var(--tt-muted,#6b7280);\">'+{y_label_js}+'：</span><b>'+_dn(v[3])+'</b><br/>'"
-            "+'<span style=\"color:var(--tt-muted,#6b7280);font-size:11px;\">红点定位在所属网格中心，数值为原始记录</span>';"
-            "}"
-        )},
+        "tooltip": {
+            "formatter": _JsFunction(
+                "function(p){" + _DENSITY_NUMBER_JS + "var v=p.value;"
+                "return '<div style=\"font-weight:600;margin-bottom:6px;\">最外围记录（原始点）</div>'"
+                f"+'<span style=\"color:var(--tt-muted,#6b7280);\">'+{x_label_js}+'：</span><b>'+_dn(v[2])+'</b><br/>'"
+                f"+'<span style=\"color:var(--tt-muted,#6b7280);\">'+{y_label_js}+'：</span><b>'+_dn(v[3])+'</b><br/>'"
+                "+'<span style=\"color:var(--tt-muted,#6b7280);font-size:11px;\">红点定位在所属网格中心，数值为原始记录</span>';"
+                "}"
+            )
+        },
     }
 
 
 def _density_detail_series(
-    df: pd.DataFrame, *, x: str, y: str, color: str | None, view: DensityView,
-    x_label: str, y_label: str,
+    df: pd.DataFrame,
+    *,
+    x: str,
+    y: str,
+    color: str | None,
+    view: DensityView,
+    x_label: str,
+    y_label: str,
 ) -> dict[str, Any] | None:
     """密度图的"放大看原始记录"图层（与 Plotly 分支同名同义）。
 
@@ -1478,15 +1743,19 @@ def _density_detail_series(
     xs, ys = sample_detail_points(
         pair.iloc[:, 0].to_numpy(dtype=float),
         pair.iloc[:, 1].to_numpy(dtype=float),
-        x_range=view.x_range, y_range=view.y_range, groups=groups,
+        x_range=view.x_range,
+        y_range=view.y_range,
+        groups=groups,
         top=_DENSITY_DETAIL_POINTS,
     )
     if xs.size == 0:
         return None
     x_label_js = json.dumps(x_label, ensure_ascii=False)
     y_label_js = json.dumps(y_label, ensure_ascii=False)
-    data = [[float(xv), float(yv)]
-            for xv, yv in zip(_round_significant(xs), _round_significant(ys), strict=True)]
+    data = [
+        [float(xv), float(yv)]
+        for xv, yv in zip(_round_significant(xs), _round_significant(ys), strict=True)
+    ]
     return {
         "name": f"抽样原始点（{format_number(xs.size)} 条）",
         "type": "scatter",
@@ -1497,20 +1766,25 @@ def _density_detail_series(
         "z": 6,
         "itemStyle": {"color": "rgba(74,111,165,0.55)"},
         "emphasis": {"scale": 1.8, "itemStyle": {"opacity": 1, "shadowBlur": 8}},
-        "tooltip": {"formatter": _JsFunction(
-            "function(p){" + _DENSITY_NUMBER_JS +
-            "var v=p.value;"
-            "return '<div style=\"font-weight:600;margin-bottom:6px;\">抽样原始点</div>'"
-            f"+'<span style=\"color:var(--tt-muted,#6b7280);\">'+{x_label_js}+'：</span><b>'+_dn(v[0])+'</b><br/>'"
-            f"+'<span style=\"color:var(--tt-muted,#6b7280);\">'+{y_label_js}+'：</span><b>'+_dn(v[1])+'</b><br/>'"
-            "+'<span style=\"color:var(--tt-muted,#6b7280);font-size:11px;\">分层抽样，用于放大后查看具体记录</span>';"
-            "}"
-        )},
+        "tooltip": {
+            "formatter": _JsFunction(
+                "function(p){" + _DENSITY_NUMBER_JS + "var v=p.value;"
+                "return '<div style=\"font-weight:600;margin-bottom:6px;\">抽样原始点</div>'"
+                f"+'<span style=\"color:var(--tt-muted,#6b7280);\">'+{x_label_js}+'：</span><b>'+_dn(v[0])+'</b><br/>'"
+                f"+'<span style=\"color:var(--tt-muted,#6b7280);\">'+{y_label_js}+'：</span><b>'+_dn(v[1])+'</b><br/>'"
+                "+'<span style=\"color:var(--tt-muted,#6b7280);font-size:11px;\">分层抽样，用于放大后查看具体记录</span>';"
+                "}"
+            )
+        },
     }
 
 
 def _density_marginal_series(
-    grid: DensityGrid, *, bar_color: str, x_label: str, y_label: str,
+    grid: DensityGrid,
+    *,
+    bar_color: str,
+    x_label: str,
+    y_label: str,
 ) -> list[dict[str, Any]]:
     """单面板的边缘分布（顶部 x 直方图 + 右侧 y 直方图）。
 
@@ -1518,14 +1792,17 @@ def _density_marginal_series(
     每一列/行严格对齐——用户能把"分布形状"与"密度图"对上，这是 jointplot
     布局最核心的价值。柱色取 ``_CHART_COLORS[4]``，与 Plotly 分支同色。
     """
+
     def formatter(label: str) -> _JsFunction:
         # 列名来自 CSV 表头，用 json.dumps 转义后作为 JS 字符串字面量拼入，
         # 防止列名里的引号/尖括号破坏函数体（与 _scatter_tooltip_formatter 一致）。
         label_js = json.dumps(label, ensure_ascii=False)
         return _JsFunction(
-            "function(p){" + _DENSITY_NUMBER_JS +
-            "return '<div style=\"font-weight:600;margin-bottom:6px;\">'+p.seriesName+'</div>'"
-            "+'<span style=\"color:var(--tt-muted,#6b7280);\">'+" + label_js
+            "function(p){"
+            + _DENSITY_NUMBER_JS
+            + "return '<div style=\"font-weight:600;margin-bottom:6px;\">'+p.seriesName+'</div>'"
+            "+'<span style=\"color:var(--tt-muted,#6b7280);\">'+"
+            + label_js
             + "+'：</span><b>'+_dn(p.name)+'</b><br/>'"
             "+'<span style=\"color:var(--tt-muted,#6b7280);\">记录数：</span><b>'+Number(p.value).toLocaleString()+'</b>';"
             "}"
@@ -1534,17 +1811,27 @@ def _density_marginal_series(
     x_marginal, y_marginal = grid.marginal_x(), grid.marginal_y()
     return [
         {
-            "name": "x 分布", "type": "bar", "xAxisIndex": 1, "yAxisIndex": 1,
+            "name": "x 分布",
+            "type": "bar",
+            "xAxisIndex": 1,
+            "yAxisIndex": 1,
             "data": [int(value) for value in x_marginal],
             # 类目轴 band 即分箱：柱宽 100% + 类目间隙 0 才能与热力图逐格对齐
-            "barWidth": "100%", "barCategoryGap": "0%", "z": 3,
+            "barWidth": "100%",
+            "barCategoryGap": "0%",
+            "z": 3,
             "itemStyle": {"color": bar_color, "opacity": 0.9},
             "tooltip": {"formatter": formatter(x_label)},
         },
         {
-            "name": "y 分布", "type": "bar", "xAxisIndex": 2, "yAxisIndex": 2,
+            "name": "y 分布",
+            "type": "bar",
+            "xAxisIndex": 2,
+            "yAxisIndex": 2,
             "data": [int(value) for value in y_marginal],
-            "barWidth": "100%", "barCategoryGap": "0%", "z": 3,
+            "barWidth": "100%",
+            "barCategoryGap": "0%",
+            "z": 3,
             "itemStyle": {"color": bar_color, "opacity": 0.9},
             "tooltip": {"formatter": formatter(y_label)},
         },
@@ -1556,8 +1843,7 @@ def _density_tooltip_formatter(x_label: str, y_label: str) -> _JsFunction:
     x_label_js = json.dumps(x_label, ensure_ascii=False)
     y_label_js = json.dumps(y_label, ensure_ascii=False)
     return _JsFunction(
-        "function(p){" + _DENSITY_NUMBER_JS +
-        "var v=p.value;if(!v||v.length<7)return '';"
+        "function(p){" + _DENSITY_NUMBER_JS + "var v=p.value;if(!v||v.length<7)return '';"
         "return '<div style=\"font-weight:600;margin-bottom:6px;\">'+p.seriesName+'</div>'"
         f"+'<span style=\"color:var(--tt-muted,#6b7280);\">'+{x_label_js}+'：</span><b>'+_dn(v[3])+' ~ '+_dn(v[4])+'</b><br/>'"
         f"+'<span style=\"color:var(--tt-muted,#6b7280);\">'+{y_label_js}+'：</span><b>'+_dn(v[5])+' ~ '+_dn(v[6])+'</b><br/>'"
@@ -1567,7 +1853,9 @@ def _density_tooltip_formatter(x_label: str, y_label: str) -> _JsFunction:
 
 
 def _density_visual_map(
-    bands: list[tuple[int, int | None]], colors: list[str], series_indexes: list[int],
+    bands: list[tuple[int, int | None]],
+    colors: list[str],
+    series_indexes: list[int],
 ) -> dict[str, Any]:
     """档位色标（piecewise）：一个 visualMap 就是全部面板共用的颜色键。
 
@@ -1606,7 +1894,13 @@ def _density_visual_map(
 
 
 def _echarts_scatter_density(
-    df: pd.DataFrame, *, x: str, y: str, color: str | None, title: str, view: DensityView,
+    df: pd.DataFrame,
+    *,
+    x: str,
+    y: str,
+    color: str | None,
+    title: str,
+    view: DensityView,
 ) -> dict[str, Any]:
     """超大数据散点 → 分档密度热力图（与 Plotly 分支同一份网格与档位色板）。
 
@@ -1642,8 +1936,13 @@ def _echarts_scatter_density(
     panel_titles: list[dict[str, Any]] = []
     has_extremes = False
 
-    def add_panel(panel: DensityPanel, structure: dict[str, Any] | None,
-                  grid_index: int, *, trend_min_r: float | None) -> None:
+    def add_panel(
+        panel: DensityPanel,
+        structure: dict[str, Any] | None,
+        grid_index: int,
+        *,
+        trend_min_r: float | None,
+    ) -> None:
         """一个密度面板 = 热力图 + （可选）趋势线 + （可选）最外围记录。
 
         ``trend_min_r`` 为 ``None`` 时不设相关系数门槛（整体布局），给数值时
@@ -1651,29 +1950,46 @@ def _echarts_scatter_density(
         """
         nonlocal has_extremes
         heatmap_indexes.append(len(series))
-        series.append({
-            "name": panel.name or f"{y_label}密度",
-            "type": "heatmap",
-            "xAxisIndex": grid_index,
-            "yAxisIndex": grid_index,
-            "data": _density_cells(panel.grid),
-            # 无描边：格子紧贴铺满，零记录格自然透出背景（点云覆盖范围才是信息）
-            "itemStyle": {"borderWidth": 0},
-            "label": {"show": False},
-            "emphasis": {"itemStyle": {
-                "borderColor": _DENSITY_ACCENT, "borderWidth": 1.5,
-                "shadowBlur": 8, "shadowColor": "rgba(0,0,0,0.25)",
-            }},
-        })
+        series.append(
+            {
+                "name": panel.name or f"{y_label}密度",
+                "type": "heatmap",
+                "xAxisIndex": grid_index,
+                "yAxisIndex": grid_index,
+                "data": _density_cells(panel.grid),
+                # 无描边：格子紧贴铺满，零记录格自然透出背景（点云覆盖范围才是信息）
+                "itemStyle": {"borderWidth": 0},
+                "label": {"show": False},
+                "emphasis": {
+                    "itemStyle": {
+                        "borderColor": _DENSITY_ACCENT,
+                        "borderWidth": 1.5,
+                        "shadowBlur": 8,
+                        "shadowColor": "rgba(0,0,0,0.25)",
+                    }
+                },
+            }
+        )
         trend_series = _density_trend_series(
-            panel.grid, structure, axis_index=grid_index,
-            x_range=view.x_range, y_range=view.y_range, min_r=trend_min_r,
+            panel.grid,
+            structure,
+            axis_index=grid_index,
+            x_range=view.x_range,
+            y_range=view.y_range,
+            min_r=trend_min_r,
         )
         if trend_series is not None:
             series.append(trend_series)
         extreme_series = _density_extreme_series(
-            df, x=x, y=y, color=color, panel=panel, view=view, axis_index=grid_index,
-            x_label=x_label, y_label=y_label,
+            df,
+            x=x,
+            y=y,
+            color=color,
+            panel=panel,
+            view=view,
+            axis_index=grid_index,
+            x_label=x_label,
+            y_label=y_label,
         )
         if extreme_series is not None:
             has_extremes = True
@@ -1695,69 +2011,116 @@ def _echarts_scatter_density(
             row, col = divmod(index, cols)
             left = layout["left"] + col * (cell_w + layout["gap_x"])
             top = layout["top"] + row * (block_h + layout["gap_y"])
-            grids.append({
-                "left": f"{left:.2f}%", "top": f"{top + layout['title']:.2f}%",
-                "width": f"{cell_w:.2f}%", "height": f"{panel_h:.2f}%",
-                "containLabel": False,
-            })
+            grids.append(
+                {
+                    "left": f"{left:.2f}%",
+                    "top": f"{top + layout['title']:.2f}%",
+                    "width": f"{cell_w:.2f}%",
+                    "height": f"{panel_h:.2f}%",
+                    "containLabel": False,
+                }
+            )
             # 共享轴：只有最下一行写 x 刻度、最左一列写 y 刻度，内圈重复刻度是噪声；
             # 轴名改由副标题统一交代（分面格子小，轴名会挤掉数据）。
-            x_axes.append(_density_category_axis(
-                panel.grid.x_edges, grid_index=index, show_labels=row == rows - 1,
-                interval=x_interval,
-            ))
-            y_axes.append(_density_category_axis(
-                panel.grid.y_edges, grid_index=index, show_labels=col == 0,
-                interval=y_interval,
-            ))
-            panel_titles.append({
-                "text": _density_panel_title(panel, structures[index]),
-                "left": f"{left:.2f}%", "top": f"{top:.2f}%",
-                "textStyle": {"fontSize": 12, "fontWeight": 600, "color": "#245C55"},
-            })
+            x_axes.append(
+                _density_category_axis(
+                    panel.grid.x_edges,
+                    grid_index=index,
+                    show_labels=row == rows - 1,
+                    interval=x_interval,
+                )
+            )
+            y_axes.append(
+                _density_category_axis(
+                    panel.grid.y_edges,
+                    grid_index=index,
+                    show_labels=col == 0,
+                    interval=y_interval,
+                )
+            )
+            panel_titles.append(
+                {
+                    "text": _density_panel_title(panel, structures[index]),
+                    "left": f"{left:.2f}%",
+                    "top": f"{top:.2f}%",
+                    "textStyle": {"fontSize": 12, "fontWeight": 600, "color": "#245C55"},
+                }
+            )
             add_panel(panel, structures[index], index, trend_min_r=_DENSITY_TREND_MIN_R)
     else:
         layout = _DENSITY_SINGLE_LAYOUT
         panel = panels[0]
         structure = structures[0]
         main_left = layout["left"]
-        main_width = 100.0 - layout["left"] - layout["right"] - layout["hist_width"] - layout["hist_gap"]
+        main_width = (
+            100.0 - layout["left"] - layout["right"] - layout["hist_width"] - layout["hist_gap"]
+        )
         main_top = layout["top"] + layout["hist"] + layout["hist_gap"]
         main_height = 100.0 - main_top - layout["bottom"]
         hist_left = main_left + main_width + layout["hist_gap"]
-        grids.append({
-            "left": f"{main_left:.2f}%", "top": f"{main_top:.2f}%",
-            "width": f"{main_width:.2f}%", "height": f"{main_height:.2f}%",
-            "containLabel": False,
-        })
-        grids.append({
-            "left": f"{main_left:.2f}%", "top": f"{layout['top']:.2f}%",
-            "width": f"{main_width:.2f}%", "height": f"{layout['hist']:.2f}%",
-            "containLabel": False,
-        })
-        grids.append({
-            "left": f"{hist_left:.2f}%", "top": f"{main_top:.2f}%",
-            "width": f"{layout['hist_width']:.2f}%", "height": f"{main_height:.2f}%",
-            "containLabel": False,
-        })
-        x_axes.append(_density_category_axis(
-            panel.grid.x_edges, grid_index=0, show_labels=True,
-            interval=_axis_label_interval(view.bin_shape[0], 14),
-            name=x_label, name_gap=34,
-        ))
-        y_axes.append(_density_category_axis(
-            panel.grid.y_edges, grid_index=0, show_labels=True,
-            interval=_axis_label_interval(view.bin_shape[1], 8),
-            name=y_label, name_gap=54,
-        ))
-        x_axes.append(_density_category_axis(
-            panel.grid.x_edges, grid_index=1, show_labels=False,
-        ))
+        grids.append(
+            {
+                "left": f"{main_left:.2f}%",
+                "top": f"{main_top:.2f}%",
+                "width": f"{main_width:.2f}%",
+                "height": f"{main_height:.2f}%",
+                "containLabel": False,
+            }
+        )
+        grids.append(
+            {
+                "left": f"{main_left:.2f}%",
+                "top": f"{layout['top']:.2f}%",
+                "width": f"{main_width:.2f}%",
+                "height": f"{layout['hist']:.2f}%",
+                "containLabel": False,
+            }
+        )
+        grids.append(
+            {
+                "left": f"{hist_left:.2f}%",
+                "top": f"{main_top:.2f}%",
+                "width": f"{layout['hist_width']:.2f}%",
+                "height": f"{main_height:.2f}%",
+                "containLabel": False,
+            }
+        )
+        x_axes.append(
+            _density_category_axis(
+                panel.grid.x_edges,
+                grid_index=0,
+                show_labels=True,
+                interval=_axis_label_interval(view.bin_shape[0], 14),
+                name=x_label,
+                name_gap=34,
+            )
+        )
+        y_axes.append(
+            _density_category_axis(
+                panel.grid.y_edges,
+                grid_index=0,
+                show_labels=True,
+                interval=_axis_label_interval(view.bin_shape[1], 8),
+                name=y_label,
+                name_gap=54,
+            )
+        )
+        x_axes.append(
+            _density_category_axis(
+                panel.grid.x_edges,
+                grid_index=1,
+                show_labels=False,
+            )
+        )
         y_axes.append(_density_marginal_value_axis(1))
         x_axes.append(_density_marginal_value_axis(2))
-        y_axes.append(_density_category_axis(
-            panel.grid.y_edges, grid_index=2, show_labels=False,
-        ))
+        y_axes.append(
+            _density_category_axis(
+                panel.grid.y_edges,
+                grid_index=2,
+                show_labels=False,
+            )
+        )
         add_panel(panel, structure, 0, trend_min_r=None)
         # 整体布局保留均值参考线（分面格子太小，画进去只会变成噪声）。
         # 坐标同样要换算成类目下标：markLine 的 xAxis/yAxis 在类目轴上按
@@ -1768,28 +2131,56 @@ def _echarts_scatter_density(
         mean_x = structure.get("mean_x") if structure else None
         mean_y = structure.get("mean_y") if structure else None
         if mean_x is not None and _within_range(mean_x, view.x_range):
-            mark_items.append({
-                "xAxis": _bin_index(float(mean_x), panel.grid.x_edges, nearest=True),
-                "lineStyle": {"color": "#9aa0a6", "width": 1.2, "type": "dashed", "opacity": 0.9},
-                "label": {"formatter": f"x 均值 {_format_number(mean_x)}",
-                          "position": "insideEndTop", "color": "#9aa0a6", "fontSize": 10},
-            })
+            mark_items.append(
+                {
+                    "xAxis": _bin_index(float(mean_x), panel.grid.x_edges, nearest=True),
+                    "lineStyle": {
+                        "color": "#9aa0a6",
+                        "width": 1.2,
+                        "type": "dashed",
+                        "opacity": 0.9,
+                    },
+                    "label": {
+                        "formatter": f"x 均值 {_format_number(mean_x)}",
+                        "position": "insideEndTop",
+                        "color": "#9aa0a6",
+                        "fontSize": 10,
+                    },
+                }
+            )
         if mean_y is not None and _within_range(mean_y, view.y_range):
-            mark_items.append({
-                "yAxis": _bin_index(float(mean_y), panel.grid.y_edges, nearest=True),
-                "lineStyle": {"color": "#9aa0a6", "width": 1.2, "type": "dashed", "opacity": 0.9},
-                "label": {"formatter": f"y 均值 {_format_number(mean_y)}",
-                          "position": "insideEndRight", "color": "#9aa0a6", "fontSize": 10},
-            })
+            mark_items.append(
+                {
+                    "yAxis": _bin_index(float(mean_y), panel.grid.y_edges, nearest=True),
+                    "lineStyle": {
+                        "color": "#9aa0a6",
+                        "width": 1.2,
+                        "type": "dashed",
+                        "opacity": 0.9,
+                    },
+                    "label": {
+                        "formatter": f"y 均值 {_format_number(mean_y)}",
+                        "position": "insideEndRight",
+                        "color": "#9aa0a6",
+                        "fontSize": 10,
+                    },
+                }
+            )
         if mark_items:
             series[heatmap_indexes[0]]["markLine"] = {
-                "silent": True, "symbol": "none",
+                "silent": True,
+                "symbol": "none",
                 "label": {"color": _ECHARTS_TEXT_SECONDARY, "fontSize": 10},
                 "data": mark_items,
             }
-        series.extend(_density_marginal_series(
-            panel.grid, bar_color=_series_color(4), x_label=x_label, y_label=y_label,
-        ))
+        series.extend(
+            _density_marginal_series(
+                panel.grid,
+                bar_color=_series_color(4),
+                x_label=x_label,
+                y_label=y_label,
+            )
+        )
 
     if faceted:
         subtext = (
@@ -1798,10 +2189,7 @@ def _echarts_scatter_density(
         )
     else:
         only = f" · {panels[0].name}" if panels[0].name else ""
-        subtext = (
-            f"{x_label} × {y_label} · {view.bin_label} 密度网格"
-            f" · {view.total:,} 条记录{only}"
-        )
+        subtext = f"{x_label} × {y_label} · {view.bin_label} 密度网格 · {view.total:,} 条记录{only}"
     titles: Any = [{**_ECHARTS_BASE_TITLE, "text": title, "subtext": subtext}]
     if faceted:
         titles.extend(panel_titles)
@@ -1814,7 +2202,13 @@ def _echarts_scatter_density(
         # 细节图层只在单面板布局出现（分面图一层点会落到错误面板）；
         # 默认隐藏，靠图例开关，与 Plotly 的图内按钮同一语义。
         detail_series = _density_detail_series(
-            df, x=x, y=y, color=color, view=view, x_label=x_label, y_label=y_label,
+            df,
+            x=x,
+            y=y,
+            color=color,
+            view=view,
+            x_label=x_label,
+            y_label=y_label,
         )
         if detail_series is not None:
             legend["data"] = (legend.get("data") or []) + [detail_series["name"]]
@@ -1833,7 +2227,8 @@ def _echarts_scatter_density(
     option: dict[str, Any] = {
         "title": titles if faceted else titles[0],
         "tooltip": {
-            **_ECHARTS_BASE_TOOLTIP, "trigger": "item",
+            **_ECHARTS_BASE_TOOLTIP,
+            "trigger": "item",
             "formatter": _density_tooltip_formatter(x_label, y_label),
         },
         "legend": legend,
@@ -1862,7 +2257,13 @@ def _echarts_scatter_density(
 
 
 def _density_interpretation(
-    df: pd.DataFrame, *, view: DensityView, x: str, y: str, color: str | None, title: str,
+    df: pd.DataFrame,
+    *,
+    view: DensityView,
+    x: str,
+    y: str,
+    color: str | None,
+    title: str,
 ) -> str:
     """密度视图的白话解读：讲清"颜色读什么"＋把算出来的锚点写成业务句子。
 
@@ -1877,7 +2278,8 @@ def _density_interpretation(
     pair = df[[x, y]].apply(pd.to_numeric, errors="coerce").dropna()
     structure = (
         _scatter_structure(pair[x].astype(float).tolist(), pair[y].astype(float).tolist())
-        if len(pair) >= 3 else None
+        if len(pair) >= 3
+        else None
     )
     r_value = structure.get("r") if structure else None
     parts: list[str] = []
@@ -1914,7 +2316,12 @@ def _density_interpretation(
 
 
 def _echarts_pie(
-    df: pd.DataFrame, *, x: str, values: str | None, y: str | None, title: str,
+    df: pd.DataFrame,
+    *,
+    x: str,
+    values: str | None,
+    y: str | None,
+    title: str,
 ) -> dict[str, Any]:
     """环形饼图：内嵌总数、悬浮占比、图例隐藏。"""
     value_col = values or y
@@ -1929,33 +2336,63 @@ def _echarts_pie(
     total = sum(d["value"] or 0 for d in data)
 
     return {
-        "title": {**_ECHARTS_BASE_TITLE, "text": title, "subtext": f"共 {len(data)} 类 · 合计 {_format_number(total)}"},
-        "tooltip": {**_ECHARTS_BASE_TOOLTIP, "trigger": "item",
-                    "formatter": _JsFunction("function(p){return '<div style=\"font-weight:600;margin-bottom:4px;\">'+p.name+'</div><span style=\"color:var(--tt-muted,#6b7280);\">'+p.seriesName+'：</span><b>'+p.value.toLocaleString()+'</b> ('+p.percent+'%)';}")},
-        "legend": {**_ECHARTS_BASE_LEGEND, "orient": "vertical", "right": 16, "top": "middle", "itemGap": 12},
-        "toolbox": {"right": 70, "top": 24, "feature": {"saveAsImage": {"title": "导出 PNG", "pixelRatio": 2}}},
+        "title": {
+            **_ECHARTS_BASE_TITLE,
+            "text": title,
+            "subtext": f"共 {len(data)} 类 · 合计 {_format_number(total)}",
+        },
+        "tooltip": {
+            **_ECHARTS_BASE_TOOLTIP,
+            "trigger": "item",
+            "formatter": _JsFunction(
+                "function(p){return '<div style=\"font-weight:600;margin-bottom:4px;\">'+p.name+'</div><span style=\"color:var(--tt-muted,#6b7280);\">'+p.seriesName+'：</span><b>'+p.value.toLocaleString()+'</b> ('+p.percent+'%)';}"
+            ),
+        },
+        "legend": {
+            **_ECHARTS_BASE_LEGEND,
+            "orient": "vertical",
+            "right": 16,
+            "top": "middle",
+            "itemGap": 12,
+        },
+        "toolbox": {
+            "right": 70,
+            "top": 24,
+            "feature": {"saveAsImage": {"title": "导出 PNG", "pixelRatio": 2}},
+        },
         "color": _ECHARTS_PALETTE,
-        "series": [{
-            "name": _build_axis_label(value_col) if value_col else "计数",
-            "type": "pie",
-            "radius": ["42%", "68%"],
-            "center": ["40%", "52%"],
-            "avoidLabelOverlap": True,
-            "itemStyle": {"borderColor": "#fff", "borderWidth": 2, "borderRadius": 6},
-            "label": {"show": True, "color": _ECHARTS_TEXT_COLOR, "fontSize": 12,
-                      "formatter": "{b}\n{d}%"},
-            "labelLine": {"length": 12, "length2": 14, "smooth": True},
-            "emphasis": {
-                "itemStyle": {"shadowBlur": 16, "shadowColor": "rgba(0,0,0,0.15)"},
-                "label": {"fontSize": 14, "fontWeight": 600},
-            },
-            "data": data,
-        }],
+        "series": [
+            {
+                "name": _build_axis_label(value_col) if value_col else "计数",
+                "type": "pie",
+                "radius": ["42%", "68%"],
+                "center": ["40%", "52%"],
+                "avoidLabelOverlap": True,
+                "itemStyle": {"borderColor": "#fff", "borderWidth": 2, "borderRadius": 6},
+                "label": {
+                    "show": True,
+                    "color": _ECHARTS_TEXT_COLOR,
+                    "fontSize": 12,
+                    "formatter": "{b}\n{d}%",
+                },
+                "labelLine": {"length": 12, "length2": 14, "smooth": True},
+                "emphasis": {
+                    "itemStyle": {"shadowBlur": 16, "shadowColor": "rgba(0,0,0,0.15)"},
+                    "label": {"fontSize": 14, "fontWeight": 600},
+                },
+                "data": data,
+            }
+        ],
     }
 
 
 def _echarts_histogram(
-    df: pd.DataFrame, *, x: str, color: str | None, bins: int, title: str,
+    df: pd.DataFrame,
+    *,
+    x: str,
+    color: str | None,
+    bins: int,
+    title: str,
 ) -> dict[str, Any]:
     """直方图：自动分箱 + 边际箱线图（叠加在底部）。"""
     x_label = _build_axis_label(x)
@@ -1964,38 +2401,65 @@ def _echarts_histogram(
         return _echarts_bar(df, x=x, y=None, color=color, aggregation="none", title=title)
 
     counts, edges = np.histogram(series_data, bins=min(max(bins, 2), 200))
-    categories = [f"{edges[i]:.1f}-{edges[i+1]:.1f}" for i in range(len(counts))]
+    categories = [f"{edges[i]:.1f}-{edges[i + 1]:.1f}" for i in range(len(counts))]
     data = [int(c) for c in counts]
 
     base: dict[str, Any] = {
         "title": {**_ECHARTS_BASE_TITLE, "text": title, "subtext": f"{x_label} 分布直方图"},
-        "tooltip": {**_ECHARTS_BASE_TOOLTIP, "trigger": "axis", "axisPointer": {"type": "shadow"},
-                    "formatter": _JsFunction("function(params){var p=params[0];return '<div style=\"font-weight:600;\">区间：'+p.axisValue+'</div><span style=\"color:var(--tt-muted,#6b7280);\">频数：</span><b>'+p.value.toLocaleString()+'</b>';}")},
+        "tooltip": {
+            **_ECHARTS_BASE_TOOLTIP,
+            "trigger": "axis",
+            "axisPointer": {"type": "shadow"},
+            "formatter": _JsFunction(
+                "function(params){var p=params[0];return '<div style=\"font-weight:600;\">区间：'+p.axisValue+'</div><span style=\"color:var(--tt-muted,#6b7280);\">频数：</span><b>'+p.value.toLocaleString()+'</b>';}"
+            ),
+        },
         "grid": {**_ECHARTS_BASE_GRID},
         "toolbox": {**_ECHARTS_BASE_TOOLBOX},
         "color": [_ECHARTS_PALETTE[0]],
-        "xAxis": [{**_ECHARTS_BASE_AXIS, "type": "category", "data": categories, "name": x_label,
-                   **_ECHARTS_X_AXIS_NAME,
-                   "axisLabel": {**_ECHARTS_BASE_AXIS["axisLabel"], "rotate": 35}}],
+        "xAxis": [
+            {
+                **_ECHARTS_BASE_AXIS,
+                "type": "category",
+                "data": categories,
+                "name": x_label,
+                **_ECHARTS_X_AXIS_NAME,
+                "axisLabel": {**_ECHARTS_BASE_AXIS["axisLabel"], "rotate": 35},
+            }
+        ],
         # Y 轴范围必须按分箱频数计算（并入 0 作基线）；若误用原始 x 列取值，
         # 数据量级与频数不匹配时柱体会被压扁或冲出绘图区。
-        "yAxis": [_echarts_value_axis(df, None, name="频数", scale=False,
-                                       values=[0.0, *(float(c) for c in data)])],
-        "series": [{
-            "name": "频数",
-            "type": "bar",
-            "data": data,
-            "barWidth": "92%",
-            "itemStyle": {"color": _build_linear_gradient(_ECHARTS_PALETTE[0]), "borderRadius": [4, 4, 0, 0]},
-            "emphasis": {"itemStyle": {"color": _ECHARTS_PALETTE[0]}},
-        }],
+        "yAxis": [
+            _echarts_value_axis(
+                df, None, name="频数", scale=False, values=[0.0, *(float(c) for c in data)]
+            )
+        ],
+        "series": [
+            {
+                "name": "频数",
+                "type": "bar",
+                "data": data,
+                "barWidth": "92%",
+                "itemStyle": {
+                    "color": _build_linear_gradient(_ECHARTS_PALETTE[0]),
+                    "borderRadius": [4, 4, 0, 0],
+                },
+                "emphasis": {"itemStyle": {"color": _ECHARTS_PALETTE[0]}},
+            }
+        ],
         "dataZoom": [{"type": "inside", "start": 0, "end": 100}],
     }
     return base
 
 
 def _echarts_box(
-    df: pd.DataFrame, *, x: str, y: str | None, color: str | None, title: str, violin: bool = False,
+    df: pd.DataFrame,
+    *,
+    x: str,
+    y: str | None,
+    color: str | None,
+    title: str,
+    violin: bool = False,
 ) -> dict[str, Any]:
     """箱线图 / 小提琴图：按 x 分组展示 y 分布。
 
@@ -2029,14 +2493,16 @@ def _echarts_box(
         upper = min(float(vals.max()), q3 + 1.5 * iqr)
         idx = len(categories)
         categories.append(name)
-        box_data.append({
-            "value": [round(v, 4) for v in (lower, q1, q2, q3, upper)],
-            "itemStyle": {
-                "color": _hex_to_rgba(_series_color(idx), 0.18),
-                "borderColor": _series_color(idx),
-                "borderWidth": 1.5,
-            },
-        })
+        box_data.append(
+            {
+                "value": [round(v, 4) for v in (lower, q1, q2, q3, upper)],
+                "itemStyle": {
+                    "color": _hex_to_rgba(_series_color(idx), 0.18),
+                    "borderColor": _series_color(idx),
+                    "borderWidth": 1.5,
+                },
+            }
+        )
         outliers = vals[(vals < lower) | (vals > upper)]
         if len(outliers) > 100:
             # 离群点过多时等距抽样，避免 option 体积膨胀拖慢渲染
@@ -2067,44 +2533,70 @@ def _echarts_box(
         "}"
     )
 
-    series: list[dict[str, Any]] = [{
-        "name": y_label,
-        "type": "boxplot",
-        "data": box_data,
-        "boxWidth": [10, 44],
-        "emphasis": {"itemStyle": {"borderWidth": 2, "shadowBlur": 8}},
-    }]
+    series: list[dict[str, Any]] = [
+        {
+            "name": y_label,
+            "type": "boxplot",
+            "data": box_data,
+            "boxWidth": [10, 44],
+            "emphasis": {"itemStyle": {"borderWidth": 2, "shadowBlur": 8}},
+        }
+    ]
     if outlier_points:
-        series.append({
-            "name": "离群值",
+        series.append(
+            {
+                "name": "离群值",
+                "type": "scatter",
+                "data": outlier_points,
+                "symbolSize": 7,
+                "itemStyle": {
+                    "color": _hex_to_rgba(_ECHARTS_PALETTE[3], 0.55),
+                    "borderColor": _ECHARTS_PALETTE[3],
+                    "borderWidth": 1,
+                },
+                "z": 3,
+            }
+        )
+    series.append(
+        {
+            "name": "均值",
             "type": "scatter",
-            "data": outlier_points,
-            "symbolSize": 7,
-            "itemStyle": {"color": _hex_to_rgba(_ECHARTS_PALETTE[3], 0.55),
-                          "borderColor": _ECHARTS_PALETTE[3], "borderWidth": 1},
-            "z": 3,
-        })
-    series.append({
-        "name": "均值",
-        "type": "scatter",
-        "data": mean_points,
-        "symbol": "diamond",
-        "symbolSize": 9,
-        "itemStyle": {"color": "#ffffff", "borderColor": _ECHARTS_TEXT_COLOR, "borderWidth": 1.5},
-        "z": 4,
-    })
+            "data": mean_points,
+            "symbol": "diamond",
+            "symbolSize": 9,
+            "itemStyle": {
+                "color": "#ffffff",
+                "borderColor": _ECHARTS_TEXT_COLOR,
+                "borderWidth": 1.5,
+            },
+            "z": 4,
+        }
+    )
 
     option: dict[str, Any] = {
-        "title": {**_ECHARTS_BASE_TITLE, "text": title, "subtext": f"{x_label} 分组 × {y_label} 分布"},
+        "title": {
+            **_ECHARTS_BASE_TITLE,
+            "text": title,
+            "subtext": f"{x_label} 分组 × {y_label} 分布",
+        },
         "tooltip": {**_ECHARTS_BASE_TOOLTIP, "trigger": "item", "formatter": tooltip_formatter},
         "legend": {**_ECHARTS_BASE_LEGEND, "data": [s["name"] for s in series]},
         "grid": {**_ECHARTS_BASE_GRID},
         "toolbox": {**_ECHARTS_BASE_TOOLBOX},
         "color": _ECHARTS_PALETTE,
-        "xAxis": [{**_ECHARTS_BASE_AXIS, "type": "category", "data": categories, "name": x_label,
-                   **_ECHARTS_X_AXIS_NAME,
-                   "axisLabel": {**_ECHARTS_BASE_AXIS["axisLabel"],
-                                 "rotate": 30 if len(categories) > 8 else 0}}],
+        "xAxis": [
+            {
+                **_ECHARTS_BASE_AXIS,
+                "type": "category",
+                "data": categories,
+                "name": x_label,
+                **_ECHARTS_X_AXIS_NAME,
+                "axisLabel": {
+                    **_ECHARTS_BASE_AXIS["axisLabel"],
+                    "rotate": 30 if len(categories) > 8 else 0,
+                },
+            }
+        ],
         "yAxis": [_echarts_value_axis(df, y, name=y_label, scale=True)],
         "series": series,
     }
@@ -2114,7 +2606,12 @@ def _echarts_box(
 
 
 def _echarts_heatmap(
-    df: pd.DataFrame, *, x: str, y: str | None, values: str | None, title: str,
+    df: pd.DataFrame,
+    *,
+    x: str,
+    y: str | None,
+    values: str | None,
+    title: str,
     is_correlation: bool = False,
 ) -> dict[str, Any]:
     """热力图 / 相关性热力图。
@@ -2133,8 +2630,10 @@ def _echarts_heatmap(
         x_names = [_build_axis_label(str(c)) for c in corr.columns]
         y_names = [_build_axis_label(str(i)) for i in corr.index]
         raw: list[list[Any]] = [
-            [None if math.isnan(float(corr.iloc[i, j])) else round(float(corr.iloc[i, j]), 3)
-             for j in range(len(x_names))]
+            [
+                None if math.isnan(float(corr.iloc[i, j])) else round(float(corr.iloc[i, j]), 3)
+                for j in range(len(x_names))
+            ]
             for i in range(len(y_names))
         ]
         vmin, vmax = -1.0, 1.0
@@ -2145,8 +2644,10 @@ def _echarts_heatmap(
         pivot = df.pivot_table(index=y, columns=x, values=values, aggfunc="mean")
         x_names = [str(c) for c in pivot.columns]
         y_names = [str(i) for i in pivot.index]
-        raw = [[_safe_value(pivot.iloc[i, j]) for j in range(len(x_names))]
-               for i in range(len(y_names))]
+        raw = [
+            [_safe_value(pivot.iloc[i, j]) for j in range(len(x_names))]
+            for i in range(len(y_names))
+        ]
         valid = [v for row in raw for v in row if v is not None]
         vmin = float(min(valid)) if valid else 0.0
         vmax = float(max(valid)) if valid else 1.0
@@ -2170,56 +2671,112 @@ def _echarts_heatmap(
     show_label = len(x_names) * len(y_names) <= 200
     label_formatter = _JsFunction(
         "function(p){var v=p.value[2];if(v===null||v===undefined){return '';}"
-        + ("return v.toFixed(2);}" if is_correlation
-           else "return Math.abs(v)>=10000?(v/10000).toFixed(1)+'万':Number(v.toFixed(2)).toLocaleString();}")
+        + (
+            "return v.toFixed(2);}"
+            if is_correlation
+            else "return Math.abs(v)>=10000?(v/10000).toFixed(1)+'万':Number(v.toFixed(2)).toLocaleString();}"
+        )
     )
     tooltip_formatter = _JsFunction(
-        "function(p){var X=" + json.dumps(x_names, ensure_ascii=False)
-        + ",Y=" + json.dumps(y_names, ensure_ascii=False) + ";"
+        "function(p){var X="
+        + json.dumps(x_names, ensure_ascii=False)
+        + ",Y="
+        + json.dumps(y_names, ensure_ascii=False)
+        + ";"
         "var v=p.value[2];"
         "var t=(v===null||v===undefined)?'—':Number(v).toLocaleString(undefined,{maximumFractionDigits:3});"
         "return '<div style=\"font-weight:600;margin-bottom:4px;\">'+Y[p.value[1]]+' × '+X[p.value[0]]+'</div>'"
-        "+'<span style=\"color:var(--tt-muted,#6b7280);\">'+" + json.dumps(value_label, ensure_ascii=False)
+        "+'<span style=\"color:var(--tt-muted,#6b7280);\">'+"
+        + json.dumps(value_label, ensure_ascii=False)
         + "+'：</span><b>'+t+'</b>';}"
     )
 
     # 矩阵型图表跳过任何刻度都会误导阅读，类目数可控时强制逐个显示
     axis_interval: Any = 0 if max(len(x_names), len(y_names)) <= 25 else "auto"
     return {
-        "title": {**_ECHARTS_BASE_TITLE, "text": title,
-                  "subtext": "相关性矩阵" if is_correlation else f"{_build_axis_label(x)} × {_build_axis_label(y)}"},
+        "title": {
+            **_ECHARTS_BASE_TITLE,
+            "text": title,
+            "subtext": "相关性矩阵"
+            if is_correlation
+            else f"{_build_axis_label(x)} × {_build_axis_label(y)}",
+        },
         "tooltip": {**_ECHARTS_BASE_TOOLTIP, "trigger": "item", "formatter": tooltip_formatter},
         "grid": {**_ECHARTS_BASE_GRID, "left": 100, "bottom": 100},
         "toolbox": {**_ECHARTS_BASE_TOOLBOX},
-        "xAxis": [{"type": "category", "data": x_names, "splitArea": {"show": True},
-                   "axisTick": {"show": False},
-                   "axisLabel": {"color": _ECHARTS_TEXT_SECONDARY, "fontSize": 11,
-                                 "rotate": 30, "interval": axis_interval}}],
-        "yAxis": [{"type": "category", "data": y_names, "splitArea": {"show": True},
-                   "axisTick": {"show": False},
-                   "axisLabel": {"color": _ECHARTS_TEXT_SECONDARY, "fontSize": 11,
-                                 "interval": axis_interval}}],
+        "xAxis": [
+            {
+                "type": "category",
+                "data": x_names,
+                "splitArea": {"show": True},
+                "axisTick": {"show": False},
+                "axisLabel": {
+                    "color": _ECHARTS_TEXT_SECONDARY,
+                    "fontSize": 11,
+                    "rotate": 30,
+                    "interval": axis_interval,
+                },
+            }
+        ],
+        "yAxis": [
+            {
+                "type": "category",
+                "data": y_names,
+                "splitArea": {"show": True},
+                "axisTick": {"show": False},
+                "axisLabel": {
+                    "color": _ECHARTS_TEXT_SECONDARY,
+                    "fontSize": 11,
+                    "interval": axis_interval,
+                },
+            }
+        ],
         "visualMap": {
-            "min": vmin, "max": vmax, "calculable": True, "orient": "horizontal",
-            "left": "center", "bottom": 16, "precision": 2,
+            "min": vmin,
+            "max": vmax,
+            "calculable": True,
+            "orient": "horizontal",
+            "left": "center",
+            "bottom": 16,
+            "precision": 2,
             "textStyle": {"color": _ECHARTS_TEXT_SECONDARY},
             # 相关性：ColorBrewer RdBu 反转 7 段（蓝=负、红=正），多色标让中段不发灰
-            "inRange": {"color": ["#2166AC", "#67A9CF", "#D1E5F0", "#F7F7F7",
-                                   "#FDDBC7", "#EF8A62", "#B2182B"] if is_correlation
-                        else ["#EDF3F9", "#8FB3D1", "#2C5F8D"]},
+            "inRange": {
+                "color": [
+                    "#2166AC",
+                    "#67A9CF",
+                    "#D1E5F0",
+                    "#F7F7F7",
+                    "#FDDBC7",
+                    "#EF8A62",
+                    "#B2182B",
+                ]
+                if is_correlation
+                else ["#EDF3F9", "#8FB3D1", "#2C5F8D"]
+            },
         },
-        "series": [{
-            "name": value_label, "type": "heatmap", "data": cells,
-            "label": {"show": show_label, "color": _ECHARTS_TEXT_COLOR, "fontSize": 11,
-                      "formatter": label_formatter},
-            "itemStyle": {"borderColor": "#ffffff", "borderWidth": 1},
-            "emphasis": {"itemStyle": {"shadowBlur": 10, "shadowColor": "rgba(0,0,0,0.3)"}},
-        }],
+        "series": [
+            {
+                "name": value_label,
+                "type": "heatmap",
+                "data": cells,
+                "label": {
+                    "show": show_label,
+                    "color": _ECHARTS_TEXT_COLOR,
+                    "fontSize": 11,
+                    "formatter": label_formatter,
+                },
+                "itemStyle": {"borderColor": "#ffffff", "borderWidth": 1},
+                "emphasis": {"itemStyle": {"shadowBlur": 10, "shadowColor": "rgba(0,0,0,0.3)"}},
+            }
+        ],
     }
 
 
 def _stratified_3d_sample(
-    df: pd.DataFrame, color: str | None, rows: int,
+    df: pd.DataFrame,
+    color: str | None,
+    rows: int,
 ) -> tuple[pd.DataFrame, int]:
     """3D 散点的分层抽样：按分组配额抽样，返回 (抽样结果, 抽样后行数)。
 
@@ -2261,15 +2818,23 @@ def _stratified_3d_sample(
 
 
 def _echarts_scatter3d(
-    df: pd.DataFrame, *, x: str, y: str, z: str, color: str | None,
-    size: str | None, title: str,
+    df: pd.DataFrame,
+    *,
+    x: str,
+    y: str,
+    z: str,
+    color: str | None,
+    size: str | None,
+    title: str,
 ) -> dict[str, Any]:
     """真 3D 散点图（echarts-gl）：拖拽旋转、滚轮缩放、颜色分组、大小维度。"""
     x_label, y_label, z_label = _build_axis_label(x), _build_axis_label(y), _build_axis_label(z)
 
     def axis3d(name: str) -> dict[str, Any]:
         return {
-            "type": "value", "name": name, "scale": True,
+            "type": "value",
+            "name": name,
+            "scale": True,
             "nameTextStyle": {"color": _ECHARTS_TEXT_SECONDARY, "fontSize": 12},
             "axisLine": {"lineStyle": {"color": _ECHARTS_GRID_COLOR}},
             "axisLabel": {"color": _ECHARTS_TEXT_SECONDARY, "fontSize": 10},
@@ -2291,7 +2856,8 @@ def _echarts_scatter3d(
         "function(params){var val=params.value;"
         "var fmt=function(v){return (v===null||v===undefined||isNaN(v))?'—':Number(v).toLocaleString(undefined,{maximumFractionDigits:2});};"
         "var html='<div style=\"font-weight:600;margin-bottom:6px;\">'+params.seriesName+'</div>';"
-        + lines + "return html;}"
+        + lines
+        + "return html;}"
     )
 
     # size 维度在 3D 数据里位于 val[3]，归一化到 [6, 22]（3D 点过大会互相遮挡）
@@ -2301,7 +2867,8 @@ def _echarts_scatter3d(
         symbol_size: Any = _JsFunction(
             "function(val){var v=val[3];if(v==null||isNaN(v))return 8;"
             f"var min={size_min},max={size_max};"
-            "if(max<=min)return 12;return 6+(v-min)/(max-min)*16;}")
+            "if(max<=min)return 12;return 6+(v-min)/(max-min)*16;}"
+        )
     else:
         symbol_size = 9
 
@@ -2317,37 +2884,64 @@ def _echarts_scatter3d(
     sampled_df, sampled_rows = _stratified_3d_sample(
         df, color if levels else None, _SCATTER3D_MAX_POINTS
     )
-    groups = ([(str(lv), sampled_df[sampled_df[color] == lv], _series_color(idx)) for idx, lv in enumerate(levels)]
-              if levels else [("样本", sampled_df, _ECHARTS_PALETTE[0])])
-    series = [{
-        "name": gname, "type": "scatter3D",
-        "data": row_data(sub),
-        "symbolSize": symbol_size,
-        "itemStyle": {"color": gcolor, "opacity": 0.82},
-        "emphasis": {"itemStyle": {"opacity": 1}},
-    } for gname, sub, gcolor in groups]
+    groups = (
+        [
+            (str(lv), sampled_df[sampled_df[color] == lv], _series_color(idx))
+            for idx, lv in enumerate(levels)
+        ]
+        if levels
+        else [("样本", sampled_df, _ECHARTS_PALETTE[0])]
+    )
+    series = [
+        {
+            "name": gname,
+            "type": "scatter3D",
+            "data": row_data(sub),
+            "symbolSize": symbol_size,
+            "itemStyle": {"color": gcolor, "opacity": 0.82},
+            "emphasis": {"itemStyle": {"opacity": 1}},
+        }
+        for gname, sub, gcolor in groups
+    ]
 
     base: dict[str, Any] = {
-        "title": {**_ECHARTS_BASE_TITLE, "text": title,
-                  # 抽样事实写在副标题上：3D 云从 3000 个点看不出"这只是全量的
-                  # 百分之一"，不写清楚用户会以为看的是全部记录。
-                  "subtext": f"{x_label} × {y_label} × {z_label}（拖拽旋转 · 滚轮缩放）"
-                             + (f" · 已抽样 {sampled_rows:,}/{len(df):,} 点" if sampled_rows < len(df) else "")},
+        "title": {
+            **_ECHARTS_BASE_TITLE,
+            "text": title,
+            # 抽样事实写在副标题上：3D 云从 3000 个点看不出"这只是全量的
+            # 百分之一"，不写清楚用户会以为看的是全部记录。
+            "subtext": f"{x_label} × {y_label} × {z_label}（拖拽旋转 · 滚轮缩放）"
+            + (f" · 已抽样 {sampled_rows:,}/{len(df):,} 点" if sampled_rows < len(df) else ""),
+        },
         "tooltip": {**_ECHARTS_BASE_TOOLTIP, "trigger": "item", "formatter": tooltip_fmt},
         # 3D 场景下 dataZoom 框选/还原/重置只对直角坐标系生效，保留会变成
         # 点了没反应的死按钮，故工具栏仅保留 PNG 导出。
-        "toolbox": {**{k: v for k, v in _ECHARTS_BASE_TOOLBOX.items() if k != "feature"},
-                    "feature": {"saveAsImage": {"title": "导出 PNG", "pixelRatio": 2,
-                                                "backgroundColor": _ECHARTS_BG_COLOR}}},
+        "toolbox": {
+            **{k: v for k, v in _ECHARTS_BASE_TOOLBOX.items() if k != "feature"},
+            "feature": {
+                "saveAsImage": {
+                    "title": "导出 PNG",
+                    "pixelRatio": 2,
+                    "backgroundColor": _ECHARTS_BG_COLOR,
+                }
+            },
+        },
         "color": _ECHARTS_PALETTE,
         "grid3D": {
             # 盒体加大 + 视距拉近，让立体场景填满画布（默认 230 时四周留白过多）；
             # 不开自动旋转，旋转完全由用户拖拽控制。
-            "boxWidth": 130, "boxDepth": 130, "boxHeight": 100,
+            "boxWidth": 130,
+            "boxDepth": 130,
+            "boxHeight": 100,
             # 限制滚轮缩放范围：防止缩到看不见或推进盒体内部迷失视角
-            "viewControl": {"projection": "perspective", "autoRotate": False,
-                            "rotateSensitivity": 1.6, "distance": 210,
-                            "minDistance": 100, "maxDistance": 420},
+            "viewControl": {
+                "projection": "perspective",
+                "autoRotate": False,
+                "rotateSensitivity": 1.6,
+                "distance": 210,
+                "minDistance": 100,
+                "maxDistance": 420,
+            },
             "light": {"main": {"intensity": 1.1, "shadow": False}, "ambient": {"intensity": 0.5}},
         },
         "xAxis3D": axis3d(x_label),
@@ -2361,7 +2955,10 @@ def _echarts_scatter3d(
 
 
 def _splom_cell_axis(
-    *, name: str | None, show_label: bool, is_category: bool,
+    *,
+    name: str | None,
+    show_label: bool,
+    is_category: bool,
     data: list[str] | None = None,
 ) -> dict[str, Any]:
     """SPLOM 单元格坐标轴：仅边缘格显示刻度标签与变量名，内部格留白防拥挤。"""
@@ -2370,23 +2967,41 @@ def _splom_cell_axis(
         "scale": not is_category,
         "axisLine": {"lineStyle": {"color": _ECHARTS_GRID_COLOR}},
         "axisTick": {"show": False},
-        "axisLabel": {"show": show_label, "color": _ECHARTS_TEXT_SECONDARY, "fontSize": 10,
-                      # 小格子里大数值标签会互相重叠，用万/亿缩写压短
-                      **({} if is_category else {"formatter": _ECHARTS_AXIS_LABEL_FORMATTER_JS})},
-        "splitLine": {"show": not is_category, "lineStyle": {"color": _ECHARTS_BORDER_COLOR, "type": "dashed"}},
+        "axisLabel": {
+            "show": show_label,
+            "color": _ECHARTS_TEXT_SECONDARY,
+            "fontSize": 10,
+            # 小格子里大数值标签会互相重叠，用万/亿缩写压短
+            **({} if is_category else {"formatter": _ECHARTS_AXIS_LABEL_FORMATTER_JS}),
+        },
+        "splitLine": {
+            "show": not is_category,
+            "lineStyle": {"color": _ECHARTS_BORDER_COLOR, "type": "dashed"},
+        },
     }
     if is_category:
         axis["data"] = data or []
     if name:
-        axis.update({
-            "name": name, "nameLocation": "middle",
-            "nameTextStyle": {"color": _ECHARTS_TEXT_SECONDARY, "fontSize": 11, "fontWeight": 600},
-        })
+        axis.update(
+            {
+                "name": name,
+                "nameLocation": "middle",
+                "nameTextStyle": {
+                    "color": _ECHARTS_TEXT_SECONDARY,
+                    "fontSize": 11,
+                    "fontWeight": 600,
+                },
+            }
+        )
     return axis
 
 
 def _echarts_scatter_matrix(
-    df: pd.DataFrame, *, dimensions: list[str], color: str | None, title: str,
+    df: pd.DataFrame,
+    *,
+    dimensions: list[str],
+    color: str | None,
+    title: str,
 ) -> dict[str, Any]:
     """散点矩阵（SPLOM）：N×N 多 grid 网格，非对角为两两散点，对角为分布直方图。"""
     numeric = [d for d in dimensions if d in df.columns and pd.api.types.is_numeric_dtype(df[d])]
@@ -2423,12 +3038,14 @@ def _echarts_scatter_matrix(
     for i, dim_y in enumerate(numeric):  # 行：y 变量
         for j, dim_x in enumerate(numeric):  # 列：x 变量
             k = i * n + j
-            grids.append({
-                "left": f"{left0 + j * (cell_w + gap_x):.2f}%",
-                "top": f"{top0 + i * (cell_h + gap_y):.2f}%",
-                "width": f"{cell_w:.2f}%",
-                "height": f"{cell_h:.2f}%",
-            })
+            grids.append(
+                {
+                    "left": f"{left0 + j * (cell_w + gap_x):.2f}%",
+                    "top": f"{top0 + i * (cell_h + gap_y):.2f}%",
+                    "width": f"{cell_w:.2f}%",
+                    "height": f"{cell_h:.2f}%",
+                }
+            )
             bottom = i == n - 1
             leftmost = j == 0
             x_label, y_label = _build_axis_label(dim_x), _build_axis_label(dim_y)
@@ -2437,47 +3054,74 @@ def _echarts_scatter_matrix(
                 # 对角格：该变量的分布直方图，颜色取该变量在色板中的专属色
                 counts, edges = np.histogram(work[dim_x].astype(float), bins=10)
                 mids = [f"{(edges[b] + edges[b + 1]) / 2:.4g}" for b in range(len(counts))]
-                xa = _splom_cell_axis(name=x_label if bottom else None,
-                                      show_label=False, is_category=True, data=mids)
-                ya = _splom_cell_axis(name=y_label if leftmost else None,
-                                      show_label=False, is_category=False)
+                xa = _splom_cell_axis(
+                    name=x_label if bottom else None, show_label=False, is_category=True, data=mids
+                )
+                ya = _splom_cell_axis(
+                    name=y_label if leftmost else None, show_label=False, is_category=False
+                )
                 ya["scale"] = False
                 x_label_js = json.dumps(x_label, ensure_ascii=False)
-                series.append({
-                    "name": f"__hist_{i}", "type": "bar",
-                    "xAxisIndex": k, "yAxisIndex": k,
-                    "data": [int(c) for c in counts],
-                    "barWidth": "88%",
-                    "itemStyle": {"color": _hex_to_rgba(_series_color(i), 0.68),
-                                  "borderColor": _series_color(i), "borderWidth": 1,
-                                  "borderRadius": [2, 2, 0, 0]},
-                    "tooltip": {"formatter": _JsFunction(
-                        "function(p){return '<div style=\"font-weight:600;margin-bottom:6px;\">'+"
-                        f"{x_label_js}+' 分布</div>'"
-                        "+'<span style=\"color:var(--tt-muted,#6b7280);\">区间中值：</span><b>'+p.name+'</b><br/>'"
-                        "+'<span style=\"color:var(--tt-muted,#6b7280);\">频数：</span><b>'+p.value+'</b>';}")},
-                })
+                series.append(
+                    {
+                        "name": f"__hist_{i}",
+                        "type": "bar",
+                        "xAxisIndex": k,
+                        "yAxisIndex": k,
+                        "data": [int(c) for c in counts],
+                        "barWidth": "88%",
+                        "itemStyle": {
+                            "color": _hex_to_rgba(_series_color(i), 0.68),
+                            "borderColor": _series_color(i),
+                            "borderWidth": 1,
+                            "borderRadius": [2, 2, 0, 0],
+                        },
+                        "tooltip": {
+                            "formatter": _JsFunction(
+                                "function(p){return '<div style=\"font-weight:600;margin-bottom:6px;\">'+"
+                                f"{x_label_js}+' 分布</div>'"
+                                "+'<span style=\"color:var(--tt-muted,#6b7280);\">区间中值：</span><b>'+p.name+'</b><br/>'"
+                                "+'<span style=\"color:var(--tt-muted,#6b7280);\">频数：</span><b>'+p.value+'</b>';}"
+                            )
+                        },
+                    }
+                )
             else:
                 # 非对角格：dim_x × dim_y 两两散点，颜色分组与其他格联动
-                xa = _splom_cell_axis(name=x_label if bottom else None,
-                                      show_label=bottom, is_category=False)
-                ya = _splom_cell_axis(name=y_label if leftmost else None,
-                                      show_label=leftmost, is_category=False)
+                xa = _splom_cell_axis(
+                    name=x_label if bottom else None, show_label=bottom, is_category=False
+                )
+                ya = _splom_cell_axis(
+                    name=y_label if leftmost else None, show_label=leftmost, is_category=False
+                )
                 pair_fmt = _scatter_tooltip_formatter(x_label, y_label, None)
-                groups = ([(str(lv), work[work[color] == lv], _series_color(idx))
-                           for idx, lv in enumerate(levels)]
-                          if levels else [("样本", work, _ECHARTS_PALETTE[0])])
+                groups = (
+                    [
+                        (str(lv), work[work[color] == lv], _series_color(idx))
+                        for idx, lv in enumerate(levels)
+                    ]
+                    if levels
+                    else [("样本", work, _ECHARTS_PALETTE[0])]
+                )
                 for gname, sub, gcolor in groups:
-                    series.append({
-                        "name": gname, "type": "scatter",
-                        "xAxisIndex": k, "yAxisIndex": k,
-                        "data": _rows_data(sub, [dim_x, dim_y]),
-                        "symbolSize": 6,
-                        "itemStyle": {"color": gcolor, "opacity": 0.7,
-                                      "borderWidth": 0.5, "borderColor": "#fff"},
-                        "emphasis": {"scale": 1.6, "itemStyle": {"opacity": 1}},
-                        "tooltip": {"formatter": pair_fmt},
-                    })
+                    series.append(
+                        {
+                            "name": gname,
+                            "type": "scatter",
+                            "xAxisIndex": k,
+                            "yAxisIndex": k,
+                            "data": _rows_data(sub, [dim_x, dim_y]),
+                            "symbolSize": 6,
+                            "itemStyle": {
+                                "color": gcolor,
+                                "opacity": 0.7,
+                                "borderWidth": 0.5,
+                                "borderColor": "#fff",
+                            },
+                            "emphasis": {"scale": 1.6, "itemStyle": {"opacity": 1}},
+                            "tooltip": {"formatter": pair_fmt},
+                        }
+                    )
 
             if bottom:
                 xa["nameGap"] = 24
@@ -2488,8 +3132,11 @@ def _echarts_scatter_matrix(
             y_axes.append(ya)
 
     base: dict[str, Any] = {
-        "title": {**_ECHARTS_BASE_TITLE, "text": title,
-                  "subtext": "；".join(notes) if notes else f"{n}×{n} 散点矩阵，对角线为分布直方图"},
+        "title": {
+            **_ECHARTS_BASE_TITLE,
+            "text": title,
+            "subtext": "；".join(notes) if notes else f"{n}×{n} 散点矩阵，对角线为分布直方图",
+        },
         "tooltip": {**_ECHARTS_BASE_TOOLTIP, "trigger": "item"},
         "toolbox": {**_ECHARTS_BASE_TOOLBOX},
         "color": _ECHARTS_PALETTE,
@@ -2505,7 +3152,12 @@ def _echarts_scatter_matrix(
 
 
 def _echarts_sunburst(
-    df: pd.DataFrame, *, path_columns: list[str], values: str | None, title: str, is_treemap: bool = False,
+    df: pd.DataFrame,
+    *,
+    path_columns: list[str],
+    values: str | None,
+    title: str,
+    is_treemap: bool = False,
 ) -> dict[str, Any]:
     """旭日图 / 矩形树图：层级结构可视化。"""
     if not path_columns:
@@ -2517,7 +3169,9 @@ def _echarts_sunburst(
     if values and values in df.columns:
         agg_df = df.groupby(path_columns, dropna=False, sort=False)[values].sum().reset_index()
     else:
-        agg_df = df.groupby(path_columns, dropna=False, sort=False).size().reset_index(name="__count__")
+        agg_df = (
+            df.groupby(path_columns, dropna=False, sort=False).size().reset_index(name="__count__")
+        )
 
     # 构建层级树：路径元组→节点字典索引，避免逐子节点线性查找
     tree: dict[str, Any] = {"name": "全部", "children": []}
@@ -2579,9 +3233,18 @@ def _echarts_sunburst(
 
     return {
         "title": {**_ECHARTS_BASE_TITLE, "text": title, "subtext": "层级结构 · 点击下钻"},
-        "tooltip": {**_ECHARTS_BASE_TOOLTIP, "trigger": "item",
-                    "formatter": _JsFunction("function(p){return '<b>'+p.name+'</b><br/>值：<b>'+(p.value||0).toLocaleString()+'</b>';}")},
-        "toolbox": {"right": 70, "top": 24, "feature": {"saveAsImage": {"title": "导出 PNG", "pixelRatio": 2}}},
+        "tooltip": {
+            **_ECHARTS_BASE_TOOLTIP,
+            "trigger": "item",
+            "formatter": _JsFunction(
+                "function(p){return '<b>'+p.name+'</b><br/>值：<b>'+(p.value||0).toLocaleString()+'</b>';}"
+            ),
+        },
+        "toolbox": {
+            "right": 70,
+            "top": 24,
+            "feature": {"saveAsImage": {"title": "导出 PNG", "pixelRatio": 2}},
+        },
         "color": _ECHARTS_PALETTE,
         "series": [series],
     }
@@ -2595,6 +3258,7 @@ def _echarts_sunburst(
 #: 用户点按后写入 data-theme 并优先于系统偏好；独立打开的 HTML 通过 localStorage 记忆选择
 #: （沙箱 iframe 下 localStorage 受限，已 try/catch 静默降级）。
 # (constants extracted to echarts_constants.py)
+
 
 def _serialize_option(option: dict[str, Any]) -> str:
     """把 option 序列化为可嵌入 <script> 的 JS 对象字面量字符串。
@@ -2653,8 +3317,8 @@ def _build_echarts_html(
         interp_block = (
             '<div class="interpretation">'
             '<div class="interpretation-title">数据解读</div>'
-            f'{escape(interpretation)}'
-            '</div>'
+            f"{escape(interpretation)}"
+            "</div>"
         )
     else:
         interp_block = ""
@@ -2662,9 +3326,7 @@ def _build_echarts_html(
     return _ECHARTS_HTML_TEMPLATE.format(
         title=escape(title),
         script=script_src,
-        extra_script=(
-            f'\n<script src="{extra_script_src}"></script>' if extra_script_src else ""
-        ),
+        extra_script=(f'\n<script src="{extra_script_src}"></script>' if extra_script_src else ""),
         option=option_json,
         interpretation_block=interp_block,
         bg=_ECHARTS_BG_COLOR,
@@ -2675,6 +3337,7 @@ def _build_echarts_html(
 
 
 # === 主入口：分派到对应图表生成器 ===
+
 
 def _build_echarts_option(
     df: pd.DataFrame,
@@ -2702,17 +3365,23 @@ def _build_echarts_option(
     "超大数据散点走密度视图"这一分派在两条入口上完全一致。
     """
     if chart_type == "bar":
-        return _echarts_bar(df, x=x, y=y, color=color, aggregation=aggregation,
-                            title=title, stacked=stacked)
+        return _echarts_bar(
+            df, x=x, y=y, color=color, aggregation=aggregation, title=title, stacked=stacked
+        )
     if chart_type == "line":
-        return _echarts_line(df, x=x, y=y, color=color, aggregation=aggregation, title=title, area=False)
+        return _echarts_line(
+            df, x=x, y=y, color=color, aggregation=aggregation, title=title, area=False
+        )
     if chart_type == "area":
-        return _echarts_line(df, x=x, y=y, color=color, aggregation=aggregation, title=title, area=True)
+        return _echarts_line(
+            df, x=x, y=y, color=color, aggregation=aggregation, title=title, area=True
+        )
     if chart_type == "scatter":
         view = density_view
         if view is None:
-            view, _ = _density_view_for(df, chart_type=chart_type, x=x, y=y, color=color,
-                                        scale_mode=scale_mode)
+            view, _ = _density_view_for(
+                df, chart_type=chart_type, x=x, y=y, color=color, scale_mode=scale_mode
+            )
         if view is not None:
             return _echarts_scatter_density(df, x=x, y=y, color=color, title=title, view=view)
         return _echarts_scatter(df, x=x, y=y, color=color, size=size, title=title)
@@ -2737,13 +3406,19 @@ def _build_echarts_option(
     if chart_type == "heatmap":
         return _echarts_heatmap(df, x=x, y=y, values=values, title=title, is_correlation=False)
     if chart_type == "correlation_heatmap":
-        return _echarts_heatmap(df, x=x, y=y, values=values, title=title or "相关性矩阵", is_correlation=True)
+        return _echarts_heatmap(
+            df, x=x, y=y, values=values, title=title or "相关性矩阵", is_correlation=True
+        )
     if chart_type == "scatter_matrix":
         return _echarts_scatter_matrix(df, dimensions=dimensions or [], color=color, title=title)
     if chart_type == "sunburst":
-        return _echarts_sunburst(df, path_columns=path_columns or [], values=values, title=title, is_treemap=False)
+        return _echarts_sunburst(
+            df, path_columns=path_columns or [], values=values, title=title, is_treemap=False
+        )
     if chart_type == "treemap":
-        return _echarts_sunburst(df, path_columns=path_columns or [], values=values, title=title, is_treemap=True)
+        return _echarts_sunburst(
+            df, path_columns=path_columns or [], values=values, title=title, is_treemap=True
+        )
     raise ValueError(f"ECharts 引擎暂不支持图表类型：{chart_type}")
 
 
@@ -2780,22 +3455,45 @@ def _render_echarts(
     # 超大数据散点先聚合成分面密度视图：option 与解读文案共用同一份聚合结果
     # （重复聚合 30 万行是白跑）。scale_mode="auto" 时对极端值给"主体尺度"。
     density_view, density_scale = _density_view_for(
-        df, chart_type=chart_type, x=x, y=y, color=color, scale_mode=scale_mode,
+        df,
+        chart_type=chart_type,
+        x=x,
+        y=y,
+        color=color,
+        scale_mode=scale_mode,
     )
 
     # 生成 ECharts option
     option = _build_echarts_option(
-        df, chart_type=chart_type, x=x, y=y, color=color, z=z, size=size,
-        values=values, path_columns=path_columns, dimensions=dimensions,
-        aggregation=aggregation, title=display_title, bins=bins,
-        density_view=density_view, scale_mode=scale_mode, stacked=stacked,
+        df,
+        chart_type=chart_type,
+        x=x,
+        y=y,
+        color=color,
+        z=z,
+        size=size,
+        values=values,
+        path_columns=path_columns,
+        dimensions=dimensions,
+        aggregation=aggregation,
+        title=display_title,
+        bins=bins,
+        density_view=density_view,
+        scale_mode=scale_mode,
+        stacked=stacked,
     )
 
     # 自动白话解读（密度图走密度编码说明，见 _density_interpretation）
     interpretation = _auto_interpret(
-        df, chart_type=chart_type, x=x, y=y, color=color,
-        aggregation=aggregation, title=display_title,
-        density_view=density_view, stacked=stacked,
+        df,
+        chart_type=chart_type,
+        x=x,
+        y=y,
+        color=color,
+        aggregation=aggregation,
+        title=display_title,
+        density_view=density_view,
+        stacked=stacked,
     )
 
     # 大数据 HTML 嵌入降采样：散点/折线超过嵌入上限时，交互 HTML 按等距
@@ -2806,8 +3504,11 @@ def _render_echarts(
     # 抽样器只会按类目轴长度误判成"抽样了 154 个点"并破坏热力图。
     html_option = option
     sampling_info: dict[str, Any] | None = None
-    if (density_view is None and chart_type in {"scatter", "scatter_3d", "line", "area"}
-            and len(df) > _EMBED_MAX_POINTS):
+    if (
+        density_view is None
+        and chart_type in {"scatter", "scatter_3d", "line", "area"}
+        and len(df) > _EMBED_MAX_POINTS
+    ):
         html_option, original_pts, embedded_pts = sample_echarts_option_for_embed(
             option, _EMBED_MAX_POINTS
         )
@@ -2850,7 +3551,7 @@ def _render_echarts(
     workspace.register_artifact(html_path, "visualization", display_title)
 
     # ECharts option JSON：供前端动态渲染 / 调试。始终写全量 option
-    #（HTML 可能是抽样副本），损坏恢复链依赖这里的完整数据。
+    # （HTML 可能是抽样副本），损坏恢复链依赖这里的完整数据。
     json_path = workspace.artifacts_dir / f"{stem}.echarts.json"
     _atomic_write_text(json_path, json.dumps(option, ensure_ascii=False, default=_json_default))
     workspace.register_artifact(json_path, "chart_data", "ECharts option JSON")

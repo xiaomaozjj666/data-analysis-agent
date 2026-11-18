@@ -23,6 +23,7 @@ import React, {
 } from "react";
 import { AccessGate, Metric } from "./components/AccessGate";
 import ArtifactCenter from "./components/ArtifactCenter";
+import CommentsPanel from "./components/CommentsPanel";
 import ConversationThread from "./components/ConversationThread";
 import DatasetOverview from "./components/DatasetOverview";
 import MetricsEditor from "./components/MetricsEditor";
@@ -446,6 +447,9 @@ function App() {
           break;
         case "tab-artifacts":
           setActiveTab("artifacts");
+          break;
+        case "tab-comments":
+          setActiveTab("comments");
           break;
         case "show-help":
           setHelpOpen(true);
@@ -1446,6 +1450,19 @@ function App() {
                   onPreview={openArtifactPreview}
                   onBatchDownload={batchDownload}
                 />
+              </section>
+            )}
+
+            {activeTab === "comments" && (
+              <section
+                className="tab-content-enter"
+                key="tab-comments"
+                id="tabpanel-comments"
+                role="tabpanel"
+                aria-labelledby="tab-comments"
+                tabIndex={0}
+              >
+                <CommentsPanel key={session.id} sessionId={session.id} />
               </section>
             )}
           </>

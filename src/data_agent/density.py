@@ -59,8 +59,25 @@ DENSITY_MAX_PANELS = 6
 #: 档位边界候选（1-2-5 系列）：记录数分档只用这些圆整值，
 #: 图例上"1 / 2–4 / 5–9 / 10–24 / ≥25"比"1.7~3.2"可读得多。
 _BAND_EDGE_STEPS: tuple[int, ...] = (
-    1, 2, 5, 10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000,
-    10_000, 25_000, 50_000, 100_000, 250_000, 500_000, 1_000_000,
+    1,
+    2,
+    5,
+    10,
+    25,
+    50,
+    100,
+    250,
+    500,
+    1_000,
+    2_500,
+    5_000,
+    10_000,
+    25_000,
+    50_000,
+    100_000,
+    250_000,
+    500_000,
+    1_000_000,
 )
 
 #: 档位默认数量上限（含最高一档"≥X"）。
@@ -94,8 +111,9 @@ def should_use_density(row_count: int) -> bool:
     return row_count >= DENSITY_MIN_POINTS
 
 
-def bin_shape(panel_width: float = 1080.0, panel_height: float = 560.0,
-              target_px: float = BIN_TARGET_PX) -> tuple[int, int]:
+def bin_shape(
+    panel_width: float = 1080.0, panel_height: float = 560.0, target_px: float = BIN_TARGET_PX
+) -> tuple[int, int]:
     """按面板像素尺寸算网格数：(nx, ny)。
 
     网格数跟着面板大小走，保证每个格子在任何布局下都接近正方形
@@ -109,8 +127,9 @@ def bin_shape(panel_width: float = 1080.0, panel_height: float = 560.0,
     return nx, ny
 
 
-def density_bands(max_count: int, *, max_bands: int = DEFAULT_MAX_BANDS
-                  ) -> list[tuple[int, int | None]]:
+def density_bands(
+    max_count: int, *, max_bands: int = DEFAULT_MAX_BANDS
+) -> list[tuple[int, int | None]]:
     """把记录数切成可读档位，返回闭区间 ``[(lo, hi | None), ...]``。
 
     最高一档 ``hi`` 为 ``None``（开区间"≥ lo"）。整体是 1-2-5 系列，
@@ -173,17 +192,20 @@ def colorscale_from_bands(colors: Sequence[str]) -> list[list[Any]]:
     return scale
 
 
-def band_legend(bands: Sequence[tuple[int, int | None]], colors: Sequence[str]
-                ) -> list[dict[str, Any]]:
+def band_legend(
+    bands: Sequence[tuple[int, int | None]], colors: Sequence[str]
+) -> list[dict[str, Any]]:
     """档位图例（ECharts piecewise visualMap 的 pieces / 前端小图例共用）。"""
     legend = []
     for index, band in enumerate(bands):
-        legend.append({
-            "label": band_label(band),
-            "low": band[0],
-            "high": band[1],
-            "color": colors[index] if index < len(colors) else colors[-1],
-        })
+        legend.append(
+            {
+                "label": band_label(band),
+                "low": band[0],
+                "high": band[1],
+                "color": colors[index] if index < len(colors) else colors[-1],
+            }
+        )
     return legend
 
 
@@ -300,18 +322,22 @@ class DensityGrid:
             if count <= 0:
                 break
             iy, ix = divmod(int(index), nx)
-            if any(abs(iy - py) <= min_separation and abs(ix - px) <= min_separation
-                   for py, px in picked):
+            if any(
+                abs(iy - py) <= min_separation and abs(ix - px) <= min_separation
+                for py, px in picked
+            ):
                 continue
             picked.append((iy, ix))
-            result.append({
-                "x0": float(self.x_edges[ix]),
-                "x1": float(self.x_edges[ix + 1]),
-                "y0": float(self.y_edges[iy]),
-                "y1": float(self.y_edges[iy + 1]),
-                "count": count,
-                "share": count / self.total,
-            })
+            result.append(
+                {
+                    "x0": float(self.x_edges[ix]),
+                    "x1": float(self.x_edges[ix + 1]),
+                    "y0": float(self.y_edges[iy]),
+                    "y1": float(self.y_edges[iy + 1]),
+                    "count": count,
+                    "share": count / self.total,
+                }
+            )
             if len(result) >= top:
                 break
         return result
@@ -396,8 +422,9 @@ class DensityView:
 
     def spread_panel(self) -> DensityPanel | None:
         """最分散的分面（装下一半记录要铺最多的网格面积）。"""
-        return (max(self.panels, key=lambda panel: panel.grid.half_mass_share)
-                if self.panels else None)
+        return (
+            max(self.panels, key=lambda panel: panel.grid.half_mass_share) if self.panels else None
+        )
 
 
 def _fit_palette(palette: Sequence[str], count: int) -> list[str]:
@@ -458,10 +485,13 @@ def build_density_view(
     if labels is not None:
         # 分组值缺失的记录无法归入任何分面，与 Plotly/ECharts 的着色语义
         # 一致地排除掉（否则会凭空多出一个 "nan" 面板）。
-        valid = np.array([
-            item is not None and not (isinstance(item, float) and math.isnan(item))
-            for item in labels.tolist()
-        ], dtype=bool)
+        valid = np.array(
+            [
+                item is not None and not (isinstance(item, float) and math.isnan(item))
+                for item in labels.tolist()
+            ],
+            dtype=bool,
+        )
         x, y, labels = x[valid], y[valid], labels[valid]
     if x.size < 2:
         return None
@@ -488,15 +518,17 @@ def build_density_view(
         # histogram2d 返回 (nx, ny)，转置成 (ny, nx)：行号即 y 档位，与
         # Plotly 的 z 行序、ECharts y 轴类别顺序一致。
         matrix = counts.T.astype(np.int64)
-        return DensityGrid(x_edges=edges_x, y_edges=edges_y, counts=matrix,
-                           total=int(matrix.sum()))
+        return DensityGrid(x_edges=edges_x, y_edges=edges_y, counts=matrix, total=int(matrix.sum()))
 
     if labels is None or len(set(labels.tolist())) <= 1:
         only = "" if labels is None else str(next(iter(set(labels.tolist()))))
         grid = _grid(x, y)
         return DensityView(
-            panels=[DensityPanel(name=only, grid=grid, share=1.0,
-                                 levels=() if labels is None else (only,))],
+            panels=[
+                DensityPanel(
+                    name=only, grid=grid, share=1.0, levels=() if labels is None else (only,)
+                )
+            ],
             total=int(x.size),
             rows_used=int(x.size),
             x_range=bounds_x,
@@ -515,21 +547,25 @@ def build_density_view(
     text_labels = labels.astype(str)
     panels: list[DensityPanel] = []
     if len(unique) <= max_panels:
-        selected: list[tuple[str, np.ndarray]] = [(str(level), text_labels == level) for level in unique]
+        selected: list[tuple[str, np.ndarray]] = [
+            (str(level), text_labels == level) for level in unique
+        ]
     else:
         selected = [(str(level), text_labels == level) for level in unique[: max_panels - 1]]
-        rest = np.isin(text_labels, unique[max_panels - 1:].tolist())
+        rest = np.isin(text_labels, unique[max_panels - 1 :].tolist())
         selected.append((f"其他 {len(unique) - max_panels + 1} 类", rest))
     for name, panel_mask in selected:
         # 面板掩码由 np.unique 的取值构造，必然至少命中一条记录。
         sub_x, sub_y = x[panel_mask], y[panel_mask]
         grid = _grid(sub_x, sub_y)
-        panels.append(DensityPanel(
-            name=name,
-            grid=grid,
-            share=grid.total / total if total else 0.0,
-            levels=tuple(sorted(set(text_labels[panel_mask].tolist()))),
-        ))
+        panels.append(
+            DensityPanel(
+                name=name,
+                grid=grid,
+                share=grid.total / total if total else 0.0,
+                levels=tuple(sorted(set(text_labels[panel_mask].tolist()))),
+            )
+        )
     return DensityView(
         panels=panels,
         total=total,
@@ -696,8 +732,12 @@ def clip_segment(
     x0, y0, x1, y1 = (float(value) for value in segment)
     dx, dy = x1 - x0, y1 - y0
     t0, t1 = 0.0, 1.0
-    for p, q in ((-dx, x0 - x_range[0]), (dx, x_range[1] - x0),
-                 (-dy, y0 - y_range[0]), (dy, y_range[1] - y0)):
+    for p, q in (
+        (-dx, x0 - x_range[0]),
+        (dx, x_range[1] - x0),
+        (-dy, y0 - y_range[0]),
+        (dy, y_range[1] - y0),
+    ):
         if p == 0:
             if q < 0:
                 return None
@@ -730,15 +770,18 @@ def density_note(view: DensityView, *, color_label: str | None = None) -> str:
     return "".join(parts) + "。"
 
 
-def hotspot_sentence(view: DensityView, x_label: str, y_label: str,
-                     *, top: int = 2, panel: str | None = None) -> str:
+def hotspot_sentence(
+    view: DensityView, x_label: str, y_label: str, *, top: int = 2, panel: str | None = None
+) -> str:
     """最密集区域的句子（"哪里挤"的白话锚点）。
 
     没有真实聚集（峰均比过低）时不硬报热点，改说"分布比较均匀"——均匀
     随机点云的"最密集格"只是采样涨落，报出来是误导。
     """
-    grid = view.overall if panel is None else next(
-        (item.grid for item in view.panels if item.name == panel), view.overall
+    grid = (
+        view.overall
+        if panel is None
+        else next((item.grid for item in view.panels if item.name == panel), view.overall)
     )
     if grid is None:
         return ""

@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import type { Artifact } from "../types";
 
 // 与 store 的 Tab 类型保持一致（useSessionStore 中 activeTab 的字面量联合）。
-type TabId = "analysis" | "data" | "artifacts" | "audit";
+type TabId = "analysis" | "data" | "artifacts" | "audit" | "comments";
 
 // 与 store 的 Updater<T> 一致：setter 既接受直接值也接受 functional updater。
 type SetState<T> = (v: T | ((prev: T) => T)) => void;
@@ -91,11 +91,12 @@ function useShortcuts(deps: UseShortcutsDeps): void {
         toggleTheme();
         return;
       }
-      // 1/2/3/4：切换分析/数据/产物/简报核验 Tab
+      // 1/2/3/4/5：切换分析/数据/产物/简报核验/评论 Tab
       if (event.key === "1" && !meta) { event.preventDefault(); setActiveTab("analysis"); return; }
       if (event.key === "2" && !meta) { event.preventDefault(); setActiveTab("data"); return; }
       if (event.key === "3" && !meta) { event.preventDefault(); setActiveTab("artifacts"); return; }
       if (event.key === "4" && !meta) { event.preventDefault(); setActiveTab("audit"); return; }
+      if (event.key === "5" && !meta) { event.preventDefault(); setActiveTab("comments"); return; }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

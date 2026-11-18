@@ -84,4 +84,3 @@ def json_text(value: Any) -> str:
         缩进 2 空格的 JSON 字符串，中文不转义。
     """
     return json.dumps(to_jsonable(value), ensure_ascii=False, indent=2)
-

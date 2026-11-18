@@ -300,8 +300,9 @@ def test_setup_middleware_rejects_empty_token_on_public_bind(monkeypatch):
     from data_agent.middleware import setup_middleware
 
     monkeypatch.delenv("APP_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("APP_VIEWER_TOKEN", raising=False)
     monkeypatch.setattr(sys, "argv", ["uvicorn", "data_agent.api:app", "--host", "0.0.0.0"])
-    with pytest.raises(RuntimeError, match="APP_ACCESS_TOKEN 或把绑定地址改为 127.0.0.1"):
+    with pytest.raises(RuntimeError, match="至少设置一个访问令牌"):
         setup_middleware(FastAPI())
 
 
@@ -689,3 +690,20 @@ def test_read_utf8_robust_latin1_fallback(tmp_path, monkeypatch):
     p = tmp_path / "bin.html"
     p.write_bytes(b"\xff\xfe\x00binary")
     assert repair_mod._read_utf8_robust(p) == "\xff\xfe\x00binary"
+
+
+def test_setup_middleware_allows_viewer_only_mode(monkeypatch, caplog):
+    from types import SimpleNamespace
+
+    from fastapi import FastAPI
+
+    from data_agent import api  # noqa: F401
+    from data_agent.middleware import _check_rate_limit, setup_middleware
+
+    monkeypatch.delenv("APP_ACCESS_TOKEN", raising=False)
+    monkeypatch.setenv("APP_VIEWER_TOKEN", "viewer-token")
+    caplog.set_level("WARNING", logger="data_agent.middleware")
+    setup_middleware(FastAPI())
+    assert any("只读模式" in record.message for record in caplog.records)
+
+    _check_rate_limit(SimpleNamespace(url=SimpleNamespace(path="/docs")))

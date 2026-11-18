@@ -33,8 +33,15 @@ def main() -> None:
 
 @app.command()
 def analyze(
-    file: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True, help="CSV/Excel/JSON/Parquet 数据文件")],
-    task: Annotated[str, typer.Option("--task", "-t", help="分析任务")] = "完成数据清洗、统计分析和合适的可视化，并总结关键发现。",
+    file: Annotated[
+        Path,
+        typer.Argument(
+            exists=True, dir_okay=False, readable=True, help="CSV/Excel/JSON/Parquet 数据文件"
+        ),
+    ],
+    task: Annotated[
+        str, typer.Option("--task", "-t", help="分析任务")
+    ] = "完成数据清洗、统计分析和合适的可视化，并总结关键发现。",
     provider: Annotated[str | None, typer.Option(help="模型提供商：deepseek 或 openai")] = None,
     model: Annotated[str | None, typer.Option(help="覆盖默认模型名称")] = None,
     base_url: Annotated[str | None, typer.Option(help="覆盖模型 API 地址")] = None,

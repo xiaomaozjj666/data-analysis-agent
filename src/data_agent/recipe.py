@@ -33,7 +33,9 @@ def collect_tool_calls(messages: list[Any]) -> list[dict[str, Any]]:
         if isinstance(message, AIMessage) and getattr(message, "tool_calls", None):
             for call in message.tool_calls:
                 args = call.get("args", {})
-                calls.append({"name": str(call.get("name")), "args": args if isinstance(args, dict) else {}})
+                calls.append(
+                    {"name": str(call.get("name")), "args": args if isinstance(args, dict) else {}}
+                )
     return calls
 
 
@@ -78,7 +80,9 @@ def load_recipe(workspace: DataWorkspace) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
-def replay_recipe(workspace: DataWorkspace, recipe: dict[str, Any], tools: list[Any]) -> dict[str, Any]:
+def replay_recipe(
+    workspace: DataWorkspace, recipe: dict[str, Any], tools: list[Any]
+) -> dict[str, Any]:
     """按配方顺序重放工具调用，不再走规划器。"""
     tool_map = {item.name: item for item in tools}
     results: list[dict[str, Any]] = []

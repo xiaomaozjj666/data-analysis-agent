@@ -48,6 +48,8 @@
 | `pct_change_threshold` | 默认 0.2（20%），与上一次值的环比阈值 |
 | `history_limit` / `min_samples` | 默认 30 / 3；历史窗口与最少基线样本 |
 | `webhook_url` | 可选；告警 JSON POST 目标（安全规则见第 5 节） |
+| `email_to` | 可选；邮件收件人数组或逗号分隔串（SMTP 连接信息走环境变量） |
+| `sms_to` | 可选；E.164 手机号数组（最多 5 个，Twilio 凭据走环境变量） |
 | `enabled` | 默认 true；false 时不参与 `run-due` |
 
 ## 3. 命令
@@ -65,6 +67,9 @@ python -m data_agent.automation --runs-dir ./runs list
 python -m data_agent.automation --runs-dir ./runs status
 # 有到期任务或上次运行失败时退出码为 1，供监控系统调用
 python -m data_agent.automation --runs-dir ./runs status --fail-on-alert
+
+# 生成零依赖的静态 HTML 看板（--out 省略则打印到 stdout；--refresh-seconds 用 meta refresh）
+python -m data_agent.automation --runs-dir ./runs dashboard --out ./runs/dashboard.html --refresh-seconds 300
 
 # 立即跑一次（--dry-run 只计算与检测：不写历史/告警、不推送、不建持久工作区）
 python -m data_agent.automation --runs-dir ./runs run --id daily-sales

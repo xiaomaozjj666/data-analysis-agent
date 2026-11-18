@@ -85,7 +85,7 @@ def _nice_num(x: float, round_: bool = True) -> float:
     if x == 0:
         return 0.0
     exp = math.floor(math.log10(abs(x)))
-    fraction = abs(x) / (10.0 ** exp)
+    fraction = abs(x) / (10.0**exp)
     if round_:
         if fraction <= 1.5:
             nice_fraction = 1.0
@@ -105,7 +105,7 @@ def _nice_num(x: float, round_: bool = True) -> float:
         else:
             nice_fraction = 10.0
     sign = -1.0 if x < 0 else 1.0
-    return sign * nice_fraction * (10.0 ** exp)
+    return sign * nice_fraction * (10.0**exp)
 
 
 def _nice_ticks(vmin: float, vmax: float, n: int = 5) -> tuple[float, float, float]:
@@ -203,9 +203,7 @@ def _plotly_axis_tickformat(value_range: tuple[float, float]) -> str:
     return ".2e"
 
 
-def _scatter_structure(
-    x_values: list[float], y_values: list[float]
-) -> dict[str, float | None]:
+def _scatter_structure(x_values: list[float], y_values: list[float]) -> dict[str, float | None]:
     """计算散点图的结构注记数据：OLS 趋势线端点、双轴均值、皮尔逊 r。
 
     参考 Tableau/Plotly 专业实践——大点云需要"视觉锚点"才可读：趋势线
@@ -224,7 +222,13 @@ def _scatter_structure(
     """
     import numpy as np
 
-    empty: dict[str, float | None] = {"trend": None, "mean_x": None, "mean_y": None, "r": None, "n": 0}
+    empty: dict[str, float | None] = {
+        "trend": None,
+        "mean_x": None,
+        "mean_y": None,
+        "r": None,
+        "n": 0,
+    }
     try:
         if len(x_values) != len(y_values) or len(x_values) < 3:
             return empty

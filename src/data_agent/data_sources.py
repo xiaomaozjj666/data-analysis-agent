@@ -48,6 +48,12 @@ def _postgres_configured() -> bool:
     return postgres_source.is_configured()
 
 
+def _external_configured() -> bool:
+    from data_agent import external_source
+
+    return external_source.is_configured()
+
+
 def describe_sources() -> list[SourceDescriptor]:
     """列出全部已实现的数据源及其能力；``configured`` 反映当前环境。"""
     return [
@@ -67,6 +73,17 @@ def describe_sources() -> list[SourceDescriptor]:
             timeout_mechanism="statement_timeout",
             configured=_postgres_configured(),
         ),
+        SourceDescriptor(
+            name="external",
+            label=(
+                "DATA_AGENT_EXTERNAL_DB_MODULE 配置的 DB-API 数据源"
+                "（Snowflake / Databricks / BigQuery 等）"
+            ),
+            readonly_guarantee=READONLY_ROLE_REQUIRED,
+            identifier_quote="double",
+            timeout_mechanism="driver/account-level; SQL guard enforces single SELECT",
+            configured=_external_configured(),
+        ),
     ]
 
 
@@ -81,7 +98,8 @@ def resolve(name: str) -> SourceDescriptor:
             return item
     raise ValueError(
         f"未知的 source「{name}」。可用值：{'、'.join(source_names())}"
-        "（session=会话内 SQLite 文件，postgres=环境变量配置的连接）。"
+        "（session=会话内 SQLite 文件，postgres=环境变量配置的连接，"
+        "external=配置式 DB-API 数仓）。"
     )
 
 
@@ -99,6 +117,15 @@ def open_external(name: str) -> tuple[Any, Any, str]:
         if not postgres_source.is_configured():
             raise ValueError("未配置 PostgreSQL：请设置 DATA_AGENT_DATABASE_URL 后重试。")
         return postgres_source, postgres_source.connect_readonly(), descriptor.label
+    if name == "external":
+        from data_agent import external_source
+
+        if not external_source.is_configured():
+            raise ValueError(
+                "未配置外部数据源：请设置 DATA_AGENT_EXTERNAL_DB_MODULE"
+                " 与 DATA_AGENT_EXTERNAL_DB_KWARGS 后重试。"
+            )
+        return external_source, external_source.connect_readonly(), descriptor.label
     # 走到这里说明 README/registry 已声明但执行分支未实现——显式报错，
     # 不静默回退到其他源。
     raise ValueError(f"数据源「{name}」尚未实现执行分支。")

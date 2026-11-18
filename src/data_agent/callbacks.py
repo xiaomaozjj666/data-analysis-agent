@@ -119,8 +119,11 @@ class ToolTraceCallback(BaseCallbackHandler):
         """
         self._call_count = 0
 
-    def on_tool_start(self, serialized: dict[str, Any] | None = None, input_str: str = "", **kwargs: Any) -> Any:
+    def on_tool_start(
+        self, serialized: dict[str, Any] | None = None, input_str: str = "", **kwargs: Any
+    ) -> Any:
         import time
+
         tool_name = (serialized or {}).get("name", "unknown") if serialized else "unknown"
         run_id = str(kwargs.get("run_id", ""))
         self._tool_starts[run_id] = time.time()
@@ -129,38 +132,48 @@ class ToolTraceCallback(BaseCallbackHandler):
         # execute_step 内的工具调用阶段，不覆盖 replan/finalize。
         self._call_count += 1
         try:
-            self.event_callback("tool_call", {
-                "call_id": run_id,
-                "name": tool_name,
-                "input_preview": (input_str or "")[:200],
-                "started_at": self._tool_starts[run_id],
-            })
+            self.event_callback(
+                "tool_call",
+                {
+                    "call_id": run_id,
+                    "name": tool_name,
+                    "input_preview": (input_str or "")[:200],
+                    "started_at": self._tool_starts[run_id],
+                },
+            )
         except Exception:
             logger.debug("流式回调处理失败", exc_info=True)
         try:
-            self.event_callback("step_progress", {
-                "progress": min(90, self._call_count * 20),
-                "tool_calls": self._call_count,
-                "message": f"第 {self._call_count} 次工具调用",
-                # 复合进度上下文：前端据此渲染"步骤 2/4"前缀。0 表示未知
-                # （如未来在 plan 外复用本回调），前端隐藏前缀保持兼容。
-                "step_index": self.step_index,
-                "total_steps": self.total_steps,
-            })
+            self.event_callback(
+                "step_progress",
+                {
+                    "progress": min(90, self._call_count * 20),
+                    "tool_calls": self._call_count,
+                    "message": f"第 {self._call_count} 次工具调用",
+                    # 复合进度上下文：前端据此渲染"步骤 2/4"前缀。0 表示未知
+                    # （如未来在 plan 外复用本回调），前端隐藏前缀保持兼容。
+                    "step_index": self.step_index,
+                    "total_steps": self.total_steps,
+                },
+            )
         except Exception:
             logger.debug("流式回调处理失败", exc_info=True)
 
     def on_tool_end(self, output: str = "", **kwargs: Any) -> Any:
         import time
+
         run_id = str(kwargs.get("run_id", ""))
         started = self._tool_starts.pop(run_id, None)
         duration_ms = int((time.time() - started) * 1000) if started else 0
         try:
-            self.event_callback("tool_result", {
-                "call_id": run_id,
-                "output_preview": (str(output) if output else "")[:300],
-                "duration_ms": duration_ms,
-            })
+            self.event_callback(
+                "tool_result",
+                {
+                    "call_id": run_id,
+                    "output_preview": (str(output) if output else "")[:300],
+                    "duration_ms": duration_ms,
+                },
+            )
         except Exception:
             logger.debug("流式回调处理失败", exc_info=True)
 

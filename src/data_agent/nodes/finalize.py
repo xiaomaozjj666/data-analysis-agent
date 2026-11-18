@@ -55,9 +55,7 @@ def finalize(agent: DataAnalysisAgent, state: WorkflowState) -> dict[str, Any]:
     # 统计术语必须当场翻译成大白话，禁止学术八股式的章节堆砌。
     facts = extract_facts(state.get("trace"), completed_steps)
     facts_md = render_facts_markdown(facts)
-    prompt = agent.prompts["finalize_template"].format(
-        query=state["query"], evidence=evidence
-    )
+    prompt = agent.prompts["finalize_template"].format(query=state["query"], evidence=evidence)
     prompt += "\n\n" + facts_prompt_block(facts)
     try:
         # 流式报告：ReportStreamCallback 把每个 token 通过 event_callback
@@ -67,9 +65,7 @@ def finalize(agent: DataAnalysisAgent, state: WorkflowState) -> dict[str, Any]:
         # UsageAccumulator 累计 finalize 节点的 token 用量。
         reasoning_buffer: list[str] = []
         report_streamer = ReportStreamCallback(agent.event_callback)
-        reasoning_streamer = ReasoningStreamCallback(
-            agent.event_callback, buffer=reasoning_buffer
-        )
+        reasoning_streamer = ReasoningStreamCallback(agent.event_callback, buffer=reasoning_buffer)
         usage_acc = UsageAccumulator()
         final_message = agent.model.invoke(
             prompt,
@@ -84,10 +80,7 @@ def finalize(agent: DataAnalysisAgent, state: WorkflowState) -> dict[str, Any]:
     if not response:
         # LLM 汇总失败时，把各步骤的标题与摘要作为兜底返回，避免用户看到空白。
         if evidence:
-            response = (
-                "> 模型汇总失败，以下是各分析步骤的执行摘要。\n\n"
-                + evidence
-            )
+            response = "> 模型汇总失败，以下是各分析步骤的执行摘要。\n\n" + evidence
         else:
             response = "分析已完成，但没有可汇总的步骤结果。"
     if facts_md and "## 核验附录" not in response:

@@ -32,7 +32,25 @@
   退出码为 1，供看板/监控调用；不触发任何执行、不写状态。
 - **群机器人推送适配**：webhook 目标为 Slack / 飞书（Lark）/ 钉钉时自动
   转换为对应文本格式，其他地址保持原始结构化 JSON；完整明细仍写
-  `alerts.jsonl`。邮件/短信不内置，交由外部监控消费。
+  `alerts.jsonl`。
+- **静态 HTML 看板**：`automation dashboard` 把巡检视图渲染成单文件 HTML
+  （无外部资源、CSP 限制、全部字段 HTML 转义，`--refresh-seconds` 支持
+  meta refresh），可挂到任意静态目录。
+- **会话评论（协作层）**：新增 `GET/POST/DELETE /api/sessions/{id}/comments`
+  与工作台「评论」Tab（快捷键 `5`）。评论存 `comments.json`（原子写、200 条 /
+  2000 字上限、纯文本渲染防 XSS），随会话导出 ZIP 归档。
+- **只读令牌与审计日志**：新增 `APP_VIEWER_TOKEN`（仅 GET/HEAD，写请求 403；
+  只配置它时服务进入只读模式）；写操作与 401/403 可追加 JSONL 审计
+  （`DATA_AGENT_AUDIT_LOG`，不含请求体/令牌/IP，写失败不影响请求）。
+- **联网搜索工具 `web_search`**：固定 DuckDuckGo HTML 出口、重定向主机
+  白名单、结果按不可信外部数据标注；工具集由 11 个增至 12 个。真实网络
+  冒烟验证可解析出结果。
+- **通用 DB-API 外部数据源**：`query_database`/MCP 新增 `source="external"`，
+  通过 `DATA_AGENT_EXTERNAL_DB_MODULE` + `_KWARGS` 接入 Snowflake /
+  Databricks / BigQuery DB-API；模块白名单、SQL 护栏、`role-required` 能力
+  声明；离线用 sqlite3 验证连接/查询/降级，真实云连接属部署方验收项。
+- **报告级叙事编排**：finalize 提示词（中英）新增论证链要求——全局结论 →
+  驱动拆解 → 效率/对比 → 异常/风险 → 行动，每张图必须说明支撑哪条判断。
 - **经营简报核验（Sales Audit）**：新增 `POST /api/sessions/{id}/sales-audit`
   与「简报核验」工作区 Tab。只读原始上传 CSV，按 `SUM(sales)` / `SUM(quantity)`
   / `COUNT(DISTINCT order_id)` 复算，把草稿里的指标行逐条判为

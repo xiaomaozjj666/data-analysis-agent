@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Annotated, Any
 from uuid import uuid4
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -112,6 +112,47 @@ def get_session(session_id: str) -> dict[str, Any]:
     from data_agent import api
 
     return _session_payload(session_id, api.registry.get(session_id))
+
+
+class CommentRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+    author: str = Field(default="", max_length=40)
+
+
+@router.get("/api/sessions/{session_id}/comments")
+def list_session_comments(session_id: str) -> dict[str, Any]:
+    from data_agent import api
+    from data_agent.comments import list_comments
+
+    workspace = api.registry.get(session_id).workspace
+    return {"session_id": session_id, "comments": list_comments(workspace.root)}
+
+
+@router.post("/api/sessions/{session_id}/comments", status_code=201)
+def create_session_comment(
+    session_id: str, payload: CommentRequest, request: Request
+) -> dict[str, Any]:
+    from data_agent import api
+    from data_agent.comments import add_comment
+
+    workspace = api.registry.get(session_id).workspace
+    actor = str(getattr(request.state, "actor", "") or "")
+    author = payload.author.strip() or ({"admin": "管理员", "viewer": "访客"}.get(actor, ""))
+    try:
+        return add_comment(workspace.root, payload.text, author)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.delete("/api/sessions/{session_id}/comments/{comment_id}")
+def delete_session_comment(session_id: str, comment_id: str) -> dict[str, bool]:
+    from data_agent import api
+    from data_agent.comments import delete_comment
+
+    workspace = api.registry.get(session_id).workspace
+    if not delete_comment(workspace.root, comment_id):
+        raise HTTPException(status_code=404, detail="评论不存在。")
+    return {"deleted": True}
 
 
 class SalesAuditRequest(BaseModel):

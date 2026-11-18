@@ -119,7 +119,9 @@ class S3SessionStorage:
         prev_mtimes: dict[str, float] = getattr(self, "_mtimes", {}).get(session_id, {})
         new_mtimes: dict[str, float] = {}
         try:
-            with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as bundle:
+            with zipfile.ZipFile(
+                archive, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True
+            ) as bundle:
                 for path in sorted(source.rglob("*")):
                     if not path.is_file():
                         continue

@@ -1,0 +1,28 @@
+/* ---------- 会话评论（协作层） ---------- */
+.comments-panel { margin-top: 22px; padding: 20px; background: var(--canvas-default); border: 1px solid var(--border-default); border-radius: var(--radius-lg); }
+.comments-panel-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.comments-panel-header h2 { display: flex; align-items: center; gap: 8px; margin: 4px 0 0; font-size: var(--text-lg); }
+.comments-panel-count { min-width: 28px; padding: 2px 9px; border-radius: 999px; background: var(--canvas-subtle); color: var(--fg-subtle); font-size: var(--text-xs); text-align: center; }
+.comments-panel-empty { margin: 0 0 16px; color: var(--fg-subtle); font-size: var(--text-sm); }
+.comments-panel-list { display: flex; flex-direction: column; gap: 10px; margin: 0 0 18px; padding: 0; list-style: none; }
+.comments-panel-item { padding: 12px 14px; background: var(--canvas-subtle); border: 1px solid var(--border-muted); border-radius: var(--radius-md); }
+.comments-panel-meta { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; font-size: var(--text-xs); color: var(--fg-subtle); }
+.comments-panel-meta strong { color: var(--fg-default); font-size: var(--text-sm); }
+.comments-panel-meta time { margin-right: auto; }
+.comments-panel-delete { display: inline-flex; padding: 4px; color: var(--fg-subtle); background: transparent; border: 0; border-radius: var(--radius-sm); cursor: pointer; }
+.comments-panel-delete:hover:not(:disabled) { color: var(--danger-fg, #f87171); background: var(--canvas-default); }
+.comments-panel-delete:disabled { opacity: 0.5; cursor: not-allowed; }
+.comments-panel-text { margin: 0; color: var(--fg-default); font-size: var(--text-sm); line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.comments-panel-compose { display: flex; flex-direction: column; gap: 10px; }
+.comments-panel-label { display: flex; flex-direction: column; gap: 6px; color: var(--fg-subtle); font-size: var(--text-xs); }
+.comments-panel-author { width: 200px; }
+.comments-panel-label-text textarea { resize: vertical; min-height: 72px; }
+.comments-panel-actions { display: flex; align-items: center; gap: 12px; }
+.comments-panel-hint { margin-left: auto; color: var(--fg-subtle); font-size: var(--text-xs); }
+.comments-panel-error { color: var(--danger-fg, #f87171); font-size: var(--text-xs); }
+.comments-panel input,
+.comments-panel textarea { padding: 8px 10px; color: var(--fg-default); background: var(--canvas-subtle); border: 1px solid var(--border-default); border-radius: var(--radius-sm); font: inherit; }
+.comments-panel input:focus,
+.comments-panel textarea:focus { outline: 2px solid var(--accent-fg); outline-offset: 1px; }
+.comments-panel button[type="button"]:not(.comments-panel-delete) { padding: 8px 16px; color: var(--accent-contrast, #fff); background: var(--accent-fg); border: 0; border-radius: var(--radius-sm); cursor: pointer; }
+.comments-panel button[type="button"]:not(.comments-panel-delete):disabled { opacity: 0.5; cursor: not-allowed; }

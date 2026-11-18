@@ -190,8 +190,9 @@ def create_server(settings: AgentSettings | None = None) -> Any:
 
         source selects the target: "session" is the uploaded .db/.sqlite file of
         a session (session_id required); "postgres" is the warehouse configured
-        through the DATA_AGENT_DATABASE_URL environment variable (session_id not
-        needed).
+        through the DATA_AGENT_DATABASE_URL environment variable; "external" is
+        a DB-API warehouse configured through DATA_AGENT_EXTERNAL_DB_MODULE
+        (Snowflake / Databricks / BigQuery DB-API).
 
         Call with an empty sql to get every table's schema and the list of
         available sources. Only SELECT / WITH statements are accepted and the
@@ -202,7 +203,8 @@ def create_server(settings: AgentSettings | None = None) -> Any:
         if source not in available_names:
             raise ToolError(
                 f"未知的 source「{source}」。可用值：{'、'.join(available_names)}"
-                "（session=会话内 SQLite 文件，postgres=环境变量配置的连接）。"
+                "（session=会话内 SQLite 文件，postgres=环境变量配置的连接，"
+                "external=配置式 DB-API 数仓）。"
             )
         if source != "session":
             try:
@@ -221,12 +223,14 @@ def create_server(settings: AgentSettings | None = None) -> Any:
             )
             if database_path is None:
                 available = [
-                    item.name for item in data_sources.describe_sources() if item.configured
+                    item.name
+                    for item in data_sources.describe_sources()
+                    if item.configured and item.name != "session"
                 ]
                 raise ToolError(
                     '该会话没有 SQLite 数据源（source="session" 需要 .db/.sqlite 文件）。'
                     + (
-                        '环境变量已配置 PostgreSQL，请改用 source="postgres"。'
+                        f"已配置外部源：{'、'.join(available)}，请改用对应 source。"
                         if available
                         else "也可改用 inspect_data 查看当前数据集。"
                     )

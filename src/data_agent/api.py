@@ -114,10 +114,12 @@ def _warm_chart_bundles() -> None:
             logging.getLogger("data_agent.api").info("图表 bundle 预热完成: %s", ready)
         except Exception:  # pragma: no cover - 预热失败不影响任何功能
             logging.getLogger("data_agent.api").warning(
-                "图表 bundle 预热失败（不影响生成，届时按需下载）", exc_info=True,
+                "图表 bundle 预热失败（不影响生成，届时按需下载）",
+                exc_info=True,
             )
 
     threading.Thread(target=_warm, name="warm-chart-bundles", daemon=True).start()
+
 
 setup_middleware(app)
 register_error_handlers(app)
@@ -190,7 +192,9 @@ def frontend_app(full_path: str) -> Response:
     requested = raw_path.resolve()
     if dist.resolve() in requested.parents and requested.is_file():
         # 带内容的静态资源（JS/CSS/图片）文件名含 hash，可长期缓存
-        return FileResponse(requested, headers={"Cache-Control": "public, max-age=31536000, immutable"})
+        return FileResponse(
+            requested, headers={"Cache-Control": "public, max-age=31536000, immutable"}
+        )
     # index.html 必须禁止缓存，否则浏览器加载旧 HTML 引用的旧 JS 文件名
     return FileResponse(
         dist / "index.html",

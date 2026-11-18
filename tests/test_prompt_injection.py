@@ -127,3 +127,10 @@ def test_get_prompts_fallback_keeps_defense() -> None:
     prompts = get_prompts("xx")
     assert "DATA_FENCE" in prompts["system_prompt"]
     assert "数据" in prompts["system_prompt"]
+
+
+def test_finalize_prompt_requires_narrative_chain() -> None:
+    zh = PROMPTS["zh"]["finalize_template"]
+    en = PROMPTS["en"]["finalize_template"]
+    assert "报告级叙事" in zh and "论证链" in zh
+    assert "global conclusion" in en and "argument chain" in en

@@ -43,7 +43,11 @@ def scatter_point_style(rows: int) -> dict[str, Any]:
                 "opacity": opacity,
                 "line": {"width": border, "color": "white"},
             }
-    return {"size": 3.2, "opacity": 0.45, "line": {"width": 0, "color": "white"}}  # pragma: no cover
+    return {
+        "size": 3.2,
+        "opacity": 0.45,
+        "line": {"width": 0, "color": "white"},
+    }  # pragma: no cover
 
 
 def scatter_symbol_style(rows: int) -> tuple[float, float, float]:
@@ -97,12 +101,24 @@ def _refine_scatter_3d(fig: Any, *, rows: int) -> None:
         # 相机：抬高俯视角（z 更大）。默认视角下竖轴几乎与视线平行，
         # 整团点看起来是"一张平板"，量纲差异被压没（实测截图对比后定的值）。
         "camera": {"eye": {"x": 1.5, "y": 1.5, "z": 1.35}},
-        "xaxis": {"showbackground": False, "gridcolor": "rgba(148,163,184,0.28)",
-                  "zerolinecolor": "rgba(148,163,184,0.45)", "showspikes": False},
-        "yaxis": {"showbackground": False, "gridcolor": "rgba(148,163,184,0.28)",
-                  "zerolinecolor": "rgba(148,163,184,0.45)", "showspikes": False},
-        "zaxis": {"showbackground": False, "gridcolor": "rgba(148,163,184,0.28)",
-                  "zerolinecolor": "rgba(148,163,184,0.45)", "showspikes": False},
+        "xaxis": {
+            "showbackground": False,
+            "gridcolor": "rgba(148,163,184,0.28)",
+            "zerolinecolor": "rgba(148,163,184,0.45)",
+            "showspikes": False,
+        },
+        "yaxis": {
+            "showbackground": False,
+            "gridcolor": "rgba(148,163,184,0.28)",
+            "zerolinecolor": "rgba(148,163,184,0.45)",
+            "showspikes": False,
+        },
+        "zaxis": {
+            "showbackground": False,
+            "gridcolor": "rgba(148,163,184,0.28)",
+            "zerolinecolor": "rgba(148,163,184,0.45)",
+            "showspikes": False,
+        },
     }
     fig.update_layout(
         scene=scene,
@@ -145,8 +161,11 @@ def _scatter_3d_aspect(fig: Any) -> dict[str, float]:
         # 三轴量程同量级：等比即可（此时 cube 不会失真）
         return {"x": 1.0, "y": 1.0, "z": 0.9}
     scaled = 0.75 + 0.5 * (logs - logs.min()) / spread
-    return {"x": round(float(scaled[0]), 3), "y": round(float(scaled[1]), 3),
-            "z": round(float(scaled[2]), 3)}
+    return {
+        "x": round(float(scaled[0]), 3),
+        "y": round(float(scaled[1]), 3),
+        "z": round(float(scaled[2]), 3),
+    }
 
 
 def _as_scattergl(fig: Any) -> Any:
@@ -193,7 +212,9 @@ def _stat_agg_note(stat_agg: dict[str, Any]) -> str:
     )
 
 
-def _stratified_sample(df: pd.DataFrame, color: str | None, rows: int = VIOLIN_SAMPLE_ROWS) -> pd.DataFrame:
+def _stratified_sample(
+    df: pd.DataFrame, color: str | None, rows: int = VIOLIN_SAMPLE_ROWS
+) -> pd.DataFrame:
     """按分组列分层抽样（每组配额与其占比成正比）。
 
     小提琴图的形状来自核密度，两万个样本与三十万样本画出的小提琴几乎重合；
@@ -205,10 +226,10 @@ def _stratified_sample(df: pd.DataFrame, color: str | None, rows: int = VIOLIN_S
     if not color or color not in df.columns:
         return df.sample(n=rows, random_state=42)
     groups = df.groupby(color, observed=True, dropna=True)
-    quota = {level: max(200, int(round(rows * len(chunk) / len(df))))
-             for level, chunk in groups}
-    pieces = [chunk.sample(n=min(quota[level], len(chunk)), random_state=42)
-              for level, chunk in groups]
+    quota = {level: max(200, int(round(rows * len(chunk) / len(df)))) for level, chunk in groups}
+    pieces = [
+        chunk.sample(n=min(quota[level], len(chunk)), random_state=42) for level, chunk in groups
+    ]
     if not pieces:
         return df.sample(n=rows, random_state=42)
     return pd.concat(pieces)
@@ -424,7 +445,8 @@ _PLOTLY_GL_REFRESH_SCRIPT = """<script>/*gl-refresh-fix*/
 </script>"""
 
 
-_PLOTLY_DARK_MODE_SCRIPT = """<script>
+_PLOTLY_DARK_MODE_SCRIPT = (
+    """<script>
 (function() {
   // 运行时错误上报：图表脚本执行失败且画布未渲染时，把错误消息回传
   // 父页面（{type:'chart-error'}），让预览面板显示具体错误而不是永远空白。
@@ -523,7 +545,9 @@ _PLOTLY_DARK_MODE_SCRIPT = """<script>
   });
 })();
 </script>
-""" + _PLOTLY_GL_REFRESH_SCRIPT
+"""
+    + _PLOTLY_GL_REFRESH_SCRIPT
+)
 
 
 _AGGREGATION_LABELS = {

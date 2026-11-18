@@ -47,4 +47,3 @@ def schema_summary(frame: pd.DataFrame) -> dict[str, Any]:
         "table_count": 1,
         "tables": [{"table": ACTIVE_TABLE, "row_count": int(len(frame)), "columns": columns}],
     }
-

@@ -10,6 +10,7 @@ import {
   Grid3x3,
   Keyboard,
   LineChart,
+  MessageSquare,
   Moon,
   Network,
   PieChart,
@@ -64,6 +65,7 @@ const COMMAND_ACTIONS: CommandAction[] = [
   { id: "tab-analysis", icon: BarChart3, title: "切换到分析视图", subtitle: "报告与对话", section: "导航" },
   { id: "tab-data", icon: Table2, title: "切换到数据视图", subtitle: "原始记录预览", section: "导航" },
   { id: "tab-artifacts", icon: FileSpreadsheet, title: "切换到产物视图", subtitle: "图表与导出文件", section: "导航" },
+  { id: "tab-comments", icon: MessageSquare, title: "切换到评论视图", subtitle: "会话协作与复核意见", section: "导航" },
   { id: "show-help", icon: Keyboard, title: "查看键盘快捷键", subtitle: "全部快捷键列表", section: "帮助" },
 ];
 

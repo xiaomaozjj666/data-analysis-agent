@@ -44,6 +44,7 @@ _ID_LIKE_PATTERN = re.compile(r"(?i)(?:^|[_\s])(?:id|no|code)$|id$|编号$|单�
 
 # === KPI 指标计算 ===
 
+
 def compute_kpis(df: pd.DataFrame, *, chart_count: int, issue_count: int) -> list[dict[str, str]]:
     """基于当前工作区数据计算 KPI 卡片：label / val / sub / cls（语义色）。"""
     rows, cols = df.shape
@@ -57,19 +58,41 @@ def compute_kpis(df: pd.DataFrame, *, chart_count: int, issue_count: int) -> lis
 
     return [
         {"label": "记录数", "val": f"{rows:,}", "sub": f"{cols} 个字段", "cls": "blue"},
-        {"label": "字段构成", "val": str(cols),
-         "sub": f"数值 {numeric_cols} · 时间 {datetime_cols} · 类别/文本 {other_cols}", "cls": ""},
-        {"label": "缺失单元格", "val": f"{missing_pct:.1f}%",
-         "sub": f"{missing:,} / {total_cells:,} 个", "cls": "amber" if missing else "green"},
-        {"label": "重复行", "val": f"{dup_rows:,}",
-         "sub": "完全重复的记录" if dup_rows else "未发现完全重复", "cls": "red" if dup_rows else "green"},
-        {"label": "数据质量问题", "val": f"{issue_count} 项",
-         "sub": "详见下方告警区" if issue_count else "未发现明显问题", "cls": "red" if issue_count else "green"},
-        {"label": "图表产物", "val": str(chart_count), "sub": "交互式图表（亮暗双主题）", "cls": "blue"},
+        {
+            "label": "字段构成",
+            "val": str(cols),
+            "sub": f"数值 {numeric_cols} · 时间 {datetime_cols} · 类别/文本 {other_cols}",
+            "cls": "",
+        },
+        {
+            "label": "缺失单元格",
+            "val": f"{missing_pct:.1f}%",
+            "sub": f"{missing:,} / {total_cells:,} 个",
+            "cls": "amber" if missing else "green",
+        },
+        {
+            "label": "重复行",
+            "val": f"{dup_rows:,}",
+            "sub": "完全重复的记录" if dup_rows else "未发现完全重复",
+            "cls": "red" if dup_rows else "green",
+        },
+        {
+            "label": "数据质量问题",
+            "val": f"{issue_count} 项",
+            "sub": "详见下方告警区" if issue_count else "未发现明显问题",
+            "cls": "red" if issue_count else "green",
+        },
+        {
+            "label": "图表产物",
+            "val": str(chart_count),
+            "sub": "交互式图表（亮暗双主题）",
+            "cls": "blue",
+        },
     ]
 
 
 # === 数据质量剖析 ===
+
 
 def profile_quality(df: pd.DataFrame) -> list[dict[str, str]]:
     """结构化数据质量剖析：每项 {tag, level(high/mid/low), target, desc, fix}。
@@ -87,27 +110,39 @@ def profile_quality(df: pd.DataFrame) -> list[dict[str, str]]:
     missing = missing[missing > 0].sort_values(ascending=False)
     for col, cnt in list(missing.items())[:4]:
         pct = cnt / rows * 100
-        issues.append({
-            "tag": "缺失", "level": "high" if pct >= 20 else "mid", "target": str(col),
-            "desc": f"「{col}」缺失 {int(cnt):,} 个（{pct:.1f}%），相关统计的有效样本降为 {rows - int(cnt):,} 条。",
-            "fix": "补录数据，或在聚合口径中显式排除/归入「未知」分组，避免口径不一致。",
-        })
+        issues.append(
+            {
+                "tag": "缺失",
+                "level": "high" if pct >= 20 else "mid",
+                "target": str(col),
+                "desc": f"「{col}」缺失 {int(cnt):,} 个（{pct:.1f}%），相关统计的有效样本降为 {rows - int(cnt):,} 条。",
+                "fix": "补录数据，或在聚合口径中显式排除/归入「未知」分组，避免口径不一致。",
+            }
+        )
     if len(missing) > 4:
         rest = ", ".join(str(c) for c in list(missing.index)[4:9])
-        issues.append({
-            "tag": "缺失", "level": "low", "target": f"另 {len(missing) - 4} 列",
-            "desc": f"其余存在缺失的列：{rest}{'…' if len(missing) > 9 else ''}。",
-            "fix": "按列重要性逐一确认缺失原因（未采集 / 不适用 / 录入遗漏）。",
-        })
+        issues.append(
+            {
+                "tag": "缺失",
+                "level": "low",
+                "target": f"另 {len(missing) - 4} 列",
+                "desc": f"其余存在缺失的列：{rest}{'…' if len(missing) > 9 else ''}。",
+                "fix": "按列重要性逐一确认缺失原因（未采集 / 不适用 / 录入遗漏）。",
+            }
+        )
 
     # 2) 完全重复行
     dup_rows = int(df.duplicated().sum())
     if dup_rows:
-        issues.append({
-            "tag": "重复行", "level": "mid", "target": f"{dup_rows} 条",
-            "desc": f"存在 {dup_rows:,} 条与其他记录完全相同的行，直接聚合会重复计数。",
-            "fix": "确认是否为重复导入；若是则去重后再做统计。",
-        })
+        issues.append(
+            {
+                "tag": "重复行",
+                "level": "mid",
+                "target": f"{dup_rows} 条",
+                "desc": f"存在 {dup_rows:,} 条与其他记录完全相同的行，直接聚合会重复计数。",
+                "fix": "确认是否为重复导入；若是则去重后再做统计。",
+            }
+        )
 
     # 3) 疑似主键列唯一性：列名形如 id/编号/单号 且存在重复值
     for col in df.columns:
@@ -117,11 +152,15 @@ def profile_quality(df: pd.DataFrame) -> list[dict[str, str]]:
         dup_keys = int(len(non_null) - non_null.nunique())
         if dup_keys > 0:
             sample = non_null[non_null.duplicated()].astype(str).unique()[:3]
-            issues.append({
-                "tag": "主键冲突", "level": "high", "target": str(col),
-                "desc": f"「{col}」按列名疑似唯一标识，但有 {dup_keys} 个重复值（如 {', '.join(sample)}），唯一性不成立。",
-                "fix": "核实重复键是否为两条独立业务记录；统计唯一实体数时应先按该列去重。",
-            })
+            issues.append(
+                {
+                    "tag": "主键冲突",
+                    "level": "high",
+                    "target": str(col),
+                    "desc": f"「{col}」按列名疑似唯一标识，但有 {dup_keys} 个重复值（如 {', '.join(sample)}），唯一性不成立。",
+                    "fix": "核实重复键是否为两条独立业务记录；统计唯一实体数时应先按该列去重。",
+                }
+            )
 
     # 4) 极端离群：数值列超出 3 倍四分位距（比常规 1.5 倍更严格，只报真正极端的）
     numeric = df.select_dtypes(include="number")
@@ -137,11 +176,15 @@ def profile_quality(df: pd.DataFrame) -> list[dict[str, str]]:
         extreme = vals[(vals < q1 - 3 * iqr) | (vals > q3 + 3 * iqr)]
         if len(extreme):
             worst = extreme.iloc[extreme.abs().argmax()]
-            issues.append({
-                "tag": "极端离群", "level": "high", "target": str(col),
-                "desc": f"「{col}」有 {len(extreme)} 个极端离群值（超出 3 倍四分位距），最极端为 {worst:,.4g}，会显著拉偏均值与合计。",
-                "fix": "核实是否为录入错误或测试数据；聚合分析建议剔除或截尾（可用数据清洗工具的 IQR 处理）。",
-            })
+            issues.append(
+                {
+                    "tag": "极端离群",
+                    "level": "high",
+                    "target": str(col),
+                    "desc": f"「{col}」有 {len(extreme)} 个极端离群值（超出 3 倍四分位距），最极端为 {worst:,.4g}，会显著拉偏均值与合计。",
+                    "fix": "核实是否为录入错误或测试数据；聚合分析建议剔除或截尾（可用数据清洗工具的 IQR 处理）。",
+                }
+            )
             outlier_cards += 1
 
     # 5) 负值疑点：数值列 95% 以上为非负、仅少量负值时提示（不假定业务语义）
@@ -151,32 +194,45 @@ def profile_quality(df: pd.DataFrame) -> list[dict[str, str]]:
             continue
         neg = int((vals < 0).sum())
         if 0 < neg <= max(1, int(len(vals) * 0.05)):
-            issues.append({
-                "tag": "负值疑点", "level": "mid", "target": str(col),
-                "desc": f"「{col}」{len(vals) - neg:,} 个值非负，仅 {neg} 个为负，疑似录入错误或冲销/退款记录。",
-                "fix": "确认负值业务含义；若为冲销请单独口径统计，若为错误请修正。",
-            })
+            issues.append(
+                {
+                    "tag": "负值疑点",
+                    "level": "mid",
+                    "target": str(col),
+                    "desc": f"「{col}」{len(vals) - neg:,} 个值非负，仅 {neg} 个为负，疑似录入错误或冲销/退款记录。",
+                    "fix": "确认负值业务含义；若为冲销请单独口径统计，若为错误请修正。",
+                }
+            )
 
     # 6) 常量列：全列只有一个取值，对分析无信息量
     constant_cols = [str(c) for c in df.columns if df[c].dropna().nunique() == 1]
     if constant_cols:
-        issues.append({
-            "tag": "常量列", "level": "low", "target": f"{len(constant_cols)} 列",
-            "desc": f"以下列所有记录取值相同，无区分度：{', '.join(constant_cols[:6])}{'…' if len(constant_cols) > 6 else ''}。",
-            "fix": "确认是否为筛选残留或冗余字段，可从分析维度中移除。",
-        })
+        issues.append(
+            {
+                "tag": "常量列",
+                "level": "low",
+                "target": f"{len(constant_cols)} 列",
+                "desc": f"以下列所有记录取值相同，无区分度：{', '.join(constant_cols[:6])}{'…' if len(constant_cols) > 6 else ''}。",
+                "fix": "确认是否为筛选残留或冗余字段，可从分析维度中移除。",
+            }
+        )
 
     if len(issues) > _MAX_ISSUE_CARDS:
         overflow = len(issues) - (_MAX_ISSUE_CARDS - 1)
-        issues = issues[:_MAX_ISSUE_CARDS - 1] + [{
-            "tag": "更多", "level": "low", "target": f"另 {overflow} 项",
-            "desc": "其余问题从略，建议在对话中让 Agent 逐项展开数据质量分析。",
-            "fix": "使用数据清洗工具按列处理，或缩小数据范围后重新剖析。",
-        }]
+        issues = issues[: _MAX_ISSUE_CARDS - 1] + [
+            {
+                "tag": "更多",
+                "level": "low",
+                "target": f"另 {overflow} 项",
+                "desc": "其余问题从略，建议在对话中让 Agent 逐项展开数据质量分析。",
+                "fix": "使用数据清洗工具按列处理，或缩小数据范围后重新剖析。",
+            }
+        ]
     return issues
 
 
 # === 图表收集 ===
+
 
 def _rehydrate_js(node: Any) -> Any:
     """把 ``.echarts.json`` 里以字符串形态存档的 JS 函数还原为 _JsFunction，
@@ -434,7 +490,7 @@ def build_dashboard_html(workspace: DataWorkspace) -> str:
     has_echarts = has_gl = has_plotly = False
     for idx, chart in enumerate(charts):
         el_id = f"chart-{idx}"
-        wide = ' full' if _is_wide_chart(chart) else ''
+        wide = " full" if _is_wide_chart(chart) else ""
         chart_cards.append(
             f'<div class="card{wide}"><h3>{escape(chart["title"])}</h3>'
             f'<div id="{el_id}" class="chart"></div></div>'
@@ -455,7 +511,9 @@ def build_dashboard_html(workspace: DataWorkspace) -> str:
             )
         else:
             has_plotly = True
-            fig_js = json.dumps(chart["fig"], ensure_ascii=False).replace("</script>", "<\\/script>")
+            fig_js = json.dumps(chart["fig"], ensure_ascii=False).replace(
+                "</script>", "<\\/script>"
+            )
             # 去掉存档里的固定宽高，让图表自适应卡片尺寸
             init_scripts.append(
                 "<script>(function(){"
@@ -474,7 +532,8 @@ def build_dashboard_html(workspace: DataWorkspace) -> str:
             )
 
     charts_html = (
-        f'<div class="grid">{"".join(chart_cards)}</div>' if chart_cards
+        f'<div class="grid">{"".join(chart_cards)}</div>'
+        if chart_cards
         else '<div class="empty">当前会话尚无图表产物；在对话中让 Agent 生成图表后重新导出即可。</div>'
     )
 
@@ -492,8 +551,8 @@ def build_dashboard_html(workspace: DataWorkspace) -> str:
     source = escape("、".join(input_names)) if input_names else "当前工作区数据"
     generated_at = time.strftime("%Y-%m-%d %H:%M")
     meta = (
-        f'数据 <b>{rows:,}</b> 行 × <b>{cols}</b> 列 · 来源：<b>{source}</b>'
-        f' · 生成于 <b>{generated_at}</b> · 图表 <b>{len(charts)}</b> 张'
+        f"数据 <b>{rows:,}</b> 行 × <b>{cols}</b> 列 · 来源：<b>{source}</b>"
+        f" · 生成于 <b>{generated_at}</b> · 图表 <b>{len(charts)}</b> 张"
     )
 
     return f"""<!doctype html>

@@ -54,6 +54,7 @@ _EMBED_MAX_POINTS = 50_000
 # Python 循环只跑"桶数（≤ threshold）"遍、每遍一次 numpy 切片运算，
 # 30 万点全序列不出现逐点循环。
 
+
 def _lttb_indices(x: Sequence[float], y: Sequence[float], threshold: int) -> list[int]:
     """LTTB 下采样下标：返回**严格递增**的下标列表，长度恰为 ``threshold``。
 
@@ -130,7 +131,9 @@ def _lttb_indices(x: Sequence[float], y: Sequence[float], threshold: int) -> lis
     return [int(index) for index in picked]
 
 
-def _sample_echarts_option_for_thumb(option: dict[str, Any], max_points: int = _THUMB_MAX_POINTS) -> None:
+def _sample_echarts_option_for_thumb(
+    option: dict[str, Any], max_points: int = _THUMB_MAX_POINTS
+) -> None:
     """就地抽样 ECharts option 的散点系列，供迷你图渲染。
 
     只处理 ``type=="scatter"`` 系列：折线/柱状/直方图数据量由类别或
@@ -270,7 +273,12 @@ def sample_echarts_option_for_embed(
 
     axes = sampled.get("xAxis") if isinstance(sampled, dict) else None
     cat_axis = None
-    if isinstance(axes, list) and axes and isinstance(axes[0], dict) and axes[0].get("type") == "category":
+    if (
+        isinstance(axes, list)
+        and axes
+        and isinstance(axes[0], dict)
+        and axes[0].get("type") == "category"
+    ):
         cat_axis = axes[0]
     axis_step = 0
     axis_before = 0
@@ -284,17 +292,18 @@ def sample_echarts_option_for_embed(
             # 只要轴上还挂着柱状/散点等"每个类目一个观测"的系列，就必须
             # 退回等距步进（抽掉一个类目等于抽掉一根柱子）。
             series_items = [item for item in (series or []) if isinstance(item, dict)]
-            line_items = [item for item in series_items
-                          if item.get("type") in {"line", "area", None}
-                          and isinstance(item.get("data"), list)]
-            others = [item for item in series_items
-                      if item.get("type") not in {"line", "area", None}]
+            line_items = [
+                item
+                for item in series_items
+                if item.get("type") in {"line", "area", None} and isinstance(item.get("data"), list)
+            ]
+            others = [
+                item for item in series_items if item.get("type") not in {"line", "area", None}
+            ]
             if line_items and not others:
                 envelope = _category_envelope(line_items, axis_before)
                 if envelope is not None:
-                    cat_indices = _lttb_indices(
-                        list(range(axis_before)), envelope, max_points
-                    )
+                    cat_indices = _lttb_indices(list(range(axis_before)), envelope, max_points)
                     cat_axis["data"] = [cat_axis["data"][index] for index in cat_indices]
             if cat_indices is None:
                 axis_step = math.ceil(axis_before / max_points)
@@ -337,7 +346,9 @@ def sample_echarts_option_for_embed(
     scatter_items = [
         item
         for item in (series if isinstance(series, list) else [])
-        if isinstance(item, dict) and item.get("type") == "scatter" and isinstance(item.get("data"), list)
+        if isinstance(item, dict)
+        and item.get("type") == "scatter"
+        and isinstance(item.get("data"), list)
     ]
     line_before = sum(len(item["data"]) for item in line_items)
     scatter_before = sum(len(item["data"]) for item in scatter_items)
@@ -377,8 +388,15 @@ def sample_echarts_option_for_embed(
 #: 按点一维数组的图型（轨迹数据是"每行一个点"的长数组）；矩阵型
 #: （heatmap 的 z 是二维网格）与类别型（bar 的 x/y 是类别维度）排除。
 _PLOTLY_SAMPLE_TRACE_TYPES = {
-    "scatter", "scattergl", "scatter3d", "scatterternary", "scatterpolar",
-    "scatterpolargl", "line", "box", "violin",
+    "scatter",
+    "scattergl",
+    "scatter3d",
+    "scatterternary",
+    "scatterpolar",
+    "scatterpolargl",
+    "line",
+    "box",
+    "violin",
 }
 
 
@@ -431,6 +449,7 @@ def _resample_trace_arrays(
     - ``indices``：LTTB 下标（升序），用于折线/面积保峰；
     - ``step``：等距步长 ``value[::step]``，其余图型沿用。
     """
+
     def _pick(value: Any, _n: int = n, _idx: Any = indices, _step: int = step) -> Any:
         # 递归抽样：散点的 marker.color/marker.size 等嵌套按点数组与 x/y
         # 同一套下标。默认参数绑定外层变量（ruff B023）。
@@ -446,7 +465,9 @@ def _resample_trace_arrays(
         trace[key] = _pick(value)
 
 
-def _sample_plotly_figure_for_thumb(figure: dict[str, Any], max_points: int = _THUMB_MAX_POINTS) -> None:
+def _sample_plotly_figure_for_thumb(
+    figure: dict[str, Any], max_points: int = _THUMB_MAX_POINTS
+) -> None:
     """就地抽样 Plotly figure 的按点数据数组，供迷你图渲染。
 
     每个 trace 先取所有数组字段的最大长度 n（x/y/z/text/customdata/

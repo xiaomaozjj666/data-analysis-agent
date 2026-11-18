@@ -8,7 +8,7 @@ export type SSEEventType =
   | "cancelled" | "error" | "heartbeat" | "chat_chunk" | "chat_done"
   | "plan_ready" | "step_progress";
 
-export type WorkspaceTab = "analysis" | "data" | "artifacts" | "audit";
+export type WorkspaceTab = "analysis" | "data" | "artifacts" | "audit" | "comments";
 
 // 分析结果
 // 注意：流式渲染阶段会构造部分字段的对象（仅 response + artifacts + plan +

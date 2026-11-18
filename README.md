@@ -57,15 +57,16 @@ flowchart LR
 ## 功能特性
 
 - **计划-执行式分析流程**：每次分析先生成 2–6 个结构化步骤，每个步骤由 ReAct 执行器调用受控工具完成；重规划器根据真实工具结果删除无用步骤、补充后续分析，证据充分时提前结束，达到步骤上限时强制汇总，避免无限循环。
-- **受控数据工具集**（11 个内置工具）：数据检查、格式修复、安全清洗、非破坏性筛选视图、跨源合并、数据库查询、登记指标计算、统计分析、图表生成、数据导出、受限 Python 沙箱。
+- **受控数据工具集**（12 个内置工具）：数据检查、格式修复、安全清洗、非破坏性筛选视图、跨源合并、公开网页检索（`web_search`，固定出口、结果按不可信数据对待）、数据库查询、登记指标计算、统计分析、图表生成、数据导出、受限 Python 沙箱。
 - **MCP 数据面服务**：把会话发现、数据集载入、结构探查与只读 SQL 以 MCP 标准开放给其他 Agent，护栏同源、传输 stdio（详见"快速开始"）。
   - 跨源合并带连接键校验与行数膨胀护栏：键不存在、键类型不一致导致一行都匹配不上、键不唯一导致行数被放大数倍，三种情况一律拒绝执行并说明原因；结果同时给出未匹配键数量与一对多放大警告，避免把扇出后的行数当作原始记录数。合并结果会成为新的活动数据集，行数基线同步重置。
-  - 数据库查询面向两类数据源：上传的 **SQLite** 文件，以及环境变量 `DATA_AGENT_DATABASE_URL` 配置的 **PostgreSQL**（驱动按需安装：`pip install ".[postgres]"`）。**只读**（SQLite 以 `mode=ro` 打开、Postgres 在服务端设置 `default_transaction_read_only`，写入在驱动/服务端即被拒绝），只接受 `SELECT` / `WITH` 语句；单条查询默认 30 秒墙钟预算（`DATA_AGENT_SQL_TIMEOUT_SECONDS`，1–120；SQLite 用 progress handler 中断、Postgres 用服务端 `statement_timeout`），结果上限 5000 行、500 列。空 `sql` 调用可一次拿到可用数据源、各源的只读保证等级（`readonly_guarantee`：driver / server-confirmed）与全库表结构；传 `adopt=true` 可把查询结果接管为活动数据集，后续统计与图表直接在其上工作。
+  - 数据库查询面向三类数据源：上传的 **SQLite** 文件、环境变量 `DATA_AGENT_DATABASE_URL` 配置的 **PostgreSQL**（驱动按需安装：`pip install ".[postgres]"`），以及 `DATA_AGENT_EXTERNAL_DB_MODULE` / `DATA_AGENT_EXTERNAL_DB_KWARGS` 配置的 **通用 DB-API 数仓**（Snowflake、Databricks、BigQuery DB-API 等，模块走白名单，只读保证等级为 `role-required`——SQL 护栏 + 账号/角色权限，项目不谎称服务端已确认）。**只读**（SQLite 以 `mode=ro` 打开、Postgres 在服务端设置 `default_transaction_read_only`，写入在驱动/服务端即被拒绝），只接受 `SELECT` / `WITH` 语句；单条查询默认 30 秒墙钟预算（`DATA_AGENT_SQL_TIMEOUT_SECONDS`，1–120；SQLite 用 progress handler 中断、Postgres 用服务端 `statement_timeout`），结果上限 5000 行、500 列。空 `sql` 调用可一次拿到可用数据源、各源的只读保证等级（`readonly_guarantee`：driver / server-confirmed / role-required）与全库表结构；传 `adopt=true` 可把查询结果接管为活动数据集，后续统计与图表直接在其上工作。
   - 清洗带安全护栏：缺失值删除比例超过 50% 会拒绝执行，主数据行数始终不低于原始行数的 20%。
   - 统计方法覆盖描述统计、相关分析（含 Pearson p 值）、分组聚合、独立/配对 t 检验、ANOVA、卡方检验、线性回归（R² / RMSE / MAE）。
 - **指标口径登记（可选）**：在会话目录放置 `metrics.json`，或用 `DATA_AGENT_METRICS_PATH` 指定一份全局定义，登记指标的标准名称、别名、口径说明、算式与**已验证问法**（`examples`：业务确认过的问题样例，随口径一起注入，让模型把口语问题对齐到标准指标，对标 Power BI verified answers 的人工策展思路）；规划阶段会把相关定义注入提示词，避免同一指标在不同会话被各自定义为不同口径。未提供定义文件时该特性完全不生效，行为与原来一致。
 - **定时分析任务与主动告警（最小闭环）**：`python -m data_agent.automation` 按间隔或每日 `HH:MM` 运行任务——加载数据、计算登记指标、用 z-score 与环比在历史窗口上做确定性异常检测，按阈值归一化严重度排序并生成 `attribution` 归因摘要（最大偏离指标、方向、是否同向），告警先落 `alerts.jsonl` 再按需推送（webhook 支持 Slack / 飞书 / 钉钉自动转文本格式，其他地址发原始 JSON；任务可配 `email_to` 经 SMTP 发邮件、`sms_to` 经 Twilio 发短信，凭据全部走环境变量）；支持 `add`（创建/更新任务）、`run-due`（供 cron / Windows 任务计划调用）、`run`、`list`、`remove`、`status`（巡检视图，`--fail-on-alert` 供监控）与前台 `loop`。样本不足（默认 <3）不下结论，单任务失败不阻断批次，历史每行带指标定义哈希。见 [docs/automation.md](docs/automation.md)。
 - **分析技能包导出与安装**：把会话的 `analysis_recipe.json` 导出为 `SKILL.md + analysis_recipe.json + skill.json` 技能包（对标 Trae SKILL.md 设计），可分发、可版本化；`python -m data_agent.skill run --bundle … --data …` 按配方确定性重跑，不调用 LLM；`install --scope project|global` 安装到 `.data-agent/skills` 或 `~/.data-agent/skills`（校验配方哈希、拒绝符号链接与越界 slug），`list` 输出带完整性状态的清单。覆盖已有目录/技能需显式 `--force`。见 [docs/skills.md](docs/skills.md)。
+- **会话评论（协作层）**：每个会话带「评论」Tab，队友可留下口径疑问/复核意见；评论存 `comments.json`（原子写、单会话 200 条上限、纯文本渲染防 XSS），随导出 ZIP 一起归档。见 [docs/collaboration.md](docs/collaboration.md)。
 - **双图表引擎**（Plotly + ECharts）：共享同一套数据准备逻辑，支持折线、柱状、面积图、散点（含 3D）、直方图、箱线图、小提琴图、饼图、热力图、相关热力图、散点矩阵、旭日图、矩形树图；自动选图、散点图自动叠加 OLS 趋势线（标注 r 值）与双轴均值象限参考线、极端值自动检测与主体尺度/全量视图切换、暗色主题联动、PNG 导出、数据驱动的白话解读。
 - **大数据图表的可读性**：几十万行时"每点一个标记"的散点会因 alpha 饱和糊成一团（实测 30 万点全是同色噪点）。**散点 ≥ 2 万行自动切换为密度视图**：服务端聚合成网格（单格约 7px）、用分档颜色表达每格记录数（档位图例直接给出"1 / 2–4 / 5–9 …"的记录数区间）、零记录格完全透明，并在有分组时按分组拆成共享色标的分面面板（类别用分面表达、颜色只表达密度）；无分组时补顶部/右侧边缘直方图（jointplot 布局）、趋势线、均值参考线与最外围原始点。判定"是否真有聚集"会先扣掉均匀随机点云的统计涨落，没有聚集就直说。**放大后想看具体记录**：图上带一层默认隐藏的分层抽样原始点，Plotly 用右上角按钮、ECharts 用图例开关一键叠加（名字与解读都写明是抽样、条数，完整数据在同名 JSON）。直方图 ≥ 5 万行改为服务端分箱（纵轴仍是真实记录数）、箱线图改为服务端五数概括、小提琴图与 3D 散点分层抽样（3D 会把"已抽样 N/M 点"写在副标题上）——**同一批图表 HTML 体积从 3~12MB 降到 20~200KB**，密度视图是精确聚合而非抽样，完整数据始终保留在同名 JSON 产物里。折线/面积按 **LTTB（Largest-Triangle-Three-Buckets）保峰降采样**（数值轴与类目轴都覆盖），短促尖峰不会被等距抽样抹掉。
 - **可访问性**：全站文字对比度按 WCAG AA 校准并用浏览器计算样式实测（浅/暗两主题 × 起始页/工作台/产物/历史/命令面板/预览模态），三级文字阶梯与"实心强调色"分令牌管理（白字压底专用 `--accent-solid`，避免暗色下提亮的品牌色当背景时只有 3.5:1）；滑块、按钮、卡片均带 hover/active 反馈与键盘焦点环。
@@ -73,7 +74,7 @@ flowchart LR
 - **多格式数据接入**：CSV / TSV / Excel / JSON / JSONL / Parquet、SQLite（`.db` / `.sqlite` / `.sqlite3`，上传后默认载入行数最多的表，其余表由数据库查询工具访问），以及 PDF 表格提取、TXT、Word 表格；自动探测编码（UTF-8 / GB18030）与分隔符，大文件分块流式读取，数值列自动降级数据类型以节省内存。
 - **全流程 Web 工作台**：文件上传（含进度与取消）、数据概览指标、分析任务与预设模板、计划审阅/批准、实时步骤与工具调用进度（SSE + 15 秒心跳）、随时取消分析、报告生成后的多轮追问、产物中心（预览/对比/PNG/批量下载）、历史会话（重命名/删除/导出 ZIP/导入）、命令面板与快捷键、深浅主题、移动端适配。
 - **断点续跑与自动恢复**：分析中断后可从已完成的步骤继续，无需重跑；前端支持 SSE 断线自动恢复与一键重试。
-- **安全与访问控制**：可选访问令牌（`APP_ACCESS_TOKEN`）、滑动窗口速率限制、CORS / GZip / 安全响应头；API Key 通过操作系统凭据库（keyring）保存，不落明文文件。
+- **安全与访问控制**：可选访问令牌（`APP_ACCESS_TOKEN` 全权、`APP_VIEWER_TOKEN` 只读——只允许 GET/HEAD，写请求返回 403）；滑动窗口速率限制、CORS / GZip / 安全响应头；写操作与拒绝访问追加审计日志（`DATA_AGENT_AUDIT_LOG` 指向 JSONL，不记请求体/令牌）；API Key 通过操作系统凭据库（keyring）保存，不落明文文件。
 - **会话持久化**：本地或 S3 兼容对象存储（如 Cloudflare R2）双后端，会话按 session id 自动归档/恢复，带路径穿越防护。
 - **设置与连接诊断**：设置面板用原生 `<dialog>`，支持「测试连接」——只探测模型服务连通性，不落盘、不回显 Key，按 401/429/超时/网络错误分类提示；LangSmith 状态细分为 configured / missing_key / key_unconfirmed / local / disabled。
 - **可观测与部署**：LangSmith 全链路 Trace（规划、每次工具调用、重规划、汇总）；LangGraph Agent Server 部署；Dockerfile（非 root 用户 + 健康检查）；Render Blueprint 一键部署；GitHub Actions 自动 CI。
@@ -268,5 +269,7 @@ CLI、部署），含异常分支与降级路径；CI 中以 `DATA_AGENT_SKIP_KA
 - [docs/competitive-analysis.md](docs/competitive-analysis.md) — 竞品分析：与同类数据分析 Agent 产品的定位与能力对比（2026-09 初查 + 2026-11 官方一手页实地复核，含抓取矩阵与可达性负证据）。
 - [docs/automation.md](docs/automation.md) — 定时分析：任务定义、调度命令、异常判定与告警产物、cron/任务计划接法。
 - [docs/skills.md](docs/skills.md) — 技能包：从配方导出 SKILL.md、确定性重跑与边界。
+- [docs/collaboration.md](docs/collaboration.md) — 协作：会话评论、全权/只读令牌、审计日志与边界。
+- [docs/external-databases.md](docs/external-databases.md) — 外部数据库：PostgreSQL 与通用 DB-API 数仓的配置、只读保证与安全边界。
 - [docs/agent-eval.md](docs/agent-eval.md) — 发布前评测：配对结果格式、McNemar 精确检验、成本/延迟护栏、ledger 校验与 CI 接法。
 - [docs/analysis-provenance.md](docs/analysis-provenance.md) — 分析溯源：哈希链格式、API 与离线复核方法、信任边界。

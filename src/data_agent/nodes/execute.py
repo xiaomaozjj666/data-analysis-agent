@@ -95,9 +95,10 @@ def execute_step(agent: DataAnalysisAgent, state: WorkflowState) -> dict[str, An
             "remaining_steps": [],
         }
     completed = state.get("completed_steps", [])
-    completed_text = "\n".join(
-        f"- {item['title']}: {item.get('summary', '')[:800]}" for item in completed
-    ) or "尚无"
+    completed_text = (
+        "\n".join(f"- {item['title']}: {item.get('summary', '')[:800]}" for item in completed)
+        or "尚无"
+    )
     # 增强上下文：把数据概况传递给 ReAct 执行器，避免每步都重新 inspect_data。
     # 附带每列的 dtype 与 unique 计数：模型选图前能直接判断列基数
     # （unique ≈ 行数→标识符列，unique = 1→常量列），从源头避免无意义图表。
@@ -128,16 +129,31 @@ def execute_step(agent: DataAnalysisAgent, state: WorkflowState) -> dict[str, An
     # 而不是只看到"正在执行 (2/4)"一行字等 30 秒。
     # step_index/total_steps 随 step_progress 事件一起推送，前端渲染
     # "步骤 2/4 · 第 3 次工具调用"的复合进度。
-    tool_tracer = ToolTraceCallback(agent.event_callback, step_index=step_index, total_steps=total_steps)
+    tool_tracer = ToolTraceCallback(
+        agent.event_callback, step_index=step_index, total_steps=total_steps
+    )
     try:
         result = agent.react_agent.invoke(
-            {"messages": [*state.get("input_messages", []), HumanMessage(content=execution_prompt)]},
-            config=agent._invoke_config(tool_tracer, recursion_limit=agent.settings.max_iterations * 2 + 5),
+            {
+                "messages": [
+                    *state.get("input_messages", []),
+                    HumanMessage(content=execution_prompt),
+                ]
+            },
+            config=agent._invoke_config(
+                tool_tracer, recursion_limit=agent.settings.max_iterations * 2 + 5
+            ),
         )
         messages = result["messages"]
         format_error = _format_error_text(messages)
-        if format_error and _query_allows_format_repair(state["query"]) and _is_recoverable_format_error(format_error):
-            repair_tool = next((item for item in agent.tools if item.name == "repair_data_format"), None)
+        if (
+            format_error
+            and _query_allows_format_repair(state["query"])
+            and _is_recoverable_format_error(format_error)
+        ):
+            repair_tool = next(
+                (item for item in agent.tools if item.name == "repair_data_format"), None
+            )
             if repair_tool is not None:
                 repair_result = repair_tool.invoke({})
                 recovery_note = f"已执行一次安全格式修复并重试：{repair_result}"
@@ -147,8 +163,15 @@ def execute_step(agent: DataAnalysisAgent, state: WorkflowState) -> dict[str, An
                     repair_result=repair_result,
                 )
                 retry = agent.react_agent.invoke(
-                    {"messages": [*state.get("input_messages", []), HumanMessage(content=retry_prompt)]},
-                    config=agent._invoke_config(tool_tracer, recursion_limit=agent.settings.max_iterations * 2 + 5),
+                    {
+                        "messages": [
+                            *state.get("input_messages", []),
+                            HumanMessage(content=retry_prompt),
+                        ]
+                    },
+                    config=agent._invoke_config(
+                        tool_tracer, recursion_limit=agent.settings.max_iterations * 2 + 5
+                    ),
                 )
                 messages = [*messages, *retry["messages"]]
         agent._ensure_not_cancelled()
@@ -176,14 +199,12 @@ def execute_step(agent: DataAnalysisAgent, state: WorkflowState) -> dict[str, An
         (
             index
             for index, message in enumerate(messages)
-            if isinstance(message, ToolMessage)
-            and message.additional_kwargs.get("error_code")
+            if isinstance(message, ToolMessage) and message.additional_kwargs.get("error_code")
         ),
         default=-1,
     )
     recovered = any(
-        isinstance(message, ToolMessage)
-        and not message.additional_kwargs.get("error_code")
+        isinstance(message, ToolMessage) and not message.additional_kwargs.get("error_code")
         for message in messages[last_error_index + 1 :]
     )
     if last_error_index >= 0 and not recovered:

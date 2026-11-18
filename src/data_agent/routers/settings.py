@@ -69,8 +69,9 @@ def api_version() -> dict[str, str]:
 
 @router.get("/api/auth")
 def auth_status(request: Request) -> dict[str, bool]:
-    required = bool(os.getenv("APP_ACCESS_TOKEN", "").strip())
-    if not required:
+    full = bool(os.getenv("APP_ACCESS_TOKEN", "").strip())
+    viewer = bool(os.getenv("APP_VIEWER_TOKEN", "").strip())
+    if not full and not viewer:
         return {"required": False, "authenticated": True}
     try:
         _check_access(request)

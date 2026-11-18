@@ -88,14 +88,20 @@ def _density_customdata(grid: Any) -> np.ndarray:
     y0 = np.tile(grid.y_edges[:-1, None], (1, nx))
     y1 = np.tile(grid.y_edges[1:, None], (1, nx))
     share = counts / grid.total * 100 if grid.total else np.zeros(counts.shape, dtype=float)
-    return np.stack([
-        _round_sig(x0), _round_sig(x1), _round_sig(y0), _round_sig(y1),
-        counts.astype(float), np.round(share, 3),
-    ], axis=-1)
+    return np.stack(
+        [
+            _round_sig(x0),
+            _round_sig(x1),
+            _round_sig(y0),
+            _round_sig(y1),
+            counts.astype(float),
+            np.round(share, 3),
+        ],
+        axis=-1,
+    )
 
 
-def _hover_template(x_label: str, y_label: str, x_format: str, y_format: str,
-                    extra: str) -> str:
+def _hover_template(x_label: str, y_label: str, x_format: str, y_format: str, extra: str) -> str:
     return (
         f"{x_label} %{{customdata[0]:{x_format}}} ~ %{{customdata[1]:{x_format}}}"
         f"<br>{y_label} %{{customdata[2]:{y_format}}} ~ %{{customdata[3]:{y_format}}}"
@@ -104,8 +110,9 @@ def _hover_template(x_label: str, y_label: str, x_format: str, y_format: str,
     )
 
 
-def panel_structure(df: pd.DataFrame, *, x: str, y: str, color: str | None,
-                    panel: Any) -> dict[str, Any] | None:
+def panel_structure(
+    df: pd.DataFrame, *, x: str, y: str, color: str | None, panel: Any
+) -> dict[str, Any] | None:
     """某个密度面板对应原始记录的结构注记（趋势线端点、均值、皮尔逊 r）。"""
     if x not in df.columns or y not in df.columns:
         return None
@@ -157,19 +164,30 @@ def density_figure(
         count = len(panels)
         cols = 2 if count in (2, 4) else 3
         rows = int(math.ceil(count / cols))
-        titles = [_panel_title(panel, structure)
-                  for panel, structure in zip(panels, structures, strict=True)]
+        titles = [
+            _panel_title(panel, structure)
+            for panel, structure in zip(panels, structures, strict=True)
+        ]
         fig = make_subplots(
-            rows=rows, cols=cols, shared_xaxes=True, shared_yaxes=True,
+            rows=rows,
+            cols=cols,
+            shared_xaxes=True,
+            shared_yaxes=True,
             subplot_titles=titles + [""] * (rows * cols - len(titles)),
-            horizontal_spacing=0.055, vertical_spacing=0.135,
+            horizontal_spacing=0.055,
+            vertical_spacing=0.135,
         )
         positions = [(index // cols + 1, index % cols + 1) for index in range(count)]
     else:
         fig = make_subplots(
-            rows=2, cols=2, shared_xaxes=True, shared_yaxes=True,
-            column_widths=[0.885, 0.115], row_heights=[0.115, 0.885],
-            horizontal_spacing=0.012, vertical_spacing=0.022,
+            rows=2,
+            cols=2,
+            shared_xaxes=True,
+            shared_yaxes=True,
+            column_widths=[0.885, 0.115],
+            row_heights=[0.115, 0.885],
+            horizontal_spacing=0.012,
+            vertical_spacing=0.022,
         )
         positions = [(2, 1)]
 
@@ -212,37 +230,49 @@ def density_figure(
                 name=panel.name or y_label,
                 showlegend=False,
             ),
-            row=row, col=col,
+            row=row,
+            col=col,
         )
         _add_anchors(
-            fig, df, panel=panel, structure=structures[index], view=view,
-            x=x, y=y, color=color, row=row, col=col, faceted=faceted,
-            x_format=x_format, y_format=y_format,
+            fig,
+            df,
+            panel=panel,
+            structure=structures[index],
+            view=view,
+            x=x,
+            y=y,
+            color=color,
+            row=row,
+            col=col,
+            faceted=faceted,
+            x_format=x_format,
+            y_format=y_format,
         )
 
     if not faceted:
         _add_marginals(fig, panels[0].grid, colors=colors)
         _add_structure(fig, structures[0], row=2, col=1)
-        _add_detail_layer(fig, df, view=view, x=x, y=y, color=color,
-                          x_format=x_format, y_format=y_format)
+        _add_detail_layer(
+            fig, df, view=view, x=x, y=y, color=color, x_format=x_format, y_format=y_format
+        )
 
-    _apply_axis_titles(fig, positions=positions, faceted=faceted,
-                       x_label=x_label, y_label=y_label)
+    _apply_axis_titles(fig, positions=positions, faceted=faceted, x_label=x_label, y_label=y_label)
 
-    fig.update_layout(meta={
-        "density_view": {
-            "bins": view.bin_label,
-            "panels": len(panels),
-            "bands": band_names,
-            "total": view.total,
-            # 主题切换时由注入脚本换用暗色档位色板：同一颜色在两种主题下
-            # 必须代表同一档记录数（Tableau 明/暗色板同理），所以两套色标
-            # 都随图带过去，而不是在暗色下重新分档。
-            "colorscales": {"light": scale_light, "dark": scale_dark},
+    fig.update_layout(
+        meta={
+            "density_view": {
+                "bins": view.bin_label,
+                "panels": len(panels),
+                "bands": band_names,
+                "total": view.total,
+                # 主题切换时由注入脚本换用暗色档位色板：同一颜色在两种主题下
+                # 必须代表同一档记录数（Tableau 明/暗色板同理），所以两套色标
+                # 都随图带过去，而不是在暗色下重新分档。
+                "colorscales": {"light": scale_light, "dark": scale_dark},
+            }
         }
-    })
-    fig.update_layout(title={"text": title, "x": 0.01, "xanchor": "left",
-                             "font": {"size": 22}})
+    )
+    fig.update_layout(title={"text": title, "x": 0.01, "xanchor": "left", "font": {"size": 22}})
     if view.dropped_rows:
         # 极端值把量程拉大时，网格按"主体尺度"聚合——被排除的记录必须在
         # 画面上说清楚，否则用户会以为图表漏了数据（文字解读里也有，但
@@ -252,23 +282,45 @@ def density_figure(
             # （放左下角时实测与"销售额"轴标题叠在一起）。
             # （放左下角时实测与"销售额"轴标题叠在一起；窄屏 414px 下 y=-0.045
             # 又会压到居中的轴标题上，因此再往下让一行，落在轴标题与图例之间。）
-            xref="paper", yref="paper", x=1.0, y=-0.10,
-            xanchor="right", yanchor="top", showarrow=False, align="right",
-            text=(f"视图外 {view.dropped_rows:,} 条记录超出主体尺度（未计入密度网格）；"
-                  "悬浮/下载 JSON 可查看全量数据"),
+            xref="paper",
+            yref="paper",
+            x=1.0,
+            y=-0.10,
+            xanchor="right",
+            yanchor="top",
+            showarrow=False,
+            align="right",
+            text=(
+                f"视图外 {view.dropped_rows:,} 条记录超出主体尺度（未计入密度网格）；"
+                "悬浮/下载 JSON 可查看全量数据"
+            ),
             font={"size": 11, "color": "#B4762E"},
-            bgcolor="rgba(217,160,91,0.16)", bordercolor="#D9A05B",
-            borderwidth=1, borderpad=5,
+            bgcolor="rgba(217,160,91,0.16)",
+            bordercolor="#D9A05B",
+            borderwidth=1,
+            borderpad=5,
         )
     fig.update_xaxes(range=list(view.x_range))
     fig.update_yaxes(range=list(view.y_range))
     return fig
 
 
-def _add_anchors(fig: go.Figure, df: pd.DataFrame, *, panel: Any,
-                 structure: dict[str, Any] | None, view: DensityView,
-                 x: str, y: str, color: str | None, row: int, col: int,
-                 faceted: bool, x_format: str, y_format: str) -> None:
+def _add_anchors(
+    fig: go.Figure,
+    df: pd.DataFrame,
+    *,
+    panel: Any,
+    structure: dict[str, Any] | None,
+    view: DensityView,
+    x: str,
+    y: str,
+    color: str | None,
+    row: int,
+    col: int,
+    faceted: bool,
+    x_format: str,
+    y_format: str,
+) -> None:
     """面板内结构锚点：分面趋势线、密度峰值框、整体布局下的最外围原始点。"""
     grid = panel.grid
     if structure and structure.get("trend"):
@@ -276,29 +328,50 @@ def _add_anchors(fig: go.Figure, df: pd.DataFrame, *, panel: Any,
         if r_value is not None and abs(r_value) >= DENSITY_TREND_MIN_R:
             # 趋势线按面板数据的 min/max 算端点，但坐标轴是共享范围，
             # 必须裁剪到可视范围（否则线会从画面上方穿出去）。
-            trend = clip_segment(structure["trend"], x_range=view.x_range,
-                                 y_range=view.y_range)
+            trend = clip_segment(structure["trend"], x_range=view.x_range, y_range=view.y_range)
             if trend:
                 fig.add_shape(
-                    type="line", x0=trend[0], y0=trend[1], x1=trend[2], y1=trend[3],
-                    line={"color": "#E15759", "width": 2}, row=row, col=col,
+                    type="line",
+                    x0=trend[0],
+                    y0=trend[1],
+                    x1=trend[2],
+                    y1=trend[3],
+                    line={"color": "#E15759", "width": 2},
+                    row=row,
+                    col=col,
                 )
 
     peak = grid.peak()
     if peak and grid.has_clusters:
         # 密度峰值框：纯色块图上最缺的锚点就是"最挤的一格在哪"。
         fig.add_shape(
-            type="rect", x0=peak["x0"], x1=peak["x1"], y0=peak["y0"], y1=peak["y1"],
-            line={"color": "#E15759", "width": 1.6}, fillcolor="rgba(0,0,0,0)",
-            row=row, col=col,
+            type="rect",
+            x0=peak["x0"],
+            x1=peak["x1"],
+            y0=peak["y0"],
+            y1=peak["y1"],
+            line={"color": "#E15759", "width": 1.6},
+            fillcolor="rgba(0,0,0,0)",
+            row=row,
+            col=col,
         )
         fig.add_annotation(
-            x=(peak["x0"] + peak["x1"]) / 2, y=(peak["y0"] + peak["y1"]) / 2,
+            x=(peak["x0"] + peak["x1"]) / 2,
+            y=(peak["y0"] + peak["y1"]) / 2,
             text=f"最密 {format_number(peak['count'])} 条",
-            showarrow=True, arrowhead=2, arrowsize=1, arrowwidth=1,
-            ax=0, ay=-30, font={"size": 10, "color": "#B23A3C"},
-            bgcolor="rgba(255,255,255,0.82)", bordercolor="#E15759",
-            borderwidth=1, borderpad=2, row=row, col=col,
+            showarrow=True,
+            arrowhead=2,
+            arrowsize=1,
+            arrowwidth=1,
+            ax=0,
+            ay=-30,
+            font={"size": 10, "color": "#B23A3C"},
+            bgcolor="rgba(255,255,255,0.82)",
+            bordercolor="#E15759",
+            borderwidth=1,
+            borderpad=2,
+            row=row,
+            col=col,
         )
 
     if faceted:
@@ -310,22 +383,32 @@ def _add_anchors(fig: go.Figure, df: pd.DataFrame, *, panel: Any,
     if len(pair) < 10:
         return
     xs, ys = extreme_points(
-        pair.iloc[:, 0].to_numpy(dtype=float), pair.iloc[:, 1].to_numpy(dtype=float),
-        x_range=view.x_range, y_range=view.y_range, top=DENSITY_EXTREME_POINTS,
+        pair.iloc[:, 0].to_numpy(dtype=float),
+        pair.iloc[:, 1].to_numpy(dtype=float),
+        x_range=view.x_range,
+        y_range=view.y_range,
+        top=DENSITY_EXTREME_POINTS,
     )
     if len(xs) == 0:  # pragma: no cover - 网格存在即至少有一个视口内记录
         return
     fig.add_trace(
         go.Scattergl(
-            x=xs, y=ys, mode="markers", name="最外围记录",
-            marker={"size": 5, "color": "rgba(225,87,89,0.85)",
-                    "line": {"width": 0.8, "color": "rgba(255,255,255,0.9)"}},
+            x=xs,
+            y=ys,
+            mode="markers",
+            name="最外围记录",
+            marker={
+                "size": 5,
+                "color": "rgba(225,87,89,0.85)",
+                "line": {"width": 0.8, "color": "rgba(255,255,255,0.9)"},
+            },
             hovertemplate=(
                 f"{_hl(x)}: %{{x:{x_format}}}<br>{_hl(y)}: %{{y:{y_format}}}"
                 "<extra>最外围记录（原始点）</extra>"
             ),
         ),
-        row=row, col=col,
+        row=row,
+        col=col,
     )
 
 
@@ -344,27 +427,36 @@ def _add_marginals(fig: go.Figure, grid: Any, *, colors: Sequence[str] | None) -
     bin_width_y = float(grid.y_edges[1] - grid.y_edges[0])
     fig.add_trace(
         go.Bar(
-            x=grid.x_centers, y=grid.marginal_x(), width=bin_width_x,
-            marker={"color": bar_color, "line": {"width": 0}}, opacity=0.9,
+            x=grid.x_centers,
+            y=grid.marginal_x(),
+            width=bin_width_x,
+            marker={"color": bar_color, "line": {"width": 0}},
+            opacity=0.9,
             hovertemplate="记录数 %{y:,.0f}<extra>x 分布</extra>",
-            name="x 分布", showlegend=False,
+            name="x 分布",
+            showlegend=False,
         ),
-        row=1, col=1,
+        row=1,
+        col=1,
     )
     fig.add_trace(
         go.Bar(
-            x=grid.marginal_y(), y=grid.y_centers, width=bin_width_y,
+            x=grid.marginal_y(),
+            y=grid.y_centers,
+            width=bin_width_y,
             orientation="h",
-            marker={"color": bar_color, "line": {"width": 0}}, opacity=0.9,
+            marker={"color": bar_color, "line": {"width": 0}},
+            opacity=0.9,
             hovertemplate="记录数 %{x:,.0f}<extra>y 分布</extra>",
-            name="y 分布", showlegend=False,
+            name="y 分布",
+            showlegend=False,
         ),
-        row=2, col=2,
+        row=2,
+        col=2,
     )
 
 
-def _add_structure(fig: go.Figure, structure: dict[str, Any] | None,
-                   *, row: int, col: int) -> None:
+def _add_structure(fig: go.Figure, structure: dict[str, Any] | None, *, row: int, col: int) -> None:
     """整体密度图的趋势线与均值参考线（Tableau 式视觉锚点）。"""
     if not structure:
         return
@@ -374,31 +466,45 @@ def _add_structure(fig: go.Figure, structure: dict[str, Any] | None,
         name = f"趋势线 r={r_value:.2f}" if r_value is not None else "趋势线"
         fig.add_trace(
             go.Scatter(
-                x=[trend[0], trend[2]], y=[trend[1], trend[3]], mode="lines",
-                name=name, line={"color": "#E15759", "width": 2.5}, hoverinfo="skip",
+                x=[trend[0], trend[2]],
+                y=[trend[1], trend[3]],
+                mode="lines",
+                name=name,
+                line={"color": "#E15759", "width": 2.5},
+                hoverinfo="skip",
             ),
-            row=row, col=col,
+            row=row,
+            col=col,
         )
     if structure.get("mean_y") is not None:
         fig.add_hline(
-            y=structure["mean_y"], line_dash="dash", line_color="#9aa0a6", line_width=1.2,
+            y=structure["mean_y"],
+            line_dash="dash",
+            line_color="#9aa0a6",
+            line_width=1.2,
             annotation_text=f"y 均值 {_compact_number(structure['mean_y'])}",
             annotation_position="top right",
             annotation_font={"size": 10, "color": "#6b7280"},
-            row=row, col=col,
+            row=row,
+            col=col,
         )
     if structure.get("mean_x") is not None:
         fig.add_vline(
-            x=structure["mean_x"], line_dash="dash", line_color="#9aa0a6", line_width=1.2,
+            x=structure["mean_x"],
+            line_dash="dash",
+            line_color="#9aa0a6",
+            line_width=1.2,
             annotation_text=f"x 均值 {_compact_number(structure['mean_x'])}",
             annotation_position="top right",
             annotation_font={"size": 10, "color": "#6b7280"},
-            row=row, col=col,
+            row=row,
+            col=col,
         )
 
 
-def _apply_axis_titles(fig: go.Figure, *, positions: list[tuple[int, int]],
-                       faceted: bool, x_label: str, y_label: str) -> None:
+def _apply_axis_titles(
+    fig: go.Figure, *, positions: list[tuple[int, int]], faceted: bool, x_label: str, y_label: str
+) -> None:
     """只在最外圈面板上写轴标题（共享轴的内圈重复标题是噪声）。"""
     if not faceted:
         fig.update_xaxes(title_text=x_label, row=2, col=1)
@@ -448,18 +554,28 @@ def density_interpretation(
         panels = panels_sentence(view, color_label)
         if panels:
             parts.append(panels)
-    parts.append("颜色深浅表示每格记录数的多少（色标给出各档区间，格子越深越密），"
-                 "空格表示该范围没有记录；滚轮可放大局部，鼠标悬浮查看每格覆盖的"
-                 "数值范围与记录数。"
-                 f"放大后若想看具体记录，可点图右上角「显示抽样原始点」叠加 "
-                 f"{format_number(DENSITY_DETAIL_POINTS)} 条分层抽样的原始点"
-                 "（完整数据在同名 JSON 产物里）。")
+    parts.append(
+        "颜色深浅表示每格记录数的多少（色标给出各档区间，格子越深越密），"
+        "空格表示该范围没有记录；滚轮可放大局部，鼠标悬浮查看每格覆盖的"
+        "数值范围与记录数。"
+        f"放大后若想看具体记录，可点图右上角「显示抽样原始点」叠加 "
+        f"{format_number(DENSITY_DETAIL_POINTS)} 条分层抽样的原始点"
+        "（完整数据在同名 JSON 产物里）。"
+    )
     return "".join(parts)
 
 
-def _add_detail_layer(fig: go.Figure, df: pd.DataFrame, *, view: DensityView,
-                      x: str, y: str, color: str | None,
-                      x_format: str, y_format: str) -> None:
+def _add_detail_layer(
+    fig: go.Figure,
+    df: pd.DataFrame,
+    *,
+    view: DensityView,
+    x: str,
+    y: str,
+    color: str | None,
+    x_format: str,
+    y_format: str,
+) -> None:
     """叠一层"默认隐藏的分层抽样原始点"，配右上角按钮手动开关。
 
     密度图深度放大时是栅格拉伸，看不清单条记录；真正按视口重算（datashader
@@ -474,7 +590,9 @@ def _add_detail_layer(fig: go.Figure, df: pd.DataFrame, *, view: DensityView,
     xs, ys = sample_detail_points(
         pair.iloc[:, 0].to_numpy(dtype=float),
         pair.iloc[:, 1].to_numpy(dtype=float),
-        x_range=view.x_range, y_range=view.y_range, groups=groups,
+        x_range=view.x_range,
+        y_range=view.y_range,
+        groups=groups,
         top=DENSITY_DETAIL_POINTS,
     )
     if xs.size == 0:
@@ -482,29 +600,51 @@ def _add_detail_layer(fig: go.Figure, df: pd.DataFrame, *, view: DensityView,
     index = len(fig.data)
     # row/col 必须显式给：jointplot 布局的第一格是顶部边缘直方图，
     # 不指定子图就会把抽样点画到那条窄条里（实测踩到）。
-    fig.add_trace(go.Scattergl(
-        x=xs, y=ys, mode="markers", visible=False,
-        name=f"抽样原始点（{format_number(xs.size)} 条）",
-        marker={"size": 4, "color": "rgba(74, 111, 165, 0.55)", "line": {"width": 0}},
-        hovertemplate=(
-            f"{_hl(x)}: %{{x:{x_format}}}<br>{_hl(y)}: %{{y:{y_format}}}"
-            "<extra>抽样原始点</extra>"
+    fig.add_trace(
+        go.Scattergl(
+            x=xs,
+            y=ys,
+            mode="markers",
+            visible=False,
+            name=f"抽样原始点（{format_number(xs.size)} 条）",
+            marker={"size": 4, "color": "rgba(74, 111, 165, 0.55)", "line": {"width": 0}},
+            hovertemplate=(
+                f"{_hl(x)}: %{{x:{x_format}}}<br>{_hl(y)}: %{{y:{y_format}}}"
+                "<extra>抽样原始点</extra>"
+            ),
         ),
-    ), row=2, col=1)
-    fig.update_layout(updatemenus=[{
-        "type": "buttons",
-        "direction": "right",
-        "x": 1, "xanchor": "right", "y": 1.045, "yanchor": "bottom",
-        "showactive": False, "active": -1,
-        "bgcolor": "#FFFFFF", "bordercolor": "#CBD5D1",
-        "font": {"size": 12, "color": "#245C55"},
-        "buttons": [
-            {"label": "显示抽样原始点", "method": "restyle",
-             "args": [{"visible": True}, [index]]},
-            {"label": "只看密度图", "method": "restyle",
-             "args": [{"visible": False}, [index]]},
-        ],
-    }])
+        row=2,
+        col=1,
+    )
+    fig.update_layout(
+        updatemenus=[
+            {
+                "type": "buttons",
+                "direction": "right",
+                "x": 1,
+                "xanchor": "right",
+                "y": 1.045,
+                "yanchor": "bottom",
+                "showactive": False,
+                "active": -1,
+                "bgcolor": "#FFFFFF",
+                "bordercolor": "#CBD5D1",
+                "font": {"size": 12, "color": "#245C55"},
+                "buttons": [
+                    {
+                        "label": "显示抽样原始点",
+                        "method": "restyle",
+                        "args": [{"visible": True}, [index]],
+                    },
+                    {
+                        "label": "只看密度图",
+                        "method": "restyle",
+                        "args": [{"visible": False}, [index]],
+                    },
+                ],
+            }
+        ]
+    )
 
 
 def finalize_density_layout(fig: go.Figure, view: DensityView) -> None:

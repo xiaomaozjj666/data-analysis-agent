@@ -137,7 +137,9 @@ def _query_deadline(connection: sqlite3.Connection, budget_ms: int) -> Iterator[
         connection.set_progress_handler(None, 0)
 
 
-def count_rows(connection: sqlite3.Connection, table: str, budget_ms: int = QUERY_TIME_BUDGET_MS) -> int:
+def count_rows(
+    connection: sqlite3.Connection, table: str, budget_ms: int = QUERY_TIME_BUDGET_MS
+) -> int:
     """统计单表行数；超预算返回 -1（用于默认表选举与结构概览）。
 
     COUNT(*) 在 SQLite 上是一次 B-tree 扫描，对超大表可能很慢。这里允许它在超时后
@@ -145,7 +147,9 @@ def count_rows(connection: sqlite3.Connection, table: str, budget_ms: int = QUER
     """
     with _query_deadline(connection, budget_ms):
         try:
-            return int(connection.execute(f"SELECT COUNT(*) FROM {_quote_identifier(table)}").fetchone()[0])
+            return int(
+                connection.execute(f"SELECT COUNT(*) FROM {_quote_identifier(table)}").fetchone()[0]
+            )
         except sqlite3.OperationalError:
             return -1
 
@@ -161,7 +165,12 @@ def describe_table(connection: sqlite3.Connection, table: str) -> list[dict[str,
         raise ValueError(f"表「{table}」不存在。可用表：{'、'.join(known) if known else '（无）'}")
     rows = connection.execute(f"PRAGMA table_info({_quote_identifier(table)})").fetchall()
     return [
-        {"name": str(row[1]), "type": str(row[2] or ""), "not_null": bool(row[3]), "primary_key": bool(row[5])}
+        {
+            "name": str(row[1]),
+            "type": str(row[2] or ""),
+            "not_null": bool(row[3]),
+            "primary_key": bool(row[5]),
+        }
         for row in rows
     ]
 

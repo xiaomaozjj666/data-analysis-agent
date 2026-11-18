@@ -3679,3 +3679,81 @@ def test_access_token_non_ascii_rejected_not_500(monkeypatch):
     # Bearer 路径：非 ASCII 值
     resp = client.get("/api/settings", headers={"Authorization": b"Bearer \xe9\xe8"})
     assert resp.status_code == 401
+
+
+def test_viewer_token_is_read_only_and_audited(monkeypatch, caplog):
+    monkeypatch.setenv("APP_ACCESS_TOKEN", "full-token")
+    monkeypatch.setenv("APP_VIEWER_TOKEN", "viewer-token")
+    client = TestClient(api.app)
+
+    auth = client.get("/api/auth", headers={"X-App-Token": "viewer-token"})
+    assert auth.json() == {"required": True, "authenticated": True}
+    assert client.get("/api/settings", headers={"X-App-Token": "viewer-token"}).status_code == 200
+
+    caplog.set_level("WARNING", logger="data_agent.middleware")
+    denied = client.post(
+        "/api/sessions/viewer/analyze/stream",
+        headers={"X-App-Token": "viewer-token"},
+        json={"task": "检查数据"},
+    )
+    assert denied.status_code == 403
+    assert denied.json()["detail"] == "只读令牌不能执行写操作。"
+    assert any("audit denied actor=viewer" in record.message for record in caplog.records)
+
+    assert client.get("/api/settings", headers={"X-App-Token": "wrong"}).status_code == 401
+
+
+def test_viewer_only_mode_blocks_writes(monkeypatch):
+    monkeypatch.delenv("APP_ACCESS_TOKEN", raising=False)
+    monkeypatch.setenv("APP_VIEWER_TOKEN", "viewer-token")
+    client = TestClient(api.app)
+
+    assert client.get("/api/auth").json() == {"required": True, "authenticated": False}
+    assert client.get("/api/settings", headers={"X-App-Token": "viewer-token"}).status_code == 200
+    denied = client.post(
+        "/api/sessions/viewer/analyze/stream",
+        headers={"X-App-Token": "viewer-token"},
+        json={"task": "检查数据"},
+    )
+    assert denied.status_code == 403
+
+
+def test_audit_log_records_denied_write(tmp_path, monkeypatch):
+    log_path = tmp_path / "audit" / "access.jsonl"
+    monkeypatch.setenv("APP_ACCESS_TOKEN", "full-token")
+    monkeypatch.setenv("APP_VIEWER_TOKEN", "viewer-token")
+    monkeypatch.setenv("DATA_AGENT_AUDIT_LOG", str(log_path))
+    client = TestClient(api.app)
+
+    assert client.get("/api/settings", headers={"X-App-Token": "viewer-token"}).status_code == 200
+    assert not log_path.exists()
+
+    denied = client.post(
+        "/api/sessions/audit/analyze/stream",
+        headers={"X-App-Token": "viewer-token"},
+        json={"task": "检查数据"},
+    )
+    assert denied.status_code == 403
+    rows = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["actor"] == "viewer"
+    assert rows[0]["method"] == "POST"
+    assert rows[0]["status"] == 403
+    assert rows[0]["path"] == "/api/sessions/audit/analyze/stream"
+    assert "token" not in json.dumps(rows[0]).lower()
+
+
+def test_audit_log_write_failure_does_not_break_request(tmp_path, monkeypatch, caplog):
+    monkeypatch.setenv("APP_ACCESS_TOKEN", "full-token")
+    monkeypatch.setenv("APP_VIEWER_TOKEN", "viewer-token")
+    monkeypatch.setenv("DATA_AGENT_AUDIT_LOG", str(tmp_path))  # 目录路径 -> OSError
+    monkeypatch.setattr("data_agent.middleware._audit_warning_shown", False)
+    caplog.set_level("WARNING", logger="data_agent.middleware")
+    client = TestClient(api.app)
+    response = client.post(
+        "/api/sessions/audit/analyze/stream",
+        headers={"X-App-Token": "viewer-token"},
+        json={"task": "检查数据"},
+    )
+    assert response.status_code == 403
+    assert any("cannot write audit log" in record.message for record in caplog.records)

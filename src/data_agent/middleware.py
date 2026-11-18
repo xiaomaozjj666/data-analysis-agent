@@ -20,6 +20,8 @@ import sys
 import threading
 import time
 from collections import defaultdict, deque
+from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi import HTTPException, Request
@@ -66,7 +68,8 @@ def _is_loopback_host(host: str) -> bool:
 
 def _check_access(request: Request) -> None:
     expected = os.getenv("APP_ACCESS_TOKEN", "").strip()
-    if not expected:
+    viewer = os.getenv("APP_VIEWER_TOKEN", "").strip()
+    if not expected and not viewer:
         return
     provided = request.headers.get("x-app-token", "")
     if provided.lower().startswith("bearer "):
@@ -75,12 +78,55 @@ def _check_access(request: Request) -> None:
         provided = request.headers.get("authorization", "")
         if provided.lower().startswith("bearer "):
             provided = provided[7:]
+    candidate = provided.strip().encode("utf-8")
     # 编码成 bytes 再比较：hmac.compare_digest 对含非 ASCII 字符的 str 会抛
     # TypeError（"comparing strings with non-ASCII characters is not
     # supported"），恶意构造的令牌头会变成 500 而不是 401。按字节比较没有
-    # 这个限制，时序安全性也不变。
-    if not hmac.compare_digest(provided.strip().encode("utf-8"), expected.encode("utf-8")):
-        raise HTTPException(status_code=401, detail="需要有效的应用访问令牌。")
+    # 这个限制，时序安全性也不变。两个令牌都要比较，避免通过响应时间区分
+    # 「全权令牌」与「只读令牌」。
+    full_ok = bool(expected) and hmac.compare_digest(candidate, expected.encode("utf-8"))
+    viewer_ok = bool(viewer) and hmac.compare_digest(candidate, viewer.encode("utf-8"))
+    if full_ok:
+        request.state.actor = "admin"
+        return
+    if viewer_ok:
+        request.state.actor = "viewer"
+        if request.method not in {"GET", "HEAD", "OPTIONS"}:
+            raise HTTPException(status_code=403, detail="只读令牌不能执行写操作。")
+        return
+    raise HTTPException(status_code=401, detail="需要有效的应用访问令牌。")
+
+
+def _append_audit(*, actor: str, method: str, path: str, status: int, request_id: str) -> None:
+    """可选的持久审计日志（``DATA_AGENT_AUDIT_LOG`` 指向 JSONL 文件）。
+
+    写失败只告警一次并不影响请求：审计是旁路，不能变成可用性风险。日志里
+    不包含请求体、查询串、令牌或客户端 IP（最小化留存）。
+    """
+    target = os.environ.get("DATA_AGENT_AUDIT_LOG", "").strip()
+    if not target:
+        return
+    record = {
+        "at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "actor": actor,
+        "method": method,
+        "path": path,
+        "status": status,
+        "request_id": request_id,
+    }
+    try:
+        log_path = Path(target).expanduser()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        global _audit_warning_shown
+        if not _audit_warning_shown:
+            _audit_warning_shown = True
+            logger.warning("cannot write audit log %s: %s", target, exc)
+
+
+_audit_warning_shown = False
 
 
 # Rate-limit bucket dictionary hard cap. An attacker spoofing X-Forwarded-For
@@ -219,12 +265,18 @@ def setup_middleware(app) -> None:  # type: ignore[no-untyped-def]
     # runs/ 下全部会话公开。Dockerfile、Render 与 run.ps1 都显式传 --host，
     # 因此启动时即可判定（见 _resolve_bind_host）。
     access_token = os.getenv("APP_ACCESS_TOKEN", "").strip()
-    if not access_token:
+    viewer_token = os.getenv("APP_VIEWER_TOKEN", "").strip()
+    if not access_token and viewer_token:
+        logger.warning(
+            "只配置了 APP_VIEWER_TOKEN：所有写操作（POST/PUT/PATCH/DELETE）都会被拒绝，"
+            "服务以只读模式运行。"
+        )
+    if not access_token and not viewer_token:
         bind_host = _resolve_bind_host()
         if not _is_loopback_host(bind_host):
             raise RuntimeError(
-                f"APP_ACCESS_TOKEN 未设置，但服务监听地址 {bind_host!r} 不是环回地址。"
-                "请设置 APP_ACCESS_TOKEN 或把绑定地址改为 127.0.0.1。"
+                f"APP_ACCESS_TOKEN / APP_VIEWER_TOKEN 均未设置，但服务监听地址 {bind_host!r} "
+                "不是环回地址。请至少设置一个访问令牌，或把绑定地址改为 127.0.0.1。"
             )
         # 生产类环境即使绑在环回也提示（可能是反向代理背后只绑本机）。
         if os.getenv("RENDER") or os.getenv("DATA_AGENT_STORAGE_BACKEND") == "s3":
@@ -285,6 +337,43 @@ def setup_middleware(app) -> None:  # type: ignore[no-untyped-def]
                 if response is None:
                     response = await call_next(request)
                 status_code = response.status_code
+                # 操作审计：只记方法/路径/状态/身份，不记请求体与查询串
+                # （查询串可能含一次性 token 或数据片段）。写操作 INFO，
+                # 拒绝访问 WARNING，便于事后追责与异常探测。
+                actor = getattr(request.state, "actor", "anonymous")
+                if request.url.path.startswith("/api/"):
+                    if status_code in {401, 403}:
+                        logger.warning(
+                            "audit denied actor=%s method=%s path=%s status=%s request_id=%s",
+                            actor,
+                            request.method,
+                            request.url.path,
+                            status_code,
+                            request_id,
+                        )
+                        _append_audit(
+                            actor=actor,
+                            method=request.method,
+                            path=request.url.path,
+                            status=status_code,
+                            request_id=request_id,
+                        )
+                    elif request.method not in {"GET", "HEAD", "OPTIONS"}:
+                        logger.info(
+                            "audit actor=%s method=%s path=%s status=%s request_id=%s",
+                            actor,
+                            request.method,
+                            request.url.path,
+                            status_code,
+                            request_id,
+                        )
+                        _append_audit(
+                            actor=actor,
+                            method=request.method,
+                            path=request.url.path,
+                            status=status_code,
+                            request_id=request_id,
+                        )
                 response.headers.setdefault("X-Content-Type-Options", "nosniff")
                 response.headers.setdefault("Referrer-Policy", "no-referrer")
                 response.headers.setdefault("X-Frame-Options", "DENY")

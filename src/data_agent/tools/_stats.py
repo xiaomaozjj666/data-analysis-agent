@@ -157,7 +157,11 @@ def run_statistical_analysis(
         if not group_by:
             raise ValueError("groupby 方法需要 group_by。")
         _checked_columns(df, [group_by])
-        values = _numeric_columns(df, columns) if aggregation != "count" else _checked_columns(df, columns)
+        values = (
+            _numeric_columns(df, columns)
+            if aggregation != "count"
+            else _checked_columns(df, columns)
+        )
         grouped = df.groupby(group_by, dropna=False)[values].agg(aggregation).reset_index()
         group_sizes = df.groupby(group_by, dropna=False).size().rename("_group_n_").reset_index()
         grouped = grouped.merge(group_sizes, on=group_by, how="left")
@@ -169,13 +173,18 @@ def run_statistical_analysis(
     if method == "ttest_ind":
         if group_by and (target or (columns and len(columns) == 1)):
             value_col = target or columns[0]
-            first, second, left_name, right_name = _two_group_series(df, value_col, group_by, groups)
+            first, second, left_name, right_name = _two_group_series(
+                df, value_col, group_by, groups
+            )
             result.update(_welch_from_series(first, second, alpha))
             result["comparison"] = "two_groups"
             result["group_by"] = group_by
             result["target"] = value_col
             result["groups"] = [left_name, right_name]
-            result["means"] = {left_name: result["means"]["first"], right_name: result["means"]["second"]}
+            result["means"] = {
+                left_name: result["means"]["first"],
+                right_name: result["means"]["second"],
+            }
             return result
         numeric = _numeric_columns(df, columns)
         if len(numeric) != 2:
@@ -262,8 +271,7 @@ def run_statistical_analysis(
         max_cardinality = max(cardinality.values())
         if max_cardinality > _CHI_SQUARE_MAX_CARDINALITY:
             raise ValueError(
-                f"卡方检验拒绝高基数列：{cardinality}。"
-                "请对类别做合并、分组或改用其他统计方法。"
+                f"卡方检验拒绝高基数列：{cardinality}。请对类别做合并、分组或改用其他统计方法。"
             )
         table = pd.crosstab(df[selected[0]], df[selected[1]])
         chi2, p_value, dof, expected = stats.chi2_contingency(table)

@@ -85,7 +85,9 @@ def _field_unit(payload: dict[str, Any], field: str) -> str:
     return str(unit or "").strip()
 
 
-def extract_facts(trace: list[dict[str, Any]] | None, completed_steps: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+def extract_facts(
+    trace: list[dict[str, Any]] | None, completed_steps: list[dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
     """从 tool_result 与步骤摘要中收集事实及可重放的定位信息。"""
     facts: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str, str]] = set()

@@ -17,7 +17,10 @@ logger = logging.getLogger(__name__)
 
 
 def _needs_replan(
-    *, completed: list[dict[str, Any]], remaining: list[dict[str, str]], artifact_count: int,
+    *,
+    completed: list[dict[str, Any]],
+    remaining: list[dict[str, str]],
+    artifact_count: int,
 ) -> bool:
     """是否值得花一次 LLM 往返咨询重规划器。
 

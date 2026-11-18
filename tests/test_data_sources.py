@@ -9,13 +9,16 @@ from data_agent import data_sources, postgres_source
 
 def test_describe_sources_declares_capabilities(monkeypatch):
     monkeypatch.setattr(postgres_source, "is_configured", lambda: False)
+    monkeypatch.delenv("DATA_AGENT_EXTERNAL_DB_MODULE", raising=False)
     by_name = {item.name: item for item in data_sources.describe_sources()}
-    assert set(by_name) == {"session", "postgres"}
+    assert set(by_name) == {"session", "postgres", "external"}
     assert by_name["session"].readonly_guarantee == data_sources.READONLY_DRIVER
     assert by_name["session"].timeout_mechanism == "sqlite progress handler"
     assert by_name["postgres"].readonly_guarantee == data_sources.READONLY_SERVER_CONFIRMED
     assert by_name["postgres"].timeout_mechanism == "statement_timeout"
+    assert by_name["external"].readonly_guarantee == data_sources.READONLY_ROLE_REQUIRED
     assert by_name["postgres"].configured is False
+    assert by_name["external"].configured is False
     assert by_name["session"].configured is True
 
 
