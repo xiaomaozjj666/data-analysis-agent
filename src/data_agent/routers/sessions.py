@@ -158,8 +158,6 @@ def delete_session_comment(session_id: str, comment_id: str) -> dict[str, bool]:
 class SalesAuditRequest(BaseModel):
     draft: str = Field(min_length=1, max_length=6000)
     confirm_full_table: bool = False
-    # 可选：快速起草返回的轨迹哈希。带上它即要求草稿与模型原话逐字对应。
-    draft_trace_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 @router.post("/api/sessions/{session_id}/sales-audit")
@@ -178,52 +176,17 @@ def sales_audit(session_id: str, payload: SalesAuditRequest) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail="经营简报核验需要会话上传的原始 CSV。")
     if not payload.draft.strip():
         raise HTTPException(status_code=422, detail="请输入待核验的简报草稿。")
-    trace_digest = payload.draft_trace_sha256
-    if trace_digest:
-        from data_agent.audit_draft import TRACE_DIR_NAME, QuickDraftError, verify_trace
-
-        try:
-            verify_trace(workspace.root / TRACE_DIR_NAME, trace_digest, payload.draft)
-        except QuickDraftError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     try:
-        result = audit_sales_brief(
+        return audit_sales_brief(
             source,
             payload.draft,
             confirm_full_table=payload.confirm_full_table,
             max_rows=api.bootstrap_settings.max_rows,
-            draft_trace_sha256=trace_digest,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except OSError as exc:
         raise HTTPException(status_code=422, detail="无法读取原始 CSV，请重新上传数据。") from exc
-    # 每次复算都留痕；写账本失败不影响本次核验结果，只附加说明。
-    from data_agent.audit_ledger import LedgerError, append_entry, sha256_text
-
-    try:
-        entry = append_entry(
-            workspace.root,
-            kind="audit",
-            session_id=session_id,
-            payload={
-                "audit_id": result["audit_id"],
-                "source_sha256": result["source"]["sha256"],
-                "source_filename": result["source"]["filename"],
-                "draft_sha256": sha256_text(payload.draft),
-                "draft_trace_sha256": trace_digest,
-                "confirm_full_table": payload.confirm_full_table,
-                "summary": result["summary"],
-            },
-        )
-        result["ledger"] = {
-            "seq": entry["seq"],
-            "hash": entry["hash"],
-            "prev": entry["prev"],
-        }
-    except LedgerError as exc:
-        result["ledger_error"] = str(exc)
-    return result
 
 
 @router.delete("/api/sessions/{session_id}", status_code=204)
@@ -415,11 +378,9 @@ async def import_session(file: Annotated[UploadFile, File()]) -> dict[str, Any]:
         except zipfile.BadZipFile as exc:
             shutil.rmtree(root, ignore_errors=True)
             raise HTTPException(status_code=400, detail="无效的 ZIP 文件。") from exc
-    except HTTPException:
-        # 上传超限/成员过多/路径逃逸/坏 ZIP：session 目录还没注册进 registry，
-        # 不清理会留下 TTL 永远回收不到的孤儿空目录（413 路径此前就在漏）。
-        shutil.rmtree(root, ignore_errors=True)
-        raise
+        except HTTPException:
+            shutil.rmtree(root, ignore_errors=True)
+            raise
     finally:
         tmp_zip.unlink(missing_ok=True)
     record = api.registry.restore_from_directory(session_id)
