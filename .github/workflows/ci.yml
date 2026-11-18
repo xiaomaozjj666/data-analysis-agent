@@ -62,9 +62,16 @@ jobs:
       - name: Audit dependencies
         # pip-audit 没有 npm audit 的 --audit-level 选项；默认行为是发现任何
         # 已知漏洞即非零退出，比只拦 high 更严格。
+        # pypi.org 偶发 15s 读超时（2026-11-18 3.12/3.13 两格因此假失败），
+        # 放宽单次超时并重试三次；真有漏洞时三次都会非零退出，不会被重试掩盖。
         run: |
           python -m pip install pip-audit
-          pip-audit
+          for attempt in 1 2 3; do
+            pip-audit --timeout 60 && exit 0
+            echo "pip-audit 第 ${attempt} 次失败（网络超时或存在漏洞），稍后重试…" >&2
+            sleep $((attempt * 10))
+          done
+          exit 1
 
       - name: Lint with ruff
         run: ruff check .
