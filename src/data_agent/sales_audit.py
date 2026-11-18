@@ -1,5 +1,7 @@
 """Recalculate a sales brief directly from the original CSV.
 
+编码支持 UTF-8（含 BOM）与 GB18030（中文 Excel 常见导出编码）。
+
 金额允许负数（退款/冲销），订单号按原样去重（含尾随空格视为不同订单）。
 行数上限由调用方传入（复用上传时的工作区 max_rows），避免绕过导入护栏。
 """
@@ -40,8 +42,20 @@ def _read_sales(
     orders: set[str] = set()
     sales_cents = units = row_count = 0
     preview = []
+    raw = source.read_bytes()
+    encoding = "utf-8-sig"
     try:
-        with source.open(encoding="utf-8-sig", newline="") as handle:
+        raw.decode(encoding)
+    except UnicodeDecodeError:
+        try:
+            raw.decode("gb18030")
+        except UnicodeDecodeError as exc:
+            raise ValueError(
+                "核验使用 UTF-8 或 GB18030 编码、逗号分隔的 CSV。请检查编码和引号。"
+            ) from exc
+        encoding = "gb18030"
+    try:
+        with source.open(encoding=encoding, newline="") as handle:
             reader = csv.DictReader(handle, strict=True)
             headers = reader.fieldnames or []
             if any(headers.count(column) != 1 for column in _COLUMNS):
@@ -73,7 +87,9 @@ def _read_sales(
                         }
                     )
     except (UnicodeDecodeError, csv.Error) as exc:
-        raise ValueError("核验使用 UTF-8 编码、逗号分隔的 CSV。请检查编码和引号。") from exc
+        raise ValueError(
+            "核验使用 UTF-8 或 GB18030 编码、逗号分隔的 CSV。请检查编码和引号。"
+        ) from exc
     if not row_count:
         raise ValueError("CSV 至少需要一条订单明细。")
     if digest != sha256_file(source):

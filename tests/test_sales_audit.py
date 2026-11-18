@@ -87,3 +87,19 @@ def test_row_limit_blocks_oversized_csv(sales_csv):
     )
     with pytest.raises(ValueError, match="行上限"):
         audit_sales_brief(sales_csv, "订单数：5 笔", max_rows=3)
+
+
+def test_gb18030_csv_is_accepted(sales_csv):
+    """中文 Excel 常见的 GB18030 导出也应能核验。"""
+    sales_csv.write_bytes(
+        "order_id,sales,quantity\n订单A,12.34,2\n订单B,2.66,1\n".encode("gb18030")
+    )
+    result = audit_sales_brief(sales_csv, "销售额合计：15.00 元\n销量合计：3 件\n订单数：2 笔")
+    assert result["summary"] == {"verified": 3, "conflict": 0, "unsupported": 0}
+    assert result["source"]["preview"][0]["order_id"] == "订单A"
+
+
+def test_undecodable_csv_is_rejected(sales_csv):
+    sales_csv.write_bytes(b"order_id,sales,quantity\n\xff\xfe\xff,1,1\n")
+    with pytest.raises(ValueError, match="UTF-8 或 GB18030"):
+        audit_sales_brief(sales_csv, "订单数：1 笔")

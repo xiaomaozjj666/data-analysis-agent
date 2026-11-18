@@ -284,3 +284,23 @@ def test_render_caps_examples_at_three():
     text = render_metric_context("分析", [_definition(examples=examples)])
     assert "问题0" in text and "问题2" in text
     assert "问题3" not in text
+
+
+def test_save_workspace_metrics_is_atomic(tmp_path, monkeypatch):
+    """替换失败时旧 metrics.json 保持完整，不留下半写文件。"""
+    from data_agent import _workspace_bundles
+    from data_agent.metrics import save_workspace_metrics
+
+    save_workspace_metrics(tmp_path, {"metrics": [{"name": "a", "description": "d"}]})
+    path = tmp_path / METRICS_FILENAME
+    before = path.read_bytes()
+
+    def boom(src, dst):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(_workspace_bundles.os, "replace", boom)
+    with pytest.raises(OSError, match="replace failed"):
+        save_workspace_metrics(tmp_path, {"metrics": [{"name": "b", "description": "d"}]})
+
+    assert path.read_bytes() == before
+    assert not list(tmp_path.glob("*.tmp"))

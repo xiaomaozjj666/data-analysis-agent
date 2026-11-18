@@ -26,6 +26,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from data_agent._workspace_bundles import _atomic_write_text
+
 #: 工作区内约定使用的指标定义文件名。
 METRICS_FILENAME = "metrics.json"
 
@@ -145,10 +147,8 @@ def save_workspace_metrics(root: str | Path, payload: Any) -> list[MetricDefinit
     definitions = parse_metric_definitions(payload)
     path = Path(root).expanduser() / METRICS_FILENAME
     serialized = serialize_metric_definitions(definitions)
-    path.write_text(
-        json.dumps(serialized, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    # 与其它持久化路径一致：tmp + rename，避免写一半留下损坏的 metrics.json
+    _atomic_write_text(path, json.dumps(serialized, ensure_ascii=False, indent=2) + "\n")
     return definitions
 
 

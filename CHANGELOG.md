@@ -91,6 +91,10 @@
 
 ### 修复
 
+- **销售核验支持 GB18030**：中文 Excel 常见的 GB18030 导出不再被拒；
+  解码失败仍给出可操作提示（UTF-8/GB18030、逗号分隔）。
+- **metrics.json 原子写**：`save_workspace_metrics` 改为 tmp + rename，
+  替换失败时旧文件保持完整，不再出现半写的指标定义。
 - **修复 main 不可导入**：`3a9aed8` 漏提交 `_AUDIT_SAMPLE_SALES_CSV`，
   `import data_agent.api` 直接 ImportError；已补常量并推送（`619b125`）。
 - **沙箱子进程清理**：Windows 下 venv 启动器先退出、派生解释器仍持有临时目录；
