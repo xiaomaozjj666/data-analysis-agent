@@ -7,6 +7,54 @@
 项目自 2026-07 起以 trunk 方式开发（`main` 即最新可用版），本文件从 v1.0.0
 起维护；更早的历史按月份归档在版本条目里。
 
+## [2026-11-19]
+
+### 新增
+
+- **经营简报核验升级到 `schema_version=2`**：源文件只读一次字节快照，SHA-256、
+  编码识别与 CSV 解析基于同一份 bytes，消除读两遍的 TOCTOU；新增范围门——
+  登记指标必须整行精确匹配，「华东区订单数」「平均订单数」「订单数（华东区）」
+  一律判为 `unsupported`，即使 `confirm_full_table=true` 也不放行；订单号近似
+  重复（NFKC、大小写、零宽字符、前导 0）只写入 `warnings` 并给相关指标附
+  `caveat`，不改变订单数口径；表头接受 订单号/金额/数量 等中文别名，仅唯一
+  匹配时接受，歧义直接报错；新增「客单价」口径（销售额合计 ÷ 订单数，按分
+  HALF_UP）；未登记指标按单位给出口径候选 `candidates`。`audit_id` 为源文件
+  哈希、草稿、确认标志与复算结果的确定性哈希。
+- **服务端确认门**：新增 `POST /api/sessions/{id}/sales-audit/confirm`，服务端
+  按原始 CSV 重新复算，重算的 `audit_id` 与提交值不一致返回 409；通过后写
+  `confirm` 记录并返回权威简报与回执（`seq` / `ts` / `hash` / `prev` /
+  `brief_sha256`）。
+- **核验账本与离线校验**：`runs/<会话>/audit_ledger.jsonl` 记录每次 audit 与
+  confirm，逐条 `prev` / `hash` 串联，追加前先校验整链；新增
+  `GET /api/sessions/{id}/sales-audit/ledger` 与
+  `scripts/verify_audit_ledger.py`（校验链条；`--brief` 文件改 1 个字节即
+  退出码 1；`--source` 校验原始 CSV）。
+- **快速起草对照入口**：新增 `POST /api/sessions/{id}/sales-audit/quick-draft`，
+  不调用工具、关闭思考，直接让模型读表写三行指标；返回模型名、耗时、脱敏与
+  丢弃行数。提示词不提供去重口径或公式，仅作为核验器的对照输入。
+- **Render 保活脚本**：新增 `scripts/keepalive.ps1`，按间隔 ping 健康检查地址
+  并打印状态码与耗时，失败后继续下一轮。
+
+### 变更
+
+- README 与 `docs/wuxi-trusted-ai-challenge.md` 补充范围门、`audit_id`、服务端
+  确认门、账本与离线校验命令、快速起草入口，并新增 90 秒路演脚本；测试徽章按
+  实测收集数（1636 项）更新为保守下限 1600+。
+- `render.yaml` 注释补充 Free 档 15 分钟休眠与 35–90 秒冷启动说明，以及
+  `healthCheckPath` 在冷启动期间可能失败；未改动 region / disk 等不可变字段。
+
+### 修复
+
+- **kaleido 1.5.1 PNG 导出竞态**：包装 `_KaleidoTab.navigate`，在原导航完成后
+  以 0.1 秒间隔轮询 `kaleido_scopes` 就绪，上限 10 秒；超时不引入新异常，只记
+  日志并按原流程继续。仅当版本与内部结构均符合预期时才打补丁。环境缺失
+  （无 Chrome / 无 kaleido）仍返回 503 与可操作提示。
+- **邮箱脱敏正则回溯**：原 `[A-Z0-9._%+-]+@...` 对不含 `@` 的长串会按起点反复
+  扫到串尾，耗时随长度二次方增长；改为占有量词的分支扫描，总耗时线性，命中范围
+  与原正则保持一致。
+- **`run.ps1` 环境自检加固**：按 3.13 / 3.12 / 3.11 探测受支持的 Python、校验
+  Node.js ≥ 22.12、端口可用性改用实际 bind 判定、缺少 `.env` 时给出创建指引。
+
 ## [Unreleased]
 
 ### 新增
@@ -131,6 +179,27 @@
 
 ### 修复
 
+- **webhook DNS rebinding 窗口关闭**：发送改为"一次 getaddrinfo 同时完成
+  校验与 IP 钉扎"——连接直连已校验 IP，TLS/SNI/Host 头仍用原域名；每一跳
+  （含重定向）重走完整校验，公网地址 302 到内网/元数据地址在钉扎层被拒。
+- **external DB-API 源补齐查询超时**：sqlite3 用 progress handler 执行中打断、
+  psycopg 服务端 `statement_timeout`、Snowflake 会话超时之外，所有驱动再叠
+  工作线程 join(timeout) 硬顶——DB-API 无法中止服务端语句时也保证调用方不被
+  无限期阻塞；sqlite3 连接默认 `check_same_thread=False`。
+- **邮件发件人归一化**：`DATA_AGENT_SMTP_URL` username 段可能带 %0d%0a，
+  From/Subject 统一折叠空白，消息构造移入 try——配置手滑降级为发送错误记录，
+  不再违反"不抛异常"契约。
+- **`status_overview` 类型防御**：手改 state.json 的 `last_alerts` 为非数值
+  时按 0 处理，不再拖垮整个看板/巡检。
+- **会话导入孤儿目录**：上传超限（413）/成员过多/路径逃逸/坏 ZIP 路径统一
+  清理未注册的 `runs/api_*` 目录，TTL 不再回收不到。
+- **技能包重跑 fail-closed**：`run` 缺 `skill.json` 或缺 `recipe_sha256` 时
+  拒绝执行（与 install/list 同口径），删清单绕过完整性校验的路径已封死。
+- **唯一 tmp 后缀扫尾**：`_atomic_write_text`、评测结果、上传 `.part`、
+  checkpoint parquet 全部改随机后缀，多进程/多线程写同一目标不再互相截断。
+- **相关分析性能**：p 值由相关矩阵 r + 有效样本量按 t 分布导出（与
+  scipy.pearsonr 数值一致），常数列判定改 O(n) 比较——200k 行 × 7 数值列
+  0.472s → 0.025s（约 19×），回归测试逐对比对 scipy。
 - **SQL 只读护栏第二轮加固**：反斜杠失步多语句（`SELECT 'x\'; DROP ...`）、
   数据修改 CTE（`WITH ... DELETE/INSERT/UPDATE`）、`SELECT ... INTO` /
   `INTO OUTFILE`、危险函数（`pg_read_file`、`pg_current_setting`、

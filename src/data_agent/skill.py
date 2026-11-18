@@ -455,15 +455,20 @@ def run_bundle(bundle_dir: str | Path, data_path: str | Path) -> dict[str, Any]:
     if not isinstance(recipe, dict):
         raise ValueError(f"{recipe_path} 不是 JSON 对象。")
     manifest_path = bundle / MANIFEST_FILE
-    if manifest_path.is_file():
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        expected = str(manifest.get("recipe_sha256") or "") if isinstance(manifest, dict) else ""
-        actual = _recipe_digest(recipe)
-        if expected and expected != actual:
-            raise ValueError(
-                "技能包内的 analysis_recipe.json 与 skill.json 的配方哈希不一致，"
-                "可能被改动过；请重新导出后再重跑。"
-            )
+    # 重跑与安装同一口径 fail-closed：没有清单或没有哈希就拒绝执行。
+    # 此前"清单缺失也放行"意味着删掉 skill.json 就能绕过配方完整性校验。
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"技能包缺少 {MANIFEST_FILE}，无法校验配方完整性：{manifest_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    expected = str(manifest.get("recipe_sha256") or "") if isinstance(manifest, dict) else ""
+    actual = _recipe_digest(recipe)
+    if not expected:
+        raise ValueError(f"{MANIFEST_FILE} 缺少 recipe_sha256，无法校验配方完整性。")
+    if expected != actual:
+        raise ValueError(
+            "技能包内的 analysis_recipe.json 与 skill.json 的配方哈希不一致，"
+            "可能被改动过；请重新导出后再重跑。"
+        )
     # 每次重跑用独立临时工作区并在结束时清理：固定 session id 会让并发重跑
     # 争用同一 artifacts 目录，且 runs/ 下的目录永不被 TTL 回收。
     temp_root = Path(tempfile.mkdtemp(prefix="data-agent-skill-"))

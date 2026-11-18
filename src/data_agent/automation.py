@@ -44,6 +44,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from email.message import EmailMessage
+from http import client as http_client
 from pathlib import Path
 from typing import Any
 
@@ -178,14 +179,137 @@ def validate_webhook_url(url: str, *, resolve: bool = True) -> str | None:
     return _unsafe_host_reason(parsed.hostname, resolve=resolve)
 
 
-class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """每一跳重定向都重新校验目标，避免公网地址 302 到内网/元数据地址。"""
+def _validated_sockaddrs(url: str) -> list[tuple[int, tuple[str, int]]]:
+    """解析并校验 URL 主机的全部地址；任一命中私网/保留段即整体拒绝。
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
-        unsafe = validate_webhook_url(newurl)
+    与「先 validate 再连接」的两段式不同，这里**一次 getaddrinfo 同时完成
+    校验与钉扎**：连接用的就是这批已校验地址，解析与连接之间不再有
+    DNS rebinding 窗口（2026-11 评审 I2）。每跳重定向都重新走一遍。
+    """
+    parsed = urllib.parse.urlsplit(url)
+    host = parsed.hostname or ""
+    port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+    try:
+        infos = socket.getaddrinfo(host, port)
+    except OSError as exc:
+        raise urllib.error.HTTPError(
+            url, 403, f"redirect blocked: 域名解析失败（{exc}）", {}, None
+        ) from exc
+    safe: list[tuple[int, tuple[str, int]]] = []
+    for family, _type, _proto, _canon, sockaddr in infos:
+        address = ipaddress.ip_address(sockaddr[0])
+        if _unsafe_address(address):
+            raise urllib.error.HTTPError(
+                url, 403, "redirect blocked: 域名解析到内网/环回/保留地址", {}, None
+            )
+        safe.append((family, (str(address), sockaddr[1])))
+    if not safe:
+        raise urllib.error.HTTPError(url, 403, "redirect blocked: 域名没有可用地址", {}, None)
+    return safe
+
+
+class _PinnedHTTPSConnection(http_client.HTTPSConnection):
+    """连接到已校验 IP，但 TLS 握手/SNI/证书校验仍针对原域名。"""
+
+    def __init__(self, real_host: str, sockaddr: tuple[str, int], timeout: float) -> None:
+        super().__init__(sockaddr[0], sockaddr[1], timeout=timeout)
+        self._real_host = real_host
+
+    def connect(self) -> None:  # noqa: D102 - 覆写内置行为
+        sock = socket.create_connection(
+            (self.host, self.port), timeout=self.timeout, source_address=self.source_address
+        )
+        if self._tunnel_host:
+            # 不支持代理隧道：webhook 场景没有代理配置，走直连。
+            raise urllib.error.HTTPError(
+                f"https://{self._real_host}", 400, "proxy tunnel is not supported", {}, None
+            )
+        self.sock = self._context.wrap_socket(sock, server_hostname=self._real_host)
+
+
+class _WebhookResponse:
+    """供 ``with`` 使用的最小响应：只暴露 status/code（webhook 不读响应体）。"""
+
+    __slots__ = ("status", "code")
+
+    def __init__(self, status: int) -> None:
+        self.status = status
+        self.code = status
+
+    def __enter__(self) -> _WebhookResponse:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+
+_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+_WEBHOOK_MAX_HOPS = 5
+
+
+def _pinned_send(
+    method: str,
+    url: str,
+    body: bytes | None,
+    headers: dict[str, str],
+) -> int:
+    """逐跳校验 + IP 钉扎发送 webhook 请求，返回最终 HTTP 状态码。
+
+    每一跳：语法/凭据校验（resolve=False）→ 一次 getaddrinfo 同时校验并钉扎
+    → http.client 直连该 IP（TLS 用原域名做 SNI 与证书校验，Host 头保持原
+    域名）。重定向只在白名单语义下跟随，且每跳都重走完整校验。
+    """
+    current = url
+    current_method = method.upper()
+    current_body = body
+    for _hop in range(_WEBHOOK_MAX_HOPS + 1):
+        # 语法层校验不解析 DNS（DNS 由下面的钉扎路径负责，且只解一次）。
+        unsafe = validate_webhook_url(current, resolve=False)
         if unsafe:
-            raise urllib.error.HTTPError(newurl, code, f"redirect blocked: {unsafe}", headers, fp)
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+            raise urllib.error.HTTPError(current, 403, f"redirect blocked: {unsafe}", {}, None)
+        parsed = urllib.parse.urlsplit(current)
+        is_https = parsed.scheme.lower() == "https"
+        sockaddrs = _validated_sockaddrs(current)
+        family, (ip, port) = sockaddrs[0]
+        path = urllib.parse.urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
+        send_headers = {key.lower(): value for key, value in headers.items()}
+        send_headers["host"] = parsed.netloc
+        if current_body is not None and "content-length" not in send_headers:
+            send_headers["content-length"] = str(len(current_body))
+        if is_https:
+            connection: http_client.HTTPConnection = _PinnedHTTPSConnection(
+                parsed.hostname or "", (ip, port), WEBHOOK_TIMEOUT_SECONDS
+            )
+        else:
+            connection = http_client.HTTPConnection(ip, port, timeout=WEBHOOK_TIMEOUT_SECONDS)
+        try:
+            connection.request(current_method, path, body=current_body, headers=send_headers)
+            response = connection.getresponse()
+            status = int(response.status)
+            location = response.headers.get("Location") if status in _REDIRECT_STATUSES else None
+            response.read()
+        finally:
+            try:
+                connection.close()
+            except OSError:
+                pass
+        if status not in _REDIRECT_STATUSES:
+            return status
+        if not location:
+            raise urllib.error.HTTPError(current, status, "redirect without Location", {}, None)
+        if status in {301, 302, 303}:
+            # 303（以及历史习惯的 301/302）改写为 GET 并丢弃请求体。
+            current_method = "GET"
+            current_body = None
+        current = urllib.parse.urljoin(current, location)
+    raise urllib.error.HTTPError(url, 508, "redirect blocked: too many hops", {}, None)
+
+
+def _post_request(request: urllib.request.Request) -> _WebhookResponse:
+    """发送 webhook 请求（独立函数便于测试替换；每跳校验 + IP 钉扎）。"""
+    headers = {key: value for key, value in request.header_items()}
+    status = _pinned_send(request.get_method(), request.full_url, request.data, headers)
+    return _WebhookResponse(status)
 
 
 def _channel_for_url(webhook_url: str) -> str | None:
@@ -279,12 +403,6 @@ def _notify(webhook_url: str, payload: dict[str, Any]) -> str | None:
     return _notify_result(webhook_url, payload)[0]
 
 
-def _post_request(request: urllib.request.Request):
-    """发送 webhook 请求（独立函数便于测试替换；重定向逐跳校验）。"""
-    opener = urllib.request.build_opener(_SafeRedirectHandler)
-    return opener.open(request, timeout=WEBHOOK_TIMEOUT_SECONDS)
-
-
 def _parse_recipients(raw: Any, *, field: str, task_id: str) -> tuple[str, ...]:
     """解析 email_to / sms_to；接受数组或逗号/分号分隔字符串。"""
     if raw is None or raw == "":
@@ -354,16 +472,16 @@ def _send_email_result(
         return f"未配置 {SMTP_URL_ENV}，无法发送邮件。", None, 0
     if not config["from_addr"]:
         return f"缺少发件人：请设置 {SMTP_FROM_ENV} 或在 SMTP URL 中带用户名。", None, 0
-    message = EmailMessage()
-    # 主题含任务名（用户可控）：折叠换行，防止邮件头注入（EmailMessage 也会
-    # 报错，但这里先归一化，保证多行任务名仍能正常发信而不是整封失败）。
-    message["Subject"] = " ".join(str(subject).split())[:200]
-    message["From"] = str(config["from_addr"])
-    message["To"] = ", ".join(recipients)
-    message.set_content(text)
     started = time.monotonic()
-    client: smtplib.SMTP | None = None
     try:
+        message = EmailMessage()
+        # 主题/发件人都含用户可控内容（任务名、SMTP URL 的 username 段可能带
+        # %0d%0a）：统一折叠空白，防邮件头注入；EmailMessage 对裸 CRLF 会直接
+        # 抛错，归一化保证配置手滑时是「正常发信」而不是「整封失败」。
+        message["Subject"] = " ".join(str(subject).split())[:200]
+        message["From"] = " ".join(str(config["from_addr"]).split())
+        message["To"] = ", ".join(recipients)
+        message.set_content(text)
         if config["ssl"]:
             client = smtplib.SMTP_SSL(
                 str(config["host"]),
@@ -691,6 +809,14 @@ def next_due_at(spec: AutomationSpec, last_run_at: str, now: datetime) -> dateti
     return target + timedelta(days=1)
 
 
+def _coerce_int(value: Any) -> int:
+    """把状态里的计数转成 int；坏类型（含 bool/str/None）安全回退 0。"""
+    try:
+        return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+    except (TypeError, ValueError):
+        return 0
+
+
 def status_overview(runs_dir: str | Path, *, now: datetime | None = None) -> dict[str, Any]:
     """汇总全部任务的状态，供看板/巡检脚本消费（不触发任何执行）。"""
     moment = now or datetime.now().astimezone()
@@ -719,7 +845,9 @@ def status_overview(runs_dir: str | Path, *, now: datetime | None = None) -> dic
                 "next_due_at": next_due.isoformat(timespec="seconds") if next_due else None,
                 "last_run_at": last_run_at or None,
                 "last_status": state.get("last_status"),
-                "last_alerts": int(state.get("last_alerts") or 0),
+                # 手改的 state.json 可能是合法 JSON 但类型错误：坏类型按 0 处理，
+                # 别让一个任务的怪数据把整个看板/巡检打挂。
+                "last_alerts": _coerce_int(state.get("last_alerts")),
                 "last_alert_headline": state.get("last_alert_headline"),
                 "last_error": state.get("last_error"),
                 "last_webhook_status": state.get("last_webhook_status"),

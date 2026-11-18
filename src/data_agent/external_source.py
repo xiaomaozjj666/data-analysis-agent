@@ -21,6 +21,8 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import threading
+import time
 from typing import Any
 
 from data_agent.sql_guard import (
@@ -75,16 +77,28 @@ def _timeout_seconds() -> int:
 
 
 def _connect(module: Any, name: str, kwargs: dict[str, Any]) -> Any:
+    seconds = _timeout_seconds()
     if name == "sqlite3":
         # 测试/本地文件场景：显式 read-only URI 由调用方在 database 参数里给出。
-        connection = module.connect(**kwargs)
+        # 查询在工作线程执行（墙钟硬顶），必须允许跨线程使用同一连接。
+        connect_kwargs = dict(kwargs)
+        connect_kwargs.setdefault("check_same_thread", False)
+        connection = module.connect(**connect_kwargs)
         connection.execute("PRAGMA query_only = ON")
         return connection
     connection = module.connect(**kwargs)
     if name == "snowflake.connector":
         # Snowflake 没有会话级只读开关；至少把失控查询交给服务端超时取消。
         with connection.cursor() as cursor:
-            cursor.execute(f"ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = {_timeout_seconds()}")
+            cursor.execute(f"ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = {seconds}")
+    elif name == "psycopg":
+        # 与 postgres_source 同一保证：服务端 statement_timeout 取消失控查询。
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(f"SET statement_timeout = {seconds * 1000}")
+            connection.commit()
+        except Exception:  # noqa: BLE001 - 某些 DB-API 包装不支持会话级 SET，由线程兜底
+            pass
     return connection
 
 
@@ -168,15 +182,52 @@ def schema_summary(connection: Any) -> dict[str, Any]:
     return payload
 
 
-def run_select(connection: Any, sql: str, limit: int) -> dict[str, Any]:
-    """执行单条只读查询；语句校验、行/列上限与 JSON 安全转换复用 sql_guard。"""
+def run_select(
+    connection: Any, sql: str, limit: int, *, timeout_seconds: int | None = None
+) -> dict[str, Any]:
+    """执行单条只读查询；语句校验、行/列上限与 JSON 安全转换复用 sql_guard。
+
+    墙钟预算双层兜底：
+    - 支持 progress handler 的驱动（sqlite3）在执行中打断；
+    - 其余驱动用工作线程 + join(timeout) 硬顶——DB-API 无法中止已在服务端
+      跑的语句，这里保证的是**调用方不被无限期阻塞**，并在报错里说明该边界。
+    """
     statement = validate_select(sql)
-    cursor = connection.cursor()
-    try:
-        cursor.execute(statement)
-        return collect_rows(cursor, limit)
-    finally:
+    seconds = _timeout_seconds() if timeout_seconds is None else max(1, int(timeout_seconds))
+    if hasattr(connection, "set_progress_handler"):
+        deadline = time.monotonic() + seconds
+
+        def _over_budget() -> int:
+            return 1 if time.monotonic() > deadline else 0
+
         try:
-            cursor.close()
-        except Exception:  # noqa: BLE001
+            connection.set_progress_handler(_over_budget, 1000)
+        except Exception:  # noqa: BLE001 - 非标准 DB-API 包装可能没有该方法
             pass
+    outcome: dict[str, Any] = {}
+
+    def _execute() -> None:
+        cursor = connection.cursor()
+        try:
+            cursor.execute(statement)
+            outcome["result"] = collect_rows(cursor, limit)
+        except BaseException as exc:  # noqa: BLE001 - 驱动异常类型各异，统一透传
+            outcome["error"] = exc
+        finally:
+            try:
+                cursor.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    worker = threading.Thread(target=_execute, daemon=True)
+    worker.start()
+    worker.join(seconds)
+    if worker.is_alive():
+        raise ValueError(
+            f"查询超过 {seconds}s 墙钟预算，已放弃等待；数据库端可能仍在执行，"
+            f"请优化查询或在驱动/账号层配置服务端超时"
+            f"（DATA_AGENT_EXTERNAL_DB_TIMEOUT_SECONDS）。"
+        )
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["result"]

@@ -12,6 +12,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
+from uuid import uuid4
 
 import pandas as pd
 
@@ -104,7 +105,10 @@ def _atomic_write_text(path: Path, content: str, *, encoding: str = "utf-8") -> 
     a half-written one. ``os.replace`` is atomic on POSIX and Windows for
     same-filesystem renames.
     """
-    temporary = path.with_suffix(path.suffix + ".tmp")
+    # 唯一 tmp 名：固定 `<name>.tmp` 在两个进程/线程同时写同一目标时会互相
+    # 截断（后写的把先写的 tmp 覆盖，替换出半新半旧的内容）。注释/指标定义/
+    # automation 状态都可能被多入口写，用随机后缀隔离每一次写入。
+    temporary = path.with_name(f"{path.name}.{uuid4().hex[:8]}.tmp")
     try:
         temporary.write_text(content, encoding=encoding)
         os.replace(temporary, path)
