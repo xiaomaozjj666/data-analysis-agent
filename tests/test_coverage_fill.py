@@ -3165,3 +3165,40 @@ def test_curate_artifacts_keeps_dual_engine_same_title(tmp_path):
     assert len(visualizations2) == 2  # plotly 最新一张 + echarts 一张
     assert any(item["name"] == "散点图_3.html" for item in visualizations2)
     assert any(item["name"] == "散点图_2.html" for item in visualizations2)
+
+
+def test_correlation_p_values_match_scipy_and_constant_guard(tmp_path):
+    """相关分析：t 导出的 p 值与 scipy.pearsonr 一致；常数列/完全相关分支正确。"""
+    import numpy as np
+    from scipy import stats as scipy_stats
+
+    from data_agent.tools._stats import run_statistical_analysis
+
+    rng = np.random.default_rng(7)
+    n = 500
+    frame = pd.DataFrame(
+        {
+            "a": rng.normal(size=n),
+            "b": 0.6 * rng.normal(size=n),
+            "constant": [3.0] * n,
+            "perfect": np.arange(n, dtype=float),
+            "linear": 3.0 * np.arange(n) + 2.0,
+        }
+    )
+    frame.loc[[3, 7, 11], "b"] = np.nan  # 掩码路径
+    result = run_statistical_analysis(
+        frame, "correlation", columns=["a", "b", "constant", "perfect", "linear"]
+    )
+    p_values = result["p_values"]
+    # 与 scipy.pearsonr 逐对比对（相对误差 < 1e-9）
+    mask = frame["a"].notna() & frame["b"].notna()
+    expected = float(scipy_stats.pearsonr(frame.loc[mask, "a"], frame.loc[mask, "b"]).pvalue)
+    assert p_values["a"]["b"] == pytest.approx(expected, rel=1e-9)
+    # 常数列：p 为 None（旧实现 nunique()<2 分支）
+    assert p_values["a"]["constant"] is None
+    # 完全线性相关：p 为 0
+    assert p_values["perfect"]["linear"] == 0.0
+    # 相关矩阵数值不变（round 6）
+    assert result["result"]["a"]["b"] == pytest.approx(
+        float(frame[["a", "b"]].corr().loc["a", "b"]), abs=1e-6
+    )
