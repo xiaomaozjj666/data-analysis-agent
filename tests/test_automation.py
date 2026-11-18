@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import urllib.parse
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -854,3 +855,181 @@ def test_summarize_alerts_flat_semantics_and_missing_value():
     assert sparse is not None
     assert sparse["top_metric"] == "m"
     assert sparse["ranking"][0]["value"] is None
+
+
+# ---------------------------------------------------------------------------
+# 邮件 / 短信投递
+# ---------------------------------------------------------------------------
+
+
+def test_parse_recipients_validates_and_deduplicates(tmp_path):
+    spec = _make_spec(
+        tmp_path,
+        email_to="a@example.com, b@example.com;a@example.com",
+        sms_to=["+8613800000000"],
+    )
+    assert spec.email_to == ("a@example.com", "b@example.com")
+    assert spec.sms_to == ("+8613800000000",)
+    assert spec.to_dict()["email_to"] == ["a@example.com", "b@example.com"]
+
+    with pytest.raises(ValueError, match="email_to"):
+        automation.parse_spec(_base_spec(email_to=["not-an-email"]))
+    with pytest.raises(ValueError, match="sms_to"):
+        automation.parse_spec(_base_spec(sms_to=["123"]))
+    with pytest.raises(ValueError, match="最多 5"):
+        automation.parse_spec(_base_spec(sms_to=[f"+86138000000{i:02d}" for i in range(6)]))
+    with pytest.raises(ValueError, match="必须是字符串数组"):
+        automation.parse_spec(_base_spec(email_to={"a": 1}))
+
+
+class _FakeSMTP:
+    instances: list[_FakeSMTP] = []
+    fail_login: Exception | None = None
+
+    def __init__(self, host, port, timeout=None, context=None):
+        self.host = host
+        self.port = port
+        self.timeout = timeout
+        self.started_tls = False
+        self.logged_in: tuple[str, str] | None = None
+        self.messages: list[object] = []
+        _FakeSMTP.instances.append(self)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def starttls(self, context=None):
+        self.started_tls = True
+
+    def login(self, username, password):
+        if _FakeSMTP.fail_login is not None:
+            raise _FakeSMTP.fail_login
+        self.logged_in = (username, password)
+
+    def send_message(self, message):
+        self.messages.append(message)
+
+
+def test_email_delivery_success_and_config_errors(monkeypatch):
+    _FakeSMTP.instances.clear()
+    _FakeSMTP.fail_login = None
+    monkeypatch.setattr(automation.smtplib, "SMTP", _FakeSMTP)
+    monkeypatch.setenv(automation.SMTP_URL_ENV, "smtp://user:secret@smtp.example.test:587")
+    monkeypatch.setenv(automation.SMTP_FROM_ENV, "alerts@example.test")
+
+    error, status, duration = automation._send_email_result(("ops@example.test",), "告警", "正文")
+    assert error is None and status == 250 and duration >= 0
+    client = _FakeSMTP.instances[0]
+    assert client.started_tls is True
+    assert client.logged_in == ("user", "secret")
+    assert client.messages[0]["To"] == "ops@example.test"
+    assert client.messages[0]["From"] == "alerts@example.test"
+
+    monkeypatch.delenv(automation.SMTP_URL_ENV)
+    error, status, _ = automation._send_email_result(("ops@example.test",), "s", "b")
+    assert automation.SMTP_URL_ENV in error and status is None
+
+    monkeypatch.setenv(automation.SMTP_URL_ENV, "smtp://smtp.example.test:587")
+    monkeypatch.delenv(automation.SMTP_FROM_ENV)
+    error, _, _ = automation._send_email_result(("ops@example.test",), "s", "b")
+    assert automation.SMTP_FROM_ENV in error
+
+
+def test_email_subject_with_newline_is_sanitized(monkeypatch):
+    """任务名可含换行（JSON 输入）：主题必须折叠，不能造成邮件头注入。"""
+    _FakeSMTP.instances.clear()
+    _FakeSMTP.fail_login = None
+    monkeypatch.setattr(automation.smtplib, "SMTP", _FakeSMTP)
+    monkeypatch.setenv(automation.SMTP_URL_ENV, "smtp://user:secret@smtp.example.test:587")
+    monkeypatch.setenv(automation.SMTP_FROM_ENV, "alerts@example.test")
+
+    error, status, _ = automation._send_email_result(
+        ("ops@example.test",), "[data-agent] 任务\nBcc: evil@example.test", "body"
+    )
+    assert error is None and status == 250
+    subject = str(_FakeSMTP.instances[0].messages[0]["Subject"])
+    assert "\n" not in subject and "Bcc:" in subject
+
+
+def test_email_failure_redacts_password(monkeypatch):
+    _FakeSMTP.instances.clear()
+    _FakeSMTP.fail_login = OSError("login failed with secret")
+    monkeypatch.setattr(automation.smtplib, "SMTP", _FakeSMTP)
+    monkeypatch.setenv(automation.SMTP_URL_ENV, "smtp://user:secret@smtp.example.test:587")
+    monkeypatch.setenv(automation.SMTP_FROM_ENV, "alerts@example.test")
+    try:
+        error, status, _ = automation._send_email_result(("ops@example.test",), "s", "b")
+    finally:
+        _FakeSMTP.fail_login = None
+    assert "secret" not in error
+    assert "***" in error
+    assert status is None
+
+
+def test_sms_delivery_uses_twilio_form_and_redacts(monkeypatch):
+    monkeypatch.setenv(automation.TWILIO_SID_ENV, "AC123")
+    monkeypatch.setenv(automation.TWILIO_TOKEN_ENV, "token-secret")
+    monkeypatch.setenv(automation.TWILIO_FROM_ENV, "+12025550123")
+    calls: list[object] = []
+
+    class _Resp:
+        status = 201
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(
+        automation, "_post_request", lambda request: calls.append(request) or _Resp()
+    )
+    error, status, _ = automation._send_sms_result(("+8613800000000", "+8613800000001"), "x" * 400)
+    assert error is None and status == 201 and len(calls) == 2
+    form = urllib.parse.parse_qs(calls[0].data.decode("utf-8"))
+    assert form["To"] == ["+8613800000000"]
+    assert len(form["Body"][0]) <= 301
+    assert calls[0].headers["Authorization"].startswith("Basic ")
+
+    monkeypatch.delenv(automation.TWILIO_TOKEN_ENV)
+    error, status, _ = automation._send_sms_result(("+8613800000000",), "b")
+    assert "Twilio 配置不完整" in error and status is None
+
+
+def test_delivery_fields_recorded_in_run(tmp_path, monkeypatch):
+    monkeypatch.setenv(automation.SMTP_URL_ENV, "smtp://user:secret@smtp.example.test:587")
+    monkeypatch.setenv(automation.SMTP_FROM_ENV, "alerts@example.test")
+    monkeypatch.setenv(automation.TWILIO_SID_ENV, "AC123")
+    monkeypatch.setenv(automation.TWILIO_TOKEN_ENV, "token-secret")
+    monkeypatch.setenv(automation.TWILIO_FROM_ENV, "+12025550123")
+
+    class _Resp:
+        status = 201
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(automation, "_post_request", lambda request: _Resp())
+    monkeypatch.setattr(automation, "_send_email_result", lambda *args: (None, 250, 5))
+    monkeypatch.setattr(automation, "_send_sms_result", lambda *args: (None, 201, 6))
+    spec = _make_spec(tmp_path, email_to=["ops@example.test"], sms_to=["+8613800000000"])
+    runs = tmp_path / "runs"
+    dataset = Path(spec.dataset_path)
+    base = datetime(2026, 11, 17, tzinfo=UTC)
+    for value in (100, 110, 90):
+        _write_dataset(dataset, value)
+        automation.run_automation(spec, runs, now=base)
+    _write_dataset(dataset, 1000)
+    result = automation.run_automation(spec, runs, now=base + timedelta(days=1))
+
+    assert result["email_sent"] is True and result["sms_sent"] is True
+    assert result["email_status"] == 250 and result["sms_status"] == 201
+    state = json.loads((automation.task_dir(runs, spec.id) / automation.STATE_FILENAME).read_text())
+    assert state["last_email_status"] == 250
+    assert state["last_sms_status"] == 201

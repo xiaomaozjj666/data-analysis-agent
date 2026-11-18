@@ -173,11 +173,21 @@ Windows 任务计划同理，动作写 `python -m data_agent.automation run-due`
   （Lark 同域）/ `oapi.dingtalk.com` 时，自动把结构化告警压成对应机器人的
   文本格式（Slack `{"text": …}`、飞书 `{"msg_type":"text",…}`、钉钉
   `{"msgtype":"text",…}`）；其他地址保持原始 JSON。文本最多 3500 字符、
-  只列前 5 条告警，完整明细始终在 `alerts.jsonl`。邮件/短信未内置
-  （需要 SMTP/运营商凭据与退信治理），建议由外部监控系统消费 `status`/
-  webhook 转发。
-- **dry-run 无副作用**：不写历史/告警/状态、不推送，也不创建持久工作区；
-  webhook 配置了也不会发。
+  只列前 5 条告警，完整明细始终在 `alerts.jsonl`。
+- **邮件告警（SMTP）**：任务定义里只写收件人 `email_to`（最多 10 个），
+  连接信息全部放环境变量，凭据不落任务文件：
+  `DATA_AGENT_SMTP_URL`（`smtp://user:pass@host:587?starttls=1` 或
+  `smtps://…:465`）、可选 `DATA_AGENT_SMTP_FROM`（缺省用 URL 里的用户名）。
+  默认 STARTTLS；错误文本会脱敏密码后写入 `last_email_error`。发送在告警落盘之后，
+  失败不影响任务状态回滚。
+- **短信告警（Twilio）**：任务定义写 `sms_to`（E.164，最多 5 个），凭据放
+  `DATA_AGENT_TWILIO_ACCOUNT_SID` / `DATA_AGENT_TWILIO_AUTH_TOKEN` /
+  `DATA_AGENT_TWILIO_FROM`。短信正文截断到 300 字（运营商分段与计费考虑），
+  完整明细仍在 `alerts.jsonl`；同样脱敏错误信息。
+- **未内置的投递方式**：邮件与短信之外的自定义渠道用 webhook（任意 HTTP
+  网关即可转发到企业 IM / 工单系统）；运营商直连短信需按供应商协议单独实现。
+- **dry-run 无副作用**：不写历史/告警/状态、不推送（webhook/邮件/短信都不发），
+  也不创建持久工作区。
 - **时区**：`daily_at` 按运行机器的本地时区解释；DST 切换日目标时刻仍按
   当天本地时间计算，最多偏移一小时，不会跳过或重复执行（以 `last_run_at`
   与目标时刻比较）。

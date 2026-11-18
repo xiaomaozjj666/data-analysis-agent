@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import ipaddress
 import json
@@ -29,7 +30,9 @@ import math
 import os
 import re
 import shutil
+import smtplib
 import socket
+import ssl
 import statistics
 import sys
 import tempfile
@@ -40,6 +43,7 @@ import urllib.request
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
+from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +71,16 @@ RETRY_BACKOFF_MINUTES = 5
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+_EMAIL_RE = re.compile(r"^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$")
+_SMS_RE = re.compile(r"^\+?[0-9]{7,15}$")
+
+#: 投递渠道的凭据只从环境变量读，不落任务定义（避免 automations.json 泄密）。
+SMTP_URL_ENV = "DATA_AGENT_SMTP_URL"
+SMTP_FROM_ENV = "DATA_AGENT_SMTP_FROM"
+TWILIO_SID_ENV = "DATA_AGENT_TWILIO_ACCOUNT_SID"
+TWILIO_TOKEN_ENV = "DATA_AGENT_TWILIO_AUTH_TOKEN"
+TWILIO_FROM_ENV = "DATA_AGENT_TWILIO_FROM"
+DELIVERY_TIMEOUT_SECONDS = 10.0
 _PRIVATE_FLAGS = (
     "is_private",
     "is_loopback",
@@ -93,11 +107,17 @@ class AutomationSpec:
     history_limit: int = DEFAULT_HISTORY_LIMIT
     min_samples: int = DEFAULT_MIN_SAMPLES
     webhook_url: str = ""
+    #: 邮件收件人（SMTP 连接信息放环境变量，任务定义里不保存凭据）。
+    email_to: tuple[str, ...] = ()
+    #: 短信收件人（E.164 格式；Twilio 凭据放环境变量）。
+    sms_to: tuple[str, ...] = ()
     enabled: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["metric_names"] = list(self.metric_names)
+        payload["email_to"] = list(self.email_to)
+        payload["sms_to"] = list(self.sms_to)
         return payload
 
 
@@ -265,6 +285,177 @@ def _post_request(request: urllib.request.Request):
     return opener.open(request, timeout=WEBHOOK_TIMEOUT_SECONDS)
 
 
+def _parse_recipients(raw: Any, *, field: str, task_id: str) -> tuple[str, ...]:
+    """解析 email_to / sms_to；接受数组或逗号/分号分隔字符串。"""
+    if raw is None or raw == "":
+        return ()
+    if isinstance(raw, str):
+        items = [part.strip() for part in re.split(r"[,;]", raw) if part.strip()]
+    elif isinstance(raw, (list, tuple)):
+        items = [str(part).strip() for part in raw if str(part).strip()]
+    else:
+        raise ValueError(f"任务 {task_id} 的 {field} 必须是字符串数组或逗号分隔字符串。")
+    unique = list(dict.fromkeys(items))
+    limit = 10 if field == "email_to" else 5
+    if len(unique) > limit:
+        raise ValueError(f"任务 {task_id} 的 {field} 最多 {limit} 个收件人。")
+    pattern = _EMAIL_RE if field == "email_to" else _SMS_RE
+    invalid = [item for item in unique if not pattern.fullmatch(item)]
+    if invalid:
+        hint = "邮箱地址" if field == "email_to" else "E.164 手机号（如 +8613800000000）"
+        raise ValueError(f"任务 {task_id} 的 {field} 含非法{hint}：{invalid[0]}")
+    return tuple(unique)
+
+
+def _redact(text: str, *secrets: str) -> str:
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "***")
+    return text
+
+
+def _smtp_config() -> dict[str, Any] | None:
+    """从环境变量解析 SMTP 配置；未配置返回 None，配置错误抛 ValueError。"""
+    raw = os.environ.get(SMTP_URL_ENV, "").strip()
+    if not raw:
+        return None
+    parsed = urllib.parse.urlsplit(raw)
+    if parsed.scheme not in {"smtp", "smtps"}:
+        raise ValueError(f"{SMTP_URL_ENV} 只支持 smtp:// 或 smtps://")
+    if not parsed.hostname:
+        raise ValueError(f"{SMTP_URL_ENV} 缺少主机名")
+    username = urllib.parse.unquote(parsed.username or "")
+    password = urllib.parse.unquote(parsed.password or "")
+    query = urllib.parse.parse_qs(parsed.query)
+    use_ssl = parsed.scheme == "smtps"
+    starttls = not use_ssl and (query.get("starttls", ["1"])[0].lower() not in {"0", "false"})
+    return {
+        "host": parsed.hostname,
+        "port": parsed.port or (465 if use_ssl else 587),
+        "username": username,
+        "password": password,
+        "ssl": use_ssl,
+        "starttls": starttls,
+        "from_addr": os.environ.get(SMTP_FROM_ENV, "").strip() or username,
+    }
+
+
+def _send_email_result(
+    recipients: tuple[str, ...], subject: str, text: str
+) -> tuple[str | None, int | None, int]:
+    """发送告警邮件；返回 ``(错误文本, SMTP 状态码, 耗时 ms)``，不抛异常。"""
+    if not recipients:
+        return None, None, 0
+    try:
+        config = _smtp_config()
+    except ValueError as exc:
+        return str(exc), None, 0
+    if config is None:
+        return f"未配置 {SMTP_URL_ENV}，无法发送邮件。", None, 0
+    if not config["from_addr"]:
+        return f"缺少发件人：请设置 {SMTP_FROM_ENV} 或在 SMTP URL 中带用户名。", None, 0
+    message = EmailMessage()
+    # 主题含任务名（用户可控）：折叠换行，防止邮件头注入（EmailMessage 也会
+    # 报错，但这里先归一化，保证多行任务名仍能正常发信而不是整封失败）。
+    message["Subject"] = " ".join(str(subject).split())[:200]
+    message["From"] = str(config["from_addr"])
+    message["To"] = ", ".join(recipients)
+    message.set_content(text)
+    started = time.monotonic()
+    client: smtplib.SMTP | None = None
+    try:
+        if config["ssl"]:
+            client = smtplib.SMTP_SSL(
+                str(config["host"]),
+                int(config["port"]),
+                timeout=DELIVERY_TIMEOUT_SECONDS,
+                context=ssl.create_default_context(),
+            )
+        else:
+            client = smtplib.SMTP(
+                str(config["host"]), int(config["port"]), timeout=DELIVERY_TIMEOUT_SECONDS
+            )
+        with client:
+            if config["starttls"]:
+                client.starttls(context=ssl.create_default_context())
+            if config["username"]:
+                client.login(str(config["username"]), str(config["password"]))
+            client.send_message(message)
+        return None, 250, int((time.monotonic() - started) * 1000)
+    except (smtplib.SMTPException, OSError, ValueError) as exc:
+        code = getattr(exc, "smtp_code", None)
+        reason = _redact(str(exc), str(config["password"]))[:300]
+        return (
+            reason,
+            int(code) if isinstance(code, int) else None,
+            int((time.monotonic() - started) * 1000),
+        )
+
+
+def _twilio_config() -> dict[str, str] | None:
+    sid = os.environ.get(TWILIO_SID_ENV, "").strip()
+    token = os.environ.get(TWILIO_TOKEN_ENV, "").strip()
+    sender = os.environ.get(TWILIO_FROM_ENV, "").strip()
+    if not sid and not token and not sender:
+        return None
+    missing = [
+        name
+        for name, value in (
+            (TWILIO_SID_ENV, sid),
+            (TWILIO_TOKEN_ENV, token),
+            (TWILIO_FROM_ENV, sender),
+        )
+        if not value
+    ]
+    if missing:
+        raise ValueError(f"Twilio 配置不完整：缺少 {', '.join(missing)}")
+    return {"sid": sid, "token": token, "from": sender}
+
+
+def _send_sms_result(recipients: tuple[str, ...], text: str) -> tuple[str | None, int | None, int]:
+    """通过 Twilio REST API 发送短信；返回 ``(错误文本, HTTP 状态码, 耗时 ms)``。"""
+    if not recipients:
+        return None, None, 0
+    try:
+        config = _twilio_config()
+    except ValueError as exc:
+        return str(exc), None, 0
+    if config is None:
+        return f"未配置 Twilio（{TWILIO_SID_ENV}/{TWILIO_TOKEN_ENV}/{TWILIO_FROM_ENV}）。", None, 0
+    started = time.monotonic()
+    endpoint = f"https://api.twilio.com/2010-04-01/Accounts/{urllib.parse.quote(config['sid'])}/Messages.json"
+    auth = base64.b64encode(f"{config['sid']}:{config['token']}".encode()).decode("ascii")
+    body = text[:300] + ("…" if len(text) > 300 else "")
+    statuses: list[int] = []
+    errors: list[str] = []
+    for recipient in recipients:
+        form = urllib.parse.urlencode(
+            {"From": config["from"], "To": recipient, "Body": body}
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            endpoint,
+            data=form,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Authorization": f"Basic {auth}",
+            },
+            method="POST",
+        )
+        try:
+            with _post_request(request) as response:
+                status = getattr(response, "status", None) or getattr(response, "code", None)
+                statuses.append(int(status) if status is not None else 201)
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            code = getattr(exc, "code", None)
+            if isinstance(code, int):
+                statuses.append(code)
+            errors.append(_redact(str(exc), config["token"], config["sid"])[:200])
+    elapsed = int((time.monotonic() - started) * 1000)
+    if errors:
+        return "；".join(errors)[:300], statuses[-1] if statuses else None, elapsed
+    return None, statuses[-1] if statuses else None, elapsed
+
+
 # ---------------------------------------------------------------------------
 # 定义解析与存储
 # ---------------------------------------------------------------------------
@@ -320,6 +511,8 @@ def parse_spec(payload: Any) -> AutomationSpec:
     webhook_error = validate_webhook_url(webhook_url, resolve=False)
     if webhook_error:
         raise ValueError(f"任务 {task_id} 的 webhook_url 不安全：{webhook_error}。")
+    email_to = _parse_recipients(payload.get("email_to"), field="email_to", task_id=task_id)
+    sms_to = _parse_recipients(payload.get("sms_to"), field="sms_to", task_id=task_id)
     return AutomationSpec(
         id=task_id,
         name=name,
@@ -333,6 +526,8 @@ def parse_spec(payload: Any) -> AutomationSpec:
         history_limit=history_limit,
         min_samples=min_samples,
         webhook_url=webhook_url,
+        email_to=email_to,
+        sms_to=sms_to,
         enabled=bool(payload.get("enabled", True)),
     )
 
@@ -841,6 +1036,79 @@ def run_automation(
         )
 
 
+def render_dashboard(overview: dict[str, Any], *, refresh_seconds: int = 0) -> str:
+    """把 :func:`status_overview` 渲染成零依赖的单文件 HTML 看板。
+
+    看板是只读快照：不引入前端构建链、不依赖后端在线；`refresh_seconds>0`
+    时用 meta refresh 定时重载（需要重新生成文件才能看到新数据）。所有任务
+    字段都经过 HTML 转义——任务名来自用户配置，不能当可信 HTML。
+    """
+    from html import escape
+
+    summary = overview.get("summary") if isinstance(overview.get("summary"), dict) else {}
+    tasks = overview.get("tasks") if isinstance(overview.get("tasks"), list) else []
+    refresh = max(0, int(refresh_seconds))
+    meta_refresh = f'<meta http-equiv="refresh" content="{refresh}">' if refresh else ""
+    cards = "".join(
+        f'<div class="card"><span>{escape(label)}</span><strong>{escape(str(value))}</strong></div>'
+        for label, value in (
+            ("任务总数", summary.get("total", 0)),
+            ("启用", summary.get("enabled", 0)),
+            ("已到期", summary.get("due", 0)),
+            ("上次告警", summary.get("alerts", 0)),
+            ("失败任务", summary.get("errors", 0)),
+        )
+    )
+    rows: list[str] = []
+    for item in tasks:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("last_status") or "never")
+        due = bool(item.get("due"))
+        css = "due" if due else status if status in {"ok", "partial", "error"} else "never"
+        rows.append(
+            "<tr>"
+            f"<td><strong>{escape(str(item.get('name') or ''))}</strong><br>"
+            f"<code>{escape(str(item.get('id') or ''))}</code></td>"
+            f'<td><span class="chip {css}">{escape("到期" if due else status)}</span></td>'
+            f"<td>{escape(str(item.get('last_run_at') or '从未运行'))}</td>"
+            f"<td>{escape(str(item.get('next_due_at') or '—'))}</td>"
+            f"<td>{escape(str(item.get('last_alert_headline') or '—'))}</td>"
+            f"<td>{escape(str(item.get('last_error') or '—'))}</td>"
+            "</tr>"
+        )
+    body_rows = "".join(rows) or '<tr><td colspan="6" class="empty">暂无任务</td></tr>'
+    generated = escape(str(overview.get("generated_at") or ""))
+    return f"""<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+{meta_refresh}
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
+<title>data-agent 定时任务看板</title>
+<style>
+body{{margin:0;padding:32px;background:#0b1020;color:#e5e7eb;font:15px/1.6 system-ui,"Segoe UI",sans-serif}}
+h1{{margin:0 0 4px;font-size:24px}} .muted{{color:#94a3b8;margin-bottom:24px}}
+.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:24px}}
+.card{{background:#151b2e;border:1px solid #243049;border-radius:12px;padding:14px}}
+.card span{{color:#94a3b8;font-size:13px}} .card strong{{display:block;font-size:26px;margin-top:4px}}
+table{{width:100%;border-collapse:collapse;background:#151b2e;border-radius:12px;overflow:hidden}}
+th,td{{text-align:left;padding:12px 14px;border-bottom:1px solid #243049;vertical-align:top}}
+th{{color:#94a3b8;font-weight:600;font-size:13px}} tr:last-child td{{border-bottom:0}}
+code{{color:#93c5fd;font-size:12px}}
+.chip{{display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;background:#334155}}
+.chip.ok{{background:#14532d;color:#bbf7d0}} .chip.partial{{background:#713f12;color:#fef08a}}
+.chip.error{{background:#7f1d1d;color:#fecaca}} .chip.due{{background:#1e3a8a;color:#bfdbfe}}
+.chip.never{{background:#334155;color:#cbd5e1}} .empty{{text-align:center;color:#64748b}}
+</style></head><body>
+<h1>data-agent 定时任务看板</h1>
+<div class="muted">生成于 {generated} · 只读快照</div>
+<div class="cards">{cards}</div>
+<table><thead><tr><th>任务</th><th>状态</th><th>上次运行</th><th>下次预计</th><th>最近归因</th><th>最近错误</th></tr></thead>
+<tbody>{body_rows}</tbody></table>
+</body></html>
+"""
+
+
 def _run_with_workspace(
     workspace: DataWorkspace,
     spec: AutomationSpec,
@@ -897,6 +1165,12 @@ def _run_with_workspace(
         "webhook_error": None,
         "webhook_status": None,
         "webhook_duration_ms": None,
+        "email_sent": False,
+        "email_error": None,
+        "email_status": None,
+        "sms_sent": False,
+        "sms_error": None,
+        "sms_status": None,
         "dry_run": dry_run,
         "history_samples": len(history),
         "metrics_file": str(metrics_path),
@@ -956,23 +1230,41 @@ def _run_with_workspace(
         state.pop("last_errors", None)
     _write_state(runs_dir, spec.id, state)
 
+    notification = {
+        "task": {"id": spec.id, "name": spec.name},
+        "ran_at": ran_at,
+        "alerts": alerts,
+        "attribution": attribution,
+    }
     webhook_error: str | None = None
     webhook_status: int | None = None
     webhook_duration_ms: int | None = None
-    if alerts and notify and spec.webhook_url:
+    email_error: str | None = None
+    email_status: int | None = None
+    sms_error: str | None = None
+    sms_status: int | None = None
+    notify_now = bool(alerts and notify)
+    if notify_now and spec.webhook_url:
         webhook_error, webhook_status, webhook_duration_ms = _notify_result(
-            spec.webhook_url,
-            {
-                "task": {"id": spec.id, "name": spec.name},
-                "ran_at": ran_at,
-                "alerts": alerts,
-                "attribution": attribution,
-            },
+            spec.webhook_url, notification
         )
-    result["notified"] = bool(alerts and notify and spec.webhook_url and not webhook_error)
+    if notify_now and spec.email_to:
+        subject = f"[data-agent] {spec.name} 触发 {len(alerts)} 项告警"
+        email_error, email_status, _ = _send_email_result(
+            spec.email_to, subject, _alert_text(notification)
+        )
+    if notify_now and spec.sms_to:
+        sms_error, sms_status, _ = _send_sms_result(spec.sms_to, _alert_text(notification))
+    result["notified"] = bool(notify_now and spec.webhook_url and not webhook_error)
     result["webhook_error"] = webhook_error
     result["webhook_status"] = webhook_status
     result["webhook_duration_ms"] = webhook_duration_ms
+    result["email_sent"] = bool(notify_now and spec.email_to and not email_error)
+    result["email_error"] = email_error
+    result["email_status"] = email_status
+    result["sms_sent"] = bool(notify_now and spec.sms_to and not sms_error)
+    result["sms_error"] = sms_error
+    result["sms_status"] = sms_status
     if webhook_error:
         state["last_webhook_error"] = webhook_error
     else:
@@ -981,6 +1273,16 @@ def _run_with_workspace(
         # 只有真的尝试过推送才落这两个字段：区分「没配 webhook」与「推失败」。
         state["last_webhook_status"] = webhook_status
         state["last_webhook_duration_ms"] = webhook_duration_ms
+    for channel, error, status in (
+        ("email", email_error, email_status),
+        ("sms", sms_error, sms_status),
+    ):
+        if error:
+            state[f"last_{channel}_error"] = error
+        else:
+            state.pop(f"last_{channel}_error", None)
+        if status is not None:
+            state[f"last_{channel}_status"] = status
     state["last_notified"] = result["notified"]
     _write_state(runs_dir, spec.id, state)
     return result
@@ -1071,6 +1373,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="有到期任务或上次运行失败时以退出码 1 结束（供监控调用）",
     )
+    dashboard = sub.add_parser("dashboard", help="生成零依赖的静态 HTML 看板")
+    dashboard.add_argument("--out", help="输出 HTML 路径（省略则打印到 stdout）")
+    dashboard.add_argument(
+        "--refresh-seconds", type=int, default=0, help="meta refresh 间隔（0=不自动刷新）"
+    )
 
     remove = sub.add_parser("remove", help="删除任务")
     remove.add_argument("--id", required=True)
@@ -1106,6 +1413,18 @@ def main(argv: list[str] | None = None) -> int:
             output = [spec.to_dict() for spec in load_specs(runs_dir)]
         elif args.command == "status":
             output = status_overview(runs_dir)
+        elif args.command == "dashboard":
+            overview = status_overview(runs_dir)
+            html_text = render_dashboard(
+                overview, refresh_seconds=max(0, int(args.refresh_seconds or 0))
+            )
+            if not args.out:
+                sys.stdout.write(html_text)
+                return 0
+            target = Path(args.out).expanduser()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _atomic_write_text(target, html_text)
+            output = {"path": str(target), "summary": overview["summary"]}
         elif args.command == "remove":
             output = {"removed": remove_spec(runs_dir, args.id)}
         elif args.command == "run":

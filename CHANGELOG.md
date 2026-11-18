@@ -11,6 +11,13 @@
 
 ### 新增
 
+- **邮件与短信告警通道**：任务定义可配 `email_to`（最多 10 个）与 `sms_to`
+  （E.164，最多 5 个）；邮件走 SMTP（`DATA_AGENT_SMTP_URL`，支持
+  `smtp://`/`smtps://`、STARTTLS，发件人可用 `DATA_AGENT_SMTP_FROM` 覆盖），
+  短信走 Twilio（`DATA_AGENT_TWILIO_ACCOUNT_SID` / `_AUTH_TOKEN` / `_FROM`）。
+  凭据只从环境变量读取、错误文本脱敏；发送失败记录
+  `last_email_error` / `last_sms_error` 与状态码，不影响任务状态回滚。
+  本地假 SMTP 服务器端到端用例覆盖成功与配置错误分支。
 - **技能包安装与清单**：`skill.py` 新增 `install`（项目级 `.data-agent/skills`
   或全局级 `~/.data-agent/skills`，`DATA_AGENT_SKILLS_DIR` 可覆盖）与 `list`。
   安装按不可信输入处理：只复制三个约定文件、拒绝符号链接、slug 安全字符集、

@@ -248,3 +248,44 @@ def test_cli_status_and_fail_on_alert(tmp_path, capsys):
     assert automation.main(["--runs-dir", str(runs), "status", "--fail-on-alert"]) == 1
     overview = json.loads(capsys.readouterr().out)
     assert overview["summary"]["alerts"] >= 1
+
+
+def test_dashboard_html_is_escaped_and_refreshes(tmp_path, capsys):
+    runs = tmp_path / "runs"
+    payload = _spec_payload(tmp_path, name='<script>alert("x")</script>')
+    spec_path = _write_spec(tmp_path, payload)
+    assert automation.main(["--runs-dir", str(runs), "add", "--spec", str(spec_path)]) == 0
+    capsys.readouterr()
+
+    target = tmp_path / "dashboard.html"
+    assert (
+        automation.main(
+            [
+                "--runs-dir",
+                str(runs),
+                "dashboard",
+                "--out",
+                str(target),
+                "--refresh-seconds",
+                "30",
+            ]
+        )
+        == 0
+    )
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["path"] == str(target)
+    html = target.read_text(encoding="utf-8")
+    assert "<!doctype html>" in html
+    assert 'http-equiv="refresh" content="30"' in html
+    assert "<script>alert" not in html
+    assert "&lt;script&gt;alert" in html
+    assert "定时任务看板" in html
+    assert "任务总数" in html
+
+
+def test_dashboard_stdout_mode(tmp_path, capsys):
+    runs = tmp_path / "runs"
+    assert automation.main(["--runs-dir", str(runs), "dashboard"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("<!doctype html>")
+    assert "暂无任务" in out
