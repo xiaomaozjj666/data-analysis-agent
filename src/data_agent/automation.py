@@ -168,6 +168,57 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+def _channel_for_url(webhook_url: str) -> str | None:
+    """按 webhook 主机识别常见群机器人（Slack / 飞书 / 钉钉）。"""
+    host = (urllib.parse.urlsplit(webhook_url).hostname or "").lower()
+    if host == "hooks.slack.com" or host.endswith(".slack.com"):
+        return "slack"
+    if host in {"open.feishu.cn", "open.larksuite.com"} or host.endswith(".larksuite.com"):
+        return "feishu"
+    if host in {"oapi.dingtalk.com", "api.dingtalk.com"} or host.endswith(".dingtalk.com"):
+        return "dingtalk"
+    return None
+
+
+def _alert_text(payload: dict[str, Any]) -> str:
+    """把结构化告警压成群机器人可直接渲染的短文本（有长度上限）。"""
+    task = payload.get("task") if isinstance(payload.get("task"), dict) else {}
+    alerts = payload.get("alerts") if isinstance(payload.get("alerts"), list) else []
+    lines = [
+        f"[data-agent] {task.get('name') or task.get('id') or '定时任务'}"
+        f" @ {payload.get('ran_at') or ''}".rstrip()
+    ]
+    attribution = payload.get("attribution")
+    if isinstance(attribution, dict) and attribution.get("headline"):
+        lines.append(str(attribution["headline"]))
+    for alert in alerts[:5]:
+        if not isinstance(alert, dict):
+            continue
+        reasons = "；".join(str(item) for item in alert.get("reasons") or [])
+        lines.append(f"- {alert.get('metric')}={alert.get('value')}：{reasons or '触发阈值'}")
+    if len(alerts) > 5:
+        lines.append(f"…另有 {len(alerts) - 5} 项告警，详见 alerts.jsonl")
+    return "\n".join(lines)[:3500]
+
+
+def _webhook_body(webhook_url: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """按目标渠道转换请求体；未识别的地址保持原始结构化 JSON。
+
+    群机器人只接受各自的文本格式，直接 POST 原始 JSON 会 400；识别到已知
+    主机时改发文本摘要，避免用户还要自己写一层格式转换。结构化明细仍完整
+    保存在 ``alerts.jsonl``，不因渠道压缩而丢失。
+    """
+    channel = _channel_for_url(webhook_url)
+    if channel is None:
+        return payload
+    text = _alert_text(payload)
+    if channel == "slack":
+        return {"text": text}
+    if channel == "feishu":
+        return {"msg_type": "text", "content": {"text": text}}
+    return {"msgtype": "text", "text": {"content": text}}
+
+
 def _notify_result(webhook_url: str, payload: dict[str, Any]) -> tuple[str | None, int | None, int]:
     """POST 告警到 webhook；返回 ``(错误文本, HTTP 状态码, 耗时 ms)``。
 
@@ -179,7 +230,7 @@ def _notify_result(webhook_url: str, payload: dict[str, Any]) -> tuple[str | Non
     unsafe = validate_webhook_url(webhook_url)
     if unsafe:
         return f"webhook 被拒绝：{unsafe}", None, 0
-    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    body = json.dumps(_webhook_body(webhook_url, payload), ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
         webhook_url,
         data=body,
@@ -425,6 +476,76 @@ def is_due(
     return last < target
 
 
+def next_due_at(spec: AutomationSpec, last_run_at: str, now: datetime) -> datetime | None:
+    """估算下一次到期时刻；停用任务返回 ``None``。
+
+    这是**展示用估算**，不是调度器的承诺：间隔任务按"上次运行 + 间隔"推算，
+    每日任务按当天/次日的本地目标时刻推算。DST 切换日仍按本地墙钟时间，
+    与 :func:`is_due` 的判定口径一致；错过的任务会返回一个已过去的时刻，
+    提醒调用方"现在已经到期"，而不是假装它还在未来。
+    """
+    if not spec.enabled:
+        return None
+    last = _parse_time(last_run_at) if last_run_at else None
+    if spec.interval_minutes:
+        return now if last is None else last + timedelta(minutes=spec.interval_minutes)
+    hour, minute = (int(part) for part in spec.daily_at.split(":"))
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if now < target or last is None or last < target:
+        return target
+    return target + timedelta(days=1)
+
+
+def status_overview(runs_dir: str | Path, *, now: datetime | None = None) -> dict[str, Any]:
+    """汇总全部任务的状态，供看板/巡检脚本消费（不触发任何执行）。"""
+    moment = now or datetime.now().astimezone()
+    tasks: list[dict[str, Any]] = []
+    for spec in load_specs(runs_dir):
+        state = _read_state(runs_dir, spec.id)
+        last_run_at = str(state.get("last_run_at") or "")
+        due = is_due(
+            spec,
+            last_run_at,
+            moment,
+            next_retry_at=str(state.get("next_retry_at") or ""),
+        )
+        next_due = next_due_at(spec, last_run_at, moment)
+        tasks.append(
+            {
+                "id": spec.id,
+                "name": spec.name,
+                "enabled": spec.enabled,
+                "schedule": (
+                    {"interval_minutes": spec.interval_minutes}
+                    if spec.interval_minutes
+                    else {"daily_at": spec.daily_at}
+                ),
+                "due": due,
+                "next_due_at": next_due.isoformat(timespec="seconds") if next_due else None,
+                "last_run_at": last_run_at or None,
+                "last_status": state.get("last_status"),
+                "last_alerts": int(state.get("last_alerts") or 0),
+                "last_alert_headline": state.get("last_alert_headline"),
+                "last_error": state.get("last_error"),
+                "last_webhook_status": state.get("last_webhook_status"),
+                "next_retry_at": state.get("next_retry_at"),
+                "state_corrupt": _state_corrupt(runs_dir, spec.id),
+            }
+        )
+    summary = {
+        "total": len(tasks),
+        "enabled": sum(1 for item in tasks if item["enabled"]),
+        "due": sum(1 for item in tasks if item["due"]),
+        "alerts": sum(item["last_alerts"] for item in tasks),
+        "errors": sum(1 for item in tasks if item["last_status"] == "error"),
+    }
+    return {
+        "generated_at": moment.isoformat(timespec="seconds"),
+        "summary": summary,
+        "tasks": tasks,
+    }
+
+
 def read_history(runs_dir: str | Path, task_id: str, limit: int) -> list[dict[str, Any]]:
     path = task_dir(runs_dir, task_id) / HISTORY_FILENAME
     if not path.is_file():
@@ -552,7 +673,15 @@ def detect_anomalies(
             if last == 0 and abs(numeric_value) > 1e-9:
                 # 零基线没有方差与环比，按「刚过阈值」计，至少不排在正常项后面。
                 ratios.append(1.0)
-            direction = "up" if numeric_value > mean else "down" if numeric_value < mean else "flat"
+            # 方向优先按环比符号——headline 展示的首选口径就是环比；没有环比
+            # （历史不足/零基线）才退回与基线均值比较，避免出现「上升（环比
+            # -50%）」这种自相矛盾的摘要。
+            if pct_change is not None:
+                direction = "up" if pct_change > 0 else "down" if pct_change < 0 else "flat"
+            else:
+                direction = (
+                    "up" if numeric_value > mean else "down" if numeric_value < mean else "flat"
+                )
             alerts.append(
                 {
                     "metric": metric,
@@ -580,7 +709,10 @@ def summarize_alerts(alerts: list[dict[str, Any]]) -> dict[str, Any] | None:
         return None
     ranked = sorted(
         alerts,
-        key=lambda item: (-float(item.get("severity") or 0.0), -abs(float(item["value"]))),
+        key=lambda item: (
+            -float(item.get("severity") or 0.0),
+            -abs(float(item.get("value") or 0.0)),
+        ),
     )
     top = ranked[0]
     detail: list[str] = []
@@ -593,26 +725,30 @@ def summarize_alerts(alerts: list[dict[str, Any]]) -> dict[str, Any] | None:
     label = {"up": "上升", "down": "下降", "flat": "持平"}.get(
         str(top.get("direction") or ""), "变化"
     )
-    headline = f"{top['metric']} {label}（{'、'.join(detail)}），为本次偏离最大的指标"
+    headline = f"{top.get('metric')} {label}（{'、'.join(detail)}），为本次偏离最大的指标"
     directions = {"up": 0, "down": 0, "flat": 0}
     for item in alerts:
         key = str(item.get("direction") or "")
         if key in directions:
             directions[key] += 1
-    moved = [key for key, count in directions.items() if count and key != "flat"]
+    has_up = directions["up"] > 0
+    has_down = directions["down"] > 0
     return {
         "headline": headline,
-        "top_metric": top["metric"],
+        "top_metric": top.get("metric"),
         "max_severity": top.get("severity"),
         "count": len(alerts),
-        "same_direction": len(moved) == 1,
+        # 「所有告警同向」要求：确有移动、且只有一个方向、没有持平项。
+        # [up, flat] 或全 flat 都不算同向（此前 flat 被排除在 moved 外，
+        # 会误报同向）。
+        "same_direction": (has_up != has_down) and directions["flat"] == 0,
         "directions": directions,
         "ranking": [
             {
-                "metric": item["metric"],
+                "metric": item.get("metric"),
                 "severity": item.get("severity"),
                 "direction": item.get("direction"),
-                "value": item["value"],
+                "value": item.get("value"),
                 "baseline_mean": item.get("baseline_mean"),
             }
             for item in ranked[:10]
@@ -929,6 +1065,12 @@ def main(argv: list[str] | None = None) -> int:
     add.add_argument("--spec", required=True, help="任务定义 JSON 文件路径")
 
     sub.add_parser("list", help="列出全部任务")
+    status = sub.add_parser("status", help="汇总任务运行状态（巡检/看板用）")
+    status.add_argument(
+        "--fail-on-alert",
+        action="store_true",
+        help="有到期任务或上次运行失败时以退出码 1 结束（供监控调用）",
+    )
 
     remove = sub.add_parser("remove", help="删除任务")
     remove.add_argument("--id", required=True)
@@ -962,6 +1104,8 @@ def main(argv: list[str] | None = None) -> int:
                 output = {"added": [spec.id]}
         elif args.command == "list":
             output = [spec.to_dict() for spec in load_specs(runs_dir)]
+        elif args.command == "status":
+            output = status_overview(runs_dir)
         elif args.command == "remove":
             output = {"removed": remove_spec(runs_dir, args.id)}
         elif args.command == "run":
@@ -982,6 +1126,12 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(f"错误：{exc}\n")
         return 2
     sys.stdout.write(json.dumps(output, ensure_ascii=False, indent=2) + "\n")
+    if args.command == "status" and args.fail_on_alert:
+        summary = output["summary"]
+        # 告警也算「需要人看一眼」：上次运行有告警但还没到下次调度时，
+        # 监控不应因为 due=0 就显示一切正常。
+        if summary["due"] or summary["errors"] or summary["alerts"]:
+            return 1
     return 0
 
 

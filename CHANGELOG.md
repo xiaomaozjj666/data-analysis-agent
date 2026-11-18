@@ -20,6 +20,12 @@
   `run`/`run-due` 结果、`alerts.jsonl` 与 webhook 增加 `attribution`
   （最大偏离指标、方向、`same_direction` 同向判断、Top-10 排名），
   `state.json` 记录 `last_alert_headline`。归因只到统计层，不推导业务原因。
+- **任务巡检视图 `automation status`**：只读汇总任务的上次运行、到期状态、
+  下次预计到期、最近归因与错误，`--fail-on-alert` 在到期、失败或有告警时
+  退出码为 1，供看板/监控调用；不触发任何执行、不写状态。
+- **群机器人推送适配**：webhook 目标为 Slack / 飞书（Lark）/ 钉钉时自动
+  转换为对应文本格式，其他地址保持原始结构化 JSON；完整明细仍写
+  `alerts.jsonl`。邮件/短信不内置，交由外部监控消费。
 - **经营简报核验（Sales Audit）**：新增 `POST /api/sessions/{id}/sales-audit`
   与「简报核验」工作区 Tab。只读原始上传 CSV，按 `SUM(sales)` / `SUM(quantity)`
   / `COUNT(DISTINCT order_id)` 复算，把草稿里的指标行逐条判为

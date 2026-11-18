@@ -216,3 +216,35 @@ def test_cli_run_due_skips_non_due(tmp_path, capsys):
     automation._write_state(runs, spec.id, {"last_run_at": datetime.now(UTC).isoformat()})
     assert automation.main(["--runs-dir", str(runs), "run-due", "--no-notify"]) == 0
     assert json.loads(capsys.readouterr().out) == []
+
+
+def test_cli_status_and_fail_on_alert(tmp_path, capsys):
+    runs = tmp_path / "runs"
+    spec_path = _write_spec(tmp_path, _spec_payload(tmp_path))
+    assert automation.main(["--runs-dir", str(runs), "add", "--spec", str(spec_path)]) == 0
+    capsys.readouterr()
+
+    assert automation.main(["--runs-dir", str(runs), "status", "--fail-on-alert"]) == 1
+    overview = json.loads(capsys.readouterr().out)
+    assert overview["summary"]["due"] == 1
+    assert overview["tasks"][0]["schedule"] == {"interval_minutes": 60}
+
+    assert automation.main(["--runs-dir", str(runs), "run", "--id", "cli-task"]) == 0
+    capsys.readouterr()
+    assert automation.main(["--runs-dir", str(runs), "status", "--fail-on-alert"]) == 0
+    overview = json.loads(capsys.readouterr().out)
+    assert overview["summary"]["due"] == 0
+    assert overview["tasks"][0]["last_status"] == "ok"
+
+    # 上次运行留下告警时，即使未到期也要让监控看到（alerts 计入失败判据）
+    dataset = tmp_path / "sales.csv"
+    for value in (100, 110, 90):
+        dataset.write_text(f"region,sales\nEast,{value}\n", encoding="utf-8")
+        assert automation.main(["--runs-dir", str(runs), "run", "--id", "cli-task"]) == 0
+        capsys.readouterr()
+    dataset.write_text("region,sales\nEast,1000\n", encoding="utf-8")
+    assert automation.main(["--runs-dir", str(runs), "run", "--id", "cli-task"]) == 0
+    capsys.readouterr()
+    assert automation.main(["--runs-dir", str(runs), "status", "--fail-on-alert"]) == 1
+    overview = json.loads(capsys.readouterr().out)
+    assert overview["summary"]["alerts"] >= 1

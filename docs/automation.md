@@ -61,6 +61,11 @@ python -m data_agent.automation --runs-dir ./runs add --spec ./automation.json
 # 查看任务
 python -m data_agent.automation --runs-dir ./runs list
 
+# 巡检：汇总每个任务的上次运行、到期状态、下次预计到期与最近归因（不触发执行）
+python -m data_agent.automation --runs-dir ./runs status
+# 有到期任务或上次运行失败时退出码为 1，供监控系统调用
+python -m data_agent.automation --runs-dir ./runs status --fail-on-alert
+
 # 立即跑一次（--dry-run 只计算与检测：不写历史/告警、不推送、不建持久工作区）
 python -m data_agent.automation --runs-dir ./runs run --id daily-sales
 python -m data_agent.automation --runs-dir ./runs run --id daily-sales --dry-run
@@ -131,6 +136,24 @@ Windows 任务计划同理，动作写 `python -m data_agent.automation run-due`
 `same_direction=true` 表示所有告警同向（通常指向数据源/口径整体变化，而非
 单个业务事件）；它只是统计事实，不构成因果结论。`ranking` 最多保留前 10 项。
 
+### 4.2 巡检视图（`status`）
+
+`status` 只读汇总，不运行任务、不写状态：
+
+```json
+{"generated_at": "2026-11-18T08:00:00+08:00",
+ "summary": {"total": 2, "enabled": 2, "due": 1, "alerts": 3, "errors": 0},
+ "tasks": [{"id": "daily-sales", "name": "每日销售额巡检", "enabled": true,
+            "schedule": {"interval_minutes": 60}, "due": true,
+            "next_due_at": "2026-11-18T08:00:00+08:00",
+            "last_run_at": "2026-11-18T07:00:00+08:00", "last_status": "ok",
+            "last_alerts": 1, "last_alert_headline": "…", "state_corrupt": false}]}
+```
+
+`next_due_at` 是展示用估算（间隔=上次+间隔，每日=当天/次日本地目标时刻）；
+错过的任务会返回一个已过去的时刻，表示“现在已到期”。`--fail-on-alert` 在
+`due>0`、`errors>0` 或上次运行 `alerts>0` 时退出码为 1，可直接接监控告警规则。
+
 ## 5. 失败、并发与 webhook 安全
 
 - **推送顺序**：先写历史与 `alerts.jsonl`，再尝试 webhook；推送失败把错误写入
@@ -146,6 +169,13 @@ Windows 任务计划同理，动作写 `python -m data_agent.automation run-due`
   **每一跳重定向都会重新校验**，公网地址 302 到内网会被拦截。
   已知边界：未做 IP 钉扎，解析与连接之间仍存在 DNS rebinding 窗口——这是
   尽力防护，不是完整隔离。
+- **群机器人渠道适配**：目标主机是 `hooks.slack.com` / `open.feishu.cn`
+  （Lark 同域）/ `oapi.dingtalk.com` 时，自动把结构化告警压成对应机器人的
+  文本格式（Slack `{"text": …}`、飞书 `{"msg_type":"text",…}`、钉钉
+  `{"msgtype":"text",…}`）；其他地址保持原始 JSON。文本最多 3500 字符、
+  只列前 5 条告警，完整明细始终在 `alerts.jsonl`。邮件/短信未内置
+  （需要 SMTP/运营商凭据与退信治理），建议由外部监控系统消费 `status`/
+  webhook 转发。
 - **dry-run 无副作用**：不写历史/告警/状态、不推送，也不创建持久工作区；
   webhook 配置了也不会发。
 - **时区**：`daily_at` 按运行机器的本地时区解释；DST 切换日目标时刻仍按

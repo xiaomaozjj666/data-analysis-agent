@@ -679,3 +679,178 @@ def test_attribution_is_written_to_alerts_webhook_and_state(tmp_path, monkeypatc
     assert alert_rows[-1]["attribution"]["count"] == 1
     state = json.loads((automation.task_dir(runs, spec.id) / automation.STATE_FILENAME).read_text())
     assert "销售额" in state["last_alert_headline"]
+
+
+def test_next_due_at_interval_and_daily_boundaries(tmp_path):
+    now = datetime(2026, 11, 18, 8, 0, tzinfo=UTC)
+    interval_spec = _make_spec(tmp_path, interval_minutes=60)
+    assert automation.next_due_at(interval_spec, "", now) == now
+    last = (now - timedelta(minutes=30)).isoformat()
+    assert automation.next_due_at(interval_spec, last, now) == now + timedelta(minutes=30)
+
+    daily_payload = _base_spec()
+    daily_payload.pop("interval_minutes")
+    daily_payload["daily_at"] = "09:00"
+    daily_payload.update(
+        dataset_path=str(tmp_path / "sales.csv"), metrics_path=str(tmp_path / "metrics.json")
+    )
+    daily_spec = automation.parse_spec(daily_payload)
+    assert automation.next_due_at(daily_spec, "", now) == now.replace(hour=9, minute=0)
+
+    later = datetime(2026, 11, 18, 10, 30, tzinfo=UTC)
+    ran_today = datetime(2026, 11, 18, 9, 5, tzinfo=UTC).isoformat()
+    assert automation.next_due_at(daily_spec, ran_today, later) == datetime(
+        2026, 11, 19, 9, 0, tzinfo=UTC
+    )
+
+    disabled = _make_spec(tmp_path, enabled=False)
+    assert automation.next_due_at(disabled, "", now) is None
+
+
+def test_status_overview_reports_due_counts(tmp_path):
+    spec = _make_spec(tmp_path)
+    runs = tmp_path / "runs"
+    automation.add_spec(runs, spec)
+    now = datetime(2026, 11, 18, 8, 0, tzinfo=UTC)
+
+    overview = automation.status_overview(runs, now=now)
+    assert overview["summary"] == {"total": 1, "enabled": 1, "due": 1, "alerts": 0, "errors": 0}
+    task = overview["tasks"][0]
+    assert task["id"] == spec.id
+    assert task["schedule"] == {"interval_minutes": 60}
+    assert task["last_run_at"] is None
+    assert task["next_due_at"] == now.isoformat(timespec="seconds")
+    assert task["state_corrupt"] is False
+
+
+# ---------------------------------------------------------------------------
+# 群机器人渠道适配
+# ---------------------------------------------------------------------------
+
+
+def _webhook_payload() -> dict:
+    return {
+        "task": {"id": "daily", "name": "每日销售"},
+        "ran_at": "2026-11-18T08:00:00+08:00",
+        "alerts": [
+            {"metric": "销售额", "value": 1000, "reasons": ["z-score +4.00 ≥ 3"]},
+            {"metric": "订单数", "value": 10, "reasons": []},
+        ],
+        "attribution": {"headline": "销售额 上升，为本次偏离最大的指标"},
+    }
+
+
+def test_webhook_body_adapts_known_channels():
+    payload = _webhook_payload()
+    slack = automation._webhook_body("https://hooks.slack.com/services/demo", payload)
+    assert set(slack) == {"text"}
+    assert "每日销售" in slack["text"]
+    assert "销售额 上升" in slack["text"]
+    assert "z-score +4.00" in slack["text"]
+
+    feishu = automation._webhook_body("https://open.feishu.cn/open-apis/bot/v2/hook/x", payload)
+    assert feishu["msg_type"] == "text"
+    assert "每日销售" in feishu["content"]["text"]
+
+    dingtalk = automation._webhook_body(
+        "https://oapi.dingtalk.com/robot/send?access_token=x", payload
+    )
+    assert dingtalk["msgtype"] == "text"
+    assert "每日销售" in dingtalk["text"]["content"]
+
+
+def test_webhook_body_truncates_and_keeps_generic_payload():
+    payload = _webhook_payload()
+    payload["alerts"] = [
+        {"metric": f"指标{i}", "value": i, "reasons": ["原因" * 200]} for i in range(12)
+    ]
+    text = automation._alert_text(payload)
+    assert len(text) <= 3500
+    assert "另有 7 项告警" in text
+    assert automation._webhook_body("https://example.test/hook", payload) is payload
+
+
+def test_slack_webhook_sends_text_body(tmp_path, monkeypatch):
+    spec = _make_spec(tmp_path, webhook_url="https://hooks.slack.com/services/demo")
+    runs = tmp_path / "runs"
+    dataset = Path(spec.dataset_path)
+    base = datetime(2026, 11, 17, tzinfo=UTC)
+    for value in (100, 110, 90):
+        _write_dataset(dataset, value)
+        automation.run_automation(spec, runs, now=base)
+    _write_dataset(dataset, 1000)
+    calls: list[object] = []
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(
+        automation, "_post_request", lambda request: calls.append(request) or _Resp()
+    )
+    result = automation.run_automation(spec, runs, now=base + timedelta(days=1))
+    body = json.loads(calls[0].data.decode("utf-8"))
+    assert result["notified"] is True
+    assert set(body) == {"text"}
+    assert "每日销售" in body["text"] or spec.name in body["text"]
+
+
+# ---------------------------------------------------------------------------
+# 告警严重度/方向与归因摘要的边界（2026-11 评审回归）
+# ---------------------------------------------------------------------------
+
+
+def test_detect_direction_follows_pct_change_sign(tmp_path):
+    """P1 回归：环比下降但当前值高于均值时，方向必须是 down。
+
+    否则摘要会输出「上升（环比 -50%）」这类自相矛盾的句子。
+    """
+    spec = _make_spec(tmp_path)
+    history = [
+        {"at": f"2026-11-{10 + i:02d}T00:00:00+00:00", "metrics": {"销售额": value}}
+        for i, value in enumerate((10, 10, 10, 100))
+    ]
+
+    alerts = automation.detect_anomalies({"销售额": 50}, history, spec)
+
+    assert len(alerts) == 1
+    alert = alerts[0]
+    assert alert["pct_change"] == pytest.approx(-0.5)
+    assert alert["direction"] == "down"
+    # 环比 50% / 阈值 20% = 2.5，是主导严重度
+    assert alert["severity"] == pytest.approx(2.5)
+
+
+def test_detect_zero_baseline_severity_at_least_threshold(tmp_path):
+    spec = _make_spec(tmp_path)
+    history = [{"metrics": {"销售额": 0.0}} for _ in range(3)]
+
+    alerts = automation.detect_anomalies({"销售额": 10.0}, history, spec)
+
+    assert len(alerts) == 1
+    assert alerts[0]["severity"] == pytest.approx(1.0)
+    assert alerts[0]["direction"] == "up"
+
+
+def test_summarize_alerts_flat_semantics_and_missing_value():
+    """flat 不参与「同向」判定；缺 value/severity 不抛错。"""
+    up_and_flat = automation.summarize_alerts(
+        [
+            {"metric": "a", "value": 1.0, "direction": "up", "severity": 2.0},
+            {"metric": "b", "value": 1.0, "direction": "flat", "severity": 1.0},
+        ]
+    )
+    assert up_and_flat["same_direction"] is False
+
+    all_flat = automation.summarize_alerts(
+        [{"metric": "a", "value": 1.0, "direction": "flat", "severity": 1.0}]
+    )
+    assert all_flat["same_direction"] is False
+
+    sparse = automation.summarize_alerts([{"metric": "m", "severity": 2.0}])
+    assert sparse is not None
+    assert sparse["top_metric"] == "m"
+    assert sparse["ranking"][0]["value"] is None

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import shutil
@@ -31,6 +32,8 @@ from uuid import uuid4
 from data_agent._workspace_bundles import _atomic_write_text
 from data_agent.recipe import RECIPE_FILENAME
 
+_log = logging.getLogger(__name__)
+
 #: 技能包内文件约定。
 SKILL_DOC = "SKILL.md"
 MANIFEST_FILE = "skill.json"
@@ -40,13 +43,50 @@ _MAX_NAME_CHARS = 64
 #: 安装目录约定：项目级放当前工作区，全局级放用户主目录；可用环境变量统一覆盖。
 SKILLS_DIRNAME = Path(".data-agent") / "skills"
 SKILLS_DIR_ENV = "DATA_AGENT_SKILLS_DIR"
-_SLUG_RE = re.compile(r"^[\w\u4e00-\u9fff-]{1,64}$")
+#: slug 字符集与 docs/skills.md 保持一致（ASCII 字母数字、下划线、中文、连字符）。
+_SLUG_RE = re.compile(r"^[A-Za-z0-9_\u4e00-\u9fff-]{1,64}$")
 _SKILL_FILES = (SKILL_DOC, RECIPE_FILENAME, MANIFEST_FILE)
+
+#: Windows 设备保留名：作为目录名会出现「恒存在」或 PermissionError 的
+#: 诡异行为（2026-11 实测 slug=NUL）。
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
+
+
+def _is_link_like(path: Path) -> bool:
+    """是否为符号链接或 Windows junction（两者都能把路径指到目录之外）。
+
+    Python 3.12+ 的 ``Path.is_junction()`` 对 junction 返回 True，但
+    ``is_symlink()`` 返回 False；只判 is_symlink 会漏掉 junction 逃逸。
+    """
+    if path.is_symlink():
+        return True
+    is_junction = getattr(path, "is_junction", None)
+    return bool(is_junction and is_junction())
+
+
+def _validate_slug(slug: str) -> str:
+    """校验安装用 slug：字符集、长度、路径语义与 Windows 保留名。"""
+    if not slug or not _SLUG_RE.fullmatch(slug):
+        raise ValueError("skill.json 的 slug 缺失或包含不安全字符，拒绝安装。")
+    if slug in {".", ".."} or slug.endswith((".", " ")):
+        raise ValueError("skill.json 的 slug 不能是 . 或 ..，也不能以点/空格结尾。")
+    if slug.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES:
+        raise ValueError(f"skill.json 的 slug「{slug}」是 Windows 保留设备名，拒绝安装。")
+    return slug
 
 
 def _slug(value: str) -> str:
-    """把任务名转成文件系统安全的 slug（保留中英文与数字，其余折叠为 -）。"""
-    text = re.sub(r"[^\w\u4e00-\u9fff-]+", "-", value.strip(), flags=re.UNICODE)
+    """把任务名转成文件系统安全的 slug（保留中英文与数字，其余折叠为 -）。
+
+    字符集必须与 :func:`_validate_slug` 一致，否则会出现「导出成功、安装被拒」
+    的自相矛盾（如西里尔字母任务名）。这里只保留 ASCII 字母数字、下划线、
+    中文与连字符，其余一律折叠。
+    """
+    text = re.sub(r"[^A-Za-z0-9_\u4e00-\u9fff-]+", "-", value.strip())
     text = re.sub(r"-{2,}", "-", text).strip("-_")[:_MAX_NAME_CHARS]
     return text or "analysis-skill"
 
@@ -263,7 +303,7 @@ def _load_bundle_contract(
     texts: dict[str, str] = {}
     for filename in _SKILL_FILES:
         path = bundle / filename
-        if path.is_symlink():
+        if _is_link_like(path):
             raise ValueError(f"技能包文件不能是符号链接：{path}")
         if not path.is_file():
             raise FileNotFoundError(f"技能包缺少 {filename}：{path}")
@@ -277,9 +317,7 @@ def _load_bundle_contract(
         raise ValueError(f"{RECIPE_FILENAME} 必须是 JSON 对象。")
     if not isinstance(manifest, dict):
         raise ValueError(f"{MANIFEST_FILE} 必须是 JSON 对象。")
-    slug = str(manifest.get("slug") or "").strip()
-    if not _SLUG_RE.fullmatch(slug) or slug in {".", ".."}:
-        raise ValueError("skill.json 的 slug 缺失或包含不安全字符，拒绝安装。")
+    slug = _validate_slug(str(manifest.get("slug") or "").strip())
     expected = str(manifest.get("recipe_sha256") or "").strip()
     if not expected:
         raise ValueError("skill.json 缺少 recipe_sha256，无法校验配方完整性。")
@@ -310,18 +348,29 @@ def install_skill(
     replaced = target.exists()
     if replaced and not force:
         raise FileExistsError(f"技能已安装：{target}（确认覆盖请加 force）")
-    backup: Path | None = None
-    if replaced:
-        backup = target.with_name(f".{target.name}.bak-{uuid4().hex[:8]}")
-        os.replace(target, backup)
+    # 先建 staging 再移动旧版本：mkdtemp 失败（磁盘满/权限/杀软占用）时，
+    # 旧版本仍在 canonical 路径上，不会只剩一个隐藏的 .bak 目录。
     staging = Path(tempfile.mkdtemp(prefix=".install-", dir=target.parent))
+    backup: Path | None = None
     try:
+        if replaced:
+            backup = target.with_name(f".{target.name}.bak-{uuid4().hex[:8]}")
+            os.replace(target, backup)
         for filename in _SKILL_FILES:
             _atomic_write_text(staging / filename, texts[filename])
         os.replace(staging, target)
     except Exception:
-        if backup is not None and backup.exists() and not target.exists():
-            os.replace(backup, target)
+        # 回滚：旧版本在 .bak 里时尽量复位；若目标已被并发方重建则保留 .bak
+        # 并留 warning（不能删掉别人的新内容）。
+        if backup is not None and backup.exists():
+            if target.exists():
+                _log.warning(
+                    "install rollback skipped: %s was recreated concurrently; old copy kept at %s",
+                    target,
+                    backup,
+                )
+            else:
+                os.replace(backup, target)
         raise
     else:
         if backup is not None:
@@ -351,7 +400,7 @@ def list_skills(*, scope: str = "project", root: str | Path | None = None) -> di
     entries: list[dict[str, Any]] = []
     if base.is_dir():
         for child in sorted(base.iterdir(), key=lambda item: item.name.casefold()):
-            if child.is_symlink() or not child.is_dir() or child.name.startswith("."):
+            if _is_link_like(child) or not child.is_dir() or child.name.startswith("."):
                 continue
             entry: dict[str, Any] = {
                 "slug": child.name,
@@ -363,7 +412,7 @@ def list_skills(*, scope: str = "project", root: str | Path | None = None) -> di
             try:
                 for filename in _SKILL_FILES:
                     path = child / filename
-                    if path.is_symlink() or not path.is_file():
+                    if _is_link_like(path) or not path.is_file():
                         raise ValueError(f"缺少或不是普通文件：{filename}")
                 manifest = json.loads((child / MANIFEST_FILE).read_text(encoding="utf-8"))
                 recipe = json.loads((child / RECIPE_FILENAME).read_text(encoding="utf-8"))

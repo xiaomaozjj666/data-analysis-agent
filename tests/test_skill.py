@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -486,3 +487,73 @@ def test_list_reports_bad_manifest_variants(tmp_path):
     assert "JSON 对象" in by_slug["non-dict"]["error"]
     assert "缺少 recipe_sha256" in by_slug["no-hash"]["error"]
     assert "不一致" in by_slug["mismatch"]["error"]
+
+
+def test_install_keeps_old_version_when_staging_creation_fails(tmp_path, monkeypatch):
+    """P1 回归：mkdtemp 失败时旧版本仍留在 canonical 路径（不只剩隐藏 .bak）。"""
+    workspace = _workspace_with_recipe(tmp_path)
+    exported = export_skill(workspace.root, tmp_path / "out")
+    bundle = tmp_path / "out" / exported["slug"]
+    target_root = tmp_path / "installed"
+    install_skill(bundle, root=target_root)
+    target = target_root / exported["slug"]
+    before = (target / MANIFEST_FILE).read_text(encoding="utf-8")
+
+    def boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("data_agent.skill.tempfile.mkdtemp", boom)
+    with pytest.raises(OSError, match="disk full"):
+        install_skill(bundle, root=target_root, force=True)
+
+    assert (target / MANIFEST_FILE).read_text(encoding="utf-8") == before
+    assert not [item for item in target_root.iterdir() if item.name.startswith(".")]
+
+
+def test_install_rejects_windows_reserved_slug(tmp_path):
+    workspace = _workspace_with_recipe(tmp_path)
+    exported = export_skill(workspace.root, tmp_path / "out")
+    bundle = tmp_path / "out" / exported["slug"]
+    manifest_path = bundle / MANIFEST_FILE
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["slug"] = "NUL"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="保留设备名"):
+        install_skill(bundle, root=tmp_path / "installed")
+
+
+def test_install_rejects_non_cjk_unicode_slug(tmp_path):
+    """字符集与 docs/skills.md 对齐：西里尔等非中文 Unicode 不再放行。"""
+    workspace = _workspace_with_recipe(tmp_path)
+    exported = export_skill(workspace.root, tmp_path / "out")
+    bundle = tmp_path / "out" / exported["slug"]
+    manifest_path = bundle / MANIFEST_FILE
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["slug"] = "данные"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="slug"):
+        install_skill(bundle, root=tmp_path / "installed")
+
+
+def test_list_skips_junction_directories(tmp_path, monkeypatch):
+    """junction 在 Python 3.12+ 不是 symlink，但同样能指向目录之外。"""
+    root = tmp_path / "installed"
+    root.mkdir()
+    (root / "linked").mkdir()
+    monkeypatch.setattr(
+        Path, "is_junction", lambda self: self.name == "linked", raising=False
+    )
+    assert list_skills(root=root)["skills"] == []
+
+
+def test_export_and_install_slug_charset_are_consistent(tmp_path):
+    """导出用的 slug 字符集必须能通过安装校验（西里尔名称不能被导出成不可装）。"""
+    workspace = _workspace_with_recipe(tmp_path)
+    exported = export_skill(workspace.root, tmp_path / "out", name="данные")
+    assert re.fullmatch(r"[A-Za-z0-9_\u4e00-\u9fff-]{1,64}", exported["slug"])
+    target_root = tmp_path / "installed"
+    result = install_skill(tmp_path / "out" / exported["slug"], root=target_root)
+    assert result["slug"] == exported["slug"]
+    assert (target_root / exported["slug"]).is_dir()
