@@ -7,7 +7,7 @@
   <img src="https://img.shields.io/badge/FastAPI-API-009688" alt="FastAPI" />
   <img src="https://img.shields.io/badge/LangGraph-agent-4D6BFE" alt="LangGraph" />
   <img src="https://img.shields.io/badge/Docker-ready-2496ED" alt="Docker" />
-  <img src="https://img.shields.io/badge/tests-1600%2B%20backend%20%C2%B7%20187%2B%20frontend-brightgreen" alt="后端 1600+ 项、前端 187+ 项自动化测试" />
+  <img src="https://img.shields.io/badge/tests-1681%2B%20backend%20%C2%B7%20193%2B%20frontend-brightgreen" alt="后端 1681+ 项、前端 193+ 项自动化测试" />
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License" />
 </p>
 
@@ -79,7 +79,7 @@ flowchart LR
 - **设置与连接诊断**：设置面板用原生 `<dialog>`，支持「测试连接」——只探测模型服务连通性，不落盘、不回显 Key，按 401/429/超时/网络错误分类提示；LangSmith 状态细分为 configured / missing_key / key_unconfirmed / local / disabled。
 - **可观测与部署**：LangSmith 全链路 Trace（规划、每次工具调用、重规划、汇总）；LangGraph Agent Server 部署；Dockerfile（非 root 用户 + 健康检查）；Render Blueprint 一键部署；GitHub Actions 自动 CI。
 - **可复核的分析溯源与逐结论核验**：每次分析在会话目录生成哈希链，覆盖任务元信息、数据集、指标定义文件、逐条工具调用、产物文件与报告正文；finalize/replay 另将正文数字逐项判为 `verified` / `conflict` / `unsupported`，在报告追加结论核验表并生成可下载的 `report-verification.json`，按 trace 序号和 JSON Pointer 定位证据。见 [docs/analysis-provenance.md](docs/analysis-provenance.md)。
-- **有据经营简报核验（schema v2）**：工作台「简报核验」把待审草稿逐行判为 `verified` / `conflict` / `unsupported`，核验器独立读取原始 CSV 复算，不调用第二个模型。源文件只读一次字节快照，SHA-256、编码识别与 CSV 解析基于同一份 bytes，不存在读两遍的 TOCTOU；**范围门**要求登记指标整行精确匹配，「华东区订单数」「平均订单数」「订单数（华东区）」一律 `unsupported`，即使 `confirm_full_table=true` 也不放行；订单号近似重复（NFKC、大小写、零宽字符、前导 0）只进 `warnings` 并给相关指标附 `caveat`，不改变订单数口径；表头接受 订单号/金额/数量 等中文别名，仅唯一匹配时接受，歧义直接报错。指标口径为 销售额合计 / 销量合计 / 订单数 / 客单价（销售额合计 ÷ 订单数，按分 HALF_UP）。每次复算返回确定性 `audit_id`（源文件哈希 + 草稿 + 确认标志 + 复算结果，带起草轨迹时再绑定轨迹哈希，最终取 SHA-256 截断），未登记指标按单位给出口径候选 `candidates`。会话可在「核验口径」里登记声明式指标（列、聚合、单位、类型、空值策略、过滤与时间窗口），核验器按登记口径独立复算，口径指纹绑定进 `audit_id` 与账本；内置销售口径作为默认。
+- **有据经营简报核验（schema v2）**：工作台「简报核验」把待审草稿逐行判为 `verified` / `conflict` / `unsupported`，核验器独立读取原始 CSV 复算，不调用第二个模型。源文件只读一次字节快照，SHA-256、编码识别与 CSV 解析基于同一份 bytes，不存在读两遍的 TOCTOU；**范围门**要求登记指标整行精确匹配，「华东区订单数」「平均订单数」「订单数（华东区）」一律 `unsupported`，即使 `confirm_full_table=true` 也不放行；订单号近似重复（NFKC、大小写、零宽字符、前导 0）只进 `warnings` 并给相关指标附 `caveat`，不改变订单数口径；表头接受 订单号/金额/数量 等中文别名，仅唯一匹配时接受，歧义直接报错。指标口径为 销售额合计 / 销量合计 / 订单数 / 客单价（销售额合计 ÷ 订单数，按分 HALF_UP）。每次复算返回确定性 `audit_id`（源文件哈希 + 草稿 + 确认标志 + 复算结果，带起草轨迹时再绑定轨迹哈希，最终取 SHA-256 截断），未登记指标按单位给出口径候选 `candidates`。会话可在「核验口径」里登记声明式指标（列、聚合、单位、精度、类型、空值策略、舍入、正负策略、过滤与时间窗口），核验器按登记口径独立复算，口径指纹绑定进 `audit_id` 与账本；内置销售口径作为默认。
 - **服务端确认门与核验账本**：`POST /api/sessions/{id}/sales-audit/confirm` 由服务端按会话里的原始 CSV 重新复算，重算的 `audit_id` 与提交值不一致返回 409；通过后写一条 `confirm` 记录并返回权威简报与回执（`seq` / `ts` / `hash` / `prev` / `brief_sha256`）。每次复算也会尝试追加一条 `audit` 记录（写失败时响应带 `ledger_error`，不影响本次核验结果），账本为 `runs/<会话>/audit_ledger.jsonl`，逐条 `prev` / `hash` 串联，追加前先校验整链。`GET /api/sessions/{id}/sales-audit/ledger` 返回最近记录与链校验结果；离线脚本 `scripts/verify_audit_ledger.py` 可校验链条，`--brief` 文件改 1 个字节即退出码 1，`--source` 校验原始 CSV，`--trace` 校验快速起草轨迹。账本无签名、无外部时间戳，属演示级篡改可见性。
 - **快速起草对照入口**：`POST /api/sessions/{id}/sales-audit/quick-draft` 不调用任何工具、关闭思考，直接把订单表交给模型写三行指标，作为核验器的对照输入；返回模型名、耗时、脱敏单元格数、丢弃行数与轨迹哈希 `trace_sha256`。轨迹写到 `draft_traces/<sha256>.json`；把 `trace_sha256` 作为 `draft_trace_sha256` 传给复算/确认接口，即可把「模型原话 → 过滤后的草稿 → 复算 → 确认」绑定起来。它刻意不提示去重口径，不能代表产品的分析能力。
 - **发布前质量闸门（可选）**：`data-agent-eval compare` 对同一套用例的基线与候选结果做配对 McNemar 精确检验，同时检查成本与延迟回归，给出接受 / 拒绝 / 证据不足三态裁决，并写入可校验的哈希链 ledger。见 [docs/agent-eval.md](docs/agent-eval.md)。
@@ -217,6 +217,120 @@ Invoke-RestMethod "$base/api/sessions/$sid/sales-audit/quick-draft" -Method Post
 数据在核验后被改动，服务端返回 409，页面会要求重新复算。账本未签名、无外部
 时间戳，能发现内容被改动，不能证明「谁在何时确认」。完整路演步骤见
 [参赛演示说明](docs/wuxi-trusted-ai-challenge.md)。
+
+### 声明式核验口径
+
+核验器不只认销售额、销量、订单数、客单价这四个内置销售指标。每个会话可以在
+工作区根目录放一份 `audit_schema.json`，用纯声明式字段描述自己的指标；核验时
+按登记口径独立读取原始 CSV 复算，不执行模型生成的表达式。字段如下：
+
+| 字段 | 说明 |
+| --- | --- |
+| `name` | 指标名称，草稿行按该名称匹配，会话内不可重复 |
+| `column` | 原始 CSV 列名（表头必须存在）；`ratio` 可省略，缺省时取 `numerator` |
+| `aggregation` | `sum` / `count` / `count_distinct` / `min` / `max` / `mean`；`ratio` 为派生比率，需配 `numerator` / `denominator` |
+| `numerator` / `denominator` | 仅 `aggregation=ratio` 时使用，引用同一口径中已登记的两个非 `ratio` 指标；`ratio` 不支持 `filters` / `time_window` |
+| `unit` | 单位，最多 8 个字符 |
+| `decimals` | 输出小数位，0–6，默认 2 |
+| `data_type` | `decimal` / `integer` / `date` / `string`；`sum`、`mean`、`min`、`max` 只接受 `decimal` 或 `integer` |
+| `null_policy` | `exclude`（跳过）/ `fail`（报错）/ `zero`（空值按 0 参与求和与均值） |
+| `rounding` | `HALF_UP` / `HALF_EVEN`，默认 `HALF_UP` |
+| `sign_policy` | `allow` / `non_negative`（数值聚合出现负数即报错） |
+| `filters` | 数组，最多 8 项；`op` 支持 `eq` / `ne` / `gt` / `ge` / `lt` / `le` / `in` / `contains` |
+| `time_window` | `{column, start, end}`，日期为 `YYYY-MM-DD`，起止均包含 |
+
+一个会话最多登记 12 项指标，`filters` 内条件按 AND 组合。`ratio` 的分母为 0 或
+引用未登记指标时直接报错，不输出猜测值。下面是一张非销售表
+（`customer_id, region, revenue, signup_date`）的口径示例：
+
+```json
+{
+  "metrics": [
+    {
+      "name": "收入合计",
+      "column": "revenue",
+      "aggregation": "sum",
+      "unit": "元",
+      "data_type": "decimal",
+      "null_policy": "exclude",
+      "rounding": "HALF_UP",
+      "sign_policy": "non_negative",
+      "decimals": 2
+    },
+    {
+      "name": "客户数",
+      "column": "customer_id",
+      "aggregation": "count_distinct",
+      "unit": "人"
+    },
+    {
+      "name": "华东收入",
+      "column": "revenue",
+      "aggregation": "sum",
+      "unit": "元",
+      "filters": [{ "column": "region", "op": "eq", "value": "East" }]
+    },
+    {
+      "name": "Q4 华东收入",
+      "column": "revenue",
+      "aggregation": "sum",
+      "unit": "元",
+      "filters": [{ "column": "region", "op": "eq", "value": "East" }],
+      "time_window": {
+        "column": "signup_date",
+        "start": "2026-10-01",
+        "end": "2026-12-31"
+      }
+    }
+  ]
+}
+```
+
+对应的数据文件：
+
+```text
+customer_id,region,revenue,signup_date
+C1,East,100.50,2026-10-02
+C1,East,99.50,2026-11-03
+C2,West,50.00,2026-11-04
+C2,East,30.00,2026-12-31
+C3,East,40.00,2027-01-05
+```
+
+验收命令（仓库根目录；本机实测 27 passed）：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_audit_schema.py -q
+# 27 passed
+```
+
+把上面的 JSON 存为 `$env:TEMP\audit-schema-demo\audit_schema.json`、数据存为
+同目录的 `customers.csv` 后，也可以直接跑一次复算：
+
+```powershell
+$demo = Join-Path $env:TEMP "audit-schema-demo"
+.\.venv\Scripts\python.exe -c "from pathlib import Path; from data_agent.audit_schema import load_schema, read_metrics; print(read_metrics(Path(r'$demo\customers.csv'), load_schema(Path(r'$demo'))).metrics)"
+# {'收入合计': '320.00', '客户数': '3', '华东收入': '270.00', 'Q4 华东收入': '230.00'}
+```
+
+`GET/PUT /api/sessions/{id}/audit-schema` 读取或覆盖当前会话口径，前端「核验口径」
+折叠面板编辑的就是这段 JSON。保存时写入 `audit_schema.json`，并向
+`audit_schema_history.jsonl` 追加一条带 `ts`、`sha256` 和完整指标定义的记录；
+`GET /api/sessions/{id}/audit-schema/history` 返回最近 `limit` 条保存历史（默认
+20，最多 100），并逐条复算 `fingerprint_valid`，用 `consistent` 汇总整份历史
+是否自洽。未登记或保存空数组时
+回退到内置销售四项。口径指纹是对登记项规范化 JSON 取 SHA-256，会进入
+`audit_id`，并随 `audit` / `confirm` 记录写入 `audit_ledger.jsonl`；口径一变，
+旧 `audit_id` 就对不上，确认接口返回 409。离线可用
+`scripts/verify_audit_ledger.py <账本> --schema audit_schema.json` 校验当前口径
+指纹是否命中账本记录，口径被改动时退出码 1。空值、类型或负数策略失败时，接口
+返回带「第 N 条记录的列名」的 422 诊断。
+
+当前接口回显范围：`GET/PUT` 响应只返回 `name` / `column` / `aggregation` /
+`unit` / `decimals` / `aliases`；`data_type`、`null_policy`、`rounding`、
+`sign_policy`、`filters`、`time_window`、`numerator`、`denominator` 会写入
+`audit_schema.json` 并参与复算，但不随响应返回。需要编辑完整策略时，请以工作区
+里的 `audit_schema.json` 为准。
 
 ## 配置
 

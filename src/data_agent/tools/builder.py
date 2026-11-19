@@ -1259,6 +1259,14 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             "html": html_path,
             "plotly_json": json_path,
         }
+        # 图表与来源绑定：导出物可追溯到具体那一版 CSV，而不是只靠会话目录。
+        if workspace.source_path and workspace.source_path.is_file():
+            from data_agent.provenance import sha256_file
+
+            response["source"] = {
+                "filename": workspace.source_path.name,
+                "sha256": sha256_file(workspace.source_path),
+            }
         if sampling_info is not None:
             response["sampling"] = sampling_info
         if density_view is not None:

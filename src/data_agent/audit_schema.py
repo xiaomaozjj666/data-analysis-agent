@@ -264,6 +264,11 @@ def _serialize(metrics: list[AuditMetric]) -> list[dict[str, Any]]:
     ]
 
 
+def serialize_metrics(metrics: list[AuditMetric]) -> list[dict[str, Any]]:
+    """完整序列化（含类型、策略、过滤、时间窗、比率），供 API 回显。"""
+    return _serialize(metrics)
+
+
 def load_schema(root: str | Path) -> list[AuditMetric] | None:
     path = Path(root) / SCHEMA_FILENAME
     if not path.is_file():

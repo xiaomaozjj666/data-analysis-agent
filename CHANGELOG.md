@@ -21,9 +21,16 @@
   HALF_UP）；未登记指标按单位给出口径候选 `candidates`。`audit_id` 为源文件
   哈希、草稿、确认标志与复算结果的确定性哈希。
 - **声明式核验口径**：会话可登记 `audit_schema.json`，按
-  `名称 / 列 / 聚合 / 单位 / 数据类型 / 空值策略 / 舍入 / 正负策略 / 过滤条件 /
-  时间窗口` 描述指标；核验器按登记口径独立复算，口径指纹绑定进 `audit_id` 与
-  账本，每次保存追加 `audit_schema_history.jsonl` 版本记录。内置销售口径保持不变。
+  `名称 / 列 / 聚合 / 单位 / 精度 / 数据类型 / 空值策略 / 舍入 / 正负策略 /
+  过滤条件 / 时间窗口` 描述指标；支持 `sum` / `count` / `count_distinct` /
+  `min` / `max` / `mean`，以及引用两项已登记指标的 `ratio`，核验器用
+  `Decimal` 精确复算。空值、类型或负数策略失败时给出「第 N 条记录 / 列名」
+  诊断；过滤条件按 AND 组合，时间窗口起止均包含。新增
+  `GET/PUT /api/sessions/{id}/audit-schema` 与
+  `GET /api/sessions/{id}/audit-schema/history`（逐条复算指纹），前端「核验口径」
+  折叠面板可直接编辑 JSON。每次保存追加 `audit_schema_history.jsonl` 版本记录，
+  口径指纹绑定进 `audit_id` 与账本；离线脚本 `verify_audit_ledger.py --schema`
+  可校验口径指纹是否命中账本。内置销售口径保持不变。
 - **服务端确认门**：新增 `POST /api/sessions/{id}/sales-audit/confirm`，服务端
   按原始 CSV 重新复算，重算的 `audit_id` 与提交值不一致返回 409；通过后写
   `confirm` 记录并返回权威简报与回执（`seq` / `ts` / `hash` / `prev` /
@@ -45,8 +52,9 @@
 ### 变更
 
 - README 与 `docs/wuxi-trusted-ai-challenge.md` 补充范围门、`audit_id`、服务端
-  确认门、账本与离线校验命令、快速起草入口，并新增 90 秒路演脚本；测试徽章按
-  实测收集数（约 1650 项）更新为保守下限 1600+。
+  确认门、账本与离线校验命令、快速起草入口、声明式核验口径示例与治理说明，并
+  更新 90 秒路演脚本；测试徽章按本次实测数更新为后端 1681+（pytest 收集 1681
+  项）、前端 193+（Vitest 实测 193 项通过）。
 - `render.yaml` 注释补充 Free 档 15 分钟休眠与 35–90 秒冷启动说明，以及
   `healthCheckPath` 在冷启动期间可能失败；未改动 region / disk 等不可变字段。
 

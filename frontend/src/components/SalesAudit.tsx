@@ -97,11 +97,19 @@ export interface AuditResult {
 
 export interface AuditSchemaSpec {
   name: string;
-  column: string;
-  aggregation: "sum" | "count" | "count_distinct" | "min" | "max" | "mean";
+  column?: string;
+  aggregation: "sum" | "count" | "count_distinct" | "min" | "max" | "mean" | "ratio";
   unit?: string;
   decimals?: number;
   aliases?: string[];
+  data_type?: "decimal" | "integer" | "date" | "string";
+  null_policy?: "exclude" | "fail" | "zero";
+  rounding?: "HALF_UP" | "HALF_EVEN";
+  sign_policy?: "allow" | "non_negative";
+  filters?: { column: string; op: string; value: unknown }[];
+  time_window?: { column: string; start?: string; end?: string } | null;
+  numerator?: string;
+  denominator?: string;
 }
 
 export interface ConfirmResult {
@@ -482,6 +490,7 @@ export default function SalesAudit({
 }`);
   const [schemaBusy, setSchemaBusy] = useState(false);
   const [schemaLoaded, setSchemaLoaded] = useState(false);
+  const [schemaHistory, setSchemaHistory] = useState<{ versions: number; consistent: boolean }>({ versions: 0, consistent: true });
   const [schemaMessage, setSchemaMessage] = useState("");
   const [draftTrace, setDraftTrace] = useState<string | null>(null);
   const [error, setError] = useState("");
@@ -667,6 +676,17 @@ export default function SalesAudit({
       const metrics = Array.isArray(payload?.metrics) ? payload.metrics : [];
       setSchemaSpecs(metrics);
       setSchemaText(JSON.stringify({ metrics }, null, 2));
+      try {
+        const history = await api<{ entries?: unknown[]; consistent?: boolean }>(
+          `/api/sessions/${sessionId}/audit-schema/history`,
+        );
+        setSchemaHistory({
+          versions: Array.isArray(history.entries) ? history.entries.length : 0,
+          consistent: history.consistent !== false,
+        });
+      } catch {
+        // 历史不可用时不影响当前口径。
+      }
     } catch {
       // 口径接口不可用时保持内置销售口径，不阻断核验。
     }
@@ -883,13 +903,21 @@ export default function SalesAudit({
           >
             <summary>
               核验口径 · {schemaSpecs.length ? `${schemaSpecs.length} 项自定义` : "内置销售四项"}
+              {schemaHistory.versions > 0 && ` · 历史 ${schemaHistory.versions} 版`}
+              {!schemaHistory.consistent && " · 历史指纹异常"}
             </summary>
             <p>
-              核验器按登记口径独立读取原始 CSV 复算。支持 sum / count / count_distinct / min / max / mean；
-              留空使用内置的销量、订单数、销售额与客单价口径。
+              核验器按登记口径独立读取原始 CSV 复算。支持 sum / count / count_distinct / min / max / mean，
+              以及用两个已登记指标定义 ratio；可声明 data_type、null_policy、rounding、sign_policy、
+              filters 与 time_window。留空使用内置的销量、订单数、销售额与客单价口径。
             </p>
             <textarea
               aria-label="核验口径 JSON"
+              placeholder={`{
+  "metrics": [
+    {"name": "收入合计", "column": "sales", "aggregation": "sum", "unit": "元"}
+  ]
+}`}
               value={schemaText}
               onChange={(event) => setSchemaText(event.target.value)}
               rows={8}

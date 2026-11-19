@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import json
+import sys
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 from test_api import _isolate_runtime
-
-import sys
-from pathlib import Path
 
 from data_agent import api
 from data_agent.audit_schema import (
@@ -382,3 +381,42 @@ def test_schema_history_api_and_offline_fingerprint(tmp_path, monkeypatch):
     tampered["metrics"][0]["unit"] = "美元"
     schema_file.write_text(json.dumps(tampered), encoding="utf-8")
     assert verify_audit_ledger.main([str(ledger), "--schema", str(schema_file)]) == 1
+
+def test_schema_api_returns_advanced_policy_fields(tmp_path, monkeypatch):
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    csv = "revenue,status,order_date" + NL + "100,paid,2026-10-02" + NL
+    upload = client.post(
+        "/api/sessions", files={"file": ("orders.csv", csv.encode(), "text/csv")}
+    )
+    session_id = upload.json()["id"]
+    payload = {
+        "metrics": [
+            {
+                "name": "Q4 收入",
+                "column": "revenue",
+                "aggregation": "sum",
+                "unit": "元",
+                "data_type": "decimal",
+                "null_policy": "fail",
+                "rounding": "HALF_EVEN",
+                "sign_policy": "non_negative",
+                "filters": [{"column": "status", "op": "eq", "value": "paid"}],
+                "time_window": {
+                    "column": "order_date",
+                    "start": "2026-10-01",
+                    "end": "2026-12-31",
+                },
+            }
+        ]
+    }
+    saved = client.put(f"/api/sessions/{session_id}/audit-schema", json=payload).json()
+    metric = saved["metrics"][0]
+    assert metric["data_type"] == "decimal"
+    assert metric["null_policy"] == "fail"
+    assert metric["rounding"] == "HALF_EVEN"
+    assert metric["sign_policy"] == "non_negative"
+    assert metric["filters"] == [{"column": "status", "op": "eq", "value": "paid"}]
+    assert metric["time_window"]["start"] == "2026-10-01"
+    fetched = client.get(f"/api/sessions/{session_id}/audit-schema").json()
+    assert fetched["metrics"] == saved["metrics"]
