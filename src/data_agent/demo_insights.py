@@ -32,10 +32,10 @@ def _number(value: str) -> float | None:
     if not text:
         return None
     try:
-        value = float(text)
+        number = float(text)
     except ValueError:
         return None
-    return value if math.isfinite(value) else None
+    return number if math.isfinite(number) else None
 
 
 def _money(value: float) -> str:
