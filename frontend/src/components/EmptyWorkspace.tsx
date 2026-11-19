@@ -1,15 +1,12 @@
 import React, { useCallback, useRef, useState } from "react";
-import {
-  Braces,
-  FileCheck2,
-  FileSpreadsheet,
-  Link2,
-  LoaderCircle,
-  ShieldCheck,
-  Sparkles,
-  Table2,
-  Upload,
-} from "lucide-react";
+import { Braces, FileSpreadsheet, LoaderCircle, ShieldCheck, Sparkles, Table2, Upload } from "lucide-react";
+import { motion } from "motion/react";
+import DotField from "./rb/DotField";
+import Aurora from "./rb/Aurora";
+import SplitText from "./rb/SplitText";
+import ShinyText from "./rb/ShinyText";
+import ClickSpark from "./rb/ClickSpark";
+import RotatingText from "./rb/RotatingText";
 
 interface EmptyWorkspaceProps {
   uploading: boolean;
@@ -21,6 +18,9 @@ interface EmptyWorkspaceProps {
   onCancelUpload?: () => void;
 }
 
+// 支持的文件扩展名，需与后端 data_agent.workspace.SUPPORTED_EXTENSIONS 及
+// App.tsx 文件输入的 accept 保持一致：表格/文本/PDF/Word 之外还有 SQLite
+// （.db/.sqlite/.sqlite3，上传后默认载入行数最多的表）。
 const SUPPORTED_EXTENSIONS = [
   ".csv",
   ".tsv",
@@ -42,8 +42,35 @@ function isSupportedFile(file: File): boolean {
 }
 
 function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCancelUpload }: EmptyWorkspaceProps) {
+  // 鼠标跟随光斑：跟踪鼠标在整个工作区的相对位置，更新 CSS 变量，
+  // 由 empty-state.css 的 radial-gradient 渲染全屏柔和光晕。
+  const sectionRef = useRef<HTMLElement>(null);
   const [dragOver, setDragOver] = useState(false);
+  const [titleDone, setTitleDone] = useState(false);
   const dragCounter = useRef(0);
+  // Magnetic button: track mouse offset for subtle pull effect
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const handleBtnMouseMove = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
+    const btn = btnRef.current;
+    if (!btn) return;
+    const rect = btn.getBoundingClientRect();
+    const x = (e.clientX - rect.left - rect.width / 2) * 0.08;
+    const y = (e.clientY - rect.top - rect.height / 2) * 0.08;
+    btn.style.transform = `translate(${x}px, ${y}px)`;
+  }, []);
+  const handleBtnMouseLeave = useCallback(() => {
+    const btn = btnRef.current;
+    if (btn) btn.style.transform = "translate(0, 0)";
+  }, []);
+  const handleMouseMove = useCallback((event: React.MouseEvent<HTMLElement>) => {
+    const el = sectionRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const x = ((event.clientX - rect.left) / rect.width) * 100;
+    const y = ((event.clientY - rect.top) / rect.height) * 100;
+    el.style.setProperty("--mouse-x", `${x}%`);
+    el.style.setProperty("--mouse-y", `${y}%`);
+  }, []);
 
   const handleDragEnter = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -58,6 +85,8 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
     if (dragCounter.current <= 0) { dragCounter.current = 0; setDragOver(false); }
   }, []);
   const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => { e.preventDefault(); e.stopPropagation(); }, []);
+  // 多文件拖入：首个支持文件走主上传流程，其余支持文件通过自定义事件
+  // 交给 App.tsx 作为额外会话处理，避免阻塞主数据集的加载。
   const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
@@ -73,6 +102,11 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
     }
   }, [onFileDrop]);
 
+  // 整个工作区都可点击触发上传：点击空白区域等价于点击主按钮，
+  // 让用户无需精准瞄准按钮即可发起分析。点击按钮自身时由按钮处理，
+  // 这里通过 closest("button") 排除，避免重复弹出文件选择框。
+  // 另排除"正在选择文字"的点击：落地页文案是可选中的，用户拖选一句话
+  // 松开鼠标就弹系统文件框（而且系统框会打断选择）非常恼人。
   const handleSectionClick = useCallback((e: React.MouseEvent<HTMLElement>) => {
     if (uploading) return;
     if ((e.target as HTMLElement).closest("button")) return;
@@ -81,6 +115,7 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
     onUpload();
   }, [onUpload, uploading]);
 
+  // 键盘可达性：Enter / Space 触发上传，让不用鼠标的用户也能操作
   const handleSectionKeyDown = useCallback((e: React.KeyboardEvent<HTMLElement>) => {
     if (uploading || e.currentTarget !== e.target) return;
     if (e.key === "Enter" || e.key === " ") {
@@ -89,16 +124,19 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
     }
   }, [onUpload, uploading]);
 
+  // 示例数据快速开始：通知 App.tsx 调用 /api/sessions/sample
   const handleLoadSample = useCallback((auditDemo: boolean) => {
     window.dispatchEvent(new CustomEvent("empty-workspace:load-sample", { detail: { auditDemo } }));
   }, []);
 
   return (
     <section
+      ref={sectionRef}
       className={`empty-workspace${dragOver ? " is-drag-over" : ""}`}
       role="button"
       tabIndex={0}
       aria-label="上传数据文件开始分析，或拖拽文件到此区域"
+      onMouseMove={handleMouseMove}
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
@@ -106,51 +144,73 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
       onClick={handleSectionClick}
       onKeyDown={handleSectionKeyDown}
     >
+      {/* 背景光晕交给 CSS 控制配色（empty-state.css 按主题给 --aurora-* ）：
+          组件内联写死颜色会让暗色主题拿到同一组高饱和值，实测在深底上糊成
+          一大片蓝紫、并盖住主文案的对比度。 */}
+      <Aurora className="empty-aurora-bg" speed={0.7} blur={90} />
+      <DotField className="empty-grid-bg" dotRadius={2} dotSpacing={24} cursorRadius={460} bulgeStrength={88} gradientFrom="rgba(113, 113, 122, 0.26)" gradientTo="rgba(161, 161, 170, 0.14)" glowColor="transparent" />
       <div className="empty-copy">
-        <div className="empty-kicker-row">
-          <span className="empty-kicker-dot" aria-hidden="true" />
-          <span className="section-kicker">可信数据分析与核验工作台</span>
-        </div>
-        <h2>从一份数据开始</h2>
-        <p className="empty-subtitle">
-          先由程序独立复算原始数据，再交付经核验的洞察与经营简报。
+        <span className="section-kicker">新建分析</span>
+        <h2>
+          {titleDone ? (
+            <ShinyText text="从一份数据开始" color="var(--fg-default)" shineColor="var(--accent-fg)" speed={3} />
+          ) : (
+            <SplitText text="从一份数据开始" splitBy="char" stagger={0.04} delay={0.2} onComplete={() => setTitleDone(true)} />
+          )}
+        </h2>
+        {/* 场景词轮播：传达"能分析什么"，降低首次使用的想象成本；
+            对屏幕阅读器隐藏（轮播文本反复播报是噪音） */}
+        <p className="empty-scene" aria-hidden="true">
+          看清楚你的
+          <RotatingText words={["销售趋势", "用户增长", "成本结构", "异常波动", "实验效果"]} />
         </p>
-
-        <div className="empty-formats" aria-hidden="true">
+        {/* 支持格式徽章：带 stagger 入场动画 */}
+        <motion.div
+          className="empty-formats"
+          aria-hidden="true"
+          initial="hidden"
+          animate="visible"
+          variants={{ hidden: {}, visible: { transition: { staggerChildren: 0.08, delayChildren: 0.6 } } }}
+        >
           {[
             { icon: <FileSpreadsheet size={12} />, label: "CSV" },
             { icon: <FileSpreadsheet size={12} />, label: "Excel" },
             { icon: <Braces size={12} />, label: "JSON" },
             { icon: <Table2 size={12} />, label: "Parquet" },
           ].map((item) => (
-            <span key={item.label} className="format-badge">
+            <motion.span
+              key={item.label}
+              className="format-badge"
+              variants={{ hidden: { opacity: 0, y: 8, scale: 0.9 }, visible: { opacity: 1, y: 0, scale: 1 } }}
+            >
               {item.icon}{item.label}
-            </span>
+            </motion.span>
           ))}
-        </div>
-
-        <p className="empty-drop-hint">
-          支持 CSV、Excel、JSON 或 Parquet{dragOver ? " · 松开以上传" : " · 点击空白处或拖拽文件到此"}
-        </p>
-
+        </motion.div>
+        <p>CSV、Excel、JSON 或 Parquet{dragOver ? " · 松开以上传" : " · 或拖拽文件到此"}</p>
         <div className="empty-actions">
           <div className="empty-primary-row">
-            <button
-              type="button"
-              className="primary empty-upload-button"
-              onClick={onUpload}
-              disabled={uploading}
-            >
-              {uploading ? <LoaderCircle className="spin" size={16} /> : <Upload size={16} />}
-              {uploading ? (uploadProgress != null ? `上传中 ${uploadProgress}%` : "正在读取") : "选择数据文件"}
-            </button>
+            <ClickSpark sparkColor="var(--fg-default)" sparkLength={12}>
+              <button type="button"
+                ref={btnRef}
+                className="primary empty-upload-button"
+                onClick={onUpload}
+                disabled={uploading}
+                onMouseMove={handleBtnMouseMove}
+                onMouseLeave={handleBtnMouseLeave}
+                style={{ transition: "transform 0.2s var(--ease-out), background 0.15s, box-shadow 0.15s" }}
+              >
+                {uploading ? <LoaderCircle className="spin" size={16} /> : <Upload size={16} />}
+                {uploading ? (uploadProgress != null ? `上传中 ${uploadProgress}%` : "正在读取") : "选择数据文件"}
+              </button>
+            </ClickSpark>
             <button
               type="button"
               className="empty-audit-button"
               onClick={() => handleLoadSample(true)}
               disabled={uploading}
             >
-              <ShieldCheck size={16} />
+              <ShieldCheck size={15} />
               体验简报核验
             </button>
           </div>
@@ -165,7 +225,8 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
             加载示例数据体验
           </button>
         </div>
-
+        {/* 上传进度条 + 取消：仅在上传中且有真实进度时展示。
+            100% 后服务端仍在解析文件（读取/探测编码），文案切换为"正在解析"。 */}
         {uploading && uploadProgress != null && (
           <div className="empty-upload-progress" role="progressbar" aria-valuenow={uploadProgress} aria-valuemin={0} aria-valuemax={100}>
             <div className="empty-upload-progress-track">
@@ -181,12 +242,6 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
             </div>
           </div>
         )}
-
-        <div className="empty-trust-strip" aria-hidden="true">
-          <span><FileCheck2 size={13} />原表独立复算</span>
-          <span><ShieldCheck size={13} />范围门拦截越界口径</span>
-          <span><Link2 size={13} />SHA-256 哈希链存证</span>
-        </div>
       </div>
     </section>
   );

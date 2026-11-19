@@ -12,8 +12,9 @@ import {
   Plus,
   RotateCcw,
   ShieldCheck,
+  Sparkles,
 } from "lucide-react";
-import type { AuditResult, ConfirmReceipt } from "./SalesAudit";
+import type { AuditResult, ConfirmReceipt, QuickDraftResult } from "./SalesAudit";
 import "./SalesAuditDemo.css";
 
 interface SalesAuditDemoProps {
@@ -23,6 +24,8 @@ interface SalesAuditDemoProps {
   busy: boolean;
   confirming: boolean;
   confirmed: boolean;
+  quickBusy?: boolean;
+  quickDraft?: QuickDraftResult | null;
   canRun: boolean;
   error: string;
   evidence: ReactNode;
@@ -32,6 +35,7 @@ interface SalesAuditDemoProps {
   briefText?: string | null;
   onRun: () => void;
   onConfirm: () => void;
+  onQuickDraft?: () => void;
   onDownloadEvidence: () => void;
   onDownloadBrief: () => void;
   onDraftChange?: (value: string) => void;
@@ -48,7 +52,6 @@ function orderCount(text?: string) {
 
 const formatCount = new Intl.NumberFormat("zh-CN");
 
-// 直接显示真实值：路演容器里滚动动画容易停在起点（0 笔），对核验页是错误信息。
 function Figure({ value }: { value: bigint | null }) {
   if (value === null) return <>—</>;
   return <>{formatCount.format(value)}</>;
@@ -61,6 +64,19 @@ async function sha256Hex(text: string): Promise<string | null> {
   return Array.from(new Uint8Array(buffer))
     .map(byte => byte.toString(16).padStart(2, "0"))
     .join("");
+}
+
+// 逐字符高亮 SHA-256 雪崩差异：改动 1 个字节，几乎全部十六进制字符瞬间变红。
+function DiffHash({ actual, expected }: { actual: string; expected: string }) {
+  const slice = actual.slice(0, 32);
+  return (
+    <code className="sales-showcase-hash-chars" title={actual}>
+      {slice.split("").map((ch, idx) => (
+        <span key={idx} className={ch !== expected[idx] ? "is-diff" : undefined}>{ch}</span>
+      ))}
+      …
+    </code>
+  );
 }
 
 // 和服务端 confirm 写入的 brief_sha256 用同一算法：改一个空格，哈希就对不上。
@@ -91,14 +107,28 @@ function VerifyExport({ brief, expected }: { brief: string; expected: string }) 
         <h3>导出校验</h3>
         <small>与 scripts/verify_audit_ledger.py 使用同一 SHA-256 比对</small>
       </div>
+      {tampered && (
+        <div className="sales-showcase-tamper-note" role="note">
+          <span>已注入 1 字节篡改：简报末尾追加 1 个空格</span>
+          <code>"␣" (+1 byte)</code>
+        </div>
+      )}
       <div className="sales-showcase-verify-hash">
         <div>
-          <label>回执指纹</label>
-          <code title={expected}>{expected.slice(0, 16)}…</code>
+          <label>回执指纹（SHA-256 前 32 位）</label>
+          <code title={expected}>{expected.slice(0, 32)}…</code>
         </div>
         <div>
-          <label>当前简报</label>
-          <code title={actual || undefined}>{actual ? `${actual.slice(0, 16)}…` : "尚未校验"}</code>
+          <label>当前简报指纹</label>
+          {actual ? (
+            state === "bad" ? (
+              <DiffHash actual={actual} expected={expected} />
+            ) : (
+              <code title={actual}>{actual.slice(0, 32)}…</code>
+            )
+          ) : (
+            <code>尚未校验</code>
+          )}
         </div>
       </div>
       <div className="sales-showcase-tools">
@@ -113,7 +143,7 @@ function VerifyExport({ brief, expected }: { brief: string; expected: string }) 
       </div>
       <p className={`sales-showcase-verify-state is-${state}`} role="status">
         {state === "ok" && <><Check size={15} />内容与回执一致</>}
-        {state === "bad" && <><AlertTriangle size={15} />内容与回执不一致，导出文件已被改动</>}
+        {state === "bad" && <><AlertTriangle size={15} />内容与回执不一致，导出文件已被改动（雪崩效应触发）</>}
         {state === "unsupported" && <>当前浏览器不支持 Web Crypto，请在本地运行离线脚本</>}
         {state === "idle" && <>当前简报 {brief.length} 个字符</>}
       </p>
@@ -122,8 +152,8 @@ function VerifyExport({ brief, expected }: { brief: string; expected: string }) 
 }
 
 export default function SalesAuditDemo({
-  draft, isExample, audit, busy, confirming, confirmed, canRun, error, evidence, brief, details,
-  receipt, briefText, onRun, onConfirm, onDownloadEvidence, onDownloadBrief, onDraftChange, onEdit, onReset,
+  draft, isExample, audit, busy, confirming, confirmed, quickBusy, quickDraft, canRun, error, evidence, brief, details,
+  receipt, briefText, onRun, onConfirm, onQuickDraft, onDownloadEvidence, onDownloadBrief, onDraftChange, onEdit, onReset,
 }: SalesAuditDemoProps) {
   const stage = useRef<HTMLElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
@@ -158,6 +188,24 @@ export default function SalesAuditDemo({
     document.addEventListener("fullscreenchange", updateFullscreen);
     return () => document.removeEventListener("fullscreenchange", updateFullscreen);
   }, []);
+
+  // 路演全屏快捷键：未在输入框打字时按 F 快速切换全屏
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const target = e.target as HTMLElement | null;
+      if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+      if (target?.isContentEditable) return;
+      if (e.key === "f" || e.key === "F") {
+        if (document.fullscreenEnabled) {
+          e.preventDefault();
+          void toggleFullscreen();
+        }
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
 
   async function toggleFullscreen() {
     setFullscreenError(false);
@@ -204,9 +252,20 @@ export default function SalesAuditDemo({
               <span className="sales-showcase-badge">可信复算 · 哈希链存证</span>
             </div>
             <div className="sales-showcase-tools">
-              <button type="button" onClick={() => void editDraft()} disabled={busy}><Pencil size={14} />草稿工作台</button>
+              {onQuickDraft && (
+                <button
+                  type="button"
+                  onClick={() => advance(onQuickDraft)}
+                  disabled={busy || confirming || quickBusy}
+                  title="关闭思考、不调工具，让模型直接读表起草作为真实对照"
+                >
+                  {quickBusy ? <LoaderCircle size={14} className="spin" /> : <Sparkles size={14} />}
+                  {quickBusy ? "模型起草中…" : "用模型直接起草"}
+                </button>
+              )}
+              <button type="button" onClick={() => void editDraft()} disabled={busy || quickBusy}><Pencil size={14} />草稿工作台</button>
               {document.fullscreenEnabled && (
-                <button type="button" onClick={() => void toggleFullscreen()}>
+                <button type="button" onClick={() => void toggleFullscreen()} title="快捷键 F">
                   {fullscreen ? <Minimize size={14} /> : <Maximize size={14} />}
                   {fullscreen ? "退出全屏" : "全屏"}
                 </button>
@@ -217,12 +276,21 @@ export default function SalesAuditDemo({
           <div className="sales-showcase-intro">
             <h2 ref={heading} tabIndex={-1}>{title}</h2>
             {isExample && <p>示例数据 · 草稿把销量合计当成了订单数</p>}
+            {quickDraft && (
+              <p className="sales-showcase-quick-banner" role="status">
+                <strong>模型原话（未调工具 · 尚未核验）</strong>
+                <span>
+                  {quickDraft.model} · {(quickDraft.elapsed_ms / 1000).toFixed(1)} 秒 · 读取 {quickDraft.rows_sent} 行
+                  {quickDraft.masked ? ` · 已脱敏 ${quickDraft.masked_cells} 格` : ""}
+                </span>
+              </p>
+            )}
           </div>
 
           <nav className="sales-showcase-steps" aria-label="核验流程">
             {[
               { n: 1, label: "草稿", action: toggleEditor, enabled: Boolean(onDraftChange) },
-              { n: 2, label: "复算", action: onRun, enabled: !audit && canRun && !busy },
+              { n: 2, label: "复算", action: onRun, enabled: !audit && canRun && !busy && !quickBusy },
               { n: 3, label: "确认", action: onConfirm, enabled: Boolean(audit?.corrected_brief) && !confirmed && !confirming },
               {
                 n: 4,
@@ -284,15 +352,15 @@ export default function SalesAuditDemo({
           </div>
 
           <div className="sales-showcase-editline">
-            <button type="button" className="sales-showcase-link" onClick={toggleEditor} disabled={busy || !onDraftChange}>
+            <button type="button" className="sales-showcase-link" onClick={toggleEditor} disabled={busy || quickBusy || !onDraftChange}>
               {editing ? "收起草稿" : "改一个数试试"}
             </button>
             {editing && onDraftChange && !hasScopeSample && (
-              <button type="button" className="sales-showcase-chip" onClick={insertScopeSample} disabled={busy || confirming}>
+              <button type="button" className="sales-showcase-chip" onClick={insertScopeSample} disabled={busy || confirming || quickBusy}>
                 <Plus size={12} />插入范围门测试（华东区订单数）
               </button>
             )}
-            <small>Ctrl / ⌘ + Enter 直接复算</small>
+            <small>Ctrl / ⌘ + Enter 直接复算 · 按 F 全屏</small>
           </div>
 
           {editing && onDraftChange && (
@@ -300,10 +368,10 @@ export default function SalesAuditDemo({
               ref={editor}
               className="sales-showcase-editor"
               value={draft}
-              disabled={busy || confirming}
+              disabled={busy || confirming || quickBusy}
               onChange={(event) => onDraftChange(event.target.value)}
               onKeyDown={(event) => {
-                if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && canRun && !busy) {
+                if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && canRun && !busy && !quickBusy) {
                   event.preventDefault();
                   advance(onRun);
                 }
@@ -336,12 +404,12 @@ export default function SalesAuditDemo({
             </div>
             <div className="sales-showcase-tools">
               {audit && (
-                <button type="button" onClick={() => advance(onReset)} disabled={busy}>
+                <button type="button" onClick={() => advance(onReset)} disabled={busy || quickBusy}>
                   <RotateCcw size={14} />重新演示
                 </button>
               )}
               {!audit && (
-                <button className="sales-showcase-primary" type="button" onClick={() => advance(onRun)} disabled={busy || !canRun}>
+                <button className="sales-showcase-primary" type="button" onClick={() => advance(onRun)} disabled={busy || quickBusy || !canRun}>
                   {busy ? <LoaderCircle size={16} className="spin" /> : <ShieldCheck size={16} />}
                   {busy ? "正在复算…" : "复算"}
                 </button>

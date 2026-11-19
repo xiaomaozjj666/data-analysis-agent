@@ -35,7 +35,12 @@ import SalesAudit, { SALES_BRIEF_TASK } from "./components/SalesAudit";
 import SettingsPanel from "./components/SettingsPanel";
 import TaskBox from "./components/TaskBox";
 import WorkspaceTabs from "./components/WorkspaceTabs";
+// React Bits 风格动效（手写、零新增依赖）：品牌渐变 / 指标数字滚动 /
+// 主 CTA 流光描边 / 数据概览滚动入场，均兼容暗色与 prefers-reduced-motion。
+import ClickSpark from "./components/rb/ClickSpark";
 import CountUp from "./components/rb/CountUp";
+import GlareHover from "./components/rb/GlareHover";
+import GradientText from "./components/rb/GradientText";
 import Reveal from "./components/rb/Reveal";
 import {
   ACTIVE_ANALYSIS_STATES,
@@ -903,26 +908,42 @@ function App() {
         onTouchEnd={onSidebarTouchEnd}
       >
         <div className="wordmark">
-          <strong>数据台</strong>
+          <strong>
+            <GradientText speed={8}>数据台</GradientText>
+          </strong>
           <span>DATA DESK</span>
         </div>
 
-        <button
-          type="button"
-          className="new-analysis"
-          onClick={() => fileInput.current?.click()}
-          disabled={uploading}
+        {/* ReactBits ClickSpark：点击时白色火花迸发，强化"新建"这一主操作的确认感；
+            spark 层 pointer-events:none 不影响点击，reduced-motion 下自动隐藏 */}
+        <ClickSpark
+          sparkColor="#ffffff"
+          sparkCount={8}
+          sparkLength={14}
+          className="sidebar-spark"
         >
-          <FilePlus2 size={16} />
-          新建分析
-        </button>
+          <button
+            type="button"
+            className="new-analysis"
+            onClick={() => fileInput.current?.click()}
+            disabled={uploading}
+          >
+            <FilePlus2 size={17} />
+            新建分析
+          </button>
+        </ClickSpark>
 
         <div className="sidebar-section">
           <span className="sidebar-label">当前数据</span>
-          {/* 当前数据卡片与上传入口。
+          {/* ReactBits GlareHover：悬停流光扫过数据卡片/上传入口。
               borderColor 透明避免与按钮自身边框叠加；.sidebar-glare 撑满宽度并
               放开 overflow，防止按钮 hover 的 translateX/阴影被裁切 */}
           {session ? (
+            <GlareHover
+              className="sidebar-glare"
+              borderRadius="var(--radius-md)"
+              borderColor="transparent"
+            >
               <button
                 type="button"
                 className="dataset-button"
@@ -937,7 +958,13 @@ function App() {
                 </span>
                 <RefreshCw size={13} />
               </button>
+            </GlareHover>
           ) : (
+            <GlareHover
+              className="sidebar-glare"
+              borderRadius="var(--radius-md)"
+              borderColor="transparent"
+            >
               <button
                 type="button"
                 className="upload-button"
@@ -955,6 +982,7 @@ function App() {
                     : "正在读取"
                   : "选择数据文件"}
               </button>
+            </GlareHover>
           )}
           <input
             ref={fileInput}
@@ -1051,7 +1079,11 @@ function App() {
               {settings ? "服务正常" : "连接中"}
             </div>
             {/* 命令面板入口：点击等价于 Cmd+K，给不熟悉快捷键的用户一个可见入口。
-                顶栏三个图标按钮交互一致 */}
+                与主题按钮统一用 GlareHover 悬停流光，顶栏三个图标按钮交互一致 */}
+            <GlareHover
+              borderRadius="var(--radius-md)"
+              borderColor="transparent"
+            >
               <button
                 type="button"
                 className="icon-button topbar-action"
@@ -1061,7 +1093,12 @@ function App() {
               >
                 <Command size={16} />
               </button>
+            </GlareHover>
             {/* 快捷键帮助入口：与 ? 快捷键等价 */}
+            <GlareHover
+              borderRadius="var(--radius-md)"
+              borderColor="transparent"
+            >
               <button
                 type="button"
                 className="icon-button topbar-action"
@@ -1071,9 +1108,15 @@ function App() {
               >
                 <Keyboard size={16} />
               </button>
+            </GlareHover>
             {/* 主题切换：太阳/月亮图标随当前 theme 切换，与 T 快捷键等价。
-                点击或按 T 切换亮/暗主题，
+                外层用 ReactBits 的 GlareHover 做悬停流光（默认 accent #5b5bd6），
                 原生 button 保留无障碍属性与点击；glare 在 icon 之下、仅作悬停反馈。 */}
+            <GlareHover
+              borderRadius="var(--radius-md)"
+              borderColor="transparent"
+              className="theme-toggle-glare"
+            >
               <button
                 type="button"
                 className="icon-button topbar-action theme-toggle"
@@ -1083,6 +1126,7 @@ function App() {
               >
                 {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
               </button>
+            </GlareHover>
           </div>
         </header>
 

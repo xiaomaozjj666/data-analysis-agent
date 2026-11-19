@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import {
   Check,
+  ChevronDown,
+  ChevronUp,
   Copy,
   Download,
   FileCheck2,
+  Link2,
   LoaderCircle,
   Presentation,
   ShieldCheck,
@@ -113,6 +116,27 @@ export interface QuickDraftResult {
   parsed_draft_sha256: string;
 }
 
+interface LedgerChainRecord {
+  seq: number;
+  ts: string;
+  kind: string;
+  prev: string;
+  hash: string;
+  audit_id?: string;
+  brief_sha256?: string;
+}
+
+interface LedgerChainResponse {
+  ledger: string;
+  verification: {
+    valid: boolean;
+    entries: number;
+    tip: string;
+    errors: string[];
+  };
+  entries: LedgerChainRecord[];
+}
+
 interface SalesAuditProps {
   sessionId: string;
   filename: string;
@@ -140,12 +164,10 @@ function isStatus(err: unknown, status: number): boolean {
   return err instanceof ApiError && err.status === status;
 }
 
-// 429 的等待秒数优先取 Retry-After，缺失时回退到后端文案里的「N 秒」。
 function retryAfterSeconds(err: unknown): number | null {
   if (err instanceof ApiError && typeof err.retryAfter === "number" && err.retryAfter > 0) {
     return err.retryAfter;
   }
-  // 后端文案是「同一会话 10 秒内只能起草一次，请 9 秒后再试。」——优先取「请 N 秒后」。
   const match =
     err instanceof Error
       ? err.message.match(/请\s*(\d+)\s*秒/) ?? err.message.match(/(\d+)\s*秒/)
@@ -181,22 +203,66 @@ function extractDraft(report: string): string {
   return start >= 0 ? lines.slice(start + 1, end).join("\n").trimEnd() || body : body;
 }
 
-function SourceEvidence({ source }: { source: AuditSource }) {
+function SourceEvidence({
+  source,
+  copiedHash,
+  onCopyHash,
+}: {
+  source: AuditSource;
+  copiedHash: string | null;
+  onCopyHash: (hash: string) => void;
+}) {
+  // 统计预览行里重复出现的 order_id，便于大屏一眼看出“多条明细同属一笔订单”
+  const orderCounts = new Map<string, number>();
+  for (const row of source.preview) {
+    orderCounts.set(row.order_id, (orderCounts.get(row.order_id) ?? 0) + 1);
+  }
+  const dupOrderCount = Array.from(orderCounts.values()).filter((c) => c > 1).length;
+
   return (
     <details className="sales-audit-card sales-audit-evidence">
-      <summary>查看来源 · {source.filename} · 共 {source.rows} 条明细</summary>
-      <p>复算覆盖全表，下方展示前 {source.preview.length} 条记录。</p>
-      <pre>SHA-256 {source.sha256}</pre>
+      <summary>
+        查看来源 · {source.filename} · 共 {source.rows} 条明细
+        {dupOrderCount > 0 && <span className="sales-audit-dup-hint">前 {source.preview.length} 行含同单多行记录</span>}
+      </summary>
       <p>
-        文件编码 {source.encoding ?? "未报告"}
+        复算覆盖全表，下方展示前 {source.preview.length} 条记录。文件编码 {source.encoding ?? "未报告"}
         {typeof source.order_ids === "number" ? ` · 去重后订单数 ${source.order_ids}` : ""}
       </p>
+      <div className="sales-audit-sha-row">
+        <pre>SHA-256 {source.sha256}</pre>
+        <button type="button" className="sales-audit-copy-btn" onClick={() => onCopyHash(source.sha256)}>
+          {copiedHash === source.sha256 ? <Check size={13} /> : <Copy size={13} />}
+          {copiedHash === source.sha256 ? "已复制" : "复制指纹"}
+        </button>
+      </div>
       <div className="sales-audit-table">
         <table>
-          <thead><tr><th>记录</th><th>order_id</th><th>sales（元）</th><th>quantity（件）</th></tr></thead>
-          <tbody>{source.preview.map((row) => (
-            <tr key={row.record}><td>{row.record}</td><td>{row.order_id}</td><td>{row.sales}</td><td>{row.quantity}</td></tr>
-          ))}</tbody>
+          <thead>
+            <tr>
+              <th>记录</th>
+              <th>order_id</th>
+              <th className="is-num">sales（元）</th>
+              <th className="is-num">quantity（件）</th>
+            </tr>
+          </thead>
+          <tbody>
+            {source.preview.map((row) => {
+              const count = orderCounts.get(row.order_id) ?? 0;
+              const isDup = count > 1;
+              return (
+                <tr key={row.record} className={isDup ? "is-duplicate-order" : undefined}>
+                  <td className="is-mono">{row.record}</td>
+                  <td>
+                    <span className="sales-audit-oid">{row.order_id}</span>
+                    {isDup && <span className="sales-audit-dup-badge">同单合并（{count} 行）</span>}
+                  </td>
+                  <td className="is-num">{row.sales}</td>
+                  <td className="is-num">{row.quantity}</td>
+                </tr>
+              );
+            })}
+          </tbody>
         </table>
       </div>
     </details>
@@ -224,6 +290,7 @@ function VerifiedBrief({ brief, onDownload }: { brief: string; onDownload?: () =
 }
 
 interface ResultNoticesProps {
+  sessionId: string;
   audit: AuditResult;
   receipt: ConfirmReceipt | null;
   draftTrace: string | null;
@@ -232,15 +299,44 @@ interface ResultNoticesProps {
   onCopyHash: (hash: string) => void;
 }
 
-// 告警、账本写入与发布回执：正常工作台和路演结果区共用。
+// 告警、账本写入、发布回执与按需展开的哈希链实时视图。
 function ResultNotices({
-  audit, receipt, draftTrace, copiedHash, copyHint, onCopyHash,
+  sessionId, audit, receipt, draftTrace, copiedHash, copyHint, onCopyHash,
 }: ResultNoticesProps) {
   const receiptRef = useRef<HTMLElement>(null);
+  const [chainOpen, setChainOpen] = useState(false);
+  const [chainLoading, setChainLoading] = useState(false);
+  const [chainError, setChainError] = useState("");
+  const [chainData, setChainData] = useState<LedgerChainResponse | null>(null);
+
   useEffect(() => {
-    // 确认成功后确认按钮会消失；把焦点交给回执，键盘用户不会落回文档开头。
     if (receipt) receiptRef.current?.focus({ preventScroll: true });
   }, [receipt]);
+
+  // 每次有新回执或新复算结果时，若账本抽屉正展开则清空旧缓存以便刷新
+  useEffect(() => {
+    setChainData(null);
+    setChainError("");
+  }, [audit.audit_id, receipt?.seq]);
+
+  async function toggleLedgerChain() {
+    if (chainOpen) {
+      setChainOpen(false);
+      return;
+    }
+    setChainOpen(true);
+    setChainLoading(true);
+    setChainError("");
+    try {
+      const res = await api<LedgerChainResponse>(`/api/sessions/${sessionId}/sales-audit/ledger?limit=8`);
+      setChainData(res);
+    } catch (err) {
+      setChainError(err instanceof Error ? err.message : "读取账本链失败");
+    } finally {
+      setChainLoading(false);
+    }
+  }
+
   const warnings = audit.warnings ?? [];
   const ledger = audit.ledger;
   const trace = audit.draft_trace_sha256 ?? draftTrace;
@@ -270,6 +366,11 @@ function ResultNotices({
             {copiedHash === ledger.hash ? <Check size={14} /> : <Copy size={14} />}
             {copiedHash === ledger.hash ? "已复制" : "复制 hash"}
           </button>
+          <button type="button" className="sales-audit-chain-toggle" onClick={() => void toggleLedgerChain()}>
+            <Link2 size={13} />
+            {chainOpen ? "收起哈希链" : "查看哈希链账本"}
+            {chainOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+          </button>
           {copyHint && <small>{copyHint}</small>}
         </div>
       )}
@@ -278,13 +379,58 @@ function ResultNotices({
       )}
       {receipt && (
         <section className="sales-audit-receipt" role="status" ref={receiptRef} tabIndex={-1}>
-          <strong>确认记录</strong>
+          <div className="sales-audit-receipt-head">
+            <strong>确认记录</strong>
+            <button type="button" className="sales-audit-chain-toggle" onClick={() => void toggleLedgerChain()}>
+              <Link2 size={13} />
+              {chainOpen ? "收起链式存证" : "实时核验哈希链"}
+              {chainOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+            </button>
+          </div>
           <dl>
             <div><dt>序号</dt><dd>#{receipt.seq}</dd></div>
             <div><dt>时间</dt><dd>{formatReceiptTime(receipt.ts)}</dd></div>
             <div><dt>hash</dt><dd><code>{receipt.hash.slice(0, 16)}</code></dd></div>
           </dl>
           <small>服务端按原始 CSV 重算后写入；可在核验明细中核对。</small>
+        </section>
+      )}
+      {chainOpen && (
+        <section className="sales-audit-chain" aria-label="审计哈希链账本">
+          <div className="sales-audit-chain-head">
+            <span className="sales-audit-chain-title">
+              <Link2 size={14} />
+              审计哈希链账本（audit_ledger.jsonl）
+            </span>
+            {chainData && (
+              <span className={`sales-audit-chain-status ${chainData.verification.valid ? "is-valid" : "is-broken"}`}>
+                {chainData.verification.valid
+                  ? `整链校验通过 · valid=true · 共 ${chainData.verification.entries} 条`
+                  : "链校验失败"}
+              </span>
+            )}
+          </div>
+          {chainLoading && <p className="sales-audit-chain-loading"><LoaderCircle size={14} className="spin" />正在从服务端读取并校验哈希链…</p>}
+          {chainError && <p className="sales-audit-error">{chainError}</p>}
+          {chainData && chainData.entries.length > 0 && (
+            <ol className="sales-audit-chain-list">
+              {chainData.entries.map((entry, idx) => (
+                <li key={entry.seq} className={`sales-audit-chain-node is-${entry.kind}`}>
+                  <div className="sales-audit-chain-meta">
+                    <span className="sales-audit-chain-seq">#{entry.seq}</span>
+                    <span className="sales-audit-chain-kind">{entry.kind === "confirm" ? "服务端确认" : "独立复算"}</span>
+                    <time>{formatReceiptTime(entry.ts)}</time>
+                  </div>
+                  <div className="sales-audit-chain-hashes">
+                    <span><label>prev</label><code title={entry.prev}>{entry.prev.slice(0, 16)}…</code></span>
+                    <span className="sales-audit-chain-arrow" aria-hidden="true">→</span>
+                    <span><label>hash</label><code title={entry.hash}>{entry.hash.slice(0, 16)}…</code></span>
+                  </div>
+                  {idx < chainData.entries.length - 1 && <div className="sales-audit-chain-connector" aria-hidden="true" />}
+                </li>
+              ))}
+            </ol>
+          )}
         </section>
       )}
     </>
@@ -310,7 +456,6 @@ export default function SalesAudit({
   const [confirming, setConfirming] = useState(false);
   const [quickBusy, setQuickBusy] = useState(false);
   const [quickDraft, setQuickDraft] = useState<QuickDraftResult | null>(null);
-  // 快速起草返回的轨迹哈希：手动改草稿后立即清空，避免绑定失效的轨迹。
   const [draftTrace, setDraftTrace] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [sessionLost, setSessionLost] = useState(false);
@@ -319,10 +464,8 @@ export default function SalesAudit({
   const [copiedHash, setCopiedHash] = useState<string | null>(null);
   const [copyHint, setCopyHint] = useState("");
   const draftInput = useRef<HTMLTextAreaElement>(null);
-  // \u5f02\u6b65\u8bf7\u6c42\u53d1\u51fa\u65f6\u7684\u8349\u7a3f\u5feb\u7167\uff1a\u8bf7\u6c42\u5728\u9014\u671f\u95f4\u82e5\u8349\u7a3f\u88ab\u6539\uff0c\u4e22\u5f03\u65e7\u54cd\u5e94\uff0c\u907f\u514d\u8986\u76d6\u7528\u6237\u8f93\u5165\u3002
   const draftRef = useRef(draft);
   const recoveryRef = useRef<HTMLHeadingElement>(null);
-  // 409 时草稿框仍处于 disabled（confirming=true），要等状态落回再聚焦。
   const focusDraftAfterConfirm = useRef(false);
 
   useEffect(() => {
@@ -398,7 +541,6 @@ export default function SalesAudit({
       setError("核验结果缺少 audit_id，请重新复算核验后再确认。");
       return;
     }
-    // 请求在途期间若草稿被改，服务端简报对应的是旧草稿，不能展示或提供下载。
     const submittedDraft = draftRef.current;
     setConfirming(true);
     setError("");
@@ -427,7 +569,6 @@ export default function SalesAudit({
       } : current);
     } catch (err) {
       if (isStatus(err, 409)) {
-        // 核验后草稿或 CSV 发生变化：清空结果，要求重新复算。
         setAudit(null);
         setReceipt(null);
         setServerBrief(null);
@@ -466,7 +607,6 @@ export default function SalesAudit({
         return;
       }
       updateDraft(response.draft);
-      // updateDraft 会先清空轨迹；这里按服务端返回值重新绑定本次起草。
       setDraftTrace(response.trace_sha256);
       setQuickDraft(response);
     } catch (err) {
@@ -481,7 +621,6 @@ export default function SalesAudit({
           : `模型起草请求过于频繁，请 ${seconds} 秒后再试。`);
         return;
       }
-      // 503 / 422 等：直接展示后端 detail（模型未配置、上游失败或草稿非法）。
       setError(err instanceof Error ? err.message : "快速起草失败，请重试。");
     } finally {
       setQuickBusy(false);
@@ -517,9 +656,16 @@ export default function SalesAudit({
   const tooLong = draft.length > MAX_DRAFT_LENGTH;
   const confirmed = Boolean(receipt);
   const brief = confirmed ? serverBrief : null;
-  const evidenceView = audit && <SourceEvidence source={audit.source} />;
+  const evidenceView = audit && (
+    <SourceEvidence
+      source={audit.source}
+      copiedHash={copiedHash}
+      onCopyHash={(hash) => void copyHash(hash)}
+    />
+  );
   const noticesView = audit && (
     <ResultNotices
+      sessionId={sessionId}
       audit={audit}
       receipt={receipt}
       draftTrace={draftTrace}
@@ -583,6 +729,8 @@ export default function SalesAudit({
           busy={busy}
           confirming={confirming}
           confirmed={confirmed}
+          quickBusy={quickBusy}
+          quickDraft={quickDraft}
           canRun={Boolean(draft.trim()) && !tooLong}
           error={tooLong ? `草稿最多 ${MAX_DRAFT_LENGTH} 字符，请在工作台删减后重试。` : error}
           evidence={evidenceView}
@@ -592,6 +740,7 @@ export default function SalesAudit({
           briefText={serverBrief}
           onRun={() => void runAudit()}
           onConfirm={() => void confirmBrief()}
+          onQuickDraft={() => void runQuickDraft()}
           onDownloadEvidence={downloadAudit}
           onDownloadBrief={downloadBrief}
           onDraftChange={(value) => updateDraft(value, demoDraft)}
@@ -701,7 +850,7 @@ export default function SalesAudit({
                   </p>
                   <ul className="sales-audit-claims">
                     {audit.claims.map((claim) => (
-                      <li key={claim.line}>
+                      <li key={claim.line} className={`sales-audit-claim is-${claim.status}`}>
                         <div className="sales-audit-claim-heading">
                           <strong>{claim.text}</strong>
                           <span className={`sales-audit-verdict sales-audit-${claim.status}`}>

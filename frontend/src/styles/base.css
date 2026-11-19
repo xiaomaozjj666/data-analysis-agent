@@ -5,7 +5,6 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
-  /* 统一使用设计令牌画布底色，彻底消除冷蓝灰与暖石色的色温冲突 */
   background: var(--canvas-page);
   font-size: var(--text-base);
   line-height: 1.5;
@@ -13,8 +12,7 @@ body {
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
 }
-button, input, textarea { font: inherit; letter-spacing: 0; }
-/* 所有按钮共享同一组克制过渡，保证全局交互手感一致 */
+button, input, textarea { font: inherit; letter-spacing: inherit; }
 button {
   cursor: pointer;
   transition:
@@ -24,7 +22,7 @@ button {
     box-shadow var(--duration-fast) var(--ease-out),
     transform var(--duration-fast) var(--ease-out);
 }
-button:disabled { cursor: not-allowed; opacity: 0.5; }
+button:disabled { cursor: not-allowed; opacity: 0.48; }
 :focus-visible { outline: 2px solid var(--accent-fg); outline-offset: 2px; }
 input:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent-fg); outline-offset: 2px; }
 ::selection { background: var(--accent-ring); }
@@ -35,7 +33,6 @@ input:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent-fg
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* 细滚动条：暖中性色板，不抢内容 */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border-strong); border: 3px solid transparent; border-radius: 8px; background-clip: content-box; }

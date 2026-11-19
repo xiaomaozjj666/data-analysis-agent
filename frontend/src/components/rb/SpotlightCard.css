@@ -26,7 +26,7 @@
   opacity: 0;
   background: radial-gradient(
     var(--spotlight-radius, 250px) circle at var(--spotlight-x, -9999px) var(--spotlight-y, -9999px),
-    var(--spotlight-color, rgba(77, 77, 143, 0.12)),
+    var(--spotlight-color, rgba(128, 128, 140, 0.10)),
     transparent 100%
   );
   transition: opacity 0.3s var(--ease-out);

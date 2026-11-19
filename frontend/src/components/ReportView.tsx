@@ -19,6 +19,8 @@ import { API_URL, REMARK_PLUGINS } from "../constants";
 import { describeApiError, requestHeaders } from "../utils/api";
 import { splitReportAppendix } from "../utils/reportAppendix";
 import { markdownComponents, ReasoningBlock, UsageChip } from "./ReportParts";
+import ShinyText from "./rb/ShinyText";
+import GradientText from "./rb/GradientText";
 import type { AnalysisResult, Artifact, TokenUsage } from "../types";
 
 interface ReportViewProps {
@@ -242,8 +244,8 @@ li { margin: 4px 0; }
 code { font-family: "IBM Plex Mono", SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9em; padding: 2px 6px; background: #f5f3ec; border-radius: 4px; }
 pre { background: #f5f3ec; border: 1px solid #eef0f3; border-radius: 8px; padding: 14px 16px; overflow: auto; margin: 16px 0; }
 pre code { background: transparent; padding: 0; font-size: 13px; line-height: 1.55; }
-a { color: #175953; text-decoration: none; border-bottom: 1px solid #dfdcd2; }
-blockquote { margin: 16px 0; padding: 6px 0 6px 16px; border-left: 3px solid #175953; color: #46443e; background: #f2f0e9; border-radius: 0 4px 4px 0; }
+a { color: #111113; text-decoration: none; border-bottom: 1px solid #e4e4e7; }
+blockquote { margin: 16px 0; padding: 6px 0 6px 16px; border-left: 2px solid #111113; color: #52525b; background: #f4f4f5; border-radius: 0 4px 4px 0; }
 blockquote p { margin: 4px 0; }
 hr { border: 0; border-top: 1px solid #eef0f3; margin: 24px 0; }
 table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 14px; }
@@ -611,7 +613,13 @@ const ReportView = React.memo(function ReportView({
       <div className="report-meta">
         <div className="report-title">
           <FileChartColumn size={15} />
-          <strong>分析报告</strong>
+          {/* 流式中用 ShinyText 循环微光暗示"进行中"，完成后切 GradientText
+              静态流动渐变，作为报告完成的视觉奖励 */}
+          {streaming ? (
+            <ShinyText text="分析报告" color="var(--fg-default)" shineColor="var(--fg-subtle)" speed={4} yoyo />
+          ) : (
+            <GradientText speed={7}>分析报告</GradientText>
+          )}
           {streaming ? (
             <small className="report-count is-streaming"><LoaderCircle size={11} className="spin" />生成中</small>
           ) : (

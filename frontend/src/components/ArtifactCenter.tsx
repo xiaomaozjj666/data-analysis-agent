@@ -5,6 +5,7 @@ import { formatBytes } from "../utils/format";
 import AuthImage from "./AuthImage";
 import EChartThumb from "./EChartThumb";
 import PlotlyThumb from "./PlotlyThumb";
+import SpotlightCard from "./rb/SpotlightCard";
 import type { Artifact } from "../types";
 
 interface ArtifactCenterProps {
@@ -129,7 +130,8 @@ const ArtifactCenter = React.memo(function ArtifactCenter({
               const { Icon, label } = pickChartIcon(item.name);
               const isSelected = selected.has(item.name);
               return (
-                <article key={item.name} className="chart-card" style={{ animationDelay: `${index * 60}ms` }}>
+                <SpotlightCard key={item.name} className="chart-card-spotlight" spotlightColor="rgba(128, 128, 140, 0.10)" spotlightRadius={280} tiltMax={4} hoverScale={1.015}>
+                <article className="chart-card" style={{ animationDelay: `${index * 60}ms` }}>
                   {hasBatchDownload && (
                     <input
                       type="checkbox"
@@ -247,6 +249,7 @@ const ArtifactCenter = React.memo(function ArtifactCenter({
                     </button>
                   </div>
                 </article>
+                </SpotlightCard>
               );
             })}
             </div>

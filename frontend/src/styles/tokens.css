@@ -1,87 +1,88 @@
 /* ==========================================================================
-   Data Desk 设计系统 · 建筑编辑感与可信精度（Editorial Archival v6）
+   Data Desk 设计系统 · 纯粹黑白灰与精密质感（Vercel Geist / Linear 范式）
    --------------------------------------------------------------------------
    设计原则：
-   1. 彻底去 AI 味：告别廉价紫蓝光晕与冷暖割裂，采用温润档案纸画布 +
-      深建筑松石青（Architectural Pine Teal）作为唯一可信强调色；
-   2. 严格三层表面阶梯（页底 / 侧栏 / 卡片），1px 精密发丝边框 + 极克制环境影；
-   3. 亮暗双主题全矩阵通过 WCAG AA (≥4.5:1) 与三级文字 1.2× 阶梯门禁；
-   4. 全部动效克制在 150–240ms ease-out，绝不使用廉价流光、火花或霓虹描边。
+   1. 极简无色铬（Monochrome-first）：亮色以纯粹白底 + 碳黑墨水为主，暗色以
+      曜石黑 #09090B + 极细 1px 轮廓线为主，彻底摆脱廉价紫蓝与色块装饰；
+   2. 色彩只用于真实数据信号（已核验绿 / 冲突红 / 待复核琥珀），从不滥用；
+   3. 保留并精调全部微交互（点阵物理场、磁吸按钮、玻璃扫光、卡片聚光），
+      从高饱和炫彩收敛为克制的单色光学反馈；
+   4. 亮暗双主题全矩阵严格通过 WCAG AA (≥4.5:1) 与三级文字 1.2× 阶梯。
    ========================================================================== */
 
-/* ---------- 设计令牌 ---------- */
 :root {
-  font-family: "IBM Plex Sans", "Inter", "Noto Sans SC", -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  color-scheme: light;
+  font-family: "Inter", "IBM Plex Sans", "Noto Sans SC", -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", sans-serif;
   color: var(--fg-default);
   background: var(--canvas-page);
   font-synthesis: none;
-  letter-spacing: 0;
+  letter-spacing: -0.005em;
 
-  /* 文本色（暖炭墨三级阶梯，全部满足全表面 WCAG AA ≥4.5:1 及 ≥1.2× 对比度区分） */
-  --fg-default: #181816;   /* 标题、正文主色（深炭墨）        ≈16.3:1 */
-  --fg-muted: #46443e;     /* 次级说明文字                    ≈8.8:1  */
-  --fg-subtle: #615e56;    /* 辅助标签、占位符（最差底 ≥4.8） ≈5.9:1  */
+  /* 文本色：纯中性碳黑三级阶梯（亮色全表面 ≥4.5:1 且每级 ≥1.2× 对比度） */
+  --fg-default: #09090b;   /* 主标题与正文（碳黑）          ≈19.2:1 */
+  --fg-muted: #4a4a52;     /* 次级正文与说明                ≈8.5:1  */
+  --fg-subtle: #606069;    /* 辅助标签与占位符（最差底 ≥5.0）≈6.0:1  */
 
-  /* 画布色（温润档案纸体系，消除冷蓝灰冲突） */
-  --canvas-default: #ffffff;  /* 卡片、弹层、工作台主面板 */
-  --canvas-subtle: #f2f0e9;   /* 表头、内凹底、次级区块 */
-  --canvas-inset: #e8e5db;    /* 分段控件槽、徽章中性底 */
-  --canvas-page: #f6f5f0;     /* 页面底色（统一 html 与 body） */
+  /* 画布层：纯粹中性白与极淡冷灰，无浑浊米黄 */
+  --canvas-default: #ffffff;  /* 主面板、卡片、弹层 */
+  --canvas-subtle: #f4f4f5;   /* 表头、次级区块、轻底 */
+  --canvas-inset: #e9e9ec;    /* 分段槽、徽章中性底 */
+  --canvas-page: #fafafa;     /* 页面底色 */
 
-  /* 分层底色：侧栏 / 顶栏与画布形成克制的建筑层次 */
-  --sidebar-bg: #efede5;      /* 侧栏温润石底 */
-  --topbar-bg: #ffffff;       /* 顶栏净白分区 */
+  /* 分层底色：侧栏与顶栏通过 1px 发丝线克制分区 */
+  --sidebar-bg: #f5f5f6;
+  --topbar-bg: #ffffff;
 
-  /* 边框色（低对比精密发丝线） */
-  --border-default: #dfdcd2;
-  --border-muted: #ebe8df;
-  --border-strong: #c5c0b3;   /* hover / 输入框聚焦前边界 */
+  /* 边框：精密 1px 发丝线 */
+  --border-default: #e4e4e7;
+  --border-muted: #ededf0;
+  --border-strong: #c8c8cf;
 
-  /* 品牌与可信强调色：深建筑松石青（Architectural Pine Teal） */
-  --accent-fg: #175953;       /* 文字、图标、激活指示（白底 7.9:1 AAA） */
-  --accent-hover: #10433e;    /* hover 加深 */
-  --accent-subtle: #e6f1ef;   /* 极淡松石晕染 */
-  --accent-ring: rgba(23, 89, 83, 0.16);
-  /* 实心强调填充（白字压底）：亮暗双主题白字均 ≥5.5:1 */
-  --accent-solid: #175953;
-  --accent-solid-hover: #10433e;
+  /* 品牌强调色：Vercel / Apple 范式碳黑主色，零 AI 紫蓝 */
+  --accent-fg: #18181b;
+  --accent-hover: #09090b;
+  --accent-subtle: #f1f1f3;
+  --accent-ring: rgba(9, 9, 11, 0.12);
+  /* 实心强调填充（白字压底）：18.1:1 AAA */
+  --accent-solid: #111113;
+  --accent-solid-hover: #27272a;
 
-  /* 语义状态色（精准克制：翡翠绿=已核验，焦琥珀=待复核，朱红=冲突） */
-  --success-fg: #1e6a4b;
-  --success-subtle: #e6f4ec;
-  --attention-fg: #8c5512;
-  --danger-fg: #b23a2e;
-  --danger-subtle: #fbeceb;
-  --danger-border: #e6c2be;
+  /* 语义状态色：仅用于真实核验与系统信号 */
+  --success-fg: #15803d;
+  --success-subtle: #effaf3;
+  --attention-fg: #a16207;
+  --danger-fg: #dc2626;
+  --danger-subtle: #fef2f2;
+  --danger-border: #fecaca;
 
-  /* 中性控件底与路演对比轻底 */
-  --control-hover: #edeae1;
-  --control-active: #e3dfd4;
-  --neutral-muted: #e8e5db;
-  --tint-butter: #fbf6ea;     /* 路演草稿区（待核验微暖底） */
-  --tint-sage: #eef7f3;       /* 路演复算区（真值微青底） */
+  /* 中性交互底与路演极轻语义底 */
+  --control-hover: #ededf0;
+  --control-active: #e4e4e7;
+  --neutral-muted: #e9e9ec;
+  --tint-butter: #fafafa;
+  --tint-sage: #f7fbf8;
 
-  /* 圆角（克制精密感） */
+  /* 圆角：利落克制 */
   --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
   --radius-full: 999px;
 
-  /* 阴影（极轻环境漫射，拒绝浮夸投影） */
-  --shadow-xs: 0 1px 2px rgba(24, 24, 22, 0.04);
-  --shadow-sm: 0 1px 3px rgba(24, 24, 22, 0.06), 0 1px 2px rgba(24, 24, 22, 0.03);
-  --shadow-md: 0 8px 24px rgba(24, 24, 22, 0.07), 0 2px 6px rgba(24, 24, 22, 0.04);
-  --shadow-lg: 0 12px 32px rgba(24, 24, 22, 0.10), 0 3px 10px rgba(24, 24, 22, 0.05);
-  --shadow-xl: 0 20px 52px rgba(24, 24, 22, 0.14), 0 6px 18px rgba(24, 24, 22, 0.07);
+  /* 双层自然阴影（环境光 + 直射光，Vercel Web Interface Guidelines） */
+  --shadow-xs: 0 1px 1px rgba(0, 0, 0, 0.03), 0 1px 2px rgba(0, 0, 0, 0.03);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04), 0 2px 6px rgba(0, 0, 0, 0.03);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.05), 0 1px 3px rgba(0, 0, 0, 0.04);
+  --shadow-lg: 0 12px 28px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04);
+  --shadow-xl: 0 24px 56px rgba(0, 0, 0, 0.12), 0 6px 18px rgba(0, 0, 0, 0.06);
 
-  /* 动效：150–240ms ease-out */
+  /* 动效曲线 */
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-spring: cubic-bezier(0.2, 0, 0.13, 1);
-  --duration-fast: 0.15s;
+  --duration-fast: 0.14s;
   --duration: 0.2s;
-  --duration-slow: 0.25s;
+  --duration-slow: 0.26s;
 
-  /* 字号阶梯（7 档） */
+  /* 字号阶梯 */
   --text-xs: 11px;
   --text-sm: 12px;
   --text-base: 13px;
@@ -100,86 +101,88 @@
   --space-7: 48px;
   --space-8: 64px;
 
-  /* 等宽字体：编号、代码、哈希、对齐数字 */
-  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* 等宽字体 */
+  --font-mono: "IBM Plex Mono", "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
-/* ---------- 暗色模式：曜石炭黑 + 海沫松石青 ---------- */
+/* ---------- 暗色模式：Linear / Vercel 曜石黑与月光发丝线 ---------- */
 [data-theme="dark"] {
-  /* 文本：暖白曜石三级阶梯，全表面 ≥4.5:1 且每级 ≥1.2× 区分 */
-  --fg-default: #f1efe9;   /* ≈16.6:1 */
-  --fg-muted: #bcb8ae;     /* ≈9.5:1  */
-  --fg-subtle: #979389;    /* ≈6.2:1；最差底 --canvas-inset 上 ≥4.65:1 */
+  color-scheme: dark;
 
-  /* 画布：纯净曜石炭黑，告别脏泥棕 */
-  --canvas-default: #1a1a18;
-  --canvas-subtle: #22221f;
-  --canvas-inset: #2a2a26;
-  --canvas-page: #121210;
+  /* 文本：纯净亮白三级阶梯（全表面 ≥4.5:1 且 ≥1.2× 阶梯） */
+  --fg-default: #f7f7f8;   /* ≈18.5:1 */
+  --fg-muted: #b4b4be;     /* ≈9.6:1  */
+  --fg-subtle: #90909b;    /* ≈6.3:1；最差底 #222227 上 4.86:1 */
+
+  /* 画布：纯粹曜石黑层级（#09090B → #111114 → #18181C → #222227） */
+  --canvas-default: #111114;
+  --canvas-subtle: #18181c;
+  --canvas-inset: #222227;
+  --canvas-page: #09090b;
 
   /* 分层底色 */
-  --sidebar-bg: #161614;
-  --topbar-bg: #1a1a18;
+  --sidebar-bg: #0d0d10;
+  --topbar-bg: #111114;
 
-  /* 边框：极克制深灰发丝线 */
-  --border-default: #2e2e29;
-  --border-muted: #242420;
-  --border-strong: #47463f;
+  /* 边框：月光发丝线 */
+  --border-default: #27272c;
+  --border-muted: #1e1e23;
+  --border-strong: #3f3f46;
 
-  /* 品牌色：海沫松石青（文字/图标）+ 深松石青（实心白字底） */
-  --accent-fg: #6fd1c5;
-  --accent-hover: #96e4da;
-  --accent-subtle: #192c2a;
-  --accent-ring: rgba(111, 209, 197, 0.22);
-  --accent-solid: #175953;
-  --accent-solid-hover: #1f726a;
+  /* 品牌强调色：纯净银白文字 + 深石墨实心按钮（白字 14.8:1 AAA） */
+  --accent-fg: #e4e4e7;
+  --accent-hover: #ffffff;
+  --accent-subtle: #1d1d22;
+  --accent-ring: rgba(255, 255, 255, 0.16);
+  --accent-solid: #27272c;
+  --accent-solid-hover: #35353c;
 
-  /* 语义色 */
-  --success-fg: #73c99f;
-  --success-subtle: #192e24;
-  --attention-fg: #e2b45d;
-  --danger-fg: #e6867a;
-  --danger-subtle: #341e1c;
-  --danger-border: #522e2a;
+  /* 语义状态色（暗色下提亮至清晰易读） */
+  --success-fg: #34d399;
+  --success-subtle: #0f241c;
+  --attention-fg: #fbbf24;
+  --danger-fg: #f87171;
+  --danger-subtle: #281315;
+  --danger-border: #4c1d21;
 
-  /* 中性控件与路演轻底 */
-  --control-hover: #282824;
-  --control-active: #32322d;
-  --neutral-muted: #2a2a26;
-  --tint-butter: #252118;
-  --tint-sage: #172520;
+  /* 中性交互底 */
+  --control-hover: #1e1e23;
+  --control-active: #27272d;
+  --neutral-muted: #222227;
+  --tint-butter: #141418;
+  --tint-sage: #0f1916;
 
-  /* 阴影 */
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.36);
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.44), 0 1px 2px rgba(0, 0, 0, 0.28);
-  --shadow-md: 0 6px 18px rgba(0, 0, 0, 0.50), 0 2px 6px rgba(0, 0, 0, 0.34);
-  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.60), 0 3px 10px rgba(0, 0, 0, 0.40);
-  --shadow-xl: 0 20px 52px rgba(0, 0, 0, 0.72), 0 6px 18px rgba(0, 0, 0, 0.50);
+  /* 阴影 + 顶部 1px 高光反射 */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.65), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.72), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --shadow-xl: 0 28px 64px rgba(0, 0, 0, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 [data-theme="dark"] body {
   background: var(--canvas-page);
 }
 
-html[data-theme="dark"] { background: #121210; }
+html[data-theme="dark"] { background: #09090b; }
 
 [data-theme="dark"] .preview-stage {
   background: var(--canvas-subtle);
 }
 
-[data-theme="dark"] ::-webkit-scrollbar-thumb { background: #33332e; border: 3px solid transparent; border-radius: 8px; background-clip: content-box; }
-[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background: #4c4b44; border: 3px solid transparent; background-clip: content-box; }
-[data-theme="dark"] * { scrollbar-color: #33332e transparent; }
+[data-theme="dark"] ::-webkit-scrollbar-thumb { background: #2c2c33; border: 3px solid transparent; border-radius: 8px; background-clip: content-box; }
+[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background: #46464f; border: 3px solid transparent; background-clip: content-box; }
+[data-theme="dark"] * { scrollbar-color: #2c2c33 transparent; }
 
-[data-theme="dark"] .retry-button:hover { background: #472420; border-color: var(--danger-fg); }
-[data-theme="dark"] .resume-button:hover { background: #268660; border-color: #268660; }
-[data-theme="dark"] .history-status-dot.is-cancelled { background: #64635c; }
-[data-theme="dark"] .history-status-dot.is-idle { background: #4c4b45; }
+[data-theme="dark"] .retry-button:hover { background: #3f181b; border-color: var(--danger-fg); }
+[data-theme="dark"] .resume-button:hover { background: #10b981; border-color: #10b981; color: #09090b; }
+[data-theme="dark"] .history-status-dot.is-cancelled { background: #52525b; }
+[data-theme="dark"] .history-status-dot.is-idle { background: #3f3f46; }
 [data-theme="dark"] .model-line i,
 [data-theme="dark"] .sidebar-foot i,
 [data-theme="dark"] .api-status i,
-[data-theme="dark"] .storage-status i { background: #64635c; }
+[data-theme="dark"] .storage-status i { background: #52525b; }
 
 [data-theme="dark"] .report-body:not(.is-expanded)::after {
-  background: linear-gradient(180deg, rgba(26, 26, 24, 0) 0%, var(--canvas-default) 90%);
+  background: linear-gradient(180deg, rgba(17, 17, 20, 0) 0%, var(--canvas-default) 90%);
 }

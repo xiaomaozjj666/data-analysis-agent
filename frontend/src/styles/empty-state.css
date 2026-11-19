@@ -1,102 +1,104 @@
-/* ---------- 空工作台（极简建筑网格 · 彻底去 AI 光晕与点阵特效） ---------- */
+/* ---------- 空工作台（完整保留交互物理场，收敛为纯粹单色极简美学） ---------- */
+.empty-grid-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  opacity: 0.72;
+  pointer-events: none;
+}
+
+/* 极克制的单色微光层：不再是紫蓝极光团，仅提供柔和空间纵深 */
+.empty-aurora-bg {
+  z-index: 0;
+  --aurora-primary: rgba(9, 9, 11, 0.035);
+  --aurora-secondary: rgba(113, 113, 122, 0.028);
+  --aurora-tertiary: rgba(9, 9, 11, 0.02);
+  --aurora-opacity: 0.85;
+  -webkit-mask-image: radial-gradient(110% 95% at 50% 44%, #000 0%, #000 42%, transparent 78%);
+  mask-image: radial-gradient(110% 95% at 50% 44%, #000 0%, #000 42%, transparent 78%);
+}
+[data-theme="dark"] .empty-aurora-bg {
+  --aurora-primary: rgba(255, 255, 255, 0.055);
+  --aurora-secondary: rgba(161, 161, 170, 0.035);
+  --aurora-tertiary: rgba(255, 255, 255, 0.025);
+  --aurora-opacity: 0.8;
+}
+
 .empty-workspace {
   position: relative;
-  min-height: calc(100vh - 80px);
+  min-height: calc(100vh - 52px);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 28px;
-  margin: 0 -44px;
-  padding: 48px 44px;
+  margin: 0 -48px;
+  padding: 48px 48px;
   cursor: pointer;
   overflow: hidden;
-  background-color: var(--canvas-page);
-  /* 极淡建筑图纸网格：静态、克制、零光污染 */
-  background-image:
-    linear-gradient(to right, var(--border-muted) 1px, transparent 1px),
-    linear-gradient(to bottom, var(--border-muted) 1px, transparent 1px);
-  background-size: 48px 48px;
-  background-position: center center;
-  transition: background-color var(--duration) var(--ease-out);
+  transition: background var(--duration) var(--ease-out);
+  --empty-glow: rgba(9, 9, 11, 0.045);
+  background: radial-gradient(
+    520px circle at var(--mouse-x, 50%) var(--mouse-y, 50%),
+    var(--empty-glow),
+    transparent 72%
+  );
 }
-
-/* 边缘柔化遮罩：让网格向四周自然消隐，焦点稳固在中心卡片 */
-.empty-workspace::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: radial-gradient(ellipse 68% 64% at 50% 48%, transparent 25%, var(--canvas-page) 86%);
-  z-index: 0;
+[data-theme="dark"] .empty-workspace { --empty-glow: rgba(255, 255, 255, 0.06); }
+.empty-workspace:hover {
+  background: radial-gradient(520px circle at var(--mouse-x, 50%) var(--mouse-y, 50%), var(--empty-glow), transparent 72%);
 }
-
 .empty-workspace.is-drag-over {
-  background-color: var(--accent-subtle);
-  outline: 2px dashed var(--accent-fg);
+  background: var(--accent-subtle);
+  outline: 1.5px dashed var(--fg-default);
   outline-offset: -10px;
   border-radius: var(--radius-lg);
 }
-.empty-workspace.is-drag-over::before { opacity: 0.35; }
-.empty-workspace.is-drag-over .empty-copy p { color: var(--accent-fg); font-weight: 600; }
+.empty-workspace.is-drag-over .empty-copy p { color: var(--fg-default); font-weight: 600; }
 
-/* 中心焦点卡：清晰建筑框架 + 克制留白 */
+/* 开放式居中排版：不加白底盒子，让标题与交互直接呼吸在画布上 */
 .empty-copy {
   position: relative;
   z-index: 2;
   text-align: center;
-  width: min(540px, 100%);
-  padding: 40px 36px 36px;
-  background: var(--canvas-default);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-md);
+  max-width: 480px;
 }
-
-.empty-kicker-row {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 14px;
-  padding: 4px 12px;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-full);
-  background: var(--canvas-subtle);
-}
-.empty-kicker-row .section-kicker {
-  color: var(--accent-fg);
-  letter-spacing: 0.06em;
-}
-.empty-kicker-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent-fg);
-}
-
 .empty-copy h2 {
-  margin: 0 0 10px;
-  font-size: clamp(26px, 2.8vw, 34px);
-  line-height: 1.18;
-  font-weight: 700;
-  letter-spacing: -0.025em;
+  margin: 10px 0 10px;
+  font-size: clamp(30px, 3.2vw, 42px);
+  line-height: 1.12;
+  font-weight: 650;
+  letter-spacing: -0.035em;
   color: var(--fg-default);
 }
-
-.empty-subtitle {
-  margin: 0 0 20px;
+.empty-copy p {
+  margin: 0 0 28px;
   color: var(--fg-muted);
   font-size: var(--text-md);
-  line-height: 1.65;
+  line-height: 1.6;
+  transition: color var(--duration) var(--ease-out);
 }
 
-/* 支持格式标签 */
+.empty-scene {
+  margin: 0 0 18px !important;
+  font-size: var(--text-md) !important;
+  color: var(--fg-muted) !important;
+}
+.empty-scene .rotating-text {
+  min-width: 4.2em;
+  margin-left: 6px;
+  justify-content: flex-start;
+  color: var(--fg-default);
+  font-weight: 600;
+  border-bottom: 1.5px solid var(--border-strong);
+}
+
 .empty-formats {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
   gap: 6px;
-  margin: 0 0 16px;
+  margin: 0 0 18px;
 }
 .format-badge {
   display: inline-flex;
@@ -105,24 +107,16 @@
   padding: 3px 10px;
   border: 1px solid var(--border-default);
   border-radius: var(--radius-full);
-  background: var(--canvas-subtle);
+  background: var(--canvas-default);
   color: var(--fg-muted);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   font-weight: 500;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
   line-height: 1.4;
 }
-.format-badge svg { flex-shrink: 0; color: var(--fg-subtle); }
+.format-badge svg { flex-shrink: 0; opacity: 0.72; }
 
-.empty-drop-hint {
-  margin: 0 0 24px;
-  color: var(--fg-subtle);
-  font-size: var(--text-sm);
-  line-height: 1.5;
-}
-
-/* 操作区：主上传 + 简报核验路演并排，次级示例轻量置底 */
 .empty-actions {
   display: flex;
   flex-direction: column;
@@ -136,30 +130,25 @@
   align-items: center;
   justify-content: center;
   gap: 10px;
-  width: 100%;
 }
 
 .empty-copy .empty-upload-button {
   height: 42px;
   padding: 0 22px;
   font-size: var(--text-md);
-  font-weight: 600;
-  box-shadow: var(--shadow-xs);
-}
-.empty-copy .empty-upload-button:hover:not(:disabled) {
-  transform: translateY(-1px);
+  font-weight: 500;
+  letter-spacing: -0.01em;
   box-shadow: var(--shadow-sm);
 }
-.empty-copy .empty-upload-button:active:not(:disabled) {
-  transform: translateY(0);
-  box-shadow: none;
+.empty-copy .empty-upload-button:hover:not(:disabled) {
+  box-shadow: var(--shadow-md);
 }
 .empty-copy .empty-upload-button:disabled {
   cursor: not-allowed;
   opacity: 0.65;
 }
 
-/* 体验简报核验（无锡可信 AI 挑战赛核心入口）：高质感松石青描边按钮 */
+/* 次主入口「体验简报核验」：与主按钮并排的精密白/暗描边按钮 */
 .empty-audit-button {
   display: inline-flex;
   align-items: center;
@@ -167,30 +156,31 @@
   gap: 7px;
   height: 42px;
   padding: 0 20px;
-  border: 1px solid var(--accent-fg);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
-  background: var(--accent-subtle);
-  color: var(--accent-fg);
+  background: var(--canvas-default);
+  color: var(--fg-default);
   font-size: var(--text-md);
-  font-weight: 600;
+  font-weight: 500;
   cursor: pointer;
-  transition: background var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
+  box-shadow: var(--shadow-xs);
+  transition: background var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-out);
 }
 .empty-audit-button:hover:not(:disabled) {
-  background: var(--canvas-default);
+  background: var(--canvas-subtle);
+  border-color: var(--fg-default);
   box-shadow: var(--shadow-sm);
   transform: translateY(-1px);
 }
 .empty-audit-button:active:not(:disabled) { transform: translateY(0); box-shadow: none; }
-.empty-audit-button:disabled { cursor: not-allowed; opacity: 0.6; }
+.empty-audit-button:disabled { cursor: not-allowed; opacity: 0.55; }
 
-/* 加载示例数据体验：安静克制的文本入口 */
 .empty-sample-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  height: 32px;
+  height: 30px;
   padding: 0 12px;
   border: 0;
   border-radius: var(--radius-md);
@@ -205,47 +195,27 @@
   background: var(--control-hover);
   color: var(--fg-default);
 }
-.empty-sample-button:disabled { cursor: not-allowed; opacity: 0.6; }
+.empty-sample-button:disabled { cursor: not-allowed; opacity: 0.55; }
 .empty-sample-button svg { flex-shrink: 0; }
 
-/* 底部可信特性条：无营销词，用三个硬核机制建立专业信任 */
-.empty-trust-strip {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 8px 20px;
-  margin-top: 24px;
-  padding-top: 18px;
-  border-top: 1px solid var(--border-muted);
-  color: var(--fg-subtle);
-  font-size: var(--text-xs);
-}
-.empty-trust-strip span {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-.empty-trust-strip svg { color: var(--accent-fg); flex-shrink: 0; }
-
-/* 上传进度条 */
 .empty-upload-progress {
   width: min(320px, 80vw);
-  margin: 16px auto 0;
+  margin: 14px auto 0;
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 .empty-upload-progress-track {
-  height: 5px;
+  height: 4px;
   border-radius: 999px;
-  background: var(--border-muted);
+  background: var(--border-default);
   overflow: hidden;
 }
 .empty-upload-progress-track span {
   display: block;
   height: 100%;
   border-radius: 999px;
-  background: var(--accent-fg);
+  background: var(--fg-default);
   transition: width 0.2s var(--ease-out);
 }
 .empty-upload-progress-meta {

@@ -1,5 +1,5 @@
-/* ---------- 布局骨架 ---------- */
-.app-shell { min-height: 100vh; display: grid; grid-template-columns: 272px minmax(0, 1fr); }
+/* ---------- 布局骨架（Linear / Vercel 齐平无盒感框架） ---------- */
+.app-shell { min-height: 100vh; display: grid; grid-template-columns: 268px minmax(0, 1fr); }
 .sidebar {
   position: sticky;
   top: 0;
@@ -7,67 +7,76 @@
   height: 100vh;
   display: flex;
   flex-direction: column;
-  padding: 20px 16px 16px;
+  padding: 16px 14px;
   background: var(--sidebar-bg);
   border-right: 1px solid var(--border-default);
   overflow-y: auto;
-  transition: transform 0.25s var(--ease-spring), opacity 0.2s var(--ease-out);
+  transition: transform 0.28s var(--ease-spring), opacity 0.2s var(--ease-out);
 }
-.app-main { min-width: 0; width: 100%; max-width: 1360px; margin: 0 auto; padding: 0 44px 64px; }
+.app-main { min-width: 0; width: 100%; max-width: 1360px; margin: 0 auto; padding: 0 48px 64px; }
 .app-main.is-empty { max-width: none; padding-bottom: 0; }
 
-/* ---------- 顶栏 ---------- */
-/* 顶栏：与主画布无缝对齐的建筑感导航条，清晰留白与极细底线 */
+/* ---------- 顶栏（齐平通栏 + 极细底线，告别悬浮白盒子） ---------- */
 .topbar {
-  position: relative;
-  height: 56px;
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  height: 52px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 16px;
-  margin: 12px 0 8px;
+  margin: 0 -48px;
+  padding: 0 48px;
   background: var(--topbar-bg);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-xs);
+  border-bottom: 1px solid var(--border-muted);
+  backdrop-filter: blur(12px);
 }
 .topbar::after {
   content: "";
   position: absolute;
   bottom: -1px;
   left: 0;
-  height: 2px;
+  height: 1.5px;
   width: var(--scroll-progress, 0%);
-  background: var(--accent-fg);
-  border-radius: 0 1px 1px 0;
-  opacity: 0.85;
+  background: var(--fg-default);
+  opacity: 0.65;
   transition: width 0.15s linear;
   pointer-events: none;
 }
 .breadcrumb { min-width: 0; display: flex; align-items: center; gap: 6px; color: var(--fg-subtle); font-size: var(--text-sm); font-weight: 400; }
 .breadcrumb > svg { color: var(--fg-subtle); flex: 0 0 auto; }
-.breadcrumb strong { max-width: 45vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-default); font-weight: 600; }
-.api-status { min-height: 28px; padding: 0 11px; gap: 7px; border: 1px solid var(--border-default); border-radius: var(--radius-full); background: var(--canvas-subtle); color: var(--fg-muted); font-size: var(--text-xs); font-weight: 500; transition: border-color var(--duration-fast) var(--ease-out), background-color var(--duration-fast) var(--ease-out); }
-.api-status:hover { border-color: var(--border-strong); background: var(--canvas-default); }
+.breadcrumb strong { max-width: 45vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-default); font-weight: 500; }
+
+.api-status {
+  min-height: 26px;
+  padding: 0 10px;
+  gap: 6px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+  background: var(--canvas-default);
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+.api-status:hover { border-color: var(--border-strong); }
 
 /* ---------- 鉴权页 ---------- */
 .auth-gate { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: var(--canvas-page); }
 .auth-card { width: min(100%, 380px); padding: 32px; border: 1px solid var(--border-default); border-radius: var(--radius-lg); background: var(--canvas-default); box-shadow: var(--shadow-md); }
-.auth-card h1 { margin: 10px 0 8px; color: var(--fg-default); font-size: var(--text-2xl); font-weight: 650; letter-spacing: -0.02em; }
+.auth-card h1 { margin: 10px 0 8px; color: var(--fg-default); font-size: var(--text-2xl); font-weight: 600; letter-spacing: -0.025em; }
 .auth-card p { margin: 0 0 20px; color: var(--fg-muted); font-size: var(--text-md); }
-.auth-card input { width: 100%; height: 42px; box-sizing: border-box; margin-bottom: 14px; padding: 0 12px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--canvas-default); color: var(--fg-default); transition: border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out); }
+.auth-card input { width: 100%; height: 40px; box-sizing: border-box; margin-bottom: 14px; padding: 0 12px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--canvas-default); color: var(--fg-default); transition: border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out); }
 .auth-card input:focus-visible { border-color: var(--accent-fg); box-shadow: 0 0 0 3px var(--accent-ring); }
 .auth-card .primary { width: 100%; justify-content: center; }
 .auth-error { display: block; margin-top: 12px; color: var(--danger-fg); font-size: var(--text-sm); }
 .auth-loading { color: var(--fg-muted); font-size: var(--text-md); }
 
-/* ---------- 顶栏右侧操作区 ---------- */
 .topbar-actions {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   margin-left: auto;
 }
 
-/* ---------- 侧栏切换按钮（默认隐藏，平板及以下显示） ---------- */
 .sidebar-toggle { display: none; }

@@ -18,7 +18,7 @@ interface GradientTextProps {
 
 const GradientText = ({
   children,
-  colors = ["var(--accent-fg)", "#8b5cf6", "#3b82f6", "var(--accent-fg)"],
+  colors = ["var(--fg-default)", "var(--fg-muted)", "var(--fg-default)"],
   speed = 6,
   className = "",
 }: GradientTextProps) => {
