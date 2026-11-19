@@ -135,24 +135,44 @@ const CommandPalette = React.memo(function CommandPalette({
   const inputRef = useRef<HTMLInputElement>(null);
   // 焦点管理：打开时记录触发元素并聚焦输入框；Tab 在面板内循环（焦点陷阱），
   // 避免键盘用户穿透命令面板操作背后页面（与 PreviewModal 对齐）。
+  // Esc 在 document 级监听，这样焦点移到列表按钮后仍能关闭。
   const panelRef = useRef<HTMLDivElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   const [activeIndex, setActiveIndex] = useState(0);
   useEffect(() => {
     restoreFocusRef.current = document.activeElement as HTMLElement | null;
     inputRef.current?.focus();
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onCloseRef.current();
+        return;
+      }
       if (e.key !== "Tab" || !panelRef.current) return;
-      const focusables = panelRef.current.querySelectorAll<HTMLElement>(
-        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      const panel = panelRef.current;
+      const focusables = panel.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
       );
-      if (!focusables.length) return;
+      if (!focusables.length) {
+        e.preventDefault();
+        panel.focus();
+        return;
+      }
       const first = focusables[0];
       const last = focusables[focusables.length - 1];
-      if (e.shiftKey && document.activeElement === first) {
+      const active = document.activeElement as HTMLElement | null;
+      // 焦点落在面板容器或已被移出面板时，拉回面板内。
+      if (!panel.contains(active) || active === panel) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+        return;
+      }
+      if (e.shiftKey && active === first) {
         e.preventDefault();
         last.focus();
-      } else if (!e.shiftKey && document.activeElement === last) {
+      } else if (!e.shiftKey && active === last) {
         e.preventDefault();
         first.focus();
       }
@@ -246,6 +266,12 @@ const CommandPalette = React.memo(function CommandPalette({
   }, [q, scoredActions, scoredSessions]);
 
   const total = flat.length;
+  const activeEntry = flat[activeIndex];
+  const activeLabel = activeEntry
+    ? activeEntry.type === "action"
+      ? activeEntry.value.title
+      : activeEntry.value.filename
+    : "";
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "ArrowDown") { e.preventDefault(); setActiveIndex((i) => (i + 1) % Math.max(total, 1)); }
@@ -260,7 +286,8 @@ const CommandPalette = React.memo(function CommandPalette({
       } else {
         onSelectSession(item.value);
       }
-    } else if (e.key === "Escape") { e.preventDefault(); onClose(); }
+    }
+    // Esc 由 document 级监听统一处理（见上方 effect），焦点在列表按钮上时同样生效。
   };
 
   const handleActionClick = (action: CommandAction) => {
@@ -269,21 +296,39 @@ const CommandPalette = React.memo(function CommandPalette({
   };
 
   return (
-    <div className="command-palette-backdrop" role="dialog" aria-modal="true" aria-label="命令面板" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="command-palette" ref={panelRef}>
+    <div className="command-palette-backdrop" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div
+        className="command-palette"
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="command-palette-title"
+        aria-describedby="command-palette-hint"
+        tabIndex={-1}
+      >
+        <h2 id="command-palette-title" className="sr-only">命令面板</h2>
+        <p id="command-palette-hint" className="sr-only">
+          输入关键字筛选操作或历史会话。上下方向键选择，Enter 执行，Esc 关闭。
+        </p>
         <div className="command-input-row">
-          <Search size={16} />
+          <Search size={16} aria-hidden="true" />
           <input
             ref={inputRef}
             value={query}
             onChange={(e) => onQueryChange(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="搜索操作或历史会话…"
+            aria-label="搜索命令或历史会话"
+            aria-describedby="command-palette-hint"
           />
           <kbd className="command-item-kbd">ESC</kbd>
         </div>
         <div className="command-list">
-          {total === 0 && <div className="command-empty">没有匹配的命令</div>}
+          {/* 方向键改变选中项时给读屏一个简短播报；视觉用户看 .is-active 高亮。 */}
+          <span className="sr-only" role="status" aria-live="polite">
+            {activeLabel ? `当前选中：${activeLabel}` : ""}
+          </span>
+          {total === 0 && <div className="command-empty" role="status">没有匹配的命令</div>}
           {sections.map((section) => (
             <div key={section.label}>
               <div className="command-section-label">{section.label}</div>
@@ -296,10 +341,11 @@ const CommandPalette = React.memo(function CommandPalette({
                       key={item.action.id}
                       type="button"
                       className={`command-item ${idx === activeIndex ? "is-active" : ""}`}
+                      aria-current={idx === activeIndex ? "true" : undefined}
                       onMouseEnter={() => setActiveIndex(idx)}
                       onClick={() => handleActionClick(item.action)}
                     >
-                      <Icon size={16} className="command-item-icon" />
+                      <Icon size={16} className="command-item-icon" aria-hidden="true" />
                       <span className="command-item-text">
                         <strong><Highlight text={item.action.title} indices={item.titleIndices} /></strong>
                         <small><Highlight text={item.action.subtitle} indices={item.subIndices} /></small>
@@ -315,10 +361,11 @@ const CommandPalette = React.memo(function CommandPalette({
                       key={item.session.id}
                       type="button"
                       className={`command-item ${idx === activeIndex ? "is-active" : ""}`}
+                      aria-current={idx === activeIndex ? "true" : undefined}
                       onMouseEnter={() => setActiveIndex(idx)}
                       onClick={() => onSelectSession(item.session)}
                     >
-                      <FileSpreadsheet size={16} className="command-item-icon" />
+                      <FileSpreadsheet size={16} className="command-item-icon" aria-hidden="true" />
                       <span className="command-item-text">
                         <strong><Highlight text={item.session.filename} indices={item.indices} /></strong>
                         <small>{formatRelativeTime(item.session.created_at)} · {describeHistoryStatus(item.session.analysis_status).label}</small>

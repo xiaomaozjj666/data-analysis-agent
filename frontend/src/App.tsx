@@ -303,8 +303,38 @@ function App() {
     });
   }, [setActiveTab]);
 
-  // 移动端侧边栏抽屉开关：桌面端 sidebar 常驻，平板/手机折叠为抽屉
+  // 移动端侧边栏抽屉开关：桌面端 sidebar 常驻，平板/手机折叠为抽屉。
+  // sidebarToggleRef 用于 Esc 关闭抽屉后把焦点还给触发按钮。
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const sidebarToggleRef = useRef<HTMLButtonElement>(null);
+
+  // 体验简报载入后，把焦点送到「简报核验」Tab 面板，让键盘用户从
+  // 空状态一键进入核验流程（而不是落在被卸载的上传按钮上）。
+  const auditPanelRef = useRef<HTMLElement>(null);
+  const focusAuditOnLoad = useRef(false);
+  // 读屏用的全局状态播报（polite）：载入示例、切换核验视图等异步状态。
+  const [liveMessage, setLiveMessage] = useState("");
+
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setSidebarOpen(false);
+      // 抽屉关闭后焦点不能留在已隐藏的侧栏里，交还给触发按钮。
+      window.requestAnimationFrame(() => sidebarToggleRef.current?.focus());
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [sidebarOpen]);
+
+  useEffect(() => {
+    if (!focusAuditOnLoad.current || activeTab !== "audit" || !session) return;
+    focusAuditOnLoad.current = false;
+    const frame = window.requestAnimationFrame(() => {
+      auditPanelRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeTab, session]);
 
   // 移动端手势关闭抽屉（#4）：在抽屉上向左滑动即可收起。
   // 记录 touchstart 坐标，touchend 时判断为"水平向左滑动为主且超过阈值"才关闭，
@@ -577,6 +607,8 @@ function App() {
   useEffect(() => {
     const onLoadSample = async (event: Event) => {
       const auditDemo = (event as CustomEvent<{ auditDemo?: boolean }>).detail?.auditDemo === true;
+      setLiveMessage(auditDemo ? "正在载入体验简报…" : "正在载入示例数据…");
+      if (auditDemo) focusAuditOnLoad.current = true;
       setUploading(true);
       setError("");
       closeArtifactPreview();
@@ -593,7 +625,12 @@ function App() {
         });
         auditDemoSession.current = auditDemo ? value.id : null;
         setSession(value);
-        if (auditDemo) setActiveTab("audit");
+        if (auditDemo) {
+          setActiveTab("audit");
+          setLiveMessage("体验简报已载入，已切换到简报核验视图。可用 Tab 进入草稿工作台开始核验。");
+        } else {
+          setLiveMessage("示例数据已载入，已切换到分析视图。");
+        }
         startedAtRef.current =
           (value as Session & { analysis_started_at?: number | null })
             .analysis_started_at ?? null;
@@ -602,6 +639,8 @@ function App() {
         fetchHistory();
       } catch (err) {
         setError((err as Error).message);
+        setLiveMessage("示例载入失败，请查看错误提示。");
+        if (auditDemo) focusAuditOnLoad.current = false;
       } finally {
         setUploading(false);
       }
@@ -658,6 +697,8 @@ function App() {
     if (!id) return;
     closeArtifactPreview();
     setError("");
+    setLiveMessage("正在重新载入体验简报…");
+    focusAuditOnLoad.current = true;
     try {
       const latest = await api<Session>(`/api/sessions/${id}`);
       auditDemoSession.current = id;
@@ -677,8 +718,10 @@ function App() {
           .analysis_started_at ?? null;
       setElapsedSeconds(latest.elapsed_seconds ?? null);
       setActiveTab("audit");
+      setLiveMessage("体验简报已重新载入，已切换到简报核验视图。");
       fetchHistory();
     } catch (err) {
+      focusAuditOnLoad.current = false;
       setError(`无法载入示例会话：${(err as Error).message}`);
     }
   }
@@ -902,7 +945,20 @@ function App() {
 
   return (
     <div className="app-shell">
+      {/* 跳过导航：键盘 / 读屏用户可一步越过侧栏，直达主内容。
+          放在 DOM 首位，获得焦点前视觉隐藏（见 a11y.css）。 */}
+      <a
+        className="skip-link"
+        href="#main-content"
+        onClick={(event) => {
+          event.preventDefault();
+          document.getElementById("main-content")?.focus();
+        }}
+      >
+        跳到主内容
+      </a>
       <aside
+        id="app-sidebar"
         className={`sidebar ${sidebarOpen ? "is-open" : ""}`}
         onTouchStart={onSidebarTouchStart}
         onTouchEnd={onSidebarTouchEnd}
@@ -1056,15 +1112,27 @@ function App() {
         />
       )}
 
-      <main className={session ? "app-main" : "app-main is-empty"}>
+      <main
+        id="main-content"
+        className={session ? "app-main" : "app-main is-empty"}
+        tabIndex={-1}
+      >
+        {/* 全局读屏播报：载入示例、切换到核验视图等异步状态变化。
+            role="status" 自带 aria-live="polite"，不打断当前朗读。 */}
+        <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+          {liveMessage}
+        </div>
         <header className="topbar">
           <button
+            ref={sidebarToggleRef}
             type="button"
             className="sidebar-toggle"
-            onClick={() => setSidebarOpen(true)}
-            aria-label="打开侧边栏"
+            onClick={() => setSidebarOpen((open) => !open)}
+            aria-label={sidebarOpen ? "关闭侧边栏" : "打开侧边栏"}
+            aria-expanded={sidebarOpen}
+            aria-controls="app-sidebar"
           >
-            <Menu size={18} />
+            <Menu size={18} aria-hidden="true" />
           </button>
           <div className="breadcrumb">
             <span>分析工作区</span>
@@ -1341,6 +1409,7 @@ function App() {
             />
 
             <section
+              ref={auditPanelRef}
               id="tabpanel-audit"
               role="tabpanel"
               aria-labelledby="tab-audit"

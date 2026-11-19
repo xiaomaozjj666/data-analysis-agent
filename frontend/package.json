@@ -11,7 +11,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "perf:check": "node scripts/perf/check-bundle.mjs"
   },
   "dependencies": {
     "echarts": "6.1.0",

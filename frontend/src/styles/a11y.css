@@ -1,0 +1,86 @@
+/* ==========================================================================
+   无障碍基础样式（A11y）
+   --------------------------------------------------------------------------
+   1. .sr-only：视觉隐藏但保留给读屏（状态播报、对话框标题、补充说明）。
+   2. .skip-link：跳过导航链接，未聚焦时移出视口，聚焦后出现在左上角。
+   3. 主内容与 Tab 面板的可见焦点环：键盘用户进入页面对应区域时始终有反馈。
+   颜色全部引用 tokens.css 的设计令牌，不新增硬编码配色。
+   ========================================================================== */
+
+/* 视觉隐藏：读屏可读，不参与布局与视觉渲染。 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* 跳过导航链接：Tab 第一站，聚焦后展示在主内容左上角。 */
+.skip-link {
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  z-index: 400;
+  padding: 10px 16px;
+  border: 1px solid var(--accent-fg);
+  border-radius: var(--radius-md);
+  background: var(--canvas-default);
+  color: var(--accent-fg);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  text-decoration: none;
+  box-shadow: var(--shadow-lg);
+  transform: translateY(-200%);
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
+.skip-link:focus,
+.skip-link:focus-visible {
+  transform: translateY(0);
+  outline: 2px solid var(--accent-fg);
+  outline-offset: 2px;
+}
+
+/* 主内容获得程序化焦点（跳过链接、路由切换）时给出可见提示，
+   避免焦点"消失"在页面里。 */
+.app-main:focus,
+.app-main:focus-visible {
+  outline: 2px solid var(--accent-fg);
+  outline-offset: -4px;
+}
+
+/* 命令面板 / 帮助面板容器在焦点进入时也给出可见焦点环
+   （帮助面板会把初始焦点放在对话框容器上，让读屏先播报标题）。 */
+.command-palette:focus,
+.help-panel:focus,
+.command-palette:focus-visible,
+.help-panel:focus-visible {
+  outline: 2px solid var(--accent-fg);
+  outline-offset: 2px;
+}
+
+/* Tab 面板本身可聚焦（tabIndex=0），进入面板时显示清晰焦点环。 */
+.app-main [role="tabpanel"]:focus,
+.app-main [role="tabpanel"]:focus-visible {
+  outline: 2px solid var(--accent-fg);
+  outline-offset: 4px;
+  border-radius: var(--radius-md);
+}
+
+/* 帮助面板的快捷键冲突说明。 */
+.help-panel-note {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-md);
+  background: var(--canvas-subtle);
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+}

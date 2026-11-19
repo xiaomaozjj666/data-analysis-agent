@@ -115,14 +115,10 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
     onUpload();
   }, [onUpload, uploading]);
 
-  // 键盘可达性：Enter / Space 触发上传，让不用鼠标的用户也能操作
-  const handleSectionKeyDown = useCallback((e: React.KeyboardEvent<HTMLElement>) => {
-    if (uploading || e.currentTarget !== e.target) return;
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      onUpload();
-    }
-  }, [onUpload, uploading]);
+  // 键盘可达性：整块区域不再声明 role="button"（避免把内部真实按钮
+  // 吞进 button 的语义树，导致读屏无法识别"体验简报核验"等按钮）。
+  // 键盘用户通过区域内的原生按钮完成上传 / 示例载入，Enter / Space 由
+  // 浏览器对按钮的默认行为处理。鼠标仍可点击空白区域快速上传。
 
   // 示例数据快速开始：通知 App.tsx 调用 /api/sessions/sample
   const handleLoadSample = useCallback((auditDemo: boolean) => {
@@ -133,17 +129,30 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
     <section
       ref={sectionRef}
       className={`empty-workspace${dragOver ? " is-drag-over" : ""}`}
-      role="button"
-      tabIndex={0}
-      aria-label="上传数据文件开始分析，或拖拽文件到此区域"
+      role="region"
+      aria-label="上传数据文件开始分析"
+      aria-describedby="empty-workspace-help"
+      aria-busy={uploading}
       onMouseMove={handleMouseMove}
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
       onDrop={handleDrop}
       onClick={handleSectionClick}
-      onKeyDown={handleSectionKeyDown}
     >
+      <p id="empty-workspace-help" className="sr-only">
+        按 Tab 选择“选择数据文件”上传数据集，或选择“体验简报核验”载入销售样例并直接打开简报核验。
+        全局快捷键可在顶栏的“查看键盘快捷键”中查阅。
+      </p>
+      <p className="sr-only" role="status" aria-live="polite">
+        {uploading
+          ? uploadProgress != null
+            ? uploadProgress >= 100
+              ? "上传完成，正在解析数据"
+              : "正在上传数据文件"
+            : "正在读取数据文件"
+          : ""}
+      </p>
       {/* 背景光晕交给 CSS 控制配色（empty-state.css 按主题给 --aurora-* ）：
           组件内联写死颜色会让暗色主题拿到同一组高饱和值，实测在深底上糊成
           一大片蓝紫、并盖住主文案的对比度。 */}
@@ -209,10 +218,15 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
               className="empty-audit-button"
               onClick={() => handleLoadSample(true)}
               disabled={uploading}
+              aria-describedby="empty-audit-hint"
             >
-              <ShieldCheck size={15} />
+              <ShieldCheck size={15} aria-hidden="true" />
               体验简报核验
             </button>
+            <span id="empty-audit-hint" className="sr-only">
+              载入销售样例并切换到简报核验视图。进入后按 Tab 到“草稿工作台”编辑草稿，
+              在草稿框内按 Ctrl 或 Command 加 Enter 直接复算。
+            </span>
           </div>
           <button
             type="button"
