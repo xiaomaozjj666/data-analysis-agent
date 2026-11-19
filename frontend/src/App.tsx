@@ -654,6 +654,9 @@ function App() {
           setLiveMessage("体验简报已载入，已切换到简报核验视图。可用 Tab 进入草稿工作台开始核验。");
         } else {
           setLiveMessage("示例数据已载入，已切换到分析视图。");
+          window.setTimeout(() => {
+            document.getElementById("tabpanel-analysis")?.focus();
+          }, 200);
         }
         startedAtRef.current =
           (value as Session & { analysis_started_at?: number | null })

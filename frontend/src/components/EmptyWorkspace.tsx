@@ -216,7 +216,7 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
             className="empty-demo-menu"
             onClick={(event) => event.stopPropagation()}
           >
-            <summary className="empty-sample-button" aria-label="选择演示数据">
+            <summary className="empty-sample-button">
               <Sparkles size={13} />
               载入演示数据
             </summary>

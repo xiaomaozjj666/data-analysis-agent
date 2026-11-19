@@ -67,5 +67,7 @@ describe("DemoBrief", () => {
       expect(screen.getByText(title)).toBeInTheDocument();
     }
     expect(screen.getByText("销量与订单数是两个口径。")).toBeInTheDocument();
+    const area = document.querySelector(".demo-line-area");
+    expect(area?.getAttribute("d")).toMatch(/L \d+\.\d,\d+\.\d L \d+\.\d,\d+\.\d/);
   });
 });

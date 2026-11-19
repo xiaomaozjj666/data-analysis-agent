@@ -88,7 +88,7 @@ def list_samples() -> dict[str, Any]:
 
 
 @router.post("/api/sessions/sample", status_code=201)
-async def create_sample_session(
+def create_sample_session(
     audit: bool = False, kind: str | None = None
 ) -> dict[str, Any]:
     """用内置演示数据创建会话，供新用户快速体验。
@@ -125,6 +125,13 @@ async def create_sample_session(
             settings.max_upload_bytes,
         )
         workspace.load(saved)
+        dataframe = workspace.dataframe
+        # 演示是可信常量，可以大于普通上传上限，但仍设硬上限，避免无界加载。
+        demo_limit = 250_000 if demo is not None and kind == "bigdata" else settings.max_rows
+        if len(dataframe) > demo_limit or len(dataframe) * len(dataframe.columns) > settings.max_cells:
+            raise ValueError(
+                f"演示数据规模超过限制：最多 {demo_limit:,} 行或 {settings.max_cells:,} 个单元格。"
+            )
         if demo is not None:
             if demo.schema is not None:
                 from data_agent.audit_schema import approve_schema, save_schema
@@ -151,7 +158,7 @@ async def create_sample_session(
         payload["demo"] = DEMOS[kind].public()
         from data_agent.demo_insights import insights_for
 
-        payload["demo"]["insights"] = insights_for(kind, sample_csv)
+        payload["demo"]["insights"] = insights_for(kind, sample_csv, DEMOS[kind].policy)
     return payload
 
 

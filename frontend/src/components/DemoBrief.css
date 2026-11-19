@@ -95,8 +95,8 @@
 .demo-bar-track { height: 5px; border-radius: 999px; background: var(--canvas-subtle); overflow: hidden; }
 .demo-bar-track > span { display: block; height: 100%; background: var(--fg-default); border-radius: inherit; }
 .demo-bar-value { min-width: 56px; color: var(--fg-subtle); font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
-.demo-axis { stroke: var(--border-default); stroke-width: 1; }
-.demo-scatter-dot { fill: var(--fg-subtle); opacity: 0.55; }
+.demo-axis { stroke: var(--fg-subtle); stroke-width: 1; }
+.demo-scatter-dot { fill: var(--fg-muted); opacity: 1; }
 .demo-scatter-outlier { fill: var(--danger-fg); opacity: 0.9; }
 .demo-heat-grid { display: grid; gap: 1px; }
 .demo-heat-cell { aspect-ratio: 1; border-radius: 1px; background: var(--fg-default); }
@@ -169,3 +169,6 @@
   .demo-kpi:nth-child(n + 3) { border-top: 1px solid var(--border-muted); }
   .demo-chart-grid { grid-template-columns: minmax(0, 1fr); }
 }
+
+.demo-scope { margin: 2px 0 0; color: var(--fg-subtle); font-size: 11px; }
+.demo-chart-empty { margin: 12px 0; color: var(--fg-subtle); font-size: 12px; }

@@ -26,7 +26,10 @@ function LineChart({ chart }: { chart: DemoChart }) {
     return [x, y] as const;
   });
   const path = coords.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
-  const area = `M ${coords[0][0]},${height - pad} L ${path.replaceAll(",", " ").split(" ").join(" L ")} L ${coords[coords.length - 1][0]},${height - pad} Z`;
+  const area =
+    `M ${coords[0][0]},${height - pad} L ` +
+    coords.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" L ") +
+    ` L ${coords[coords.length - 1][0]},${height - pad} Z`;
   return (
     <figure className="demo-chart demo-line">
       <figcaption>
@@ -80,13 +83,25 @@ function Scatter({ chart }: { chart: DemoChart }) {
   const width = 340;
   const height = 150;
   const pad = 14;
-  const scalePoints = points.length ? points : all;
-  const xs = scalePoints.map((point) => point[0]);
-  const ys = scalePoints.map((point) => point[1]);
-  const xMin = Math.min(...xs);
-  const xMax = Math.max(...xs) || 1;
-  const yMin = Math.min(...ys);
-  const yMax = Math.max(...ys) || 1;
+  if (!points.length) {
+    return (
+      <figure className="demo-chart demo-scatter">
+        <figcaption>
+          <strong>{chart.title}</strong>
+          {chart.subtitle && <small>{chart.subtitle}</small>}
+        </figcaption>
+        <p className="demo-chart-empty">暂无主体样本；离群点数值见 KPI 与明细。</p>
+      </figure>
+    );
+  }
+  const xs = points.map((point) => point[0]);
+  const ys = points.map((point) => point[1]);
+  let xMin = Math.min(...xs);
+  let xMax = Math.max(...xs);
+  let yMin = Math.min(...ys);
+  let yMax = Math.max(...ys);
+  if (xMax === xMin) { xMin -= 1; xMax += 1; }
+  if (yMax === yMin) { yMin -= 1; yMax += 1; }
   const map = (point: [number, number]) => {
     const x = pad + ((point[0] - xMin) / (xMax - xMin || 1)) * (width - pad * 2);
     const y = height - pad - ((point[1] - yMin) / (yMax - yMin || 1)) * (height - pad * 2);
@@ -205,6 +220,11 @@ export default function DemoBrief({ insights }: { insights: DemoInsights }) {
         <span className="demo-brief-kicker">预分析 · 打开即有</span>
         <h2>{insights.headline}</h2>
         <p>{insights.subline}</p>
+        {insights.scope && insights.scope.visible < insights.scope.rows && (
+          <p className="demo-scope">
+            预分析基于主体可见的 {insights.scope.visible} 行（共 {insights.scope.rows} 行）。
+          </p>
+        )}
       </header>
       <div className="demo-kpis">
         {insights.kpis.map((kpi) => (

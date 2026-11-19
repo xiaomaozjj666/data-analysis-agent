@@ -151,3 +151,28 @@ def test_unsigned_entry_is_rejected(tmp_path):
     result = verify_entries_signatures(entries, b"not-a-key")
     assert result["valid"] is False
     assert "没有签名" in result["errors"][0]
+
+
+def test_invalid_seed_and_non_ed25519_key(tmp_path, monkeypatch):
+    import pytest
+
+    monkeypatch.setenv("DATA_AGENT_LEDGER_SEED", base64.b64encode(b"short").decode())
+    from data_agent.audit_signing import key_id
+
+    with pytest.raises(ValueError, match="32 字节"):
+        key_id(tmp_path)
+
+    assert verify_hash(b"not a pem", "a" * 64, "c2ln") is False
+
+
+def test_seed_signs_and_bad_signature_encodings(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_AGENT_LEDGER_SEED", base64.b64encode(b"2" * 32).decode())
+    signed = sign_hash(tmp_path, "c" * 64)
+    pem = public_key_bytes(tmp_path)
+    assert verify_hash(pem, "c" * 64, signed["signature"])
+    assert verify_hash(pem, "c" * 64, "!!!not-base64!!!") is False
+    result = verify_entries_signatures(
+        [{"seq": 1, "hash": "c" * 64, "signature": "!!!"}], pem
+    )
+    assert result["valid"] is False
+    assert "签名无效" in result["errors"][0]

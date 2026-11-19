@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 import math
 import re
 from collections import Counter, defaultdict
@@ -31,9 +32,10 @@ def _number(value: str) -> float | None:
     if not text:
         return None
     try:
-        return float(text)
+        value = float(text)
     except ValueError:
         return None
+    return value if math.isfinite(value) else None
 
 
 def _money(value: float) -> str:
@@ -102,7 +104,7 @@ def _profile(rows: list[dict[str, str]]) -> dict[str, list[str]]:
             dates.append(column)
             continue
         unique = len({value for value in present})
-        if unique <= 20 and unique < max(2, len(present) * 0.6):
+        if 2 <= unique <= 20 and unique < max(3, len(present) * 0.6):
             categorical.append(column)
     numeric.sort(key=lambda column: (0 if any(h in column.lower() for h in _MONEY) else 1))
     categorical.sort(key=lambda column: (0 if any(h in column.lower() for h in ("region", "product", "channel", "store", "group", "category")) else 1))
@@ -182,6 +184,9 @@ def _auto_charts(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
                 }
             )
 
+    category_summary: dict[str, float] | None = None
+    category_unit = ""
+    category_basis = ""
     if categorical and numeric:
         column = numeric[0]
         groups: dict[str, list[float]] = defaultdict(list)
@@ -199,15 +204,26 @@ def _auto_charts(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
             excluded += len(values) - len(kept)
             if kept:
                 summary[label] = sum(kept)
+        measure_like = any(hint in column.lower() for hint in _MONEY + _QUANTITY)
+        if len(rows) > 50_000 and not measure_like:
+            counts = Counter(row.get(categorical[0], "未命名") for row in rows)
+            summary = {label: float(value) for label, value in counts.items()}
+            category_basis = "按行数"
+            category_unit = "行"
+            excluded = 0
+        else:
+            category_basis = "按" + _label(column) + "求和"
+            category_unit = _unit(column)
         if summary:
+            category_summary = summary
             charts.append(
                 {
                     "type": "bar",
                     "title": f"{_label(categorical[0])}对比",
-                    "subtitle": f"按{_label(column)}求和"
+                    "subtitle": category_basis
                     + (f" · 已排除 {excluded} 条极端值" if excluded else "")
                     + " · Top 8",
-                    "unit": _unit(column),
+                    "unit": category_unit,
                     "items": _top(summary),
                 }
             )
@@ -216,15 +232,26 @@ def _auto_charts(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
         x_column, y_column = numeric[0], numeric[1]
         points: list[list[float]] = []
         outliers: list[list[float]] = []
-        all_x = column_values(x_column)
-        cutoff = (median(all_x) * 8) if all_x else 0.0
+        def fence(values: list[float]) -> float:
+            if not values:
+                return 0.0
+            ordered = sorted(values)
+            q1 = ordered[int(len(ordered) * 0.25)]
+            q3 = ordered[int(len(ordered) * 0.75)]
+            spread = q3 - q1
+            if spread <= 0:
+                return max((abs(value) for value in values), default=0.0) * 0.999
+            return q3 + 3 * spread
+
+        fence_x = fence(column_values(x_column))
+        fence_y = fence(column_values(y_column))
         for row in rows:
             x = _number(row.get(x_column, ""))
             y = _number(row.get(y_column, ""))
             if x is None or y is None:
                 continue
             point = [round(x, 2), round(y, 2)]
-            if cutoff and (abs(x) > cutoff or abs(y) > cutoff * 2):
+            if (fence_x and abs(x) > fence_x) or (fence_y and abs(y) > fence_y):
                 outliers.append(point)
             elif len(points) < 400:
                 points.append(point)
@@ -259,14 +286,20 @@ def _auto_charts(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
             )
 
     if categorical:
-        counts = Counter(row.get(categorical[0], "未命名") for row in rows)
-        if 2 <= len(counts) <= 8:
+        if category_summary:
+            donut_items = _top(category_summary, 8)
+            donut_basis = category_basis or "按行数"
+        else:
+            counts = Counter(row.get(categorical[0], "未命名") for row in rows)
+            donut_items = _top({key: float(value) for key, value in counts.items()}, 8)
+            donut_basis = "按行数"
+        if 2 <= len(donut_items) <= 8:
             charts.append(
                 {
                     "type": "donut",
                     "title": f"{_label(categorical[0])}占比",
-                    "subtitle": "按行数",
-                    "items": _top({key: float(value) for key, value in counts.items()}, 8),
+                    "subtitle": donut_basis,
+                    "items": donut_items,
                 }
             )
 
@@ -403,16 +436,46 @@ BUILDERS = {
     "bigdata": _bigdata,
 }
 
+_REQUIRED = {
+    "sales_audit": {"order_id", "sales", "quantity"},
+    "regional_policy": {"region", "revenue"},
+    "quality_injection": {"revenue"},
+    "bigdata": {"x", "y"},
+}
+_LOGGER = logging.getLogger(__name__)
 
-def insights_for(kind: str, csv_text: str) -> dict[str, Any] | None:
+
+def insights_for(
+    kind: str, csv_text: str, policy: dict[str, Any] | None = None
+) -> dict[str, Any] | None:
     builder = BUILDERS.get(kind)
     if builder is None:
         return None
     try:
         rows = _rows(csv_text)
+        if not rows or len(rows) < 5:
+            return None
+        missing = _REQUIRED.get(kind, set()) - set(rows[0])
+        if missing:
+            _LOGGER.warning("演示预分析缺少列 %s：%s", kind, sorted(missing))
+            return None
+        visible = rows
+        rls_column = None
+        if policy and policy.get("rls"):
+            rls_column = str(policy["rls"]["column"])
+            claim = str(policy["rls"]["claim"])
+            value = (policy.get("claims") or {}).get(claim)
+            if value is not None:
+                visible = [row for row in rows if row.get(rls_column) == str(value)]
         insight = builder(rows)
         insight["kind"] = kind
-        insight["charts"] = _auto_charts(rows)
+        insight["charts"] = _auto_charts(visible)
+        insight["scope"] = {
+            "rows": len(rows),
+            "visible": len(visible),
+            "rls_column": rls_column,
+        }
         return insight
     except (KeyError, ValueError, ZeroDivisionError):
+        _LOGGER.warning("演示预分析失败：%s", kind, exc_info=True)
         return None

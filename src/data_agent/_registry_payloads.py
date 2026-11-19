@@ -251,12 +251,44 @@ def _elapsed_seconds(record: SessionRecord) -> float | None:
 def _session_payload(session_id: str, record: SessionRecord) -> dict[str, Any]:
     workspace = record.workspace
     profile = workspace.profile(sample_rows=8)
+    preview = to_jsonable(workspace.dataframe.head(100))
+
+    # 预览也受会话访问策略约束：RLS 行先过滤，PII 列按登记脱敏。
+    policy = None
+    try:
+        from data_agent.audit_policy import load_policy, rls_value
+
+        policy = load_policy(workspace.root)
+        if policy:
+            pii = set(policy.get("pii_columns") or ())
+            rls_column, rls_claimed = rls_value(policy)
+
+            def scrub(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+                scoped = []
+                for row in records:
+                    if rls_column and str(row.get(rls_column, "")).strip() != (rls_claimed or ""):
+                        continue
+                    scoped.append(
+                        {
+                            key: ("[已脱敏]" if key in pii else value)
+                            for key, value in row.items()
+                        }
+                    )
+                return scoped
+
+            preview = scrub(preview)
+            sample = profile.get("sample")
+            if isinstance(sample, list):
+                profile["sample"] = scrub(sample)
+    except (ValueError, OSError):
+        policy = None
+
     return {
         "id": session_id,
         "filename": workspace.source_path.name if workspace.source_path else "dataset",
         "title": record.title,
         "profile": profile,
-        "preview": to_jsonable(workspace.dataframe.head(100)),
+        "preview": preview,
         "chat": record.chat,
         "artifacts": _artifact_payload(session_id, workspace.artifacts),
         "analysis_status": record.analysis_status,
@@ -271,6 +303,10 @@ def _session_payload(session_id: str, record: SessionRecord) -> dict[str, Any]:
         # plan_only 模式产出的待审批计划，前端据此渲染审批面板；
         # 为 None 表示当前没有待审批计划。
         "pending_plan": record.pending_plan,
+        **({"policy": {
+            "principal_id": policy["principal_id"],
+            "pii_columns": list(policy.get("pii_columns") or ()),
+        }} if policy else {}),
     }
 
 

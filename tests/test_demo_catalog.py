@@ -46,6 +46,13 @@ def test_regional_demo_ships_policy_and_schema(tmp_path, monkeypatch):
     kinds = [chart["type"] for chart in insights["charts"]]
     assert kinds[:3] == ["line", "bar", "histogram"]
     assert [kpi["label"] for kpi in insights["kpis"]][:2] == ["全部订单", "华东可见"]
+    assert insights["scope"] == {"rows": 20, "visible": 8, "rls_column": "region"}
+    assert insights["charts"][1]["title"] == "渠道对比"
+
+    payload = created.json()
+    assert payload["preview"][0]["phone"] == "[已脱敏]"
+    assert {row["region"] for row in payload["preview"]} == {"华东"}
+    assert payload["policy"]["principal_id"] == "u_east"
 
 
 def test_quality_and_bigdata_demos(tmp_path, monkeypatch):
@@ -80,4 +87,20 @@ def test_insight_helpers_and_sales_insights():
     assert insights_for("bigdata", "x,y" + chr(10)) is None
     assert insights_for(
         "quality_injection", "store,revenue,note" + chr(10) + ",," + chr(10)
-    ) is not None
+    ) is None
+
+
+def test_insights_validation_and_non_finite(tmp_path):
+    rows = "order_id,sales,quantity" + chr(10)
+    rows += chr(10).join(f"{index},{index},{index}" for index in range(1, 6)) + chr(10)
+    result = insights_for("sales_audit", rows)
+    assert result is not None
+    assert result["kpis"][0]["label"] == "订单数"
+
+    assert insights_for("sales_audit", "order_id,sales" + chr(10) + "A,1" + chr(10)) is None
+    bad = "store,revenue,note" + chr(10)
+    for index in range(6):
+        bad += f"s{index},NaN," + chr(10)
+    quality = insights_for("quality_injection", bad)
+    assert quality is not None
+    assert quality["kpis"][1]["value"] == "6"

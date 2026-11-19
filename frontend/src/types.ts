@@ -50,6 +50,7 @@ export interface DemoInsights {
   kpis: { label: string; value: string; note?: string; unit?: string }[];
   charts: DemoChart[];
   findings: string[];
+  scope?: { rows: number; visible: number; rls_column?: string | null };
 }
 
 export interface DemoPayload {
