@@ -86,9 +86,7 @@ def _session_with_sales(tmp_path, monkeypatch) -> tuple[TestClient, str]:
     _isolate_runtime(tmp_path, monkeypatch)
     client = TestClient(api.app)
     content = b"order_id,sales,quantity\nA,10.00,1\nA,2.50,1\nB,7.50,1\n"
-    upload = client.post(
-        "/api/sessions", files={"file": ("sales.csv", content, "text/csv")}
-    )
+    upload = client.post("/api/sessions", files={"file": ("sales.csv", content, "text/csv")})
     assert upload.status_code == 201
     return client, upload.json()["id"]
 
@@ -96,9 +94,7 @@ def _session_with_sales(tmp_path, monkeypatch) -> tuple[TestClient, str]:
 def test_audit_and_confirm_are_recorded(tmp_path, monkeypatch):
     client, session_id = _session_with_sales(tmp_path, monkeypatch)
     draft = "销售额合计：20.00 元\n销量合计：3 件\n订单数：2 笔"
-    audit = client.post(
-        f"/api/sessions/{session_id}/sales-audit", json={"draft": draft}
-    ).json()
+    audit = client.post(f"/api/sessions/{session_id}/sales-audit", json={"draft": draft}).json()
     assert audit["ledger"]["seq"] == 1
 
     confirm = client.post(
@@ -119,9 +115,7 @@ def test_audit_and_confirm_are_recorded(tmp_path, monkeypatch):
 def test_confirm_rejects_stale_or_foreign_audit_id(tmp_path, monkeypatch):
     client, session_id = _session_with_sales(tmp_path, monkeypatch)
     draft = "订单数：2 笔"
-    audit = client.post(
-        f"/api/sessions/{session_id}/sales-audit", json={"draft": draft}
-    ).json()
+    audit = client.post(f"/api/sessions/{session_id}/sales-audit", json={"draft": draft}).json()
 
     tampered = client.post(
         f"/api/sessions/{session_id}/sales-audit/confirm",
@@ -139,9 +133,7 @@ def test_confirm_rejects_stale_or_foreign_audit_id(tmp_path, monkeypatch):
 def test_offline_script_detects_one_byte_change(tmp_path, monkeypatch):
     client, session_id = _session_with_sales(tmp_path, monkeypatch)
     draft = "销售额合计：20.00 元\n销量合计：3 件\n订单数：2 笔"
-    audit = client.post(
-        f"/api/sessions/{session_id}/sales-audit", json={"draft": draft}
-    ).json()
+    audit = client.post(f"/api/sessions/{session_id}/sales-audit", json={"draft": draft}).json()
     confirm = client.post(
         f"/api/sessions/{session_id}/sales-audit/confirm",
         json={"draft": draft, "audit_id": audit["audit_id"]},
@@ -165,6 +157,7 @@ def test_ledger_survives_reopen(tmp_path):
     _append(tmp_path)
     assert len(read_entries(tmp_path / "audit_ledger.jsonl")) == 1
     assert read_entries(tmp_path / "missing.jsonl") == []
+
 
 # --- 起草轨迹绑定：模型原话 → 草稿 → 复算 → 确认 ---
 
@@ -223,11 +216,21 @@ def test_audit_confirm_and_offline_script_verify_trace(tmp_path, monkeypatch):
     ledger = tmp_path / "ledger-copy.jsonl"
     ledger.write_bytes((workspace.root / "audit_ledger.jsonl").read_bytes())
     assert (
-        verify_audit_ledger.main([str(ledger), "--brief", str(_write_brief(tmp_path, confirm.json()["brief"])), "--trace", str(trace_path)])
+        verify_audit_ledger.main(
+            [
+                str(ledger),
+                "--brief",
+                str(_write_brief(tmp_path, confirm.json()["brief"])),
+                "--trace",
+                str(trace_path),
+            ]
+        )
         == 0
     )
 
-    trace_path.write_text(trace_path.read_text(encoding="utf-8").replace("test-model", "other"), encoding="utf-8")
+    trace_path.write_text(
+        trace_path.read_text(encoding="utf-8").replace("test-model", "other"), encoding="utf-8"
+    )
     assert verify_audit_ledger.main([str(ledger), "--trace", str(trace_path)]) == 1
 
 
@@ -239,7 +242,10 @@ def test_audit_rejects_trace_that_does_not_match_draft(tmp_path, monkeypatch):
     client, session_id = _session_with_sales(tmp_path, monkeypatch)
     workspace = api.registry.get(session_id).workspace
     draft = "订单数：2 笔"
-    original = {"parsed_draft": draft, "parsed_draft_sha256": hashlib.sha256(draft.encode()).hexdigest()}
+    original = {
+        "parsed_draft": draft,
+        "parsed_draft_sha256": hashlib.sha256(draft.encode()).hexdigest(),
+    }
     trace_sha, _ = write_trace(workspace.root / "draft_traces", original)
 
     response = client.post(
@@ -254,6 +260,7 @@ def _write_brief(tmp_path, text: str):
     path = tmp_path / "brief-trace.md"
     path.write_bytes(text.encode("utf-8"))
     return path
+
 
 def test_ledger_reading_edge_cases(tmp_path):
     path = tmp_path / "audit_ledger.jsonl"
@@ -333,3 +340,81 @@ def test_verify_trace_rejects_malformed_inputs(tmp_path):
     target.write_bytes(broken)
     with pytest.raises(QuickDraftError, match="无法解析"):
         verify_trace(trace_dir, hashlib.sha256(broken).hexdigest(), "订单数：1 笔")
+
+
+def test_confirm_and_ledger_error_paths(tmp_path, monkeypatch):
+    client, session_id = _session_with_sales(tmp_path, monkeypatch)
+    draft = "订单数：2 笔"
+    confirm_url = f"/api/sessions/{session_id}/sales-audit/confirm"
+
+    blank = client.post(confirm_url, json={"draft": " ", "audit_id": "aud-" + "0" * 8})
+    assert blank.status_code == 422
+
+    bad_trace = client.post(
+        confirm_url,
+        json={"draft": draft, "audit_id": "aud-" + "0" * 8, "draft_trace_sha256": "0" * 64},
+    )
+    assert bad_trace.status_code == 422
+
+    import data_agent.sales_audit as sales_audit
+
+    monkeypatch.setattr(
+        sales_audit, "audit_sales_brief", lambda *a, **k: (_ for _ in ()).throw(ValueError("bad"))
+    )
+    assert (
+        client.post(confirm_url, json={"draft": draft, "audit_id": "aud-" + "0" * 8}).status_code
+        == 422
+    )
+
+    monkeypatch.setattr(
+        sales_audit, "audit_sales_brief", lambda *a, **k: (_ for _ in ()).throw(OSError("disk"))
+    )
+    assert (
+        client.post(confirm_url, json={"draft": draft, "audit_id": "aud-" + "0" * 8}).status_code
+        == 422
+    )
+
+    audit_id = "aud-" + "1" * 8
+    monkeypatch.setattr(
+        sales_audit,
+        "audit_sales_brief",
+        lambda *a, **k: {"audit_id": audit_id, "corrected_brief": None},
+    )
+    no_brief = client.post(confirm_url, json={"draft": draft, "audit_id": audit_id})
+    assert no_brief.status_code == 422
+
+    import data_agent.routers.audit_ledger as ledger_router
+
+    monkeypatch.setattr(
+        ledger_router, "append_entry", lambda *a, **k: (_ for _ in ()).throw(LedgerError("ledger"))
+    )
+    monkeypatch.setattr(
+        sales_audit,
+        "audit_sales_brief",
+        lambda *a, **k: {
+            "audit_id": audit_id,
+            "corrected_brief": "# ok\n",
+            "source": {"sha256": "a" * 64, "filename": "sales.csv"},
+            "summary": {"verified": 1},
+        },
+    )
+    assert client.post(confirm_url, json={"draft": draft, "audit_id": audit_id}).status_code == 503
+
+    monkeypatch.setattr(
+        ledger_router, "recent_entries", lambda *a, **k: (_ for _ in ()).throw(LedgerError("read"))
+    )
+    assert client.get(f"/api/sessions/{session_id}/sales-audit/ledger").status_code == 503
+
+
+def test_confirm_requires_uploaded_csv(tmp_path, monkeypatch):
+    client, _session_id = _session_with_sales(tmp_path, monkeypatch)
+    imported = client.post(
+        "/api/sessions",
+        files={"file": ("notes.json", b'{"a": 1}', "application/json")},
+    )
+    session_id = imported.json()["id"]
+    response = client.post(
+        f"/api/sessions/{session_id}/sales-audit/confirm",
+        json={"draft": "订单数：1 笔", "audit_id": "aud-" + "0" * 8},
+    )
+    assert response.status_code == 422
