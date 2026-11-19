@@ -39,7 +39,9 @@ from data_agent._workspace_bundles import _atomic_write_text
 
 SCHEMA_FILENAME = "audit_schema.json"
 HISTORY_FILENAME = "audit_schema_history.jsonl"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+STATUS_DRAFT = "draft"
+STATUS_APPROVED = "approved"
 ALLOWED_AGGREGATIONS = frozenset({"sum", "count", "count_distinct", "min", "max", "mean", "ratio"})
 _ALLOWED_TYPES = frozenset({"decimal", "integer", "date", "string"})
 _ALLOWED_NULL_POLICIES = frozenset({"exclude", "fail", "zero"})
@@ -269,7 +271,8 @@ def serialize_metrics(metrics: list[AuditMetric]) -> list[dict[str, Any]]:
     return _serialize(metrics)
 
 
-def load_schema(root: str | Path) -> list[AuditMetric] | None:
+def load_schema_document(root: str | Path) -> dict[str, Any] | None:
+    """读取完整口径文档（含审批状态）；不存在时返回 None。"""
     path = Path(root) / SCHEMA_FILENAME
     if not path.is_file():
         return None
@@ -277,27 +280,79 @@ def load_schema(root: str | Path) -> list[AuditMetric] | None:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"无法读取核验口径 {SCHEMA_FILENAME}：{exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("核验口径文件必须是对象。")
+    return payload
+
+
+def load_schema(root: str | Path) -> list[AuditMetric] | None:
+    payload = load_schema_document(root)
+    if payload is None:
+        return None
     return parse_schema(payload)
+
+
+def approve_schema(root: str | Path, approver: str) -> list[AuditMetric]:
+    """把当前口径标记为已批准；批准人与时间写入文件与历史。"""
+    name = approver.strip()
+    if not name:
+        raise ValueError("批准人不能为空。")
+    payload = load_schema_document(root)
+    if payload is None:
+        raise ValueError("当前会话还没有登记核验口径。")
+    metrics = parse_schema(payload)
+    document = {
+        "version": SCHEMA_VERSION,
+        "status": STATUS_APPROVED,
+        "approved_by": name,
+        "approved_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "metrics": _serialize(metrics),
+    }
+    _atomic_write_text(
+        Path(root) / SCHEMA_FILENAME,
+        json.dumps(document, ensure_ascii=False, indent=2),
+    )
+    _append_history(root, metrics, status=STATUS_APPROVED, approver=name)
+    return metrics
+
+
+def _append_history(
+    root: str | Path,
+    metrics: list[AuditMetric],
+    *,
+    status: str,
+    approver: str | None = None,
+) -> None:
+    history = {
+        "ts": datetime.now(UTC).isoformat(timespec="seconds"),
+        "status": status,
+        "approved_by": approver,
+        "sha256": schema_fingerprint(metrics),
+        "metrics": _serialize(metrics),
+    }
+    try:
+        with (Path(root) / HISTORY_FILENAME).open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(history, ensure_ascii=False, sort_keys=True) + "\n")
+    except OSError:
+        # 历史写入失败不能回滚已生效的口径；下次保存会再补一条。
+        pass
 
 
 def save_schema(root: str | Path, payload: Any) -> list[AuditMetric]:
     metrics = parse_schema(payload)
     root_path = Path(root)
-    _atomic_write_text(
-        root_path / SCHEMA_FILENAME,
-        json.dumps({"version": SCHEMA_VERSION, "metrics": _serialize(metrics)}, ensure_ascii=False, indent=2),
-    )
-    history = {
-        "ts": datetime.now(UTC).isoformat(timespec="seconds"),
-        "sha256": schema_fingerprint(metrics),
+    document = {
+        "version": SCHEMA_VERSION,
+        "status": STATUS_DRAFT,
+        "approved_by": None,
+        "approved_at": None,
         "metrics": _serialize(metrics),
     }
-    try:
-        with (root_path / HISTORY_FILENAME).open("a", encoding="utf-8", newline="\n") as handle:
-            handle.write(json.dumps(history, ensure_ascii=False, sort_keys=True) + "\n")
-    except OSError:
-        # 历史写入失败不能回滚已生效的口径；下次保存会再补一条。
-        pass
+    _atomic_write_text(
+        root_path / SCHEMA_FILENAME,
+        json.dumps(document, ensure_ascii=False, indent=2),
+    )
+    _append_history(root, metrics, status=STATUS_DRAFT)
     return metrics
 
 

@@ -187,9 +187,10 @@ def sales_audit(session_id: str, payload: SalesAuditRequest) -> dict[str, Any]:
         except QuickDraftError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     try:
-        from data_agent.audit_schema import load_schema
+        from data_agent.audit_schema import load_schema, load_schema_document
 
         metric_specs = load_schema(workspace.root)
+        schema_document = load_schema_document(workspace.root)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
@@ -201,6 +202,7 @@ def sales_audit(session_id: str, payload: SalesAuditRequest) -> dict[str, Any]:
             draft_trace_sha256=trace_digest,
             metric_specs=metric_specs,
         )
+        result["schema_status"] = (schema_document or {}).get("status")
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except OSError as exc:

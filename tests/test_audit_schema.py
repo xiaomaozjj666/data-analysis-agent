@@ -420,3 +420,34 @@ def test_schema_api_returns_advanced_policy_fields(tmp_path, monkeypatch):
     assert metric["time_window"]["start"] == "2026-10-01"
     fetched = client.get(f"/api/sessions/{session_id}/audit-schema").json()
     assert fetched["metrics"] == saved["metrics"]
+
+def test_schema_approval_flow(tmp_path, monkeypatch):
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    upload = client.post(
+        "/api/sessions", files={"file": ("customers.csv", CSV.encode(), "text/csv")}
+    )
+    session_id = upload.json()["id"]
+
+    saved = client.put(f"/api/sessions/{session_id}/audit-schema", json=SPECS).json()
+    assert saved["status"] == "draft"
+    assert client.get(f"/api/sessions/{session_id}/audit-schema").json()["status"] == "draft"
+
+    approved = client.post(
+        f"/api/sessions/{session_id}/audit-schema/approve",
+        json={"approved_by": "审计主管"},
+    )
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "approved"
+    fetched = client.get(f"/api/sessions/{session_id}/audit-schema").json()
+    assert fetched["status"] == "approved"
+    assert fetched["approved_by"] == "审计主管"
+
+    history = client.get(f"/api/sessions/{session_id}/audit-schema/history").json()
+    assert [entry["status"] for entry in history["entries"]] == ["draft", "approved"]
+
+    audit = client.post(
+        f"/api/sessions/{session_id}/sales-audit",
+        json={"draft": "收入合计：250.00 元"},
+    ).json()
+    assert audit["schema_status"] == "approved"

@@ -522,3 +522,14 @@
   line-height: 1.6;
   resize: vertical;
 }
+
+.sales-audit-approver {
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--canvas-default);
+  color: var(--fg-default);
+  font: inherit;
+  font-size: 13px;
+}

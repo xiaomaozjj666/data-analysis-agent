@@ -93,6 +93,7 @@ export interface AuditResult {
   ledger?: AuditLedgerEntry;
   ledger_error?: string;
   schema_fingerprint?: string | null;
+  schema_status?: string | null;
 }
 
 export interface AuditSchemaSpec {
@@ -368,7 +369,7 @@ function ResultNotices({
       )}
       {audit.schema_fingerprint && (
         <p className="sales-audit-trace" title={audit.schema_fingerprint}>
-          核验口径指纹 {audit.schema_fingerprint.slice(0, 12)}…
+          核验口径指纹 {audit.schema_fingerprint.slice(0, 12)}… · {audit.schema_status === "approved" ? "已批准" : "草稿"}
         </p>
       )}
       {warnings.length > 0 && (
@@ -492,6 +493,8 @@ export default function SalesAudit({
   const [schemaLoaded, setSchemaLoaded] = useState(false);
   const [schemaHistory, setSchemaHistory] = useState<{ versions: number; consistent: boolean }>({ versions: 0, consistent: true });
   const [schemaMessage, setSchemaMessage] = useState("");
+  const [schemaStatus, setSchemaStatus] = useState<{ status: string | null; approvedBy: string | null }>({ status: null, approvedBy: null });
+  const [approver, setApprover] = useState("");
   const [draftTrace, setDraftTrace] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [sessionLost, setSessionLost] = useState(false);
@@ -670,11 +673,17 @@ export default function SalesAudit({
     if (schemaLoaded) return;
     setSchemaLoaded(true);
     try {
-      const payload = await api<{ metrics?: AuditSchemaSpec[] }>(
-        `/api/sessions/${sessionId}/audit-schema`,
-      );
+      const payload = await api<{
+        metrics?: AuditSchemaSpec[];
+        status?: string | null;
+        approved_by?: string | null;
+      }>(`/api/sessions/${sessionId}/audit-schema`);
       const metrics = Array.isArray(payload?.metrics) ? payload.metrics : [];
       setSchemaSpecs(metrics);
+      setSchemaStatus({
+        status: typeof payload?.status === "string" ? payload.status : null,
+        approvedBy: typeof payload?.approved_by === "string" ? payload.approved_by : null,
+      });
       setSchemaText(JSON.stringify({ metrics }, null, 2));
       try {
         const history = await api<{ entries?: unknown[]; consistent?: boolean }>(
@@ -705,6 +714,7 @@ export default function SalesAudit({
         },
       );
       setSchemaSpecs(saved.metrics);
+      setSchemaStatus({ status: "draft", approvedBy: null });
       setSchemaText(JSON.stringify({ metrics: saved.metrics }, null, 2));
       setSchemaMessage(
         saved.metrics.length
@@ -716,6 +726,35 @@ export default function SalesAudit({
       setServerBrief(null);
     } catch (err) {
       setSchemaMessage(err instanceof Error ? err.message : "核验口径保存失败。");
+    } finally {
+      setSchemaBusy(false);
+    }
+  }
+
+  async function approveSchema() {
+    if (!approver.trim()) {
+      setSchemaMessage("请填写批准人。");
+      return;
+    }
+    setSchemaBusy(true);
+    setSchemaMessage("");
+    try {
+      const saved = await api<{ metrics: AuditSchemaSpec[]; approved_by?: string }>(
+        `/api/sessions/${sessionId}/audit-schema/approve`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ approved_by: approver.trim() }),
+        },
+      );
+      setSchemaSpecs(saved.metrics);
+      setSchemaStatus({ status: "approved", approvedBy: saved.approved_by ?? approver.trim() });
+      setSchemaMessage(`口径已由 ${saved.approved_by ?? approver.trim()} 批准。`);
+      setAudit(null);
+      setReceipt(null);
+      setServerBrief(null);
+    } catch (err) {
+      setSchemaMessage(err instanceof Error ? err.message : "批准失败。");
     } finally {
       setSchemaBusy(false);
     }
@@ -903,6 +942,7 @@ export default function SalesAudit({
           >
             <summary>
               核验口径 · {schemaSpecs.length ? `${schemaSpecs.length} 项自定义` : "内置销售四项"}
+              {schemaStatus.status === "approved" ? " · 已批准" : schemaStatus.status === "draft" ? " · 草稿" : ""}
               {schemaHistory.versions > 0 && ` · 历史 ${schemaHistory.versions} 版`}
               {!schemaHistory.consistent && " · 历史指纹异常"}
             </summary>
@@ -940,6 +980,21 @@ export default function SalesAudit({
                 onClick={() => setSchemaText(JSON.stringify({ metrics: schemaSpecs }, null, 2))}
               >
                 撤销修改
+              </button>
+              <input
+                className="sales-audit-approver"
+                aria-label="批准人"
+                placeholder="批准人"
+                value={approver}
+                onChange={(event) => setApprover(event.target.value)}
+                disabled={schemaBusy || !schemaSpecs.length}
+              />
+              <button
+                type="button"
+                disabled={schemaBusy || !schemaSpecs.length || !approver.trim()}
+                onClick={() => void approveSchema()}
+              >
+                批准口径
               </button>
             </div>
             {schemaMessage && <p role="status">{schemaMessage}</p>}

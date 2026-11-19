@@ -10,7 +10,9 @@ from pydantic import BaseModel, Field
 
 from data_agent.audit_schema import (
     HISTORY_FILENAME,
+    approve_schema,
     load_schema,
+    load_schema_document,
     parse_schema,
     save_schema,
     schema_fingerprint,
@@ -24,18 +26,26 @@ class AuditSchemaPayload(BaseModel):
     metrics: list[dict[str, Any]] = Field(default_factory=list, max_length=12)
 
 
+class ApproveSchemaPayload(BaseModel):
+    approved_by: str = Field(min_length=1, max_length=80)
+
+
 @router.get("/api/sessions/{session_id}/audit-schema")
 def get_audit_schema(session_id: str) -> dict[str, Any]:
     from data_agent import api
 
     workspace = api.registry.get(session_id).workspace
     try:
+        document = load_schema_document(workspace.root)
         specs = load_schema(workspace.root)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {
         "metrics": serialize_metrics(specs or []),
-        "source": None if specs is None else "workspace",
+        "source": None if document is None else "workspace",
+        "status": (document or {}).get("status"),
+        "approved_by": (document or {}).get("approved_by"),
+        "approved_at": (document or {}).get("approved_at"),
     }
 
 
@@ -69,6 +79,22 @@ def get_audit_schema_history(session_id: str, limit: int = 20) -> dict[str, Any]
     return {"entries": entries[-max(1, min(limit, 100)) :], "consistent": consistent}
 
 
+@router.post("/api/sessions/{session_id}/audit-schema/approve")
+def approve_audit_schema(session_id: str, payload: ApproveSchemaPayload) -> dict[str, Any]:
+    from data_agent import api
+
+    workspace = api.registry.get(session_id).workspace
+    try:
+        specs = approve_schema(workspace.root, payload.approved_by)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "metrics": serialize_metrics(specs),
+        "status": "approved",
+        "approved_by": payload.approved_by,
+    }
+
+
 @router.put("/api/sessions/{session_id}/audit-schema")
 def put_audit_schema(session_id: str, payload: AuditSchemaPayload) -> dict[str, Any]:
     from data_agent import api
@@ -78,4 +104,4 @@ def put_audit_schema(session_id: str, payload: AuditSchemaPayload) -> dict[str, 
         specs = save_schema(workspace.root, payload.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return {"metrics": serialize_metrics(specs), "source": "workspace"}
+    return {"metrics": serialize_metrics(specs), "source": "workspace", "status": "draft"}
