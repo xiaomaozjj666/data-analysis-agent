@@ -451,7 +451,7 @@ def test_concurrent_first_appends_keep_the_chain_valid(tmp_path):
         with ThreadPoolExecutor(max_workers=20) as pool:
             list(
                 pool.map(
-                    lambda index: append_entry(
+                    lambda index, root=root: append_entry(
                         root,
                         kind="audit",
                         session_id="s",
