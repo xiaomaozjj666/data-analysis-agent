@@ -26,12 +26,11 @@ import csv
 import hashlib
 import io
 import json
-import re
 import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
-from decimal import ROUND_HALF_EVEN, ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import ROUND_HALF_EVEN, ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any
 
@@ -52,7 +51,6 @@ _INTEGER_AGGREGATIONS = frozenset({"count", "count_distinct"})
 _MAX_METRICS = 12
 _MAX_FILTERS = 8
 _PREVIEW_ROWS = 6
-_NUMBER = re.compile(r"[+-]?[0-9][0-9,]*(?:\.[0-9]+)?")
 _CURRENCY = str.maketrans("", "", "¥￥$€£")
 _BLANK_CATEGORIES = frozenset({"Cc", "Cf", "Zs", "Zl", "Zp"})
 _BLANK_GLYPHS = frozenset("ᅟᅠ⠀ㅤﾠ")
@@ -411,44 +409,8 @@ def _scaled_int(cell: str, *, column: str, row_number: int) -> int:
     return -value if negative else value
 
 
-def _decimal(cell: str, *, column: str, row_number: int) -> Decimal:
-    cleaned = cell.translate(_CURRENCY).replace(",", "").strip()
-    if not cleaned or not _NUMBER.fullmatch(cleaned):
-        raise ValueError(f"第 {row_number} 条记录的 {column} 不是有效数值。")
-    try:
-        return Decimal(cleaned)
-    except InvalidOperation as exc:  # pragma: no cover - 正则已限制字符集
-        raise ValueError(f"第 {row_number} 条记录的 {column} 不是有效数值。") from exc
-
-
 def _is_null(cell: str) -> bool:
     return cell.strip().casefold() in _NULL_TOKENS
-
-
-def _matches_filter(cell: str, op: str, expected: Any, *, column: str, row_number: int) -> bool:
-    actual = cell.strip()
-    if op in {"eq", "ne"}:
-        desired = str(expected).strip()
-        result = actual == desired
-        if not result:
-            try:
-                result = Decimal(actual.replace(",", "")) == Decimal(desired.replace(",", ""))
-            except (InvalidOperation, ValueError):
-                result = False
-        return result if op == "eq" else not result
-    if op == "contains":
-        return str(expected).casefold() in actual.casefold()
-    if op == "in":
-        return actual in {str(item).strip() for item in expected}
-    left = _scaled_int(actual, column=column, row_number=row_number)
-    right = _scaled_int(str(expected), column=column, row_number=row_number)
-    if op == "gt":
-        return left > right
-    if op == "ge":
-        return left >= right
-    if op == "lt":
-        return left < right
-    return left <= right
 
 
 def _cell(row: list[str], index: dict[str, int], column: str) -> str:
@@ -501,22 +463,15 @@ def _row_passes(row: list[str], index: dict[str, int], metric: AuditMetric, row_
         raw_value = _cell(row, index, column).strip()
         if _is_null(raw_value):
             return False
+        # 口径只接受 YYYY-MM-DD（parse_window 已校验），按 ISO 字符串比较即可，
+        # 避免 100 万次 date.fromisoformat；取前 10 位兼容带时间的日期时间列。
         current_text = raw_value[:10].replace("/", "-")
         start = window.get("start")
         end = window.get("end")
-        # ISO 日期用字符串比较即可，避免 100 万次 date.fromisoformat。
-        if start and len(current_text) == 10 and len(start) == 10:
-            if current_text < start:
-                return False
-        elif start:
-            if date.fromisoformat(current_text) < date.fromisoformat(start):
-                return False
-        if end and len(current_text) == 10 and len(end) == 10:
-            if current_text > end:
-                return False
-        elif end:
-            if date.fromisoformat(current_text) > date.fromisoformat(end):
-                return False
+        if start and current_text < start:
+            return False
+        if end and current_text > end:
+            return False
     return True
 
 
