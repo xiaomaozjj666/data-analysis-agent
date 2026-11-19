@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -40,6 +41,35 @@ def get_audit_schema(session_id: str) -> dict[str, Any]:
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"metrics": _serialize(specs or []), "source": None if specs is None else "workspace"}
+
+
+@router.get("/api/sessions/{session_id}/audit-schema/history")
+def get_audit_schema_history(session_id: str, limit: int = 20) -> dict[str, Any]:
+    from data_agent import api
+    from data_agent.audit_schema import HISTORY_FILENAME, parse_schema, schema_fingerprint
+
+    workspace = api.registry.get(session_id).workspace
+    path = workspace.root / HISTORY_FILENAME
+    if not path.is_file():
+        return {"entries": [], "consistent": True}
+    entries: list[dict[str, Any]] = []
+    consistent = True
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            consistent = False
+            continue
+        try:
+            fingerprint = schema_fingerprint(parse_schema({"metrics": entry.get("metrics", [])}))
+        except ValueError:
+            fingerprint = None
+        entry["fingerprint_valid"] = fingerprint == entry.get("sha256")
+        consistent = consistent and entry["fingerprint_valid"]
+        entries.append(entry)
+    return {"entries": entries[-max(1, min(limit, 100)):], "consistent": consistent}
 
 
 @router.put("/api/sessions/{session_id}/audit-schema")

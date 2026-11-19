@@ -8,6 +8,9 @@ import pytest
 from fastapi.testclient import TestClient
 from test_api import _isolate_runtime
 
+import sys
+from pathlib import Path
+
 from data_agent import api
 from data_agent.audit_schema import (
     load_schema,
@@ -17,6 +20,11 @@ from data_agent.audit_schema import (
     schema_fingerprint,
 )
 from data_agent.sales_audit import audit_sales_brief
+
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO / "scripts"))
+
+import verify_audit_ledger  # noqa: E402
 
 CSV = """customer_id,region,revenue
 C1,East,100.50
@@ -339,3 +347,38 @@ def test_ratio_metric(tmp_path):
     )
     with pytest.raises(ValueError, match="未在口径中登记"):
         read_metrics(path, no_ref)
+
+def test_schema_history_api_and_offline_fingerprint(tmp_path, monkeypatch):
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    upload = client.post(
+        "/api/sessions", files={"file": ("customers.csv", CSV.encode(), "text/csv")}
+    )
+    session_id = upload.json()["id"]
+    client.put(f"/api/sessions/{session_id}/audit-schema", json=SPECS)
+
+    history = client.get(f"/api/sessions/{session_id}/audit-schema/history").json()
+    assert history["consistent"] is True
+    assert len(history["entries"]) == 1
+    assert history["entries"][0]["fingerprint_valid"] is True
+
+    draft = "收入合计：250.00 元" + NL + "客户数：2 人"
+    audit = client.post(
+        f"/api/sessions/{session_id}/sales-audit", json={"draft": draft}
+    ).json()
+    client.post(
+        f"/api/sessions/{session_id}/sales-audit/confirm",
+        json={"draft": draft, "audit_id": audit["audit_id"]},
+    )
+
+    workspace = api.registry.get(session_id).workspace
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_bytes((workspace.root / "audit_ledger.jsonl").read_bytes())
+    schema_file = tmp_path / "audit_schema.json"
+    schema_file.write_text(json.dumps(SPECS), encoding="utf-8")
+    assert verify_audit_ledger.main([str(ledger), "--schema", str(schema_file)]) == 0
+
+    tampered = json.loads(json.dumps(SPECS))
+    tampered["metrics"][0]["unit"] = "美元"
+    schema_file.write_text(json.dumps(tampered), encoding="utf-8")
+    assert verify_audit_ledger.main([str(ledger), "--schema", str(schema_file)]) == 1
