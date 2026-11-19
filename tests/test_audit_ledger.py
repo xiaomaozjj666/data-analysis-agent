@@ -309,7 +309,7 @@ def test_append_refuses_chain_with_wrong_hash(tmp_path):
 def test_append_reports_unwritable_ledger(tmp_path):
     blocker = tmp_path / "blocker"
     blocker.write_text("x", encoding="utf-8")
-    with pytest.raises(LedgerError, match="无法(写入|读取)账本"):
+    with pytest.raises(LedgerError, match="无法(写入|读取)账本|签名密钥不可用"):
         _append(blocker)
 
 

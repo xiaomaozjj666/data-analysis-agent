@@ -195,7 +195,13 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         from data_agent.audit_signing import verify_entries_signatures
 
-        signatures = verify_entries_signatures(entries, public_pem)
+        try:
+            signatures = verify_entries_signatures(entries, public_pem)
+        except ValueError:
+            # 公钥本身解析不了（截断/乱码）≠ 逐条签名无效：错误文案必须区分，
+            # 否则运维会把“换错了公钥文件”当成“账本被改”去查链。
+            print(f"[失败] 公钥无法解析：{args.pubkey}", file=sys.stderr)
+            return 2
         checks["signature"] = {
             "path": str(args.pubkey),
             "signed": signatures["signed"],
@@ -205,7 +211,19 @@ def main(argv: list[str] | None = None) -> int:
             verification["valid"] = False
             verification["errors"].extend(signatures["errors"])
 
-    payload = {"verification": verification, "checks": checks}
+    # I1（2026-11-19 评审）：条目带签名但没给 --pubkey 时，此前链校验静默
+    # 通过、完全不提签名——验签缺失必须可见。退出码不变（链校验本身通过），
+    # 但输出里显式声明 signatures_checked=false，交给调用方决定是否可接受。
+    signed_count = sum(1 for entry in entries if entry.get("signature"))
+    if signed_count and not args.pubkey:
+        notice = (
+            f"签名未校验：账本包含 {signed_count} 条 Ed25519 签名，"
+            "但未提供 --pubkey。链校验通过不代表签名有效。"
+        )
+        verification["errors"].append(notice)
+        checks["signature"] = {"checked": False, "signed": signed_count}
+
+    payload = {"verification": verification, "checks": checks, "signatures_checked": bool(args.pubkey)}
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
@@ -240,8 +258,14 @@ def main(argv: list[str] | None = None) -> int:
             elif name == "audit_id":
                 print(f"  audit_id {check['value']}：{check['records']} 条记录")
             elif name == "signature":
-                state = "有效" if check["valid"] else "无效"
-                print(f"  Ed25519 签名：{check['signed']} 条，{state}")
+                if not check.get("checked", True):
+                    print(
+                        f"  签名未校验：账本含 {check['signed']} 条 Ed25519 签名，"
+                        "未提供 --pubkey"
+                    )
+                else:
+                    state = "有效" if check["valid"] else "无效"
+                    print(f"  Ed25519 签名：{check['signed']} 条，{state}")
         for error in verification["errors"]:
             print(f"  - {error}")
 

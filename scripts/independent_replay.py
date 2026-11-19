@@ -491,10 +491,23 @@ def main(argv: list[str] | None = None) -> int:
     if files.get("ledger.jsonl"):
         problems.extend(ledger_errors)
     signature_ok = True
-    if "public_key.pem" in files and entries:
-        signature_errors = verify_entries_signatures(entries, files["public_key.pem"])
-        problems.extend(signature_errors)
-        signature_ok = not signature_errors
+    if entries and any(entry.get("signature") for entry in entries):
+        # I1：包里条目带签名但没有 public_key.pem 时，此前静默跳过验签——
+        # 删掉公钥文件即可绕过签名校验。现在必须显式声明“未验签”。
+        if "public_key.pem" not in files:
+            problems.append(
+                "账本包含 Ed25519 签名，但证据包缺少 public_key.pem：签名未校验。"
+            )
+            signature_ok = False
+        else:
+            try:
+                signature_errors = verify_entries_signatures(entries, files["public_key.pem"])
+            except ValueError as exc:
+                problems.append(f"公钥无法解析：{exc}")
+                signature_ok = False
+            else:
+                problems.extend(signature_errors)
+                signature_ok = not signature_errors
         if entries:
             if not any(entry.get("audit_id") == replay_id for entry in entries):
                 problems.append("账本中没有该 audit_id 的记录。")

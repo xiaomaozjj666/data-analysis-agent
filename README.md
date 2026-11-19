@@ -80,11 +80,11 @@ flowchart LR
 - **可观测与部署**：LangSmith 全链路 Trace（规划、每次工具调用、重规划、汇总）；LangGraph Agent Server 部署；Dockerfile（非 root 用户 + 健康检查）；Render Blueprint 一键部署；GitHub Actions 自动 CI。
 - **可复核的分析溯源与逐结论核验**：每次分析在会话目录生成哈希链，覆盖任务元信息、数据集、指标定义文件、逐条工具调用、产物文件与报告正文；finalize/replay 另将正文数字逐项判为 `verified` / `conflict` / `unsupported`，在报告追加结论核验表并生成可下载的 `report-verification.json`，按 trace 序号和 JSON Pointer 定位证据。见 [docs/analysis-provenance.md](docs/analysis-provenance.md)。
 - **有据经营简报核验（schema v2）**：工作台「简报核验」把待审草稿逐行判为 `verified` / `conflict` / `unsupported`，核验器独立读取原始 CSV 复算，不调用第二个模型。源文件只读一次字节快照，SHA-256、编码识别与 CSV 解析基于同一份 bytes，不存在读两遍的 TOCTOU；**范围门**要求登记指标整行精确匹配，「华东区订单数」「平均订单数」「订单数（华东区）」一律 `unsupported`，即使 `confirm_full_table=true` 也不放行；订单号近似重复（NFKC、大小写、零宽字符、前导 0）只进 `warnings` 并给相关指标附 `caveat`，不改变订单数口径；表头接受 订单号/金额/数量 等中文别名，仅唯一匹配时接受，歧义直接报错。指标口径为 销售额合计 / 销量合计 / 订单数 / 客单价（销售额合计 ÷ 订单数，按分 HALF_UP）。每次复算返回确定性 `audit_id`（源文件哈希 + 草稿 + 确认标志 + 复算结果，带起草轨迹时再绑定轨迹哈希，最终取 SHA-256 截断），未登记指标按单位给出口径候选 `candidates`。会话可在「核验口径」里登记声明式指标（列、聚合、单位、精度、类型、空值策略、舍入、正负策略、过滤与时间窗口），核验器按登记口径独立复算，口径指纹绑定进 `audit_id` 与账本；内置销售口径作为默认。口径支持草稿/已批准状态与批准人，批准人不能与作者相同；`audit_lineage.json` 可登记上游表、抽取时间、负责人与新鲜度 SLA，超期会标记 `source_stale` 并写入账本。
-- **服务端确认门与核验账本**：`POST /api/sessions/{id}/sales-audit/confirm` 由服务端按会话里的原始 CSV 重新复算，重算的 `audit_id` 与提交值不一致返回 409；通过后写一条 `confirm` 记录并返回权威简报与回执（`seq` / `ts` / `hash` / `prev` / `brief_sha256`）。每次复算也会尝试追加一条 `audit` 记录（写失败时响应带 `ledger_error`，不影响本次核验结果），账本为 `runs/<会话>/audit_ledger.jsonl`，逐条 `prev` / `hash` 串联，追加前先校验整链。`GET /api/sessions/{id}/sales-audit/ledger` 返回最近记录与链校验结果；`POST /api/sessions/{id}/sales-audit/bundle` 可导出零信任证据包（原始 CSV、草稿、口径、血缘、账本与核验结果）；`scripts/independent_replay.py` 只用 Python 标准库从头复算并重现 `audit_id`。离线脚本 `scripts/verify_audit_ledger.py` 可校验链条，`--brief` 文件改 1 个字节即退出码 1，`--source` 校验原始 CSV，`--trace` 校验快速起草轨迹。账本无签名、无外部时间戳，属演示级篡改可见性。
+- **服务端确认门与核验账本**：`POST /api/sessions/{id}/sales-audit/confirm` 由服务端按会话里的原始 CSV 重新复算，重算的 `audit_id` 与提交值不一致返回 409；通过后写一条 `confirm` 记录并返回权威简报与回执（`seq` / `ts` / `hash` / `prev` / `brief_sha256`）。每次复算也会尝试追加一条 `audit` 记录（写失败时响应带 `ledger_error`，不影响本次核验结果），账本为 `runs/<会话>/audit_ledger.jsonl`，逐条 `prev` / `hash` 串联，追加前先校验整链。`GET /api/sessions/{id}/sales-audit/ledger` 返回最近记录与链校验结果；`POST /api/sessions/{id}/sales-audit/bundle` 可导出零信任证据包（原始 CSV、草稿、口径、血缘、账本与核验结果）；`scripts/independent_replay.py` 只用 Python 标准库从头复算并重现 `audit_id`。离线脚本 `scripts/verify_audit_ledger.py` 可校验链条，`--brief` 文件改 1 个字节即退出码 1，`--source` 校验原始 CSV，`--trace` 校验快速起草轨迹。账本每条记录带 Ed25519 签名（见「签名」条目），`--pubkey` 可离线验签；私钥与数据同目录（工作区访问即密钥访问），仍无外部时间戳，属演示级篡改可见性。
 - **快速起草对照入口**：`POST /api/sessions/{id}/sales-audit/quick-draft` 不调用任何工具、关闭思考，直接把订单表交给模型写三行指标，作为核验器的对照输入；返回模型名、耗时、脱敏单元格数、丢弃行数与轨迹哈希 `trace_sha256`。轨迹写到 `draft_traces/<sha256>.json`；把 `trace_sha256` 作为 `draft_trace_sha256` 传给复算/确认接口，即可把「模型原话 → 过滤后的草稿 → 复算 → 确认」绑定起来。它刻意不提示去重口径，不能代表产品的分析能力。
 - **发布前质量闸门（可选）**：`data-agent-eval compare` 对同一套用例的基线与候选结果做配对 McNemar 精确检验，同时检查成本与延迟回归，给出接受 / 拒绝 / 证据不足三态裁决，并写入可校验的哈希链 ledger。见 [docs/agent-eval.md](docs/agent-eval.md)。
 
-- **Ed25519 签名**：账本每条记录用 Ed25519 签名链哈希，公钥随证据包导出；离线脚本不依赖第三方库即可验签。
+- **Ed25519 签名**：账本每条记录用 Ed25519 签名链哈希，公钥随证据包导出；`scripts/verify_audit_ledger.py --pubkey` 可离线验签（需 `cryptography`，已随主依赖安装；`scripts/independent_replay.py` 复算 audit_id 仅用标准库）；账本含签名而未提供 `--pubkey` 时，校验脚本与证据包回放都会显式输出「签名未校验」，不再静默通过。
 
 ## 演示数据目录
 
@@ -231,8 +231,8 @@ Invoke-RestMethod "$base/api/sessions/$sid/sales-audit/quick-draft" -Method Post
 
 演示页的「确认更正并生成简报」会调用上面的 confirm 接口：成功后在结果区展示
 回执（序号、时间、hash 前 16 位），下载的也是服务端返回的权威简报；若草稿或
-数据在核验后被改动，服务端返回 409，页面会要求重新复算。账本未签名、无外部
-时间戳，能发现内容被改动，不能证明「谁在何时确认」。完整路演步骤见
+数据在核验后被改动，服务端返回 409，页面会要求重新复算。账本逐条带 Ed25519 签名（私钥与数据同目录，仍无外部时间戳），能发现内容被改动，
+不能证明「谁在何时确认」之外的强不可否认性。完整路演步骤见
 [参赛演示说明](docs/wuxi-trusted-ai-challenge.md)。
 
 ### 声明式核验口径

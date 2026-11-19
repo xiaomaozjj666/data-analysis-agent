@@ -151,8 +151,10 @@ def append_entry(
 
         try:
             entry.update(sign_hash(root, entry["hash"]))
-        except OSError as exc:
-            raise LedgerError(f"无法写入账本：签名密钥不可用（{exc}）") from exc
+        except (OSError, ValueError, TypeError) as exc:
+            # 坏 .key 文件 / 坏 seed 会抛 ValueError（含 binascii.Error）——
+            # 不接住就是 500；签名密钥不可用属于 503 可操作错误。
+            raise LedgerError(f"签名密钥不可用（{exc}）") from exc
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("a", encoding="utf-8", newline="\n") as handle:

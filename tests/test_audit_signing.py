@@ -147,10 +147,30 @@ def test_cli_verifies_signature_and_rejects_tamper(tmp_path):
 
 
 def test_unsigned_entry_is_rejected(tmp_path):
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    pem = (
+        Ed25519PrivateKey.generate()
+        .public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    )
     entries = [{"seq": 1, "hash": "a" * 64, "prev": "0" * 64, "signature_key_id": "k"}]
-    result = verify_entries_signatures(entries, b"not-a-key")
+    result = verify_entries_signatures(entries, pem)
     assert result["valid"] is False
     assert "没有签名" in result["errors"][0]
+
+
+def test_unparsable_pubkey_is_its_own_error(tmp_path):
+    import pytest
+
+    """坏公钥 ≠ 逐条签名无效：错误文案必须区分（2026-11-19 评审 N7）。"""
+    entries = [{"seq": 1, "hash": "a" * 64, "signature": "c2ln"}]
+    with pytest.raises(ValueError, match="公钥无法解析"):
+        verify_entries_signatures(entries, b"not-a-key")
 
 
 def test_invalid_seed_and_non_ed25519_key(tmp_path, monkeypatch):
@@ -171,8 +191,69 @@ def test_seed_signs_and_bad_signature_encodings(tmp_path, monkeypatch):
     pem = public_key_bytes(tmp_path)
     assert verify_hash(pem, "c" * 64, signed["signature"])
     assert verify_hash(pem, "c" * 64, "!!!not-base64!!!") is False
-    result = verify_entries_signatures(
-        [{"seq": 1, "hash": "c" * 64, "signature": "!!!"}], pem
-    )
+    result = verify_entries_signatures([{"seq": 1, "hash": "c" * 64, "signature": "!!!"}], pem)
     assert result["valid"] is False
     assert "签名无效" in result["errors"][0]
+
+
+def test_signature_check_and_tamper_endpoints(tmp_path, monkeypatch):
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = client.post(
+        "/api/sessions",
+        files={"file": ("sales.csv", b"order_id,sales,quantity\nA,10,1\n", "text/csv")},
+    ).json()["id"]
+    client.post(
+        f"/api/sessions/{session_id}/sales-audit",
+        json={"draft": "订单数：1 笔" + chr(10) + "销售额：10.00 元"},
+    )
+    checked = client.get(f"/api/sessions/{session_id}/sales-audit/signature-check").json()
+    assert checked["valid"] is True
+    assert checked["signed"] >= 1
+
+    tampered = client.get(f"/api/sessions/{session_id}/sales-audit/signature-tamper-demo").json()
+    assert tampered["valid"] is False
+    assert "签名无效" in tampered["errors"][0]
+
+
+def test_verify_script_warns_when_signatures_unchecked(tmp_path, monkeypatch):
+    """I1：条目带签名但未给 --pubkey 时必须显式“签名未校验”，不得静默通过。"""
+    import base64 as b64
+
+    monkeypatch.setenv("DATA_AGENT_LEDGER_SEED", b64.b64encode(b"3" * 32).decode())
+    from data_agent.audit_ledger import append_entry
+    from data_agent.audit_signing import key_id
+
+    root = tmp_path / "ws"
+    append_entry(root, kind="audit", session_id="s", payload={"note": "x"})
+    pub_path = root / "audit_keys" / "ledger_ed25519.pub"
+    assert pub_path.is_file()
+    monkeypatch.setenv("DATA_AGENT_LEDGER_SEED", b64.b64encode(b"4" * 32).decode())
+    # env 种子切换后 key_id 与签名必须同源（I2）：同一 root 续写也用新身份签
+    entry = append_entry(root, kind="audit", session_id="s", payload={"note": "y"})
+    assert entry["signature_key_id"] == key_id(root)
+
+    from scripts.verify_audit_ledger import main as verify_main
+
+    code = verify_main([str(root / "audit_ledger.jsonl"), "--json"])
+    assert code == 0  # 链校验仍通过；退出码语义不因“未验签”改变
+    # main 的 JSON 输出走 stdout，重新捕获一次以断言字段
+    import contextlib
+    import io
+    import json as _json
+
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        verify_main([str(root / "audit_ledger.jsonl"), "--json"])
+    payload = _json.loads(buffer.getvalue())
+    assert payload["signatures_checked"] is False
+    assert any("签名未校验" in item for item in payload["verification"]["errors"])
+
+    pub_args = [str(root / "audit_ledger.jsonl"), "--json", "--pubkey", str(pub_path)]
+    buffer2 = io.StringIO()
+    with contextlib.redirect_stdout(buffer2):
+        assert verify_main(pub_args) in {0, 1}
+    payload2 = _json.loads(buffer2.getvalue())
+    assert payload2["signatures_checked"] is True
+    # 第二条由新种子签名，公钥是旧身份 → 第二条签名无效（I2 语义被测试锁定）
+    assert payload2["checks"]["signature"]["valid"] is False
