@@ -306,3 +306,41 @@ CI 无这些变量不受影响。同族坑：某些受管环境里 pip 做**卸�
   按项目规矩不合入占位驱动；已落 `data_sources.py` 注册表（只读保证等级 / 超时
   机制 / 标识符引号）与方言感知 SQL 护栏（注释、反引号、美元引号、数仓禁用语句、
   `quote_identifier(dialect=...)`），真实驱动只差"模块 + 注册 + 跳过式集成测试"。
+
+## 2026-11-19 性能批次：实测数字、两次优化与一次否决
+
+方法：独立基准脚本（temp 目录，warm-up + `perf_counter` + 中位数），随后对
+最慢路径跑 cProfile；所有结论都带"改前/改后"数字，不凭感觉优化。
+
+### 已落地
+
+- **相关分析 p 值（`tools/_stats.py`）**：200k 行 × 7 数值列
+  `0.472s → 0.025s`（约 19×）。做法：相关矩阵只算一次，p 值由 r 与有效样本量
+  按 t 分布导出（与 `scipy.stats.pearsonr` 的 beta 公式数学等价，实测相对误差
+  ~1e-13）；常数列判定从每对 `nunique()` 改为掩码后 `O(n)` 全等比较。
+  回归：`tests/test_coverage_fill.py::test_correlation_p_values_match_scipy_and_constant_guard`
+  逐对比对 scipy，覆盖常数列/完全线性/NaN 掩码三种边界。
+- **离线验收（web-crawler `_offline_verify.py`）**：坏链密集归档（26k 引用、
+  13.5% 缺失）主因是缺失分支对同一目标重复 `resolve()`（3.5 万次系统调用，
+  96% 冗余）——按目标缓存后同类样本墙钟约 **−43%**；再把 `contained()` 的
+  `is_relative_to` 换成词法前缀快路径（只加速"确在 root 内"的判定，词法在外
+  仍走原解析），再降约 **10%**。
+  等价性验证不是靠读代码：用 `git worktree` 在旧提交跑同一归档，与新实现
+  输出 JSON **逐字段相等**（缺失/越界/未验/示例全一致）。
+
+### 实测后否决
+
+- **共享 factorize 优化 profile 冷路径**：子代理测得冷 profile 0.333s 中
+  `duplicated()` 占 57%、`nunique()` 占 37%，看似可共享一次 factorize。
+  实测三种实现（200k×15 混合列）：现有 0.124s、factorize + `np.unique(axis=0)`
+  0.197s、factorize + MultiIndex.duplicated 0.120s——**没有显著收益**，且
+  `np.unique` 更慢。结论：pandas 的哈希去重已接近最优，不做该改动；这条
+  负结果写下来，避免下一轮重复尝试。
+
+### 其它基线（无需优化）
+
+`sha256_file` 100MB 807 MB/s；流式上传 50MB 886 MB/s、RSS 不随文件增长；
+CJK 500KB 正文抽取 0.09s；crawl state 5000+20000 条目 round-trip 约 20ms；
+报告原子写约 3.5–5.0ms/次（其中 fsync 约 0.5–0.75ms，主要成本是
+mkstemp + os.replace）。Windows 文件系统波动可达 ±40%，绝对耗时门槛类断言
+必须留足抖动余量并叠加"算法复杂度"断言，不能只靠单次阈值。
