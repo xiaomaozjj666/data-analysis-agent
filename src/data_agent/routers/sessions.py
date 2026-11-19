@@ -191,8 +191,17 @@ def sales_audit(session_id: str, payload: SalesAuditRequest) -> dict[str, Any]:
 
         metric_specs = load_schema(workspace.root)
         schema_document = load_schema_document(workspace.root)
+        from data_agent.audit_policy import (
+            load_policy,
+            policy_fingerprint,
+            rls_filter_hash,
+            rls_value,
+        )
+
+        policy = load_policy(workspace.root)
+        rls_column, rls_value_matched = rls_value(policy) if policy else (None, None)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     try:
         result = audit_sales_brief(
             source,
@@ -201,8 +210,25 @@ def sales_audit(session_id: str, payload: SalesAuditRequest) -> dict[str, Any]:
             max_rows=api.bootstrap_settings.max_rows,
             draft_trace_sha256=trace_digest,
             metric_specs=metric_specs,
+            pii_columns=tuple(policy.get("pii_columns", ())) if policy else (),
+            rls_column=rls_column,
+            rls_value=rls_value_matched,
+            policy_fingerprint=policy_fingerprint(policy) if policy else None,
         )
         result["schema_status"] = (schema_document or {}).get("status")
+        policy_sha = policy_fingerprint(policy) if policy else None
+        rls_sha = (
+            rls_filter_hash(rls_column, rls_value_matched or "")
+            if rls_column
+            else None
+        )
+        if policy:
+            result["policy"] = {
+                "principal_id": policy["principal_id"],
+                "pii_columns": list(policy.get("pii_columns", ())),
+                "rls_column": rls_column,
+                "sha256": policy_sha,
+            }
         from data_agent.audit_lineage import freshness, lineage_fingerprint, load_lineage
 
         lineage = load_lineage(workspace.root)
@@ -243,6 +269,9 @@ def sales_audit(session_id: str, payload: SalesAuditRequest) -> dict[str, Any]:
                 "draft_trace_sha256": trace_digest,
                 "schema_fingerprint": result.get("schema_fingerprint"),
                 "lineage_sha256": lineage_sha,
+                "principal_id": policy["principal_id"] if policy else None,
+                "policy_sha256": policy_sha,
+                "rls_filter_hash": rls_sha,
                 "confirm_full_table": payload.confirm_full_table,
                 "summary": result["summary"],
             },

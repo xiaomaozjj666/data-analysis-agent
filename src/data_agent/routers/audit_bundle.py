@@ -69,7 +69,11 @@ def export_bundle(session_id: str, payload: BundleRequest) -> Response:
     ):
         raise HTTPException(status_code=422, detail="导出证据包需要会话上传的原始 CSV。")
     try:
+        from data_agent.audit_policy import load_policy, policy_fingerprint, rls_value
+
         metric_specs = load_schema(workspace.root)
+        policy = load_policy(workspace.root)
+        rls_column, rls_value_matched = rls_value(policy) if policy else (None, None)
         audit = audit_sales_brief(
             source,
             payload.draft,
@@ -77,6 +81,10 @@ def export_bundle(session_id: str, payload: BundleRequest) -> Response:
             max_rows=api.bootstrap_settings.max_rows,
             draft_trace_sha256=payload.draft_trace_sha256,
             metric_specs=metric_specs,
+            pii_columns=tuple(policy.get("pii_columns", ())) if policy else (),
+            rls_column=rls_column,
+            rls_value=rls_value_matched,
+            policy_fingerprint=policy_fingerprint(policy) if policy else None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -90,6 +98,7 @@ def export_bundle(session_id: str, payload: BundleRequest) -> Response:
         schema_bytes = json.dumps(_BUILTIN_SCHEMA, ensure_ascii=False).encode("utf-8")
     lineage_bytes = _read_optional(workspace.root / "audit_lineage.json")
     ledger_bytes = _read_optional(workspace.root / "audit_ledger.jsonl") or b""
+    policy_bytes = _read_optional(workspace.root / "audit_policy.json")
     trace_bytes = None
     if payload.draft_trace_sha256:
         trace_bytes = _read_optional(
@@ -102,6 +111,7 @@ def export_bundle(session_id: str, payload: BundleRequest) -> Response:
         "audit_id": audit["audit_id"],
         "schema_version": audit["schema_version"],
         "schema_fingerprint": audit.get("schema_fingerprint"),
+        "policy_fingerprint": audit.get("policy_fingerprint"),
         "metrics": audit["metrics"],
         "summary": audit["summary"],
         "claims": audit["claims"],
@@ -119,6 +129,8 @@ def export_bundle(session_id: str, payload: BundleRequest) -> Response:
     }
     if lineage_bytes is not None:
         files["lineage.json"] = lineage_bytes
+    if policy_bytes is not None:
+        files["policy.json"] = policy_bytes
     if trace_bytes is not None:
         files["draft_trace.json"] = trace_bytes
     manifest = {

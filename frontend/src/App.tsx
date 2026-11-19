@@ -1108,7 +1108,8 @@ function App() {
 
         <div className="sidebar-spacer" />
 
-        {/* 分析引擎区块：model-line + 设置面板，已提取至 SettingsPanel 组件 */}
+        {/* 分析引擎区块：同一容器内的状态列表，与工作台细线分组保持一致 */}
+        <div className="sidebar-status-group">
         <SettingsPanel />
 
         <div className="sidebar-foot" title={settings?.langsmith_project || undefined}>
@@ -1128,6 +1129,7 @@ function App() {
           <small>
             {settings?.storage_status === "ok" ? "持久化正常" : "本地存储"}
           </small>
+        </div>
         </div>
       </aside>
       {sidebarOpen && (

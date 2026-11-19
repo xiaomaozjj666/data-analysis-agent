@@ -76,6 +76,7 @@ from data_agent.routers import audit_bundle as audit_bundle_router
 from data_agent.routers import audit_draft as audit_draft_router
 from data_agent.routers import audit_ledger as audit_ledger_router
 from data_agent.routers import audit_lineage as audit_lineage_router
+from data_agent.routers import audit_policy as audit_policy_router
 from data_agent.routers import audit_schema as audit_schema_router
 from data_agent.routers import settings as settings_router
 
@@ -138,6 +139,7 @@ app.include_router(audit_ledger_router.router)
 app.include_router(audit_schema_router.router)
 app.include_router(audit_lineage_router.router)
 app.include_router(audit_bundle_router.router)
+app.include_router(audit_policy_router.router)
 app.include_router(settings_router.router)
 
 

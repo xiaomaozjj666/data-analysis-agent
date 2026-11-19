@@ -271,3 +271,74 @@
   background: var(--attention-fg);
   box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.18);
 }
+
+/* 分析引擎状态组：一个细线容器内的列表行，替代三张独立卡片。 */
+.sidebar-status-group {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--canvas-default);
+  overflow: hidden;
+}
+.sidebar-status-group .provider-block { padding: 10px 12px 0; }
+.sidebar-status-group .provider-block .sidebar-label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+.sidebar-status-group .model-line,
+.sidebar-status-group .sidebar-foot,
+.sidebar-status-group .storage-status {
+  width: 100%;
+  min-height: 0;
+  margin: 0;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  transform: none;
+  font-size: 13px;
+  text-align: left;
+}
+.sidebar-status-group .model-line {
+  margin-top: 8px;
+  border-top: 1px solid var(--border-muted);
+}
+.sidebar-status-group .sidebar-foot,
+.sidebar-status-group .storage-status {
+  border-top: 1px solid var(--border-muted);
+}
+.sidebar-status-group .model-line:hover,
+.sidebar-status-group .sidebar-foot:hover,
+.sidebar-status-group .storage-status:hover {
+  background: var(--canvas-subtle);
+  border-color: var(--border-muted);
+  box-shadow: none;
+  transform: none;
+}
+.sidebar-status-group .model-line strong { font-size: 13px; }
+.sidebar-status-group .model-line small { font-size: 11px; margin-top: 1px; }
+.sidebar-status-group .sidebar-foot small,
+.sidebar-status-group .storage-status small { font-size: 11px; }
+.sidebar-status-group .model-line i,
+.sidebar-status-group .sidebar-foot i,
+.sidebar-status-group .storage-status i {
+  width: 7px;
+  height: 7px;
+  box-shadow: none;
+}
+
+/* 框架状态保持中性：绿色只用于核验结论，不再给“已配置/服务正常”染色。 */
+.sidebar-status-group i.online,
+.api-status i.online,
+[data-theme="dark"] .sidebar-status-group i.online,
+[data-theme="dark"] .api-status i.online {
+  background: var(--fg-subtle);
+  box-shadow: none;
+}
+.sidebar-status-group .model-line small { color: var(--fg-subtle); }
+.api-status {
+  background: transparent;
+  border-color: var(--border-muted);
+  color: var(--fg-muted);
+}
+.api-status:hover { border-color: var(--border-default); }

@@ -499,6 +499,7 @@ def _audit_id(
     metrics: dict[str, str],
     draft_trace_sha256: str | None = None,
     schema_fingerprint: str | None = None,
+    policy_fingerprint: str | None = None,
 ) -> str:
     payload = json.dumps(
         {
@@ -510,6 +511,7 @@ def _audit_id(
             # 有起草轨迹时把它绑进 audit_id：换了轨迹（例如重新起草）就是另一个审计对象。
             "draft_trace_sha256": draft_trace_sha256,
             "schema_fingerprint": schema_fingerprint,
+            "policy_fingerprint": policy_fingerprint,
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -526,6 +528,10 @@ def audit_sales_brief(
     max_rows: int | None = None,
     draft_trace_sha256: str | None = None,
     metric_specs: Sequence[Any] | None = None,
+    pii_columns: tuple[str, ...] = (),
+    rls_column: str | None = None,
+    rls_value: str | None = None,
+    policy_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     schema_fingerprint: str | None = None
     rules: Mapping[str, tuple[str, str]] | None = None
@@ -534,13 +540,22 @@ def audit_sales_brief(
     if metric_specs:
         from data_agent import audit_schema
 
-        read = audit_schema.read_metrics(source, list(metric_specs), max_rows=max_rows)
+        read = audit_schema.read_metrics(
+            source,
+            list(metric_specs),
+            max_rows=max_rows,
+            pii_columns=pii_columns,
+            rls_column=rls_column,
+            rls_value=rls_value,
+        )
         metrics = read.metrics
         rules = {spec.name: (spec.unit, spec.formula()) for spec in metric_specs}
         money_metrics = frozenset()
         integer_metrics = frozenset(spec.name for spec in metric_specs if spec.is_integer)
         schema_fingerprint = audit_schema.schema_fingerprint(list(metric_specs))
     else:
+        if pii_columns or rls_column:
+            raise ValueError("使用访问策略前需要先登记核验口径。")
         read = _read_sales(source, max_rows=max_rows)
         metrics = read.metrics
     claims, needs_scope_confirmation = _audit_claims(
@@ -583,9 +598,11 @@ def audit_sales_brief(
             metrics,
             draft_trace_sha256,
             schema_fingerprint,
+            policy_fingerprint,
         ),
         "draft_trace_sha256": draft_trace_sha256,
         "schema_fingerprint": schema_fingerprint,
+        "policy_fingerprint": policy_fingerprint,
         "source": read.evidence,
         "metrics": metrics,
         "summary": summary,

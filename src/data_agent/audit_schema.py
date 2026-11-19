@@ -476,9 +476,19 @@ def _row_passes(row: list[str], index: dict[str, int], metric: AuditMetric, row_
 
 
 def read_metrics(
-    source: Path, metrics: list[AuditMetric], *, max_rows: int | None = None
+    source: Path,
+    metrics: list[AuditMetric],
+    *,
+    max_rows: int | None = None,
+    pii_columns: tuple[str, ...] = (),
+    rls_column: str | None = None,
+    rls_value: str | None = None,
 ) -> AuditMetricRead:
-    """单次读取字节快照，按声明式口径复算；金额/均值按登记精度输出。"""
+    """单次读取字节快照，按声明式口径复算；金额/均值按登记精度输出。
+
+    ``pii_columns`` 只影响证据预览（原值不落到响应里）；``rls_*`` 在聚合
+    之前按主体过滤行，过滤发生在指标计算与预览之前。
+    """
     raw = source.read_bytes()
     digest = hashlib.sha256(raw).hexdigest()
     text, encoding = _decode(raw)
@@ -491,6 +501,7 @@ def read_metrics(
     preview: list[dict[str, Any]] = []
     rows = 0
     used = 0
+    filtered = 0
     try:
         reader = csv.reader(io.StringIO(text, newline=""), strict=True)
         headers = next(reader, [])
@@ -500,6 +511,8 @@ def read_metrics(
             required.update(item["column"] for item in metric.filters)
             if metric.time_window:
                 required.add(metric.time_window["column"])
+        if rls_column and rls_column not in index:
+            raise ValueError(f"CSV 缺少 RLS 过滤列：{rls_column}")
         missing = sorted(column for column in required if column not in index)
         if missing:
             raise ValueError("CSV 缺少核验口径需要的列：" + "、".join(missing))
@@ -515,6 +528,9 @@ def read_metrics(
             if len(row) != len(headers):
                 raise ValueError(f"第 {row_number} 条记录的列数和表头不一致。")
             rows = row_number
+            if rls_column and row[index[rls_column]].strip() != (rls_value or ""):
+                filtered += 1
+                continue
             matched_any = False
             for metric in metrics:
                 if metric.aggregation == "ratio":
@@ -558,11 +574,18 @@ def read_metrics(
                 maximums[metric.name] = (
                     value if metric.name not in maximums else max(maximums[metric.name], value)
                 )
-            if rows <= _PREVIEW_ROWS:
+            if used < _PREVIEW_ROWS:
                 preview.append(
                     {
                         "record": rows,
-                        **{column: row[position] for column, position in index.items()},
+                        **{
+                            column: (
+                                "[已脱敏]"
+                                if column in pii_columns
+                                else row[position]
+                            )
+                            for column, position in index.items()
+                        },
                     }
                 )
             if matched_any:
@@ -640,6 +663,7 @@ def read_metrics(
             "sha256": digest,
             "rows": rows,
             "rows_used": used,
+            "rows_filtered": filtered,
             "encoding": encoding.lower(),
             "columns": list(headers),
             "preview": preview,

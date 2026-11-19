@@ -1,12 +1,6 @@
 import React, { useCallback, useRef, useState } from "react";
 import { Braces, FileSpreadsheet, LoaderCircle, ShieldCheck, Sparkles, Table2, Upload } from "lucide-react";
 import { motion } from "motion/react";
-import DotField from "./rb/DotField";
-import Aurora from "./rb/Aurora";
-import SplitText from "./rb/SplitText";
-import ShinyText from "./rb/ShinyText";
-import ClickSpark from "./rb/ClickSpark";
-import RotatingText from "./rb/RotatingText";
 
 interface EmptyWorkspaceProps {
   uploading: boolean;
@@ -46,7 +40,6 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
   // 由 empty-state.css 的 radial-gradient 渲染全屏柔和光晕。
   const sectionRef = useRef<HTMLElement>(null);
   const [dragOver, setDragOver] = useState(false);
-  const [titleDone, setTitleDone] = useState(false);
   const dragCounter = useRef(0);
   // Magnetic button: track mouse offset for subtle pull effect
   const btnRef = useRef<HTMLButtonElement>(null);
@@ -156,22 +149,13 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
       {/* 背景光晕交给 CSS 控制配色（empty-state.css 按主题给 --aurora-* ）：
           组件内联写死颜色会让暗色主题拿到同一组高饱和值，实测在深底上糊成
           一大片蓝紫、并盖住主文案的对比度。 */}
-      <Aurora className="empty-aurora-bg" speed={0.7} blur={90} />
-      <DotField className="empty-grid-bg" dotRadius={2} dotSpacing={24} cursorRadius={460} bulgeStrength={88} gradientFrom="rgba(113, 113, 122, 0.26)" gradientTo="rgba(161, 161, 170, 0.14)" glowColor="transparent" />
       <div className="empty-copy">
         <span className="section-kicker">新建分析</span>
-        <h2>
-          {titleDone ? (
-            <ShinyText text="从一份数据开始" color="var(--fg-default)" shineColor="var(--accent-fg)" speed={3} />
-          ) : (
-            <SplitText text="从一份数据开始" splitBy="char" stagger={0.04} delay={0.2} onComplete={() => setTitleDone(true)} />
-          )}
-        </h2>
+        <h2>从一份数据开始</h2>
         {/* 场景词轮播：传达"能分析什么"，降低首次使用的想象成本；
             对屏幕阅读器隐藏（轮播文本反复播报是噪音） */}
-        <p className="empty-scene" aria-hidden="true">
-          看清楚你的
-          <RotatingText words={["销售趋势", "用户增长", "成本结构", "异常波动", "实验效果"]} />
+        <p className="empty-scene">
+          分析销售趋势、用户增长与成本结构，或直接核验一份经营简报。
         </p>
         {/* 支持格式徽章：带 stagger 入场动画 */}
         <motion.div
@@ -199,8 +183,7 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
         <p>CSV、Excel、JSON 或 Parquet{dragOver ? " · 松开以上传" : " · 或拖拽文件到此"}</p>
         <div className="empty-actions">
           <div className="empty-primary-row">
-            <ClickSpark sparkColor="var(--fg-default)" sparkLength={12}>
-              <button type="button"
+            <button type="button"
                 ref={btnRef}
                 className="primary empty-upload-button"
                 onClick={onUpload}
@@ -212,7 +195,6 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
                 {uploading ? <LoaderCircle className="spin" size={16} /> : <Upload size={16} />}
                 {uploading ? (uploadProgress != null ? `上传中 ${uploadProgress}%` : "正在读取") : "选择数据文件"}
               </button>
-            </ClickSpark>
             <button
               type="button"
               className="empty-audit-button"

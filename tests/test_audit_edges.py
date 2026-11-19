@@ -274,3 +274,13 @@ def test_lineage_missing_time_naive_now_and_describe(tmp_path):
     state = freshness(lineage, now=datetime(2026, 11, 19, 12, 0, 0))
     assert state["stale"] is False
     assert describe(lineage) == "dwd.orders · 未登记负责人"
+
+def test_lineage_get_without_record(tmp_path, monkeypatch):
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = client.post(
+        "/api/sessions",
+        files={"file": ("sales.csv", b"order_id,sales,quantity" + NL.encode() + b"A,1,1" + NL.encode(), "text/csv")},
+    ).json()["id"]
+    payload = client.get(f"/api/sessions/{session_id}/audit-lineage").json()
+    assert payload == {"lineage": None, "sha256": None}

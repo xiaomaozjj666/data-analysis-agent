@@ -94,6 +94,12 @@ export interface AuditResult {
   ledger_error?: string;
   schema_fingerprint?: string | null;
   schema_status?: string | null;
+  policy?: {
+    principal_id: string;
+    pii_columns: string[];
+    rls_column?: string | null;
+    sha256: string;
+  } | null;
   lineage?: {
     upstream_table?: string | null;
     catalog_urn?: string | null;
@@ -377,6 +383,13 @@ function ResultNotices({
       {trace && (
         <p className="sales-audit-trace">已绑定起草轨迹 {trace.slice(0, 12)}…</p>
       )}
+      {audit.policy && (
+        <p className="sales-audit-trace">
+          按主体 {audit.policy.principal_id} 核验
+          {audit.policy.rls_column ? ` · 行级过滤 ${audit.policy.rls_column}` : ""}
+          {audit.policy.pii_columns.length ? ` · PII 脱敏 ${audit.policy.pii_columns.length} 列` : ""}
+        </p>
+      )}
       {audit.lineage && (
         <p className="sales-audit-trace">
           来源 {audit.lineage.upstream_table ?? audit.lineage.catalog_urn ?? "未命名上游"}
@@ -517,6 +530,10 @@ export default function SalesAudit({
   const [lineageLoaded, setLineageLoaded] = useState(false);
   const [lineageBusy, setLineageBusy] = useState(false);
   const [lineageMessage, setLineageMessage] = useState("");
+  const [policyText, setPolicyText] = useState("{}");
+  const [policyLoaded, setPolicyLoaded] = useState(false);
+  const [policyBusy, setPolicyBusy] = useState(false);
+  const [policyMessage, setPolicyMessage] = useState("");
   const [draftTrace, setDraftTrace] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [sessionLost, setSessionLost] = useState(false);
@@ -792,6 +809,49 @@ export default function SalesAudit({
       setLineageText(JSON.stringify(payload.lineage ?? {}, null, 2));
     } catch {
       // 血缘接口不可用时保持未登记状态。
+    }
+  }
+
+  async function loadPolicy() {
+    if (policyLoaded) return;
+    setPolicyLoaded(true);
+    try {
+      const payload = await api<{ policy?: Record<string, unknown> | null }>(
+        `/api/sessions/${sessionId}/audit-policy`,
+      );
+      setPolicyText(JSON.stringify(payload.policy ?? {}, null, 2));
+    } catch {
+      // 策略接口不可用时保持未登记状态。
+    }
+  }
+
+  async function savePolicy() {
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(policyText) as Record<string, unknown>;
+    } catch {
+      setPolicyMessage("JSON 格式不正确，请检查逗号与引号。");
+      return;
+    }
+    setPolicyBusy(true);
+    setPolicyMessage("");
+    try {
+      const saved = await api<{ policy: { principal_id: string } }>(
+        `/api/sessions/${sessionId}/audit-policy`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(parsed),
+        },
+      );
+      setPolicyMessage(`访问策略已保存：${saved.policy.principal_id}。`);
+      setAudit(null);
+      setReceipt(null);
+      setServerBrief(null);
+    } catch (err) {
+      setPolicyMessage(err instanceof Error ? err.message : "访问策略保存失败。");
+    } finally {
+      setPolicyBusy(false);
     }
   }
 
@@ -1091,6 +1151,31 @@ export default function SalesAudit({
               </button>
             </div>
             {lineageMessage && <p role="status">{lineageMessage}</p>}
+          </details>
+          <details
+            className="sales-audit-schema sales-audit-policy"
+            onToggle={(event) => {
+              if (event.currentTarget.open) void loadPolicy();
+            }}
+          >
+            <summary>访问策略 · {audit?.policy?.principal_id ?? "未登记"}</summary>
+            <p>
+              登记主体、claims、PII 脱敏列与行级权限。核验前按主体过滤行，
+              证据预览中的 PII 列显示为「已脱敏」，主体与过滤指纹写入账本。
+            </p>
+            <textarea
+              aria-label="访问策略 JSON"
+              value={policyText}
+              onChange={(event) => setPolicyText(event.target.value)}
+              rows={8}
+              disabled={policyBusy}
+            />
+            <div className="sales-audit-actions">
+              <button type="button" disabled={policyBusy} onClick={() => void savePolicy()}>
+                {policyBusy ? "保存中…" : "保存访问策略"}
+              </button>
+            </div>
+            {policyMessage && <p role="status">{policyMessage}</p>}
           </details>
           <div className="sales-audit-grid">
             <form className="sales-audit-card" onSubmit={(event) => { event.preventDefault(); void runAudit(); }}>

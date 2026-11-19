@@ -155,7 +155,13 @@ def passes(row: list[str], index: dict[str, int], metric: dict) -> bool:
     return True
 
 
-def read_metrics(source: bytes, metrics: list[dict]) -> dict[str, str]:
+def read_metrics(
+    source: bytes,
+    metrics: list[dict],
+    *,
+    rls_column: str | None = None,
+    rls_value: str | None = None,
+) -> dict[str, str]:
     import csv
     import io
 
@@ -181,6 +187,12 @@ def read_metrics(source: bytes, metrics: list[dict]) -> dict[str, str]:
             continue
         if len(row) != len(headers):
             raise ValueError("CSV 列数与表头不一致。")
+        if rls_column:
+            position = index.get(rls_column)
+            if position is None:
+                raise ValueError(f"缺少 RLS 过滤列 {rls_column}")
+            if row[position].strip() != (rls_value or ""):
+                continue
         for metric in metrics:
             if metric["aggregation"] == "ratio":
                 continue
@@ -271,6 +283,7 @@ def audit_id(report: dict, source_sha: str, draft: str, metrics: dict) -> str:
         "metrics": metrics,
         "draft_trace_sha256": report.get("draft_trace_sha256"),
         "schema_fingerprint": report.get("schema_fingerprint"),
+        "policy_fingerprint": report.get("policy_fingerprint"),
     }
     return "aud-" + sha256(canonical(payload))[:32]
 
@@ -328,8 +341,26 @@ def main(argv: list[str] | None = None) -> int:
         elif sha256(files[name]) != expected:
             problems.append(f"{name} 的 SHA-256 与 manifest 不一致。")
 
+    policy = None
+    if "policy.json" in files:
+        try:
+            policy = json.loads(files["policy.json"])
+        except json.JSONDecodeError as exc:
+            print(f"[失败] 访问策略无法解析：{exc}", file=sys.stderr)
+            return 2
+    rls_column = None
+    rls_value = None
+    if policy and policy.get("rls"):
+        rls_column = str(policy["rls"].get("column") or "")
+        claim = str(policy["rls"].get("claim") or "")
+        rls_value = str((policy.get("claims") or {}).get(claim) or "")
     try:
-        metrics = read_metrics(files["source.csv"], parse_schema(schema_payload))
+        metrics = read_metrics(
+            files["source.csv"],
+            parse_schema(schema_payload),
+            rls_column=rls_column or None,
+            rls_value=rls_value,
+        )
     except (ValueError, KeyError) as exc:
         print(f"[失败] 复算失败：{exc}", file=sys.stderr)
         return 1
