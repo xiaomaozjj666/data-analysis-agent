@@ -95,7 +95,15 @@
 .sales-audit-actions button:not(.primary):hover { background: var(--canvas-subtle); }
 .sales-audit-actions button:disabled { opacity: 0.65; }
 .sales-audit .sales-audit-error { color: var(--danger-fg); }
-.sales-audit .sales-audit-demo-note { color: var(--accent-fg); }
+.sales-audit-format-short { display: none; }
+
+.sales-audit .sales-audit-demo-note {
+  color: var(--fg-muted);
+  padding: 6px 10px;
+  background: var(--canvas-subtle);
+  border-left: 3px solid var(--border-strong);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+}
 .sales-audit-locate {
   border: 0;
   padding: 0;
@@ -212,6 +220,8 @@
   font-size: 14px;
   overflow-wrap: anywhere;
 }
+/* 账本区块只展示截断 hash；完整值放在 title，避免 64 字符撑爆一行。 */
+.sales-audit-ledger code { white-space: nowrap; }
 .sales-audit-ledger button {
   display: inline-flex;
   align-items: center;
@@ -289,13 +299,33 @@
 
 /* 1366×768 等窄高度视口：压缩留白，保证「复算并核验」留在首屏。 */
 @media (max-height: 800px) {
-  .sales-audit { gap: 10px; margin-top: 10px; }
-  .sales-audit-header { padding: 10px 14px; gap: 10px; }
+  .sales-audit { gap: 8px; margin-top: 6px; }
+  .sales-audit-header { padding: 8px 14px; gap: 10px; }
+  /* 标题保留，说明文字让位给首屏的主操作。 */
+  .sales-audit-header p { display: none; }
   .sales-audit h2 { font-size: 18px; }
   .sales-audit h3 { font-size: 15px; }
   .sales-audit-grid { gap: 10px; }
-  .sales-audit-card { padding: 12px; }
-  .sales-audit-card > :not(:first-child) { margin-top: 8px; }
-  .sales-audit textarea { max-height: 160px; }
-  .sales-audit-actions button { min-height: 32px; }
+  .sales-audit-card { padding: 10px 12px; }
+  .sales-audit-card > :not(:first-child) { margin-top: 6px; }
+  /* rows=7 的原生高度约 200px；显式 height 才能压到 120px。 */
+  .sales-audit textarea { height: 120px; min-height: 120px; }
+  .sales-audit-actions button { min-height: 30px; padding: 4px 8px; }
+  /* 格式说明在窄高度下视觉隐藏，但保留在读屏树里（aria-describedby 仍然有效），
+     腾出的高度让「复算并核验」留在首屏。 */
+  #sales-audit-format {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .sales-audit-format-short {
+    display: block;
+    font-size: 14px;
+  }
 }

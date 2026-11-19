@@ -162,7 +162,7 @@ describe("SalesAudit", () => {
       confirm_full_table: false,
     });
 
-    expect(await screen.findByText("账本已记录")).toBeInTheDocument();
+    expect(await screen.findByText("发布已记入账本")).toBeInTheDocument();
     expect(screen.getByText("#7")).toBeInTheDocument();
     expect(screen.getByText("b".repeat(16))).toBeInTheDocument();
     expect(screen.getByText(/服务端权威简报正文/)).toBeInTheDocument();
@@ -311,7 +311,7 @@ describe("SalesAudit", () => {
     expect(
       screen.getByText("订单号存在近似重复，订单数口径按原样去重，请人工复核。"),
     ).toBeInTheDocument();
-    expect(screen.getByText("已写入审计账本 #3")).toBeInTheDocument();
+    expect(screen.getByText("复算已记入账本 #3")).toBeInTheDocument();
   });
 
   it("核验返回 404 时展示恢复面板，未传回调时给出切换说明", async () => {
@@ -331,7 +331,7 @@ describe("SalesAudit", () => {
     await waitFor(() =>
       expect(apiMock).toHaveBeenCalledWith("/api/sessions/sample?audit=true", { method: "POST" }),
     );
-    expect(await screen.findByText(/s-new/)).toHaveTextContent("请刷新页面后继续");
+    expect(await screen.findByText(/s-new/)).toHaveTextContent("请从左侧历史会话中打开");
   });
 
   it("存在 onReloadSession 时把新会话 id 交给上层", async () => {
@@ -356,5 +356,52 @@ describe("SalesAudit", () => {
     fireEvent.click(screen.getByRole("button", { name: "重新载入示例" }));
 
     await waitFor(() => expect(onReloadSession).toHaveBeenCalledWith("s-new"));
+  });
+
+  it("快速起草在途时禁用草稿框与复算按钮", async () => {
+    let resolveQuick: (value: typeof QUICK) => void = () => {};
+    const pending = new Promise<typeof QUICK>((resolve) => {
+      resolveQuick = resolve;
+    });
+    apiMock.mockImplementation((url: string) =>
+      url.endsWith("/sales-audit/quick-draft")
+        ? pending
+        : Promise.reject(new Error(`unexpected ${url}`)),
+    );
+    render(<SalesAudit sessionId="s1" filename="sales.csv" initialDemo={false} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /让模型直接起草（不调工具）/ }));
+    expect(screen.getByLabelText("简报草稿")).toBeDisabled();
+    expect(screen.getByRole("button", { name: /复算并核验/ })).toBeDisabled();
+
+    resolveQuick(QUICK);
+    await waitFor(() =>
+      expect(screen.getByLabelText("简报草稿")).toHaveValue(QUICK.draft),
+    );
+    expect(screen.getByLabelText("简报草稿")).not.toBeDisabled();
+  });
+
+  it("确认在途时禁用草稿框，成功后焦点落到回执", async () => {
+    let resolveConfirm: (value: typeof CONFIRMED) => void = () => {};
+    const pending = new Promise<typeof CONFIRMED>((resolve) => {
+      resolveConfirm = resolve;
+    });
+    apiMock.mockImplementation((url: string) => {
+      if (url.endsWith("/sales-audit/confirm")) return pending;
+      return Promise.resolve(VERIFIED);
+    });
+    render(<SalesAudit sessionId="s1" filename="sales.csv" initialDemo={false} />);
+
+    fillDraft();
+    await runAudit();
+    fireEvent.click(screen.getByRole("button", { name: /生成核验版简报/ }));
+    expect(screen.getByLabelText("简报草稿")).toBeDisabled();
+
+    resolveConfirm(CONFIRMED);
+    const receipt = await screen.findByText("发布已记入账本");
+    await waitFor(() =>
+      expect(document.activeElement).toBe(receipt.closest("section")),
+    );
+    expect(screen.getByLabelText("简报草稿")).not.toBeDisabled();
   });
 });

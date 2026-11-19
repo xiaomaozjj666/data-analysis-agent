@@ -29,8 +29,10 @@ _LEGACY_EMAIL = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECA
 _EMAIL_MASK = "[已脱敏-邮箱]"
 
 # 修复前 60k 个 A 约 8 秒、20k 约 0.9 秒；线性实现实测约 1ms。
-# 预算放宽到 50ms 以留出 CI 抖动，仍比旧实现低两个数量级以上。
-_BUDGET_SECONDS = 0.05
+# 预算放宽到 250ms 以留出 CI 调度抖动（GitHub runner 曾出现 50.4ms 的
+# 边缘失败）；仍比旧实现低一个数量级以上，且下面的线性放大用例单独守住
+# 算法复杂度回归，不靠这个绝对阈值。
+_BUDGET_SECONDS = 0.25
 
 
 def _best_of(func, repeat: int = 3) -> float:

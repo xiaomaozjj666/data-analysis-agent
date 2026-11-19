@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
@@ -34,8 +35,18 @@ def ledger_path(root: Path) -> Path:
     return Path(root) / LEDGER_NAME
 
 
+def _lock_key(path: Path) -> str:
+    """同一账本路径必须始终得到同一把锁。
+
+    不能用 ``Path.resolve()``：Windows 上文件不存在时返回普通绝对路径，
+    文件存在后返回带 ``\\\\?\\`` 前缀的扩展路径，同一文件会映射成两个键，
+    并发首写就会各持一把锁把链写坏。``abspath + normcase`` 不受文件是否存在影响。
+    """
+    return os.path.normcase(os.path.abspath(str(path)))
+
+
 def _lock_for(path: Path) -> threading.Lock:
-    key = str(path.resolve()).lower()
+    key = _lock_key(path)
     with _LOCKS_GUARD:
         lock = _LOCKS.get(key)
         if lock is None:
@@ -64,7 +75,9 @@ def read_entries(path: Path) -> list[dict[str, Any]]:
     except OSError as exc:
         raise LedgerError(f"无法读取账本：{exc}") from exc
     entries = []
-    for number, line in enumerate(raw.splitlines(), start=1):
+    # 只按 \n 切行：字段里合法的 U+2028/U+2029/U+0085 会被 str.splitlines()
+    # 误当成换行，把一条完整 JSON 记录拆成两半。
+    for number, line in enumerate(raw.split("\n"), start=1):
         if not line.strip():
             continue
         try:

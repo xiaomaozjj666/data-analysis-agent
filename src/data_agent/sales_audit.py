@@ -137,6 +137,10 @@ def _parse_amount(cell: str, row_number: int) -> int:
     fraction = (match.group("frac") or ".")[1:]
     if len(fraction) > 2:
         raise ValueError(f"第 {row_number} 条记录的 sales 必须是元，最多两位小数。")
+    # 与草稿金额的 16 位上限对齐：再大就会在 Decimal 除法的 28 位精度里溢出，
+    # 变成未捕获的 InvalidOperation（500）。这里提前按可读错误拒绝。
+    if len(digits) > 16:
+        raise ValueError(f"第 {row_number} 条记录的 sales 金额过大，整数位最多 16 位。")
     try:
         value = Decimal(f"{digits}.{fraction or '0'}").scaleb(2).to_integral_value()
     except InvalidOperation as exc:  # pragma: no cover - 正则已限制字符集

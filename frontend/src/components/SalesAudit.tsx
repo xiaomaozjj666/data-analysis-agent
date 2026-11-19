@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Check,
   Copy,
@@ -145,7 +145,11 @@ function retryAfterSeconds(err: unknown): number | null {
   if (err instanceof ApiError && typeof err.retryAfter === "number" && err.retryAfter > 0) {
     return err.retryAfter;
   }
-  const match = err instanceof Error ? err.message.match(/(\d+)\s*秒/) : null;
+  // 后端文案是「同一会话 10 秒内只能起草一次，请 9 秒后再试。」——优先取「请 N 秒后」。
+  const match =
+    err instanceof Error
+      ? err.message.match(/请\s*(\d+)\s*秒/) ?? err.message.match(/(\d+)\s*秒/)
+      : null;
   return match ? Number(match[1]) : null;
 }
 
@@ -232,6 +236,11 @@ interface ResultNoticesProps {
 function ResultNotices({
   audit, receipt, draftTrace, copiedHash, copyHint, onCopyHash,
 }: ResultNoticesProps) {
+  const receiptRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    // 确认成功后确认按钮会消失；把焦点交给回执，键盘用户不会落回文档开头。
+    if (receipt) receiptRef.current?.focus({ preventScroll: true });
+  }, [receipt]);
   const warnings = audit.warnings ?? [];
   const ledger = audit.ledger;
   const trace = audit.draft_trace_sha256 ?? draftTrace;
@@ -255,8 +264,8 @@ function ResultNotices({
       )}
       {ledger && (
         <div className="sales-audit-ledger" role="status">
-          <span>已写入审计账本 #{ledger.seq}</span>
-          <code>{ledger.hash}</code>
+          <span>复算已记入账本 #{ledger.seq}</span>
+          <code title={ledger.hash}>{ledger.hash.slice(0, 16)}…</code>
           <button type="button" onClick={() => onCopyHash(ledger.hash)}>
             {copiedHash === ledger.hash ? <Check size={14} /> : <Copy size={14} />}
             {copiedHash === ledger.hash ? "已复制" : "复制 hash"}
@@ -268,14 +277,14 @@ function ResultNotices({
         <p className="sales-audit-error">审计账本写入失败：{audit.ledger_error}。本次核验结果仍然有效。</p>
       )}
       {receipt && (
-        <section className="sales-audit-receipt" role="status">
-          <strong>账本已记录</strong>
+        <section className="sales-audit-receipt" role="status" ref={receiptRef} tabIndex={-1}>
+          <strong>发布已记入账本</strong>
           <dl>
             <div><dt>序号</dt><dd>#{receipt.seq}</dd></div>
             <div><dt>时间</dt><dd>{formatReceiptTime(receipt.ts)}</dd></div>
             <div><dt>hash</dt><dd><code>{receipt.hash.slice(0, 16)}</code></dd></div>
           </dl>
-          <small>发布回执来自服务端账本，可与核验明细中的回执字段逐项核对。</small>
+          <small>回执由服务端按原始 CSV 重算后写入；下载核验明细可逐项核对。</small>
         </section>
       )}
     </>
@@ -310,9 +319,27 @@ export default function SalesAudit({
   const [copiedHash, setCopiedHash] = useState<string | null>(null);
   const [copyHint, setCopyHint] = useState("");
   const draftInput = useRef<HTMLTextAreaElement>(null);
+  // \u5f02\u6b65\u8bf7\u6c42\u53d1\u51fa\u65f6\u7684\u8349\u7a3f\u5feb\u7167\uff1a\u8bf7\u6c42\u5728\u9014\u671f\u95f4\u82e5\u8349\u7a3f\u88ab\u6539\uff0c\u4e22\u5f03\u65e7\u54cd\u5e94\uff0c\u907f\u514d\u8986\u76d6\u7528\u6237\u8f93\u5165\u3002
+  const draftRef = useRef(draft);
+  const recoveryRef = useRef<HTMLHeadingElement>(null);
+  // 409 时草稿框仍处于 disabled（confirming=true），要等状态落回再聚焦。
+  const focusDraftAfterConfirm = useRef(false);
+
+  useEffect(() => {
+    if (!confirming && focusDraftAfterConfirm.current) {
+      focusDraftAfterConfirm.current = false;
+      draftInput.current?.focus({ preventScroll: true });
+    }
+  }, [confirming]);
+
+  useEffect(() => {
+    if (sessionLost) recoveryRef.current?.focus({ preventScroll: true });
+  }, [sessionLost]);
 
   function updateDraft(value: string, isDemo = false) {
-    setDraft(value.replace(/\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]/g, "\n"));
+    const normalized = value.replace(/\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]/g, "\n");
+    draftRef.current = normalized;
+    setDraft(normalized);
     setDemoDraft(isDemo);
     setAudit(null);
     setReceipt(null);
@@ -371,6 +398,8 @@ export default function SalesAudit({
       setError("核验结果缺少 audit_id，请重新复算核验后再确认。");
       return;
     }
+    // 请求在途期间若草稿被改，服务端简报对应的是旧草稿，不能展示或提供下载。
+    const submittedDraft = draftRef.current;
     setConfirming(true);
     setError("");
     try {
@@ -384,6 +413,10 @@ export default function SalesAudit({
           ...(draftTrace ? { draft_trace_sha256: draftTrace } : {}),
         }),
       });
+      if (draftRef.current !== submittedDraft) {
+        setError("确认期间草稿已被修改，本次回执没有采用；请重新复算核验后再确认。");
+        return;
+      }
       setServerBrief(response.brief);
       setReceipt(response.receipt);
       setAudit((current) => current ? {
@@ -399,7 +432,7 @@ export default function SalesAudit({
         setReceipt(null);
         setServerBrief(null);
         setError("草稿或数据在核验后发生变化，请重新复算核验。");
-        draftInput.current?.focus();
+        focusDraftAfterConfirm.current = true;
         return;
       }
       if (isStatus(err, 404)) {
@@ -420,6 +453,7 @@ export default function SalesAudit({
   }
 
   async function runQuickDraft() {
+    const submittedDraft = draftRef.current;
     setQuickBusy(true);
     setError("");
     try {
@@ -427,6 +461,10 @@ export default function SalesAudit({
         method: "POST",
         timeoutMs: 60000,
       });
+      if (draftRef.current !== submittedDraft) {
+        setError("起草期间草稿已被修改，本次模型输出没有覆盖你的输入。");
+        return;
+      }
       updateDraft(response.draft);
       // updateDraft 会先清空轨迹；这里按服务端返回值重新绑定本次起草。
       setDraftTrace(response.trace_sha256);
@@ -456,7 +494,7 @@ export default function SalesAudit({
     try {
       const created = await api<{ id: string }>("/api/sessions/sample?audit=true", { method: "POST" });
       if (onReloadSession) onReloadSession(created.id);
-      else setRecoveryNote(`示例会话已创建（${created.id}），当前页面未接入会话切换，请刷新页面后继续。`);
+      else setRecoveryNote(`示例会话已创建（${created.id}），请从左侧历史会话中打开。`);
     } catch (err) {
       setRecoveryNote(`重新载入示例失败：${err instanceof Error ? err.message : "未知错误"}`);
     } finally {
@@ -512,7 +550,7 @@ export default function SalesAudit({
     return (
       <div className="sales-audit">
         <section className="sales-audit-recovery" role="alert">
-          <h2>会话已失效</h2>
+          <h2 ref={recoveryRef} tabIndex={-1}>会话已失效</h2>
           <p>服务端已释放该会话（例如实例重启或会话过期），当前草稿与核验结果无法继续提交。</p>
           <div className="sales-audit-actions">
             <button className="primary" type="button" disabled={reloading} onClick={() => void reloadSample()}>
@@ -570,7 +608,7 @@ export default function SalesAudit({
         <ShieldCheck size={28} aria-hidden="true" />
         <div>
           <h2>经营简报核验</h2>
-          <p>从原始明细复算销售额、销量和订单数，确认后导出核验版简报。</p>
+          <p>独立复算销售额、销量、订单数与客单价；确认由服务端按原始 CSV 重算后写入账本。</p>
         </div>
         {initialDemo && (
           <div className="sales-audit-actions sales-audit-showcase-action">
@@ -588,22 +626,25 @@ export default function SalesAudit({
             <form className="sales-audit-card" onSubmit={(event) => { event.preventDefault(); void runAudit(); }}>
               <h3><label htmlFor="sales-audit-draft">简报草稿</label></h3>
               <p id="sales-audit-format">
-                统计范围为原始 CSV 全表。每行一个指标，使用「销售额合计：… 元」「销量合计：… 件」「订单数：… 笔」。
+                统计范围为原始 CSV 全表。每行一个指标：「销售额合计：… 元」「销量合计：… 件」「订单数：… 笔」「客单价：… 元」。范围限定或口径不明的行会标为待复核。
               </p>
-              {demoDraft && <p className="sales-audit-demo-note">演示草稿含预设错数和一项缺少依据的结论。</p>}
+              <p id="sales-audit-format-short" className="sales-audit-format-short">
+                每行一个指标：销售额合计 / 销量合计 / 订单数 / 客单价。
+              </p>
+              {demoDraft && <p className="sales-audit-demo-note">示例草稿含预设错数与一条无依据结论。</p>}
               <div className="sales-audit-actions">
                 {(filename === "sample_sales.csv" || filename === "sample_sales_audit.csv") && (
-                  <button type="button" disabled={busy} onClick={() => updateDraft(DEMO_DRAFT, true)}>填入演示草稿</button>
+                  <button type="button" disabled={busy || quickBusy || confirming} onClick={() => updateDraft(DEMO_DRAFT, true)}>填入演示草稿</button>
                 )}
-                {onPrepareDraft && <button type="button" disabled={busy} onClick={onPrepareDraft}>准备 AI 起草任务</button>}
+                {onPrepareDraft && <button type="button" disabled={busy || quickBusy || confirming} onClick={onPrepareDraft}>准备 AI 起草任务</button>}
                 {report && (
-                  <button type="button" disabled={busy} onClick={() => updateDraft(extractDraft(report))}>
+                  <button type="button" disabled={busy || quickBusy || confirming} onClick={() => updateDraft(extractDraft(report))}>
                     使用分析报告草稿
                   </button>
                 )}
                 <button
                   type="button"
-                  disabled={busy || quickBusy || tooLong}
+                  disabled={busy || quickBusy || confirming || tooLong}
                   onClick={() => void runQuickDraft()}
                 >
                   {quickBusy ? <LoaderCircle className="spin" size={16} /> : <Sparkles size={16} />}
@@ -613,13 +654,13 @@ export default function SalesAudit({
               <textarea
                 ref={draftInput}
                 id="sales-audit-draft"
-                aria-describedby="sales-audit-format"
+                aria-describedby="sales-audit-format sales-audit-format-short"
                 aria-invalid={tooLong || undefined}
                 value={draft}
                 onChange={(event) => updateDraft(event.target.value)}
                 placeholder={"销售额合计：… 元\n销量合计：… 件\n订单数：… 笔"}
                 rows={7}
-                disabled={busy}
+                disabled={busy || quickBusy || confirming}
               />
               {quickDraft && (
                 <section className="sales-audit-quickdraft" role="status">
@@ -636,7 +677,7 @@ export default function SalesAudit({
               {tooLong && <p role="alert">草稿最多 {MAX_DRAFT_LENGTH} 字符，请保留要核验的部分。</p>}
               {error && <p className="sales-audit-error" role="alert">{error}</p>}
               <div className="sales-audit-actions">
-                <button className="primary" type="submit" disabled={busy || !draft.trim() || tooLong}>
+                <button className="primary" type="submit" disabled={busy || quickBusy || confirming || !draft.trim() || tooLong}>
                   {busy ? <LoaderCircle className="spin" size={16} /> : <ShieldCheck size={16} />}
                   {busy ? "正在复算…" : "复算并核验"}
                 </button>
