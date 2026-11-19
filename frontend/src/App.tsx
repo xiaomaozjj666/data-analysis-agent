@@ -315,6 +315,21 @@ function App() {
   // 读屏用的全局状态播报（polite）：载入示例、切换核验视图等异步状态。
   const [liveMessage, setLiveMessage] = useState("");
 
+  // 分析报告 → 简报核验：保存用户点击「送审并核验」时上送的正文。
+  // SalesAudit 自己负责从报告里提取草稿（复用其「使用分析报告草稿」按钮），
+  // 这里只做 Tab 切换与把正文注入 report prop，不重复实现提取逻辑。
+  const [auditReport, setAuditReport] = useState<string | null>(null);
+  const sendReportToAudit = useCallback(
+    (reportText: string) => {
+      setAuditReport(reportText);
+      // 复用已有焦点移交逻辑：Tab 切换后把焦点送到核验面板，键盘用户不迷路。
+      focusAuditOnLoad.current = true;
+      setActiveTab("audit");
+      setLiveMessage("已将分析报告送入简报核验，请在草稿工作台点击「使用分析报告草稿」。");
+    },
+    [setActiveTab],
+  );
+
   useEffect(() => {
     if (!sidebarOpen) return;
     const onKey = (event: KeyboardEvent) => {
@@ -412,6 +427,7 @@ function App() {
       setResult(null);
       setCurrentNodeTitle("");
       setRetryOffer(null);
+      setAuditReport(null);
       // 切换会话时清理审批/进度态，避免新会话复用旧审批 UI
       setAwaitingApproval(false);
       setPendingObjective("");
@@ -558,6 +574,7 @@ function App() {
     setCompleted([]);
     setResult(null);
     setTask("");
+    setAuditReport(null);
     setActiveTab("analysis");
     setCurrentNodeTitle("");
     setRetryOffer(null);
@@ -616,6 +633,7 @@ function App() {
       setCompleted([]);
       setResult(null);
       setTask("");
+      setAuditReport(null);
       setActiveTab("analysis");
       setCurrentNodeTitle("");
       setRetryOffer(null);
@@ -680,6 +698,7 @@ function App() {
   function handleSessionLost(message?: string) {
     setSession(null);
     setResult(null);
+    setAuditReport(null);
     setPlan([]);
     setCompleted([]);
     setCurrentNodeTitle("");
@@ -707,6 +726,7 @@ function App() {
       setPlan([]);
       setCompleted([]);
       setResult(null);
+      setAuditReport(null);
       setCurrentNodeTitle("");
       setRetryOffer(null);
       setFollowUps([]);
@@ -924,6 +944,12 @@ function App() {
   const missingRate = profile
     ? ((missingCount / Math.max(rows * columns, 1)) * 100).toFixed(1)
     : "0.0";
+
+  // 送审正文：优先用当前分析结果；会话恢复等场景回退到历史 last_result。
+  // 若审计页里保存的正文已落后于最新报告，自动跟随最新报告，避免拿旧稿核验。
+  const currentReportText = result?.response ?? session?.last_result?.response;
+  const auditReportText =
+    auditReport && auditReport === currentReportText ? auditReport : currentReportText;
 
   if (!authReady) {
     return (
@@ -1421,7 +1447,7 @@ function App() {
                 sessionId={session.id}
                 filename={session.filename}
                 initialDemo={auditDemoSession.current === session.id}
-                report={running && session.id === runningSessionIdRef.current ? undefined : session.last_result?.response}
+                report={running && session.id === runningSessionIdRef.current ? undefined : auditReportText}
                 onPrepareDraft={settings?.configured && !running && !awaitingApproval ? () => {
                   setTask(SALES_BRIEF_TASK);
                   setActiveTab("analysis");
@@ -1456,6 +1482,7 @@ function App() {
                           sessionId={session?.id}
                           onReplay={replayLastAnalysis}
                           replayBusy={replayBusy}
+                          onAuditReport={sendReportToAudit}
                         />
                       </Suspense>
                       <ConversationThread

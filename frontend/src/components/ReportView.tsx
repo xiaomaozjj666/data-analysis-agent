@@ -36,6 +36,8 @@ interface ReportViewProps {
   sessionId?: string | null;
   onReplay?: () => void;
   replayBusy?: boolean;
+  // 送审并核验：把报告正文交给上层（App 切到简报核验 Tab 并注入草稿）。
+  onAuditReport?: (reportText: string) => void;
 }
 
 // 从 React 子节点提取纯文本：用于给标题生成稳定的 id
@@ -229,6 +231,40 @@ function deriveFilename(md: string): string {
   return title || "分析报告";
 }
 
+interface ReportSourceInfo {
+  label: string;
+  title?: string;
+}
+
+// 从分析结果的 dataset_profile 读取真实来源字段（后端 workspace.profile 提供
+// source 文件名与 rows 行数；若未来补充数据集 sha256 也会展示）。
+// 字段缺失时不猜测，退化为「来源：当前会话数据集」。
+function resolveReportSource(result: AnalysisResult): ReportSourceInfo {
+  const profile = result.dataset_profile;
+  if (!profile) return { label: "来源：当前会话数据集" };
+
+  const rawSource = profile.source;
+  const source =
+    typeof rawSource === "string" && rawSource.trim() ? rawSource.trim() : null;
+  const rawRows = profile.rows ?? profile.row_count;
+  const rows =
+    typeof rawRows === "number" && Number.isFinite(rawRows) && rawRows >= 0
+      ? rawRows
+      : null;
+  const rawSha = profile.sha256 ?? profile.source_sha256 ?? profile.dataset_sha256;
+  const sha =
+    typeof rawSha === "string" && /^[0-9a-f]{64}$/i.test(rawSha) ? rawSha : null;
+
+  const parts = [source ?? "当前会话数据集"];
+  if (rows !== null) parts.push(`${rows.toLocaleString("zh-CN")} 行`);
+  if (sha) parts.push(`SHA-256 ${sha.slice(0, 8)}…`);
+
+  return {
+    label: `来源：${parts.join(" · ")}`,
+    title: sha ? `数据集 SHA-256：${sha}` : undefined,
+  };
+}
+
 // 导出 HTML 的内联样式：衬线正文 + 800px 正文宽 + 打印友好的代码块/表格
 const REPORT_HTML_STYLE = `
 *, *::before, *::after { box-sizing: border-box; }
@@ -298,6 +334,7 @@ const ReportView = React.memo(function ReportView({
   sessionId,
   onReplay,
   replayBusy,
+  onAuditReport,
 }: ReportViewProps) {
   // copyState: "idle" | "copied" | "failed"。之前只有 copied boolean，
   // 复制失败时静默吞掉错误，用户切到其他应用粘贴才发现是旧内容。
@@ -315,6 +352,8 @@ const ReportView = React.memo(function ReportView({
   // defer 让高优先级更新（输入框交互）先走，Markdown 渲染延后。
   const deferredResponse = useDeferredValue(result.response || "");
   const deferredReasoning = useDeferredValue(reasoning || "");
+  // 来源徽章：只读取后端真实下发的 profile 字段，缺失时显示会话数据集兜底。
+  const sourceInfo = useMemo(() => resolveReportSource(result), [result]);
   const { body: reportBody, appendix: reportAppendix } = useMemo(
     () => (streaming ? { body: deferredResponse, appendix: "" } : splitReportAppendix(deferredResponse)),
     [deferredResponse, streaming],
@@ -625,8 +664,27 @@ const ReportView = React.memo(function ReportView({
           ) : (
             <small className="report-count">{result.artifacts?.length || 0} 个产物</small>
           )}
+          {!streaming && (
+            <span className="report-count report-source" title={sourceInfo.title}>
+              {sourceInfo.label}
+            </span>
+          )}
         </div>
         <div className="report-actions">
+          {!streaming && onAuditReport && (
+            <button
+              type="button"
+              className="primary report-audit"
+              // 复用全局主按钮的实心品牌色，仅把尺寸压到报告操作区的高度
+              style={{ height: 30, padding: "0 12px", fontSize: "var(--text-xs)" }}
+              onClick={() => onAuditReport(result.response || "")}
+              disabled={!result.response}
+              title="把这份分析报告送入简报核验，先核验再对外引用"
+            >
+              <ShieldCheck size={13} />
+              送审并核验
+            </button>
+          )}
           {!streaming && <UsageChip usage={usage} />}
           {onReplay && (
             <button
