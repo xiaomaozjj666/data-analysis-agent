@@ -32,6 +32,7 @@ dependencies = [
   "python-multipart>=0.0.33,<1",
   "langsmith>=0.14.17,<1",
   "python-dotenv>=1.2.4,<2",
+  "cryptography>=50.0.0,<51",
   "typer>=0.29.1,<1",
   "rich>=15.0.0,<16",
   "keyring==25.7.0",

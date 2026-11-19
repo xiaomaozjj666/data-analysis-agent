@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import json
 
+import pandas as pd
 import pytest
 
 from data_agent.metrics import (
     METRICS_FILENAME,
     METRICS_PATH_ENV,
     MetricDefinition,
+    compute_metrics_on_frame,
     load_metric_definitions,
     load_metrics_for_workspace,
     parse_metric_definitions,
@@ -304,3 +306,36 @@ def test_save_workspace_metrics_is_atomic(tmp_path, monkeypatch):
 
     assert path.read_bytes() == before
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_metrics_non_finite_results_are_errors_and_json_safe():
+    """除零/溢出产生的 inf 必须判错，不能以 Infinity 字面量污染 JSON。"""
+    frame = pd.DataFrame({"sales": [10.0, 0.0], "orders": [0, 0]})
+    definitions = parse_metric_definitions(
+        {"metrics": [{"name": "单价", "description": "d", "expression": "sales/orders"}]}
+    )
+    entry = compute_metrics_on_frame(frame, definitions)[0]
+    assert entry["status"] == "error"
+    assert "非有限值" in entry["error"]
+    assert json.dumps({"metrics": [entry]}, allow_nan=False)  # 严格 JSON 可序列化
+
+
+def test_metrics_int64_pow_overflow_is_caught_not_wrapped():
+    """int64 幂溢出会静默回绕出假值；统一转 float64 后必须判为非有限错误。"""
+    frame = pd.DataFrame({"big": [10_000_000]})
+    definitions = parse_metric_definitions(
+        {"metrics": [{"name": "p", "description": "d", "expression": "big**big"}]}
+    )
+    entry = compute_metrics_on_frame(frame, definitions)[0]
+    assert entry["status"] == "error"
+    assert "非有限值" in entry["error"]
+
+
+def test_metrics_int_column_sum_stays_exact():
+    """常规整数列不受 float64 转换影响（< 2^53 精确）。"""
+    frame = pd.DataFrame({"qty": [3, 4, 5]})
+    definitions = parse_metric_definitions(
+        {"metrics": [{"name": "合计", "description": "d", "expression": "qty"}]}
+    )
+    entry = compute_metrics_on_frame(frame, definitions)[0]
+    assert entry["status"] == "ok" and entry["sum"] == 12.0

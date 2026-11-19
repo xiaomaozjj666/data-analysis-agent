@@ -310,7 +310,9 @@ def evaluate_metric_expression(frame: pd.DataFrame, expression: str) -> pd.Serie
         if column is None:
             missing.append(name)
             continue
-        env[name] = pd.to_numeric(frame[column], errors="coerce")
+        # 统一转 float64：int64 参与幂运算会静默回绕（如 10**10**2 取模出假值），
+        # float 溢出则显式变 inf，由 compute_metrics_on_frame 判为非有限错误。
+        env[name] = pd.to_numeric(frame[column], errors="coerce").astype("float64")
     if missing:
         available = "、".join(str(column) for column in list(frame.columns)[:30])
         raise ValueError(f"指标表达式引用了不存在的列 {missing}。可用列：{available}。")
@@ -335,6 +337,18 @@ def compute_metrics_on_frame(
         try:
             series = evaluate_metric_expression(frame, item.expression)
             numeric = pd.to_numeric(series, errors="coerce")
+            non_finite = int(np.isinf(numeric.to_numpy(dtype="float64", na_value=np.nan)).sum())
+            if non_finite:
+                # 除零/溢出产生的 inf 一旦进入下游 JSON 就是非法字面量
+                # （json.dumps 默认输出 Infinity，前端 JSON.parse 直接抛错），
+                # 必须在这里判为错误，而不是带着 inf 继续 ok。
+                entry.update(
+                    status="error",
+                    error=f"指标结果包含 {non_finite} 个非有限值（除零或溢出），请检查表达式。",
+                    non_null=int(numeric.notna().sum()),
+                )
+                results.append(entry)
+                continue
             non_null = int(numeric.notna().sum())
             if non_null == 0:
                 # 全空列不能当作 0：那会让下游把「没有数据」误读成「值为 0」，

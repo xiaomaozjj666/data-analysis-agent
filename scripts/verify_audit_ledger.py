@@ -43,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--trace", type=Path, help="待核对的快速起草轨迹 JSON")
     parser.add_argument("--schema", type=Path, help="待核对的核验口径 audit_schema.json")
     parser.add_argument("--lineage", type=Path, help="待核对的来源血缘 audit_lineage.json")
+    parser.add_argument("--pubkey", type=Path, help="Ed25519 公钥（public_key.pem），校验每条签名")
     parser.add_argument("--audit-id", help="只查看该 audit_id 的记录")
     parser.add_argument("--json", action="store_true", help="以 JSON 输出结果")
     args = parser.parse_args(argv)
@@ -186,6 +187,24 @@ def main(argv: list[str] | None = None) -> int:
                 "原始 CSV 与账本中的任何一条记录都不匹配（数据被替换过）。"
             )
 
+    if args.pubkey:
+        try:
+            public_pem = args.pubkey.read_bytes()
+        except OSError as exc:
+            print(f"[失败] 无法读取公钥：{exc}", file=sys.stderr)
+            return 2
+        from data_agent.audit_signing import verify_entries_signatures
+
+        signatures = verify_entries_signatures(entries, public_pem)
+        checks["signature"] = {
+            "path": str(args.pubkey),
+            "signed": signatures["signed"],
+            "valid": signatures["valid"],
+        }
+        if not signatures["valid"]:
+            verification["valid"] = False
+            verification["errors"].extend(signatures["errors"])
+
     payload = {"verification": verification, "checks": checks}
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -220,6 +239,9 @@ def main(argv: list[str] | None = None) -> int:
                 )
             elif name == "audit_id":
                 print(f"  audit_id {check['value']}：{check['records']} 条记录")
+            elif name == "signature":
+                state = "有效" if check["valid"] else "无效"
+                print(f"  Ed25519 签名：{check['signed']} 条，{state}")
         for error in verification["errors"]:
             print(f"  - {error}")
 

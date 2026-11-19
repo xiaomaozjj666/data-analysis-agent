@@ -61,8 +61,11 @@ def _canonical(payload: dict[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
+_SIGNATURE_FIELDS = ("hash", "signature", "signature_key_id")
+
+
 def _entry_hash(entry: dict[str, Any]) -> str:
-    body = {key: value for key, value in entry.items() if key != "hash"}
+    body = {key: value for key, value in entry.items() if key not in _SIGNATURE_FIELDS}
     return hashlib.sha256(_canonical(body)).hexdigest()
 
 
@@ -106,6 +109,7 @@ def verify_entries(entries: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "valid": not errors,
         "entries": len(entries),
+        "signed": sum(1 for entry in entries if entry.get("signature")),
         "tip": previous if entries else GENESIS_HASH,
         "errors": errors,
     }
@@ -143,6 +147,12 @@ def append_entry(
         }
         entry.update(payload)
         entry["hash"] = _entry_hash(entry)
+        from data_agent.audit_signing import sign_hash
+
+        try:
+            entry.update(sign_hash(root, entry["hash"]))
+        except OSError as exc:
+            raise LedgerError(f"无法写入账本：签名密钥不可用（{exc}）") from exc
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("a", encoding="utf-8", newline="\n") as handle:

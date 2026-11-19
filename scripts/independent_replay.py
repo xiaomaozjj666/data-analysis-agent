@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import base64
+import csv
 import hashlib
 import json
 import sys
@@ -162,7 +164,6 @@ def read_metrics(
     rls_column: str | None = None,
     rls_value: str | None = None,
 ) -> dict[str, str]:
-    import csv
     import io
 
     text = None
@@ -288,6 +289,114 @@ def audit_id(report: dict, source_sha: str, draft: str, metrics: dict) -> str:
     return "aud-" + sha256(canonical(payload))[:32]
 
 
+
+_P = 2**255 - 19
+_L = 2**252 + 27742317777372353535851937790883648493
+_D = -121665 * pow(121666, _P - 2, _P) % _P
+_I = pow(2, (_P - 1) // 4, _P)
+
+
+def _xrecover(y: int) -> int:
+    xx = (y * y - 1) * pow(_D * y * y + 1, _P - 2, _P) % _P
+    x = pow(xx, (_P + 3) // 8, _P)
+    if (x * x - xx) % _P:
+        x = x * _I % _P
+    if x & 1:
+        x = _P - x
+    return x
+
+
+_BY = 4 * pow(5, _P - 2, _P) % _P
+_BX = _xrecover(_BY)
+_B = [_BX % _P, _BY % _P, 1, _BX * _BY % _P]
+
+
+def _edwards(point: list[int], other: list[int]) -> list[int]:
+    x1, y1, z1, t1 = point
+    x2, y2, z2, t2 = other
+    a = (y1 - x1) * (y2 - x2) % _P
+    b = (y1 + x1) * (y2 + x2) % _P
+    c = t1 * 2 * _D * t2 % _P
+    dd = z1 * 2 * z2 % _P
+    e = b - a
+    f = dd - c
+    g = dd + c
+    h = b + a
+    return [e * f % _P, g * h % _P, f * g % _P, e * h % _P]
+
+
+def _scalarmult(point: list[int], scalar: int) -> list[int]:
+    result = [0, 1, 1, 0]
+    addend = point
+    while scalar:
+        if scalar & 1:
+            result = _edwards(result, addend)
+        addend = _edwards(addend, addend)
+        scalar >>= 1
+    return result
+
+
+def _encode_point(point: list[int]) -> bytes:
+    x, y, z, _ = point
+    inverse = pow(z, _P - 2, _P)
+    x = x * inverse % _P
+    y = y * inverse % _P
+    return (y | ((x & 1) << 255)).to_bytes(32, "little")
+
+
+def _decode_point(raw: bytes) -> list[int]:
+    y = int.from_bytes(raw, "little") & ((1 << 255) - 1)
+    x = _xrecover(y)
+    if (x & 1) != (raw[31] >> 7):
+        x = _P - x
+    return [x, y, 1, x * y % _P]
+
+
+def _public_from_pem(pem: bytes) -> bytes:
+    body = "".join(
+        line
+        for line in pem.decode("ascii", "replace").splitlines()
+        if line and not line.startswith("-----")
+    )
+    return base64.b64decode(body)[-32:]
+
+
+def verify_ed25519(public_pem: bytes, message: bytes, signature: bytes) -> bool:
+    if len(signature) != 64:
+        return False
+    public = _public_from_pem(public_pem)
+    r = signature[:32]
+    scalar = int.from_bytes(signature[32:], "little")
+    if scalar >= _L:
+        return False
+    try:
+        left = _scalarmult(_B, scalar)
+        digest = int.from_bytes(
+            hashlib.sha512(r + public + message).digest(), "little"
+        ) % _L
+        right = _edwards(_decode_point(r), _scalarmult(_decode_point(public), digest))
+        return _encode_point(left) == _encode_point(right)
+    except (ValueError, ZeroDivisionError):
+        return False
+
+
+def verify_entries_signatures(entries: list[dict], pem: bytes) -> list[str]:
+    errors = []
+    for index, entry in enumerate(entries, start=1):
+        signature = entry.get("signature")
+        if not signature:
+            errors.append(f"第 {index} 条记录没有 Ed25519 签名。")
+            continue
+        try:
+            raw = base64.b64decode(signature)
+        except (ValueError, TypeError):
+            errors.append(f"第 {index} 条记录的签名编码无效。")
+            continue
+        if not verify_ed25519(pem, str(entry.get("hash", "")).encode("ascii"), raw):
+            errors.append(f"第 {index} 条记录的 Ed25519 签名无效。")
+    return errors
+
+
 def verify_ledger(raw: bytes) -> tuple[bool, list[str], list[dict]]:
     entries = []
     errors = []
@@ -304,7 +413,11 @@ def verify_ledger(raw: bytes) -> tuple[bool, list[str], list[dict]]:
             errors.append(f"账本第 {number} 行序号不连续。")
         if entry.get("prev") != previous:
             errors.append(f"账本第 {number} 行 prev 不匹配。")
-        body = {key: value for key, value in entry.items() if key != "hash"}
+        body = {
+            key: value
+            for key, value in entry.items()
+            if key not in ("hash", "signature", "signature_key_id")
+        }
         if entry.get("hash") != sha256(canonical(body)):
             errors.append(f"账本第 {number} 行哈希无法复算。")
         previous = str(entry.get("hash") or "")
@@ -377,6 +490,11 @@ def main(argv: list[str] | None = None) -> int:
     ledger_ok, ledger_errors, entries = verify_ledger(files.get("ledger.jsonl", b""))
     if files.get("ledger.jsonl"):
         problems.extend(ledger_errors)
+    signature_ok = True
+    if "public_key.pem" in files and entries:
+        signature_errors = verify_entries_signatures(entries, files["public_key.pem"])
+        problems.extend(signature_errors)
+        signature_ok = not signature_errors
         if entries:
             if not any(entry.get("audit_id") == replay_id for entry in entries):
                 problems.append("账本中没有该 audit_id 的记录。")
@@ -404,6 +522,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  source      {source_sha[:16]}…")
     print(f"  metrics     {json.dumps(metrics, ensure_ascii=False)}")
     print(f"  ledger      {len(entries)} 条，整链 {'有效' if ledger_ok else '无效'}")
+    if "public_key.pem" in files:
+        print(f"  signature   {len(entries)} 条，Ed25519 {'有效' if signature_ok else '无效'}")
     print("  该结果由仅依赖 Python 标准库的脚本从头计算，未 import 项目代码。")
     return 0
 

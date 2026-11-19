@@ -99,6 +99,7 @@ def export_bundle(session_id: str, payload: BundleRequest) -> Response:
     lineage_bytes = _read_optional(workspace.root / "audit_lineage.json")
     ledger_bytes = _read_optional(workspace.root / "audit_ledger.jsonl") or b""
     policy_bytes = _read_optional(workspace.root / "audit_policy.json")
+    public_key_bytes = _read_optional(workspace.root / "audit_keys" / "ledger_ed25519.pub")
     trace_bytes = None
     if payload.draft_trace_sha256:
         trace_bytes = _read_optional(
@@ -131,6 +132,8 @@ def export_bundle(session_id: str, payload: BundleRequest) -> Response:
         files["lineage.json"] = lineage_bytes
     if policy_bytes is not None:
         files["policy.json"] = policy_bytes
+    if public_key_bytes is not None:
+        files["public_key.pem"] = public_key_bytes
     if trace_bytes is not None:
         files["draft_trace.json"] = trace_bytes
     manifest = {

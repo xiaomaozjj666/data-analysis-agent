@@ -145,6 +145,45 @@ def _clause_context(line: str, start: int, end: int) -> str:
     return line[left + 1 : right].strip() or line.strip()
 
 
+_CJK_RE = re.compile(r"[一-鿿]")
+#: 别名后紧跟这些字时是“系动词/约量词”，不是限定词（订单数为462、订单数约500）。
+_LINKING_SUFFIX = ("为", "是", "约", "达", "超", "近", "仅", "共", "余", "多", "破", "涨", "跌")
+#: 别名前紧跟这些“结构性字”时仍是同一指标（结论是p值 / 指标的数值 /
+# 总订单数）；其余 CJK 前缀（华东区/净/平均/另一处…）视为另一个口径。
+_STRUCTURAL_PREFIX = set("是的为了和与及或又也都而即则且但若如所之其此该本各每总全比在从到至按据含")
+
+
+def _alias_standalone(context: str, alias: str) -> bool:
+    """别名在上下文里必须“独立成词”才算同一指标。
+
+    「华东区订单数」「净销售额」这类带限定词的写法是另一个口径——按子串包含
+    会把它们当成同名指标，数值恰好相等时误判 verified、不等时误报 conflict
+    （与 sales_audit v2 的范围门同口径）。规则：
+
+    - 括号限定（订单数（华东区））先剥掉再判；
+    - 前邻是 CJK 且不在 {_总,全} 白名单 → 被限定（净销售额/华东区订单数/平均订单数）；
+    - 后邻是 CJK：属于系动词/约量词白名单（为/是/约/达…）→ 仍是同一指标，
+      否则被限定（订单数环比、订单数占比）；
+    - 前后邻是数字/拉丁字符 → 是数值或单位本身（订单数462、p_value 路径），不限定。
+    """
+    text = context.lower()
+    start = 0
+    while True:
+        idx = text.find(alias, start)
+        if idx < 0:
+            return False
+        before = text[idx - 1] if idx > 0 else ""
+        after = text[idx + len(alias) : idx + len(alias) + 2]
+        if before and _CJK_RE.match(before) and before not in _STRUCTURAL_PREFIX:
+            return False
+        if after and after[0] in "（(":
+            # 括号限定（订单数（华东区））是另一个口径，不能剥掉后当独立指标。
+            return False
+        if after and _CJK_RE.match(after) and not after.startswith(_LINKING_SUFFIX):
+            return False
+        return True
+
+
 def _numeric_claims(text: str, facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     numeric_facts = []
     for fact in facts:
@@ -171,7 +210,7 @@ def _numeric_claims(text: str, facts: list[dict[str, Any]]) -> list[dict[str, An
             candidates = [
                 (fact, value)
                 for fact, value in numeric_facts
-                if any(alias in context.lower() for alias in _aliases(str(fact["field"])))
+                if any(_alias_standalone(context, alias) for alias in _aliases(str(fact["field"])))
             ]
             matches = [
                 (fact, value)

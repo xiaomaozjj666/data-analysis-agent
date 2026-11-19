@@ -82,11 +82,13 @@ def test_unsupported_when_no_fact_matches_and_unit_requires_fact_unit():
 
 
 def test_numeric_evidence_is_scoped_to_its_clause():
+    """范围门（2026-11-19）：「另一处p值」是带限定词的另一口径 → unsupported，
+    不再拿全量 fact 误报 conflict；未知指标仍为 unsupported。"""
     result = verify_report(
         "另一处p值为0.05；未知指标为10。",
         [{"source": "stats", "field": "p_value", "value": "0.035", "unit": "ratio"}],
     )
-    assert [claim["verdict"] for claim in result["claims"]] == ["conflict", "unsupported"]
+    assert [claim["verdict"] for claim in result["claims"]] == ["unsupported", "unsupported"]
     assert result["claims"][1]["evidence"] == []
 
 
@@ -166,3 +168,24 @@ def test_leading_decimal_is_verified():
         [{"type": "tool_result", "name": "statistical_analysis", "detail": {"p_value": ".5"}}]
     )
     assert verify_report("p值为.5。", facts)["claims"][0]["verdict"] == "verified"
+
+
+def test_qualified_metric_names_are_never_verified_or_conflicted():
+    """范围门：带限定词的指标名不得拿同名全量 fact 去核验。"""
+    facts = extract_facts(
+        [{"type": "tool_result", "name": "groupby", "detail": {"means": {"订单数": 462}}}]
+    )
+    for text in (
+        "华东区订单数462件。",
+        "平均订单数462笔。",
+        "订单数（华东区）462笔。",
+        "订单数环比上涨10%。",
+    ):
+        result = verify_report(text, facts)
+        claim = result["claims"][0]
+        assert claim["verdict"] == "unsupported", (text, claim)
+        assert claim["evidence"] == []
+
+    # 正常句式不受影响：系动词/冒号跟随都能核验（fact 无单位时不要带单位）
+    ok = verify_report("订单数为462；订单数：462。", facts)
+    assert {claim["verdict"] for claim in ok["claims"]} == {"verified"}

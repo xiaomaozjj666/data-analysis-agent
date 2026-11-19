@@ -533,3 +533,12 @@
   font: inherit;
   font-size: 13px;
 }
+
+/* 账本签名：与校验通过同色的低调标识。 */
+.sales-audit-chain-signature {
+  margin-top: 4px;
+  color: var(--success-fg);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}

@@ -57,6 +57,8 @@ export interface AuditLedgerEntry {
   seq: number;
   hash: string;
   prev?: string;
+  signature?: string;
+  signature_key_id?: string;
 }
 
 export interface ConfirmReceipt {
@@ -162,6 +164,8 @@ interface LedgerChainRecord {
   hash: string;
   audit_id?: string;
   brief_sha256?: string;
+  signature?: string;
+  signature_key_id?: string;
 }
 
 interface LedgerChainResponse {
@@ -169,6 +173,7 @@ interface LedgerChainResponse {
   verification: {
     valid: boolean;
     entries: number;
+    signed?: number;
     tip: string;
     errors: string[];
   };
@@ -463,7 +468,10 @@ function ResultNotices({
             {chainData && (
               <span className={`sales-audit-chain-status ${chainData.verification.valid ? "is-valid" : "is-broken"}`}>
                 {chainData.verification.valid
-                  ? `整链校验通过 · valid=true · 共 ${chainData.verification.entries} 条`
+                  ? `整链校验通过 · valid=true · 共 ${chainData.verification.entries} 条` +
+                    (chainData.verification.signed
+                      ? ` · Ed25519 已签名 ${chainData.verification.signed} 条`
+                      : "")
                   : "链校验失败"}
               </span>
             )}
@@ -484,6 +492,11 @@ function ResultNotices({
                     <span className="sales-audit-chain-arrow" aria-hidden="true">→</span>
                     <span><label>hash</label><code title={entry.hash}>{entry.hash.slice(0, 16)}…</code></span>
                   </div>
+                  {entry.signature && (
+                    <div className="sales-audit-chain-signature">
+                      Ed25519 · {entry.signature_key_id?.slice(0, 8) ?? "已签名"}
+                    </div>
+                  )}
                   {idx < chainData.entries.length - 1 && <div className="sales-audit-chain-connector" aria-hidden="true" />}
                 </li>
               ))}
