@@ -94,6 +94,16 @@ export interface AuditResult {
   ledger_error?: string;
   schema_fingerprint?: string | null;
   schema_status?: string | null;
+  lineage?: {
+    upstream_table?: string | null;
+    catalog_urn?: string | null;
+    owner?: string;
+    extracted_at: string;
+    age_hours: number;
+    freshness_sla_hours: number;
+    stale: boolean;
+    sha256: string;
+  } | null;
 }
 
 export interface AuditSchemaSpec {
@@ -367,6 +377,14 @@ function ResultNotices({
       {trace && (
         <p className="sales-audit-trace">已绑定起草轨迹 {trace.slice(0, 12)}…</p>
       )}
+      {audit.lineage && (
+        <p className="sales-audit-trace">
+          来源 {audit.lineage.upstream_table ?? audit.lineage.catalog_urn ?? "未命名上游"}
+          {audit.lineage.owner ? ` · ${audit.lineage.owner}` : ""}
+          {` · 抽取于 ${audit.lineage.extracted_at.slice(0, 16).replace("T", " ")}`}
+          {audit.lineage.stale ? " · 已超过新鲜度 SLA" : " · 新鲜度正常"}
+        </p>
+      )}
       {audit.schema_fingerprint && (
         <p className="sales-audit-trace" title={audit.schema_fingerprint}>
           核验口径指纹 {audit.schema_fingerprint.slice(0, 12)}… · {audit.schema_status === "approved" ? "已批准" : "草稿"}
@@ -495,6 +513,10 @@ export default function SalesAudit({
   const [schemaMessage, setSchemaMessage] = useState("");
   const [schemaStatus, setSchemaStatus] = useState<{ status: string | null; approvedBy: string | null }>({ status: null, approvedBy: null });
   const [approver, setApprover] = useState("");
+  const [lineageText, setLineageText] = useState("{}");
+  const [lineageLoaded, setLineageLoaded] = useState(false);
+  const [lineageBusy, setLineageBusy] = useState(false);
+  const [lineageMessage, setLineageMessage] = useState("");
   const [draftTrace, setDraftTrace] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [sessionLost, setSessionLost] = useState(false);
@@ -760,6 +782,51 @@ export default function SalesAudit({
     }
   }
 
+  async function loadLineage() {
+    if (lineageLoaded) return;
+    setLineageLoaded(true);
+    try {
+      const payload = await api<{ lineage?: Record<string, unknown> | null }>(
+        `/api/sessions/${sessionId}/audit-lineage`,
+      );
+      setLineageText(JSON.stringify(payload.lineage ?? {}, null, 2));
+    } catch {
+      // 血缘接口不可用时保持未登记状态。
+    }
+  }
+
+  async function saveLineage() {
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(lineageText) as Record<string, unknown>;
+    } catch {
+      setLineageMessage("JSON 格式不正确，请检查逗号与引号。");
+      return;
+    }
+    setLineageBusy(true);
+    setLineageMessage("");
+    try {
+      const saved = await api<{ lineage: { upstream_table?: string | null } }>(
+        `/api/sessions/${sessionId}/audit-lineage`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(parsed),
+        },
+      );
+      setLineageMessage(
+        `来源血缘已保存：${saved.lineage.upstream_table ?? "已登记"}。`,
+      );
+      setAudit(null);
+      setReceipt(null);
+      setServerBrief(null);
+    } catch (err) {
+      setLineageMessage(err instanceof Error ? err.message : "来源血缘保存失败。");
+    } finally {
+      setLineageBusy(false);
+    }
+  }
+
   function saveSchema() {
     let parsed: { metrics?: AuditSchemaSpec[] };
     try {
@@ -998,6 +1065,32 @@ export default function SalesAudit({
               </button>
             </div>
             {schemaMessage && <p role="status">{schemaMessage}</p>}
+          </details>
+          <details
+            className="sales-audit-schema sales-audit-lineage"
+            onToggle={(event) => {
+              if (event.currentTarget.open) void loadLineage();
+            }}
+          >
+            <summary>来源血缘 · {audit?.lineage?.upstream_table ?? "未登记"}</summary>
+            <p>
+              登记上游表、抽取时间、负责人与新鲜度 SLA。抽取时间必须带时区；
+              超过 SLA 时核验结果会标记 source_stale，指纹写入账本并可用
+              <code>--lineage</code> 离线校验。
+            </p>
+            <textarea
+              aria-label="来源血缘 JSON"
+              value={lineageText}
+              onChange={(event) => setLineageText(event.target.value)}
+              rows={7}
+              disabled={lineageBusy}
+            />
+            <div className="sales-audit-actions">
+              <button type="button" disabled={lineageBusy} onClick={() => void saveLineage()}>
+                {lineageBusy ? "保存中…" : "保存来源血缘"}
+              </button>
+            </div>
+            {lineageMessage && <p role="status">{lineageMessage}</p>}
           </details>
           <div className="sales-audit-grid">
             <form className="sales-audit-card" onSubmit={(event) => { event.preventDefault(); void runAudit(); }}>

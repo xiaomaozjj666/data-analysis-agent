@@ -77,6 +77,26 @@ def confirm_brief(session_id: str, payload: ConfirmRequest) -> dict[str, Any]:
             metric_specs=metric_specs,
         )
         result["schema_status"] = (schema_document or {}).get("status")
+        from data_agent.audit_lineage import freshness, lineage_fingerprint, load_lineage
+
+        lineage = load_lineage(workspace.root)
+        lineage_sha = None
+        if lineage:
+            lineage_sha = lineage_fingerprint(lineage)
+            state = freshness(lineage)
+            result["lineage"] = {**lineage, **state, "sha256": lineage_sha}
+            if state["stale"]:
+                result.setdefault("warnings", []).append(
+                    {
+                        "code": "source_stale",
+                        "message": (
+                            "上游数据已超过新鲜度 SLA："
+                            f"{state['age_hours']} 小时 > {state['freshness_sla_hours']} 小时。"
+                        ),
+                        "age_hours": state["age_hours"],
+                        "freshness_sla_hours": state["freshness_sla_hours"],
+                    }
+                )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except OSError as exc:
@@ -102,6 +122,7 @@ def confirm_brief(session_id: str, payload: ConfirmRequest) -> dict[str, Any]:
                 "draft_sha256": sha256_text(payload.draft),
                 "draft_trace_sha256": trace_digest,
                 "schema_fingerprint": result.get("schema_fingerprint"),
+                "lineage_sha256": lineage_sha,
                 "brief_sha256": sha256_text(brief),
                 "confirm_full_table": payload.confirm_full_table,
                 "summary": result["summary"],

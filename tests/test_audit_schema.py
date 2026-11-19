@@ -429,9 +429,19 @@ def test_schema_approval_flow(tmp_path, monkeypatch):
     )
     session_id = upload.json()["id"]
 
-    saved = client.put(f"/api/sessions/{session_id}/audit-schema", json=SPECS).json()
+    saved = client.put(
+        f"/api/sessions/{session_id}/audit-schema",
+        json={**SPECS, "author": "业务分析员"},
+    ).json()
     assert saved["status"] == "draft"
     assert client.get(f"/api/sessions/{session_id}/audit-schema").json()["status"] == "draft"
+
+    same_person = client.post(
+        f"/api/sessions/{session_id}/audit-schema/approve",
+        json={"approved_by": "业务分析员"},
+    )
+    assert same_person.status_code == 422
+    assert "不能与口径作者相同" in same_person.json()["detail"]
 
     approved = client.post(
         f"/api/sessions/{session_id}/audit-schema/approve",

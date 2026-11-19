@@ -293,13 +293,19 @@ def load_schema(root: str | Path) -> list[AuditMetric] | None:
 
 
 def approve_schema(root: str | Path, approver: str) -> list[AuditMetric]:
-    """把当前口径标记为已批准；批准人与时间写入文件与历史。"""
+    """把当前口径标记为已批准；批准人与时间写入文件与历史。
+
+    职责分离：批准人不能是口径作者，避免同一人自编自批。
+    """
     name = approver.strip()
     if not name:
         raise ValueError("批准人不能为空。")
     payload = load_schema_document(root)
     if payload is None:
         raise ValueError("当前会话还没有登记核验口径。")
+    author = str(payload.get("author") or "").strip()
+    if author and author.casefold() == name.casefold():
+        raise ValueError("批准人不能与口径作者相同，请由另一位同事批准。")
     metrics = parse_schema(payload)
     document = {
         "version": SCHEMA_VERSION,
@@ -338,12 +344,15 @@ def _append_history(
         pass
 
 
-def save_schema(root: str | Path, payload: Any) -> list[AuditMetric]:
+def save_schema(
+    root: str | Path, payload: Any, *, author: str | None = None
+) -> list[AuditMetric]:
     metrics = parse_schema(payload)
     root_path = Path(root)
     document = {
         "version": SCHEMA_VERSION,
         "status": STATUS_DRAFT,
+        "author": (author or "").strip() or None,
         "approved_by": None,
         "approved_at": None,
         "metrics": _serialize(metrics),
@@ -352,7 +361,7 @@ def save_schema(root: str | Path, payload: Any) -> list[AuditMetric]:
         root_path / SCHEMA_FILENAME,
         json.dumps(document, ensure_ascii=False, indent=2),
     )
-    _append_history(root, metrics, status=STATUS_DRAFT)
+    _append_history(root, metrics, status=STATUS_DRAFT, approver=None)
     return metrics
 
 
@@ -362,6 +371,9 @@ def schema_fingerprint(metrics: list[AuditMetric]) -> str:
 
 
 def _normalize_value(value: str) -> str:
+    # 纯 ASCII 的订单号/编码占绝大多数：NFKC 不改变 ASCII，直接 casefold 即可。
+    if value.isascii():
+        return value.casefold()
     return "".join(
         char
         for char in unicodedata.normalize("NFKC", value).casefold()
@@ -377,6 +389,26 @@ def _decode(raw: bytes) -> tuple[str, str]:
         except UnicodeDecodeError:
             continue
     raise ValueError(_ENCODING_HINT)
+
+
+_SCALE = 1_000_000_000
+
+
+def _scaled_int(cell: str, *, column: str, row_number: int) -> int:
+    """把数值单元格解析为 10^-9 定标整数；比逐格 Decimal 快一个数量级。"""
+    cleaned = cell.strip()
+    if "," in cleaned or "¥" in cleaned or "￥" in cleaned or "$" in cleaned:
+        cleaned = cleaned.translate(_CURRENCY).replace(",", "")
+    negative = cleaned.startswith("-")
+    if cleaned[:1] in {"+", "-"}:
+        cleaned = cleaned[1:]
+    whole, _, fraction = cleaned.partition(".")
+    if not whole.isdigit() or (fraction and not fraction.isdigit()):
+        raise ValueError(f"第 {row_number} 条记录的 {column} 不是有效数值。")
+    if len(fraction) > 9:
+        raise ValueError(f"第 {row_number} 条记录的 {column} 小数位过多（最多 9 位）。")
+    value = int(whole) * _SCALE + int((fraction + "000000000")[:9])
+    return -value if negative else value
 
 
 def _decimal(cell: str, *, column: str, row_number: int) -> Decimal:
@@ -408,8 +440,8 @@ def _matches_filter(cell: str, op: str, expected: Any, *, column: str, row_numbe
         return str(expected).casefold() in actual.casefold()
     if op == "in":
         return actual in {str(item).strip() for item in expected}
-    left = _decimal(actual, column=column, row_number=row_number)
-    right = _decimal(str(expected), column=column, row_number=row_number)
+    left = _scaled_int(actual, column=column, row_number=row_number)
+    right = _scaled_int(str(expected), column=column, row_number=row_number)
     if op == "gt":
         return left > right
     if op == "ge":
@@ -419,31 +451,72 @@ def _matches_filter(cell: str, op: str, expected: Any, *, column: str, row_numbe
     return left <= right
 
 
-def _row_passes(row: dict[str, str], metric: AuditMetric, row_number: int) -> bool:
+def _cell(row: list[str], index: dict[str, int], column: str) -> str:
+    position = index.get(column)
+    if position is None:
+        raise ValueError(f"CSV 缺少核验口径需要的列：{column}")
+    return row[position]
+
+
+def _row_passes(row: list[str], index: dict[str, int], metric: AuditMetric, row_number: int) -> bool:
     for item in metric.filters:
         column = item["column"]
-        if column not in row:
-            raise ValueError(f"CSV 缺少核验口径需要的列：{column}")
-        if not _matches_filter(
-            row[column], item["op"], item["value"], column=column, row_number=row_number
-        ):
+        cell = _cell(row, index, column)
+        op = item["op"]
+        if op in {"eq", "ne"}:
+            actual = cell.strip()
+            desired = str(item["value"]).strip()
+            result = actual == desired
+            if not result:
+                try:
+                    result = _scaled_int(actual, column=column, row_number=row_number) == _scaled_int(
+                        desired, column=column, row_number=row_number
+                    )
+                except ValueError:
+                    result = False
+            if (op == "eq") != result:
+                return False
+            continue
+        if op == "contains":
+            if str(item["value"]).casefold() not in cell.casefold():
+                return False
+            continue
+        if op == "in":
+            if cell.strip() not in {str(value).strip() for value in item["value"]}:
+                return False
+            continue
+        left = _scaled_int(cell, column=column, row_number=row_number)
+        right = _scaled_int(str(item["value"]), column=column, row_number=row_number)
+        if op == "gt" and not left > right:
+            return False
+        if op == "ge" and not left >= right:
+            return False
+        if op == "lt" and not left < right:
+            return False
+        if op == "le" and not left <= right:
             return False
     window = metric.time_window
     if window:
         column = window["column"]
-        if column not in row:
-            raise ValueError(f"CSV 缺少核验口径需要的列：{column}")
-        raw_value = row[column].strip()
+        raw_value = _cell(row, index, column).strip()
         if _is_null(raw_value):
             return False
-        try:
-            current = date.fromisoformat(raw_value[:10].replace("/", "-"))
-        except ValueError as exc:
-            raise ValueError(f"第 {row_number} 条记录的 {column} 不是有效日期。") from exc
-        if window.get("start") and current < date.fromisoformat(window["start"]):
-            return False
-        if window.get("end") and current > date.fromisoformat(window["end"]):
-            return False
+        current_text = raw_value[:10].replace("/", "-")
+        start = window.get("start")
+        end = window.get("end")
+        # ISO 日期用字符串比较即可，避免 100 万次 date.fromisoformat。
+        if start and len(current_text) == 10 and len(start) == 10:
+            if current_text < start:
+                return False
+        elif start:
+            if date.fromisoformat(current_text) < date.fromisoformat(start):
+                return False
+        if end and len(current_text) == 10 and len(end) == 10:
+            if current_text > end:
+                return False
+        elif end:
+            if date.fromisoformat(current_text) > date.fromisoformat(end):
+                return False
     return True
 
 
@@ -455,45 +528,52 @@ def read_metrics(
     digest = hashlib.sha256(raw).hexdigest()
     text, encoding = _decode(raw)
 
-    sums: dict[str, Decimal] = defaultdict(Decimal)
+    sums: dict[str, int] = defaultdict(int)
     counts: dict[str, int] = defaultdict(int)
-    minimums: dict[str, Decimal] = {}
-    maximums: dict[str, Decimal] = {}
+    minimums: dict[str, int] = {}
+    maximums: dict[str, int] = {}
     distinct: dict[str, set[str]] = defaultdict(set)
-    normalized: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
     preview: list[dict[str, Any]] = []
     rows = 0
     used = 0
     try:
-        reader = csv.DictReader(io.StringIO(text, newline=""), strict=True)
-        headers = reader.fieldnames or []
+        reader = csv.reader(io.StringIO(text, newline=""), strict=True)
+        headers = next(reader, [])
+        index = {column: position for position, column in enumerate(headers)}
         required = {metric.column for metric in metrics if metric.aggregation != "ratio"}
         for metric in metrics:
             required.update(item["column"] for item in metric.filters)
             if metric.time_window:
                 required.add(metric.time_window["column"])
-        missing = sorted(column for column in required if column not in headers)
+        missing = sorted(column for column in required if column not in index)
         if missing:
             raise ValueError("CSV 缺少核验口径需要的列：" + "、".join(missing))
+        simple = {
+            metric.name: (not metric.filters and metric.time_window is None)
+            for metric in metrics
+        }
         for row_number, row in enumerate(reader, start=1):
+            if not row:
+                continue
             if max_rows is not None and row_number > max_rows:
                 raise ValueError(f"CSV 超过 {max_rows} 行上限，请拆分或先用筛选视图收敛。")
-            if None in row or any(value is None for value in row.values()):
+            if len(row) != len(headers):
                 raise ValueError(f"第 {row_number} 条记录的列数和表头不一致。")
             rows = row_number
             matched_any = False
             for metric in metrics:
                 if metric.aggregation == "ratio":
                     continue
-                if not _row_passes(row, metric, row_number):
+                if not simple[metric.name] and not _row_passes(row, index, metric, row_number):
                     continue
                 matched_any = True
-                cell = row[metric.column]
-                if metric.aggregation == "count":
+                aggregation = metric.aggregation
+                if aggregation == "count":
                     counts[metric.name] += 1
                     continue
-                if metric.aggregation == "count_distinct":
-                    value = str(cell).strip()
+                cell = _cell(row, index, metric.column)
+                if aggregation == "count_distinct":
+                    value = cell.strip()
                     if _is_null(value):
                         if metric.null_policy == "fail":
                             raise ValueError(
@@ -501,7 +581,6 @@ def read_metrics(
                             )
                         continue
                     distinct[metric.name].add(value)
-                    normalized[metric.name][_normalize_value(value)].add(value)
                     continue
                 if _is_null(cell):
                     if metric.null_policy == "fail":
@@ -511,8 +590,8 @@ def read_metrics(
                     if metric.null_policy == "zero":
                         counts[metric.name] += 1
                     continue
-                value = _decimal(cell, column=metric.column, row_number=row_number)
-                if metric.data_type == "integer" and value != value.to_integral_value():
+                value = _scaled_int(cell, column=metric.column, row_number=row_number)
+                if metric.data_type == "integer" and value % _SCALE:
                     raise ValueError(f"第 {row_number} 条记录的 {metric.column} 必须是整数。")
                 if metric.sign_policy == "non_negative" and value < 0:
                     raise ValueError(f"第 {row_number} 条记录的 {metric.column} 不能为负数。")
@@ -525,7 +604,12 @@ def read_metrics(
                     value if metric.name not in maximums else max(maximums[metric.name], value)
                 )
             if rows <= _PREVIEW_ROWS:
-                preview.append({"record": rows, **{column: row[column] for column in headers}})
+                preview.append(
+                    {
+                        "record": rows,
+                        **{column: row[position] for column, position in index.items()},
+                    }
+                )
             if matched_any:
                 used += 1
     except (csv.Error, UnicodeError) as exc:
@@ -545,15 +629,15 @@ def read_metrics(
             values[metric.name] = str(counts[metric.name])
             continue
         if metric.aggregation == "sum":
-            number = sums[metric.name]
+            number = Decimal(sums[metric.name]).scaleb(-9)
         elif metric.aggregation == "min":
-            number = minimums[metric.name]
+            number = Decimal(minimums[metric.name]).scaleb(-9)
         elif metric.aggregation == "max":
-            number = maximums[metric.name]
+            number = Decimal(maximums[metric.name]).scaleb(-9)
         else:
             if not counts[metric.name]:
                 raise ValueError(f"指标「{metric.name}」没有可计算的非空数值。")
-            number = sums[metric.name] / counts[metric.name]
+            number = (Decimal(sums[metric.name]) / counts[metric.name]).scaleb(-9)
         mode = ROUND_HALF_EVEN if metric.rounding == "HALF_EVEN" else ROUND_HALF_UP
         quant = Decimal(1).scaleb(-metric.decimals)
         values[metric.name] = f"{number.quantize(quant, rounding=mode):.{metric.decimals}f}"
@@ -575,9 +659,12 @@ def read_metrics(
     for metric in metrics:
         if metric.aggregation != "count_distinct":
             continue
+        normalized: dict[str, set[str]] = defaultdict(set)
+        for value in distinct[metric.name]:
+            normalized[_normalize_value(value)].add(value)
         groups = [
             {"normalized": key, "values": sorted(items)[:5], "count": len(items)}
-            for key, items in normalized[metric.name].items()
+            for key, items in normalized.items()
             if len(items) > 1
         ]
         if groups:

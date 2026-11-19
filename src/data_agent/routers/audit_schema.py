@@ -24,6 +24,7 @@ router = APIRouter()
 
 class AuditSchemaPayload(BaseModel):
     metrics: list[dict[str, Any]] = Field(default_factory=list, max_length=12)
+    author: str = Field(default="", max_length=80)
 
 
 class ApproveSchemaPayload(BaseModel):
@@ -44,6 +45,7 @@ def get_audit_schema(session_id: str) -> dict[str, Any]:
         "metrics": serialize_metrics(specs or []),
         "source": None if document is None else "workspace",
         "status": (document or {}).get("status"),
+        "author": (document or {}).get("author"),
         "approved_by": (document or {}).get("approved_by"),
         "approved_at": (document or {}).get("approved_at"),
     }
@@ -101,7 +103,7 @@ def put_audit_schema(session_id: str, payload: AuditSchemaPayload) -> dict[str, 
 
     workspace = api.registry.get(session_id).workspace
     try:
-        specs = save_schema(workspace.root, payload.model_dump())
+        specs = save_schema(workspace.root, payload.model_dump(), author=payload.author)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"metrics": serialize_metrics(specs), "source": "workspace", "status": "draft"}

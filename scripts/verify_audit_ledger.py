@@ -42,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source", type=Path, help="待核对的原始 CSV")
     parser.add_argument("--trace", type=Path, help="待核对的快速起草轨迹 JSON")
     parser.add_argument("--schema", type=Path, help="待核对的核验口径 audit_schema.json")
+    parser.add_argument("--lineage", type=Path, help="待核对的来源血缘 audit_lineage.json")
     parser.add_argument("--audit-id", help="只查看该 audit_id 的记录")
     parser.add_argument("--json", action="store_true", help="以 JSON 输出结果")
     args = parser.parse_args(argv)
@@ -140,6 +141,29 @@ def main(argv: list[str] | None = None) -> int:
                 "核验口径与账本中的任何一条记录都不匹配（口径文件被改动过）。"
             )
 
+    if args.lineage:
+        try:
+            from data_agent.audit_lineage import lineage_fingerprint, parse_lineage
+
+            lineage_payload = json.loads(args.lineage.read_text(encoding="utf-8"))
+            lineage_sha = lineage_fingerprint(parse_lineage(lineage_payload))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            print(f"[失败] 无法读取来源血缘：{exc}", file=sys.stderr)
+            return 2
+        matched = [
+            entry for entry in entries if entry.get("lineage_sha256") == lineage_sha
+        ]
+        checks["lineage"] = {
+            "path": str(args.lineage),
+            "fingerprint": lineage_sha,
+            "matched_seq": [entry["seq"] for entry in matched],
+        }
+        if not matched:
+            verification["valid"] = False
+            verification["errors"].append(
+                "来源血缘与账本中的任何一条记录都不匹配（血缘文件被改动过）。"
+            )
+
     if args.source:
         try:
             source_sha = _sha256(args.source)
@@ -172,6 +196,11 @@ def main(argv: list[str] | None = None) -> int:
             if name == "brief":
                 print(
                     f"  简报 {check['path']}：SHA-256 {check['sha256'][:16]}…，"
+                    f"命中记录 {check['matched_seq'] or '无'}"
+                )
+            elif name == "lineage":
+                print(
+                    f"  来源血缘 {check['path']}：指纹 {check['fingerprint'][:16]}…，"
                     f"命中记录 {check['matched_seq'] or '无'}"
                 )
             elif name == "schema":
