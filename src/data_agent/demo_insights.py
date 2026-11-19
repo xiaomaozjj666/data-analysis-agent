@@ -152,23 +152,31 @@ def _auto_charts(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
 
     if dates and numeric:
         column = numeric[0]
-        buckets: dict[str, float] = defaultdict(float)
+        buckets: dict[str, list[float]] = defaultdict(list)
         for row in rows:
             amount = _number(row.get(column, ""))
             if amount is None:
                 continue
-            buckets[(row.get(dates[0]) or "")[:10].replace("/", "-")] += amount
-        points = [
-            {"label": label, "value": round(value, 2)}
-            for label, value in sorted(buckets.items())
-            if label
-        ]
+            buckets[(row.get(dates[0]) or "")[:10].replace("/", "-")].append(amount)
+        flattened = [value for values in buckets.values() for value in values]
+        baseline = median(flattened) if flattened else 0.0
+        cap = baseline * 20 if baseline else None
+        excluded = 0
+        points = []
+        for label, values in sorted(buckets.items()):
+            if not label:
+                continue
+            kept = [value for value in values if cap is None or value <= cap]
+            excluded += len(values) - len(kept)
+            if kept:
+                points.append({"label": label, "value": round(sum(kept), 2)})
         if points:
             charts.append(
                 {
                     "type": "line",
                     "title": f"{_label(column)}趋势",
-                    "subtitle": f"按{_label(dates[0])}汇总",
+                    "subtitle": f"按{_label(dates[0])}汇总"
+                    + (f" · 已排除 {excluded} 条极端值" if excluded else ""),
                     "unit": _unit(column),
                     "points": points[:40],
                 }
@@ -176,19 +184,31 @@ def _auto_charts(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
 
     if categorical and numeric:
         column = numeric[0]
-        buckets: dict[str, float] = defaultdict(float)
+        groups: dict[str, list[float]] = defaultdict(list)
         for row in rows:
             amount = _number(row.get(column, ""))
             if amount is not None:
-                buckets[row.get(categorical[0], "未命名")] += amount
-        if buckets:
+                groups[row.get(categorical[0], "未命名")].append(amount)
+        flattened = [value for values in groups.values() for value in values]
+        baseline = median(flattened) if flattened else 0.0
+        cap = baseline * 20 if baseline else None
+        excluded = 0
+        summary = {}
+        for label, values in groups.items():
+            kept = [value for value in values if cap is None or value <= cap]
+            excluded += len(values) - len(kept)
+            if kept:
+                summary[label] = sum(kept)
+        if summary:
             charts.append(
                 {
                     "type": "bar",
                     "title": f"{_label(categorical[0])}对比",
-                    "subtitle": f"按{_label(column)}求和 · Top 8",
+                    "subtitle": f"按{_label(column)}求和"
+                    + (f" · 已排除 {excluded} 条极端值" if excluded else "")
+                    + " · Top 8",
                     "unit": _unit(column),
-                    "items": _top(buckets),
+                    "items": _top(summary),
                 }
             )
 
@@ -224,13 +244,17 @@ def _auto_charts(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
     if numeric and len(rows) <= 50_000:
         values = column_values(numeric[0])
         if len(values) >= 8:
+            baseline = median(values)
+            clipped = [value for value in values if value <= baseline * 20] if baseline else values
+            usable = clipped if len(clipped) >= 8 else values
             charts.append(
                 {
                     "type": "histogram",
                     "title": f"{_label(numeric[0])}分布",
-                    "subtitle": "12 档等宽分箱",
+                    "subtitle": "12 档等宽分箱"
+                    + (" · 已排除极端值" if len(usable) < len(values) else ""),
                     "unit": "行",
-                    "items": _histogram(values),
+                    "items": _histogram(usable),
                 }
             )
 

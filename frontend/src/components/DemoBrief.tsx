@@ -80,16 +80,21 @@ function Scatter({ chart }: { chart: DemoChart }) {
   const width = 340;
   const height = 150;
   const pad = 14;
-  const xs = all.map((point) => point[0]);
-  const ys = all.map((point) => point[1]);
+  const scalePoints = points.length ? points : all;
+  const xs = scalePoints.map((point) => point[0]);
+  const ys = scalePoints.map((point) => point[1]);
   const xMin = Math.min(...xs);
   const xMax = Math.max(...xs) || 1;
   const yMin = Math.min(...ys);
   const yMax = Math.max(...ys) || 1;
-  const map = (point: [number, number]) => [
-    pad + ((point[0] - xMin) / (xMax - xMin || 1)) * (width - pad * 2),
-    height - pad - ((point[1] - yMin) / (yMax - yMin || 1)) * (height - pad * 2),
-  ] as const;
+  const map = (point: [number, number]) => {
+    const x = pad + ((point[0] - xMin) / (xMax - xMin || 1)) * (width - pad * 2);
+    const y = height - pad - ((point[1] - yMin) / (yMax - yMin || 1)) * (height - pad * 2);
+    return [
+      Math.min(width - pad, Math.max(pad, x)),
+      Math.min(height - pad, Math.max(pad, y)),
+    ] as const;
+  };
   return (
     <figure className="demo-chart demo-scatter">
       <figcaption>
