@@ -344,3 +344,77 @@ CJK 500KB 正文抽取 0.09s；crawl state 5000+20000 条目 round-trip 约 20ms
 报告原子写约 3.5–5.0ms/次（其中 fsync 约 0.5–0.75ms，主要成本是
 mkstemp + os.replace）。Windows 文件系统波动可达 ±40%，绝对耗时门槛类断言
 必须留足抖动余量并叠加"算法复杂度"断言，不能只靠单次阈值。
+
+## 大数据基准（2026-11-19）
+
+本节把此前散落在各处的"大数据优化"固化成一条可复跑命令。基准脚本
+`scripts/bench_bigdata.py` 生成临时数据、逐项计时并输出 JSON；临时文件在
+脚本结束时删除，除 numpy / pandas / plotly（均为现有依赖）外不引入任何新依赖。
+
+复跑命令（仓库根目录，默认 20 万行 × 7 列 + 100 万行核验 CSV）：
+
+```powershell
+.venv\Scripts\python.exe scripts/bench_bigdata.py
+```
+
+可用 `--rows` / `--audit-rows` / `--repeat` / `--seed` 调整规模与轮数。
+2026-11-19 默认参数连续三次实跑：总墙钟 50s / 72s / 105s，退出码均为 0，
+全部基准项 `ok=true`。下表取**三次实跑的中位数**（每项内部仍是 3 次计时的
+中位数，`load` 与 `read_metrics` 是一次性 I/O）；波动范围见文末说明。
+
+**机器与版本**：Intel Core Ultra 9 275HX（24 逻辑核）、31.4GB 内存、
+Windows 11 家庭版中文版 10.0.26300；`.venv` 内 Python 3.13.14、
+pandas 3.1.1、numpy 2.5.5、plotly 7.1.0。表中耗时先按"每项 3 次计时
+（预热 1 次）取中位数"，再对三次完整实跑取中位数；`load` 与
+`read_metrics` 是一次性 I/O，按单次值参与三跑中位数。
+
+| 基准项 | 规模 | 入口 | 耗时 | 额外峰值内存 | 结果 |
+| --- | --- | --- | --- | --- | --- |
+| 工作区加载（含首次 profile） | 20 万行 × 7 列，CSV 26.43MB | `DataWorkspace.load` | 0.362s | 28.71MB | DataFrame 5.341MB |
+| profile 冷路径（清缓存后重算） | 同上 | `DataWorkspace.profile(5)` | 0.245s | 23.30MB | 重复行 0 |
+| profile 热路径（全量统计缓存命中） | 同上 | `DataWorkspace.profile(8)` | 0.000003s | — | LRU 命中 |
+| 相关分析（7 列 / 21 对） | 20 万行 × 7 列 | `run_statistical_analysis(..., "correlation")` | 0.063s | — | p 值走 t 分布导出 |
+| 图表嵌入抽样 · 散点 | 20 万点 | `sample_plotly_figure_for_embed` | 0.020s | — | 20 万 → 5 万点 |
+| 图表嵌入抽样 · 折线（LTTB） | 20 万点 | 同上 | 0.051s | — | 20 万 → 5 万点 |
+| 密度视图聚合 | 20 万点 | `build_density_view` | 0.049s | — | 154×80 网格、5809 个非空格、峰值 234 |
+| WebGL 切换 | 20 万行 | `_plotly_webgl_if_large` | 0.018s | — | `scatter` → `scattergl` |
+| 核验复算 | 100 万行 × 4 列，CSV 33.28MB | `audit_schema.read_metrics` | 54.802s | 210.08MB | 100 万行全量逐行复算 |
+
+阈值触发结果（脚本内直接断言并输出，避免"配置在但没生效"）：
+
+- 密度视图：`should_use_density(20_000) = True`、`(19_999) = False`、
+  20 万行 `= True`；阈值常量 `DENSITY_MIN_POINTS = 20_000`。
+- WebGL：`_PLOTLY_WEBGL_THRESHOLD = 10_000`；20 万行散点与折线均切到
+  `scattergl`，恰好 10,000 行仍是 `scatter`（判断条件是 `>` 而非 `>=`），
+  9,999 行保持 `scatter`。
+- 核验复算的读数可对账：金额合计 `501120671.01`、订单数 `1000000`、
+  区域数 `4`，`evidence.rows = 1000000`，证明 100 万行全部参与而非抽样。
+
+几点口径说明：
+
+1. **"额外峰值内存"是 `tracemalloc` 从该项开始计时起的峰值**，不是进程
+   RSS，也不能跨项相加；单位按 1024² 计算（MiB，脚本字段名沿用 MB）。
+   本机实测 numpy 的缓冲区分配会被 tracemalloc 计入
+   （`np.zeros(10_000_000)` 实测计入 76.29MiB），但解释器与已导入模块的
+   常驻内存不在其中。
+2. `load` 内部会调用一次 `profile`，所以 0.362s / 28.71MB 是"解析 CSV +
+   首次全表统计"的合计；单看 profile 冷路径是 0.245s / 23.30MB。
+3. `read_metrics` 是核验链路的**全量逐行**复算（`csv.DictReader` + `Decimal`），
+   34.4–84.9s/100 万行是刻意不抽样换来的可审计性；这条路径不属于交互式
+   预览，不要按图表路径的毫秒级预算要求它。100 万行时 210MB 峰值主要来自
+   原始字节 + 解码文本两份副本。
+4. 与上一节"相关分析 0.472s → 0.025s"的差异来自测量上下文：上一节是
+   优化前后对照的独立脚本与最快档，本节是通用基准的 3 次中位数（含结果
+   字典构建、生成数据的相关结构也不同）。**需要复现时以本节命令为准**，
+   不要拿两个不同脚本的单次数字直接当回归判据。
+5. 同一命令三次实跑的漂移：`load` 0.276 / 0.362 / 0.434s、相关分析
+   0.061 / 0.063 / 0.072s、密度聚合 0.038 / 0.049 / 0.055s、
+   `read_metrics` 34.4 / 54.8 / 84.9s（其余项差异在 1–3ms 内），总墙钟
+   50 / 72 / 105s。这与上一节"Windows 文件系统波动可达 ±40%"量级一致，
+   且三次运行期间本机工作树还有其它并行改动在变动。**不要拿单次绝对耗时当回归判据**；
+   脚本的确定性输出（点数、网格、阈值触发、读数）才是可对账的部分。
+6. 本脚本只读现有实现，不改 `src/` 与 `tests/`；它调用的是**运行时工作树**
+   里的代码，工作树存在未提交改动时以工作树为准。相关回归由
+   `tests/test_bigdata_budget.py`（体积/点数/时间上限）与
+   `tests/test_density*.py`、`tests/test_line_sampling.py`、
+   `tests/test_audit_schema.py`、`tests/test_coverage_fill.py` 覆盖。
