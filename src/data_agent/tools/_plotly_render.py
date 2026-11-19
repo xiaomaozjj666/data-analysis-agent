@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from html import escape
 from typing import Any
 
 import numpy as np
@@ -588,12 +589,222 @@ def _collect_trace_values(fig: Any, axis: str) -> list[float]:
     return values
 
 
+#: ``data_summary.rows`` 的最大行数：图表的辅助数据表只给"前 N 行"样本，
+#: 用于读屏、复制与无交互场景核对数值，不承担完整数据导出的职责（完整
+#: 数据在同名 JSON 产物里）。20 行足够读出一列的量级与格式。
+_DATA_SUMMARY_MAX_ROWS = 20
+
+
+def _summary_cell(value: Any) -> Any:
+    """把单元格转成 JSON 可序列化、可读的标量。
+
+    numpy 标量还原为原生类型；NaN/Inf/NaT 统一为 ``None``（JSON 里是 null，
+    HTML 里显示为 "—"）；日期按 ISO 字符串输出；其余类型退化为字符串，
+    保证 ``json_text`` 不会因不可序列化对象失败。
+    """
+    if value is None:
+        return None
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, float):
+        return value if np.isfinite(value) else None
+    if isinstance(value, (str, int, bool)):
+        return value
+    try:
+        if bool(pd.isna(value)):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    return str(value)
+
+
+def build_data_summary(
+    columns: list[str],
+    rows: list[list[Any]],
+    *,
+    points: int | None = None,
+    sampled: bool = False,
+    max_rows: int = _DATA_SUMMARY_MAX_ROWS,
+) -> dict[str, Any]:
+    """构造图表响应里的 ``data_summary``（供读屏、复制与无交互场景使用）。
+
+    ``rows`` 是**实际参与绘图**的 x/y/z/颜色取值（不是原始 DataFrame 的
+    前 20 行）：抽样后的图表只暴露抽样后的点，否则表格与画面会对不上。
+    ``points`` 是嵌入图表的点数（抽样后），``sampled`` 标记是否发生抽样。
+    """
+    safe_rows = [[_summary_cell(value) for value in row] for row in rows[:max_rows]]
+    return {
+        "columns": [str(column) for column in columns],
+        "points": int(len(rows) if points is None else points),
+        "sampled": bool(sampled),
+        "rows": safe_rows,
+    }
+
+
+#: 数据表样式：默认折叠、表格自带滚动区，不改变图表原有的 100% 高度布局。
+#: 暗色规则与既有图表主题脚本使用同一个 ``html[data-theme='dark']`` 约定。
+_DATA_TABLE_STYLE = (
+    "<style>"
+    ".chart-data-table{margin:8px 24px 12px;font-size:12px;line-height:1.6;color:#374151}"
+    ".chart-data-table>summary{cursor:pointer;font-weight:600;color:#245C55;"
+    "padding:4px 0;user-select:none}"
+    ".chart-data-table>summary:focus-visible{outline:2px solid #4E79A7;outline-offset:2px}"
+    ".chart-data-table-scroll{max-height:220px;overflow:auto;margin-top:6px}"
+    ".chart-data-table table{border-collapse:collapse;width:100%}"
+    ".chart-data-table caption{text-align:left;color:#6b7280;font-size:12px;"
+    "padding:0 0 6px}"
+    ".chart-data-table th,.chart-data-table td{border:1px solid #e5e7eb;"
+    "padding:4px 8px;text-align:left;white-space:nowrap}"
+    ".chart-data-table thead th{position:sticky;top:0;background:#f3f4f6;"
+    "font-weight:600;z-index:1}"
+    ".chart-data-table tbody tr:nth-child(even){background:#f9fafb}"
+    "html[data-theme='dark'] .chart-data-table{color:#c9cfd9}"
+    "html[data-theme='dark'] .chart-data-table>summary{color:#9ad0c8}"
+    "html[data-theme='dark'] .chart-data-table th,"
+    "html[data-theme='dark'] .chart-data-table td{border-color:#2a3445}"
+    "html[data-theme='dark'] .chart-data-table thead th{background:#232c3b}"
+    "html[data-theme='dark'] .chart-data-table tbody tr:nth-child(even){background:#1f2733}"
+    "html[data-theme='dark'] .chart-data-table caption{color:#9aa4b5}"
+    "</style>"
+)
+
+
+def render_data_table_html(summary: dict[str, Any] | None) -> str:
+    """把 ``data_summary`` 渲染成可访问的折叠表格（``<details>`` + ``<table>``）。
+
+    - 默认折叠：不打断现有图表交互，展开才占用空间；
+    - ``caption`` 与 ``scope="col"`` 给读屏软件完整的表结构；
+    - 所有单元格与表头都经过 ``html.escape``，图片/脚本数据不会执行。
+    """
+    if not summary:
+        return ""
+    columns = list(summary.get("columns") or [])
+    rows = list(summary.get("rows") or [])
+    if not columns:
+        return ""
+    caption = f"图表数据表（前 {len(rows)} 行）"
+    head = "".join(f'<th scope="col">{escape(str(column))}</th>' for column in columns)
+    body = "".join(
+        "<tr>"
+        + "".join(
+            f"<td>{escape('—' if value is None else str(value))}</td>"
+            for value in row
+        )
+        + "</tr>"
+        for row in rows
+    )
+    return (
+        _DATA_TABLE_STYLE
+        + '<details class="chart-data-table">'
+        + f"<summary>{caption}</summary>"
+        + '<div class="chart-data-table-scroll">'
+        + f"<table><caption>{caption}</caption>"
+        + f"<thead><tr>{head}</tr></thead>"
+        + f"<tbody>{body}</tbody></table>"
+        + "</div></details>"
+    )
+
+
+def _plotly_trace_values(trace: Any, axis: str) -> list[Any]:
+    """读取 Plotly trace 某个轴的数据并转成 Python 列表（缺失时返回空表）。"""
+    raw = getattr(trace, axis, None)
+    if raw is None:
+        return []
+    try:
+        return np.asarray(raw).tolist()
+    except (TypeError, ValueError):
+        try:
+            return list(raw)
+        except TypeError:
+            return []
+
+
+def _plotly_trace_colors(trace: Any, count: int) -> list[Any] | None:
+    """取连续颜色维度的真实取值；分类着色的色板字符串不算数据。
+
+    ``px.scatter_3d(color=数值列)`` 用单个 trace + ``marker.color`` 数组表达
+    连续颜色；分类着色则拆成多个 trace、``marker.color`` 是调色板色值。
+    前者返回数组（真实颜色值），后者返回 ``None``（让调用方用 trace.name）。
+    """
+    marker = getattr(trace, "marker", None)
+    raw = getattr(marker, "color", None) if marker is not None else None
+    if raw is None or isinstance(raw, str):
+        return None
+    try:
+        values = list(raw)
+    except TypeError:
+        return None
+    if len(values) != count or count == 0:
+        return None
+    strings = [value for value in values if isinstance(value, str)]
+    if strings and all(
+        value.startswith("#") or value.startswith("rgb") for value in strings
+    ):
+        return None
+    return values
+
+
+def scatter3d_data_summary(
+    fig: Any,
+    *,
+    x: str,
+    y: str,
+    z: str,
+    color: str | None,
+    sampled: bool,
+) -> dict[str, Any]:
+    """从**实际绘制的** Plotly 3D 散点 figure 提取 ``data_summary``。
+
+    调用时机在 HTML 嵌入抽样之后：抽样后的 figure 只含真正写给浏览器的点，
+    表格里的 ``points`` 与画面一一对应。颜色列按 trace 还原——分类着色时
+    每个 trace 是一个分组（``trace.name``），连续着色时取 ``marker.color``
+    的真实数值。
+    """
+    columns = [x, y, z] + ([color] if color else [])
+    rows: list[list[Any]] = []
+    points = 0
+    for trace in getattr(fig, "data", ()):  # type: ignore[union-attr]
+        if getattr(trace, "type", "") != "scatter3d":
+            continue
+        xs = _plotly_trace_values(trace, "x")
+        ys = _plotly_trace_values(trace, "y")
+        zs = _plotly_trace_values(trace, "z")
+        count = min(len(xs), len(ys), len(zs))
+        points += count
+        if not color:
+            rows.extend([xs[index], ys[index], zs[index]] for index in range(count))
+            continue
+        colors = _plotly_trace_colors(trace, count)
+        fallback = getattr(trace, "name", None)
+        for index in range(count):
+            color_value = colors[index] if colors is not None else fallback
+            rows.append([xs[index], ys[index], zs[index], color_value])
+    return build_data_summary(columns, rows, points=points, sampled=sampled)
+
+
+def append_html_body_block(html_text: str, block: str) -> str:
+    """把一段 HTML 插到完整文档的 ``</body>`` 之前（没有 body 时追加到末尾）。
+
+    仅用于 Plotly 的内联 bundle 回退分支：该分支由 ``write_html`` 直接产出
+    完整文档，无法走共享模板，但数据表仍必须出现在产物里。
+    """
+    if not block:
+        return html_text
+    index = html_text.lower().rfind("</body>")
+    if index == -1:
+        return html_text + block
+    return html_text[:index] + block + html_text[index:]
+
+
 def _render_plotly_html(
     *,
     title: str,
     script_src: str,
     div: str,
     interpretation_block: str = "",
+    data_table: str = "",
     dark_script: str = "",
     full_page: bool = True,
 ) -> str:
@@ -622,10 +833,10 @@ def _render_plotly_html(
     if full_page:
         body = (
             f"<div class='layout'><div class='chart-wrap'>{div}</div>"
-            f"{interpretation_block}</div>{dark_script}"
+            f"{interpretation_block}{data_table}</div>{dark_script}"
         )
     else:
-        body = f"{div}{dark_script}"
+        body = f"{div}{data_table}{dark_script}"
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"

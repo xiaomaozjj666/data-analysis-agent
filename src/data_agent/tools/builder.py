@@ -90,6 +90,9 @@ from ._plotly_render import (  # noqa: F401
     _scatter_3d_aspect,
     _stat_agg_note,
     _stratified_sample,
+    append_html_body_block,
+    render_data_table_html,
+    scatter3d_data_summary,
     scatter_point_style,
     scatter_symbol_style,
 )
@@ -1178,6 +1181,20 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                     "embedded_points": embedded_pts,
                     "full_data_json": str(workspace.artifacts_dir / f"{stem}.plotly.json"),
                 }
+        # 3D 散点的可访问数据摘要：取抽样后真正写进 HTML 的 figure 点，
+        # 保证表格数值与画面一致（Gemini 审计第 5 条：读屏/无法交互场景
+        # 也必须能拿到数据）。points 即嵌入点数，sampled 标记抽样事实。
+        data_summary: dict[str, Any] | None = None
+        if chart_type == "scatter_3d" and x and y and z:
+            data_summary = scatter3d_data_summary(
+                html_fig,
+                x=x,
+                y=y,
+                z=z,
+                color=color,
+                sampled=sampling_info is not None,
+            )
+        data_table = render_data_table_html(data_summary)
         interpretation_block = ""
         if interpretation:
             interpretation_block = (
@@ -1224,16 +1241,21 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                     script_src=relative_script,
                     div=div,
                     interpretation_block=interpretation_block,
+                    data_table=data_table,
                     dark_script=_PLOTLY_DARK_MODE_SCRIPT,
                 ),
             )
         else:
             # 内联 Plotly 的离线分支同样走 tmp + replace：进程中断时不会
-            # 留下半截 HTML 让预览 iframe 加载到损坏页面。
+            # 留下半截 HTML 让预览 iframe 加载到损坏页面。write_html 直接
+            # 产出完整文档，数据表在 </body> 前补入（与共享模板同一段 HTML）。
             temp_html = html_path.with_name(html_path.name + ".tmp")
             try:
                 fig.write_html(temp_html, include_plotlyjs=True, full_html=True)
-                temp_html.replace(html_path)
+                inline_html = temp_html.read_text(encoding="utf-8")
+                _atomic_write_text(
+                    html_path, append_html_body_block(inline_html, data_table)
+                )
             finally:
                 temp_html.unlink(missing_ok=True)
         workspace.register_artifact(html_path, "visualization", display_title)
@@ -1259,7 +1281,11 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             "html": html_path,
             "plotly_json": json_path,
         }
-        # 图表与来源绑定：导出物可追溯到具体那一版 CSV，而不是只靠会话目录。
+        if data_summary is not None:
+            # 读屏/无交互场景的数据兜底：columns + 前 20 行实际绘图值 +
+            # 嵌入点数与抽样标记（与 HTML 里的折叠数据表同源）。
+            response["data_summary"] = data_summary
+        # 图表与来源绑定：导出物可追溯到那一版 CSV，而不是只靠会话目录。
         if workspace.source_path and workspace.source_path.is_file():
             from data_agent.provenance import sha256_file
 

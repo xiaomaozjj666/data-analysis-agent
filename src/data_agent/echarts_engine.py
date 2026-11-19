@@ -2954,6 +2954,54 @@ def _echarts_scatter3d(
     return base
 
 
+def _scatter3d_data_summary(
+    option: dict[str, Any],
+    *,
+    x: str,
+    y: str,
+    z: str,
+    color: str | None,
+    total_rows: int,
+) -> dict[str, Any] | None:
+    """从 ECharts option 的实际 series 数据构造 ``data_summary``。
+
+    与 Plotly 分支同结构：``columns`` 是 x/y/z（有分组时加颜色列），
+    ``rows`` 是最多 20 行实际送入浏览器的坐标值，``points`` 是嵌入点数，
+    ``sampled`` 是"是否发生抽样"（3D 散点内部有 3000 点上限，HTML 嵌入
+    抽样还可能再降一次；两者任一触发都为 True）。
+
+    数据直接从 ``option["series"][].data`` 读取而不是回读 DataFrame：
+    抽样后的 option 才是用户看到的点。3D 降级为 2D（缺 z）时没有
+    ``scatter3D`` 系列，返回 ``None``，不生成误导性的数据表。
+    """
+    from data_agent.tools._plotly_render import build_data_summary
+
+    series = [
+        item
+        for item in (option.get("series") or [])
+        if isinstance(item, dict) and item.get("type") == "scatter3D"
+    ]
+    if not series:
+        return None
+    columns = [x, y, z] + ([color] if color else [])
+    rows: list[list[Any]] = []
+    points = 0
+    for item in series:
+        data = item.get("data") or []
+        if not isinstance(data, list):
+            continue
+        points += len(data)
+        group = item.get("name") if color else None
+        for record in data:
+            if not isinstance(record, (list, tuple)) or len(record) < 3:
+                continue
+            coordinates = [record[0], record[1], record[2]]
+            rows.append([*coordinates, group] if color else coordinates)
+    return build_data_summary(
+        columns, rows, points=points, sampled=points < total_rows
+    )
+
+
 def _splom_cell_axis(
     *,
     name: str | None,
@@ -3309,8 +3357,13 @@ def _build_echarts_html(
     script_src: str,
     interpretation: str,
     extra_script_src: str | None = None,
+    data_table: str = "",
 ) -> str:
-    """组装 standalone HTML：ECharts option + 解读块 + 视觉规范。"""
+    """组装 standalone HTML：ECharts option + 解读块 + 可访问数据表 + 视觉规范。
+
+    ``data_table`` 是 ``render_data_table_html`` 产出的折叠表格，默认空串
+    （编辑/缩略图等不需要数据表的调用方保持原行为）。
+    """
     option_json = _serialize_option(option)
 
     if interpretation:
@@ -3328,7 +3381,8 @@ def _build_echarts_html(
         script=script_src,
         extra_script=(f'\n<script src="{extra_script_src}"></script>' if extra_script_src else ""),
         option=option_json,
-        interpretation_block=interp_block,
+        # 数据表与解读块同属 .layout 的底部区域：默认折叠，不改变图表高度行为。
+        interpretation_block=interp_block + data_table,
         bg=_ECHARTS_BG_COLOR,
         font=_ECHARTS_FONT_FAMILY,
         text=_ECHARTS_TEXT_COLOR,
@@ -3522,6 +3576,18 @@ def _render_echarts(
                 "full_data_json": str(workspace.artifacts_dir / f"{stem}.echarts.json"),
             }
 
+    # 3D 散点的可访问数据摘要：从实际写入 HTML 的 option 读取（内部 3000
+    # 点上限与嵌入抽样都已生效），表格数值与画面一致。
+    data_summary: dict[str, Any] | None = None
+    data_table = ""
+    if chart_type == "scatter_3d" and x and y and z:
+        from data_agent.tools._plotly_render import render_data_table_html
+
+        data_summary = _scatter3d_data_summary(
+            html_option, x=x, y=y, z=z, color=color, total_rows=len(df)
+        )
+        data_table = render_data_table_html(data_summary)
+
     # 获取 echarts bundle（首次从 CDN 下载，失败时用 CDN URL 直引）
     bundle = workspace.ensure_echarts_bundle()
     if bundle is not None:
@@ -3546,6 +3612,7 @@ def _render_echarts(
         script_src=relative_script,
         interpretation=interpretation,
         extra_script_src=extra_script_src,
+        data_table=data_table,
     )
     _atomic_write_text(html_path, html_content)
     workspace.register_artifact(html_path, "visualization", display_title)
@@ -3576,6 +3643,9 @@ def _render_echarts(
         # 极端值走"主体尺度"时，坐标轴范围随响应一起返回，调用方不必猜。
         "scale_details": density_scale or {"scale_mode": "auto", "extreme_points": []},
     }
+    if data_summary is not None:
+        # 与 Plotly 分支同一结构：columns/points/sampled/rows（≤20 行）。
+        result["data_summary"] = data_summary
     if density_view is not None:
         # 渲染方式对调用方（Agent/前端）可见：密度视图不是抽样，是精确聚合，
         # 因此既没有 sampling 字段，也不需要"完整数据在 JSON 里"的免责声明；
