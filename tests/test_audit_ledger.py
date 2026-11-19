@@ -15,6 +15,7 @@ from data_agent.audit_draft import verify_trace
 from data_agent.audit_ledger import (
     GENESIS_HASH,
     LedgerError,
+    _lock_key,
     append_entry,
     read_entries,
     verify_entries,
@@ -308,7 +309,7 @@ def test_append_refuses_chain_with_wrong_hash(tmp_path):
 def test_append_reports_unwritable_ledger(tmp_path):
     blocker = tmp_path / "blocker"
     blocker.write_text("x", encoding="utf-8")
-    with pytest.raises(LedgerError, match="无法写入"):
+    with pytest.raises(LedgerError, match="无法(写入|读取)账本"):
         _append(blocker)
 
 
@@ -418,3 +419,55 @@ def test_confirm_requires_uploaded_csv(tmp_path, monkeypatch):
         json={"draft": "订单数：1 笔", "audit_id": "aud-" + "0" * 8},
     )
     assert response.status_code == 422
+
+
+def test_oversized_sales_is_rejected_instead_of_500(tmp_path):
+    """10^26 元曾在 Decimal 除法里抛 InvalidOperation（500），必须变成可读 422。"""
+    from data_agent.sales_audit import audit_sales_brief
+
+    path = tmp_path / "sales.csv"
+    path.write_text(
+        "order_id,sales,quantity\nX,1000000000000000000000000000,1\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="金额过大"):
+        audit_sales_brief(path, "订单数：1 笔")
+
+
+def test_lock_key_is_stable_before_and_after_file_exists(tmp_path):
+    """Windows 的 resolve() 在文件出现后会加 \\?\ 前缀，锁键必须保持不变。"""
+    path = tmp_path / "audit_ledger.jsonl"
+    before = _lock_key(path)
+    path.write_text("", encoding="utf-8")
+    assert _lock_key(path) == before
+
+
+def test_concurrent_first_appends_keep_the_chain_valid(tmp_path):
+    """多个线程同时向空账本首写，不能出现重复 seq 或断链。"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    for round_number in range(5):
+        root = tmp_path / f"round-{round_number}"
+        with ThreadPoolExecutor(max_workers=20) as pool:
+            list(
+                pool.map(
+                    lambda index: append_entry(
+                        root,
+                        kind="audit",
+                        session_id="s",
+                        payload={"index": index},
+                    ),
+                    range(20),
+                )
+            )
+        entries = read_entries(root / "audit_ledger.jsonl")
+        assert sorted(entry["seq"] for entry in entries) == list(range(1, 21))
+        assert verify_entries(entries)["valid"] is True
+
+
+def test_ledger_roundtrips_unicode_line_separators(tmp_path):
+    """字段里的 U+2028 是合法 JSON 字符，不能被 splitlines 当成换行。"""
+    _append(tmp_path, source_filename="a b.csv", note="x y\u0085z")
+    entries = read_entries(tmp_path / "audit_ledger.jsonl")
+    assert entries[0]["source_filename"] == "a b.csv"
+    assert verify_entries(entries)["valid"] is True
