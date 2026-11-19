@@ -42,7 +42,7 @@
 
 - README 与 `docs/wuxi-trusted-ai-challenge.md` 补充范围门、`audit_id`、服务端
   确认门、账本与离线校验命令、快速起草入口，并新增 90 秒路演脚本；测试徽章按
-  实测收集数（1648 项）更新为保守下限 1600+。
+  实测收集数（1650 项）更新为保守下限 1600+。
 - `render.yaml` 注释补充 Free 档 15 分钟休眠与 35–90 秒冷启动说明，以及
   `healthCheckPath` 在冷启动期间可能失败；未改动 region / disk 等不可变字段。
 

@@ -281,7 +281,9 @@ CI 无这些变量不受影响。同族坑：某些受管环境里 pip 做**卸�
   推送失败只写 `state.last_webhook_error`，不回滚任务状态。webhook 做两段校验：
   登记阶段只拦 scheme/账号/IP 字面量（不做 DNS，避免解析阶段网络 I/O 与整份
   任务列表加载失败）；发送阶段解析 DNS 并对**每一跳重定向**重新校验，防公网
-  地址 302 到内网/元数据地址。未做 IP 钉扎，DNS rebinding 仍是已知边界。
+  地址 302 到内网/元数据地址。**2026-11-18 改判**：发送侧已改为「一次
+  getaddrinfo 同时校验并钉扎 IP」，连接直连已校验地址，DNS rebinding 窗口
+  关闭；此处原「未做 IP 钉扎」的边界不再成立。
 - **失败隔离边界**：`run-due` 对每个任务的 due 判断与执行都包在独立 try 里，坏
   `last_run_at` 按"从未运行"降级；失败写 `last_status=error` + `next_retry_at`
   （默认 5 分钟），避免 loop 每秒重试。任务定义文件本身非法时整批 fail-fast，
