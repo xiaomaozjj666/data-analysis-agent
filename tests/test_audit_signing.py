@@ -203,11 +203,17 @@ def test_signature_check_and_tamper_endpoints(tmp_path, monkeypatch):
         "/api/sessions",
         files={"file": ("sales.csv", b"order_id,sales,quantity\nA,10,1\n", "text/csv")},
     ).json()["id"]
-    client.post(
+    audit = client.post(
         f"/api/sessions/{session_id}/sales-audit",
         json={"draft": "订单数：1 笔" + chr(10) + "销售额：10.00 元"},
     )
-    checked = client.get(f"/api/sessions/{session_id}/sales-audit/signature-check").json()
+    # 中间步骤显式断言：否则后续 KeyError 只会掩盖真实失败原因（CI 2026-11-19）
+    assert audit.status_code == 200, audit.text
+    audit_body = audit.json()
+    assert "audit_id" in audit_body and audit_body.get("ledger_error") is None, audit.text
+    checked_response = client.get(f"/api/sessions/{session_id}/sales-audit/signature-check")
+    assert checked_response.status_code == 200, checked_response.text
+    checked = checked_response.json()
     assert checked["valid"] is True
     assert checked["signed"] >= 1
 

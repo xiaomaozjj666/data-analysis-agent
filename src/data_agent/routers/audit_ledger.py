@@ -15,6 +15,8 @@ from pydantic import BaseModel, Field
 from data_agent.audit_ledger import (
     LedgerError,
     append_entry,
+    ledger_path,
+    read_entries,
     recent_entries,
     sha256_text,
 )
@@ -186,3 +188,58 @@ def get_ledger(session_id: str, limit: int = 50) -> dict[str, Any]:
         return recent_entries(workspace.root, limit=max(1, min(limit, 200)))
     except LedgerError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/api/sessions/{session_id}/sales-audit/signature-check")
+def check_signatures(session_id: str) -> dict[str, Any]:
+    """按会话公钥复核每条账本记录的 Ed25519 签名。"""
+    from data_agent import api
+    from data_agent.audit_signing import public_key_bytes, verify_entries_signatures
+
+    workspace = api.registry.get(session_id).workspace
+    try:
+        entries = read_entries(ledger_path(workspace.root))
+        if not entries:
+            raise HTTPException(status_code=404, detail="账本还没有记录。")
+        public_pem = public_key_bytes(workspace.root)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    result = verify_entries_signatures(entries, public_pem)
+    return {
+        "valid": result["valid"],
+        "signed": result["signed"],
+        "entries": len(entries),
+        "errors": result["errors"],
+    }
+
+
+@router.get("/api/sessions/{session_id}/sales-audit/signature-tamper-demo")
+def tamper_signature_demo(session_id: str) -> dict[str, Any]:
+    """只改内存中的签名字节并验签，不修改磁盘账本。"""
+    import base64
+
+    from data_agent import api
+    from data_agent.audit_signing import public_key_bytes, verify_entries_signatures
+
+    workspace = api.registry.get(session_id).workspace
+    try:
+        entries = read_entries(ledger_path(workspace.root))
+        if not entries:
+            raise HTTPException(status_code=404, detail="账本还没有记录。")
+        public_pem = public_key_bytes(workspace.root)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    tampered = [dict(entry) for entry in entries]
+    signature = str(tampered[0].get("signature") or "")
+    try:
+        raw = bytearray(base64.b64decode(signature))
+        raw[0] ^= 1
+        tampered[0]["signature"] = base64.b64encode(raw).decode("ascii")
+    except (ValueError, TypeError, IndexError) as exc:
+        raise HTTPException(status_code=422, detail="账本没有可篡改的签名。") from exc
+    result = verify_entries_signatures(tampered, public_pem)
+    return {
+        "valid": result["valid"],
+        "errors": result["errors"][:3],
+        "note": "仅改动内存副本，磁盘账本未变。",
+    }
