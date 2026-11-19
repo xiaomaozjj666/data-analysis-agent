@@ -623,8 +623,10 @@ function App() {
   //    其余文件在此顺序创建独立会话（数据分析常需对比多表）
   useEffect(() => {
     const onLoadSample = async (event: Event) => {
-      const auditDemo = (event as CustomEvent<{ auditDemo?: boolean }>).detail?.auditDemo === true;
-      setLiveMessage(auditDemo ? "正在载入体验简报…" : "正在载入示例数据…");
+      const detail = (event as CustomEvent<{ auditDemo?: boolean; kind?: string }>).detail;
+      const auditDemo = detail?.auditDemo === true;
+      const kind = detail?.kind;
+      setLiveMessage(auditDemo ? "正在载入体验简报…" : "正在载入演示数据…");
       if (auditDemo) focusAuditOnLoad.current = true;
       setUploading(true);
       setError("");
@@ -638,9 +640,12 @@ function App() {
       setCurrentNodeTitle("");
       setRetryOffer(null);
       try {
-        const value = await api<Session>(auditDemo ? "/api/sessions/sample?audit=true" : "/api/sessions/sample", {
-          method: "POST",
-        });
+        const path = kind
+          ? `/api/sessions/sample?kind=${encodeURIComponent(kind)}`
+          : auditDemo
+            ? "/api/sessions/sample?audit=true"
+            : "/api/sessions/sample";
+        const value = await api<Session>(path, { method: "POST" });
         auditDemoSession.current = auditDemo ? value.id : null;
         setSession(value);
         if (auditDemo) {

@@ -113,9 +113,11 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
   // 键盘用户通过区域内的原生按钮完成上传 / 示例载入，Enter / Space 由
   // 浏览器对按钮的默认行为处理。鼠标仍可点击空白区域快速上传。
 
-  // 示例数据快速开始：通知 App.tsx 调用 /api/sessions/sample
-  const handleLoadSample = useCallback((auditDemo: boolean) => {
-    window.dispatchEvent(new CustomEvent("empty-workspace:load-sample", { detail: { auditDemo } }));
+  // 演示数据快速开始：通知 App.tsx 调用 /api/sessions/sample?kind=...
+  const handleLoadSample = useCallback((kind: string, auditDemo: boolean) => {
+    window.dispatchEvent(
+      new CustomEvent("empty-workspace:load-sample", { detail: { kind, auditDemo } }),
+    );
   }, []);
 
   return (
@@ -198,7 +200,7 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
             <button
               type="button"
               className="empty-audit-button"
-              onClick={() => handleLoadSample(true)}
+              onClick={() => handleLoadSample("sales_audit", true)}
               disabled={uploading}
               aria-describedby="empty-audit-hint"
             >
@@ -210,16 +212,54 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
               在草稿框内按 Ctrl 或 Command 加 Enter 直接复算。
             </span>
           </div>
-          <button
-            type="button"
-            className="empty-sample-button"
-            onClick={() => handleLoadSample(false)}
-            disabled={uploading}
-            aria-label="加载示例数据体验"
+          <details
+            className="empty-demo-menu"
+            onClick={(event) => event.stopPropagation()}
           >
-            <Sparkles size={13} />
-            加载示例数据体验
-          </button>
+            <summary className="empty-sample-button" aria-label="选择演示数据">
+              <Sparkles size={13} />
+              载入演示数据
+            </summary>
+            <div className="empty-demo-list">
+              {[
+                {
+                  kind: "sales_audit",
+                  title: "经营简报核验",
+                  blurb: "462 → 20 的差额，现场复算、确认、验签。",
+                  audit: true,
+                },
+                {
+                  kind: "regional_policy",
+                  title: "区域权限与 PII",
+                  blurb: "只算华东可见行，手机号自动脱敏。",
+                  audit: true,
+                },
+                {
+                  kind: "quality_injection",
+                  title: "脏数据与提示注入",
+                  blurb: "缺失、负数、极端值，备注里还藏了指令。",
+                  audit: false,
+                },
+                {
+                  kind: "bigdata",
+                  title: "20 万行密度视图",
+                  blurb: "大数据聚合渲染，交互不卡。",
+                  audit: false,
+                },
+              ].map((demo) => (
+                <button
+                  key={demo.kind}
+                  type="button"
+                  className="empty-demo-item"
+                  disabled={uploading}
+                  onClick={() => handleLoadSample(demo.kind, demo.audit)}
+                >
+                  <strong>{demo.title}</strong>
+                  <small>{demo.blurb}</small>
+                </button>
+              ))}
+            </div>
+          </details>
         </div>
         {/* 上传进度条 + 取消：仅在上传中且有真实进度时展示。
             100% 后服务端仍在解析文件（读取/探测编码），文案切换为"正在解析"。 */}

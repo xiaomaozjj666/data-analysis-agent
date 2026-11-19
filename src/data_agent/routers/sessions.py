@@ -79,32 +79,77 @@ async def create_session(file: Annotated[UploadFile, File()]) -> dict[str, Any]:
     return _session_payload(actual_id, record)
 
 
+@router.get("/api/samples")
+def list_samples() -> dict[str, Any]:
+    """列出内置演示数据及其一句话亮点。"""
+    from data_agent.demo_catalog import demo_metadata
+
+    return {"samples": demo_metadata()}
+
+
 @router.post("/api/sessions/sample", status_code=201)
-async def create_sample_session(audit: bool = False) -> dict[str, Any]:
-    """用内置销售示例数据创建会话，供新用户快速体验。"""
+async def create_sample_session(
+    audit: bool = False, kind: str | None = None
+) -> dict[str, Any]:
+    """用内置演示数据创建会话，供新用户快速体验。
+
+    ``kind`` 选择演示目录中的数据集；不传时保持旧的 ``audit`` 布尔行为。
+    带口径/策略/血缘的演示会一并写入工作区，加载后即可直接核验。
+    """
     from data_agent import api
+    from data_agent.demo_catalog import (
+        DEMOS,
+        demo_lines,
+        generate_bigdata,
+        lineage_for,
+    )
     from data_agent.workspace import DataWorkspace
 
     settings = api.bootstrap_settings
     session_id = f"api_{uuid4().hex[:12]}"
     workspace = DataWorkspace(settings.runs_dir, session_id=session_id)
-    filename, sample_csv = (
-        ("sample_sales_audit.csv", _AUDIT_SAMPLE_SALES_CSV)
-        if audit
-        else ("sample_sales.csv", _SAMPLE_SALES_CSV)
-    )
     try:
+        demo = demo_lines(kind) if kind else None
+        if demo is None:
+            filename, sample_csv = (
+                ("sample_sales_audit.csv", _AUDIT_SAMPLE_SALES_CSV)
+                if audit
+                else ("sample_sales.csv", _SAMPLE_SALES_CSV)
+            )
+        else:
+            filename = demo.filename
+            sample_csv = generate_bigdata() if demo.generated else demo.csv
         saved = workspace.save_upload_stream(
             filename,
             io.BytesIO(sample_csv.encode("utf-8")),
             settings.max_upload_bytes,
         )
         workspace.load(saved)
+        if demo is not None:
+            if demo.schema is not None:
+                from data_agent.audit_schema import approve_schema, save_schema
+
+                save_schema(workspace.root, demo.schema, author="演示数据组")
+                approve_schema(workspace.root, "质量与合规组")
+            if demo.policy is not None:
+                from data_agent.audit_policy import save_policy
+
+                save_policy(workspace.root, demo.policy)
+            lineage = lineage_for(demo.kind)
+            if lineage is not None:
+                from data_agent.audit_lineage import save_lineage
+
+                save_lineage(workspace.root, lineage)
     except Exception as exc:  # noqa: BLE001 —— 示例数据为常量，失败属配置问题
         workspace.cleanup()
+        if isinstance(exc, ValueError):
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         raise HTTPException(status_code=500, detail="示例数据初始化失败。") from exc
     actual_id, record = api.registry.create(workspace)
-    return _session_payload(actual_id, record)
+    payload = _session_payload(actual_id, record)
+    if kind:
+        payload["demo"] = DEMOS[kind].public()
+    return payload
 
 
 @router.get("/api/sessions/{session_id}")

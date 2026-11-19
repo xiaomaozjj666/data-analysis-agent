@@ -243,3 +243,36 @@
   background: var(--danger-subtle);
   color: var(--danger-fg);
 }
+
+/* 演示数据目录：一个入口，四份可讲故事的样例。 */
+.empty-demo-menu { position: relative; display: inline-block; }
+.empty-demo-menu > summary { list-style: none; cursor: pointer; }
+.empty-demo-menu > summary::-webkit-details-marker { display: none; }
+.empty-demo-list {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(340px, calc(100vw - 32px));
+  padding: 6px;
+  display: grid;
+  gap: 2px;
+  background: var(--canvas-default);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  z-index: 40;
+}
+.empty-demo-item {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-default);
+  text-align: left;
+}
+.empty-demo-item:hover { background: var(--canvas-subtle); }
+.empty-demo-item strong { font-size: 13px; font-weight: 600; }
+.empty-demo-item small { color: var(--fg-subtle); font-size: 11px; line-height: 1.5; }

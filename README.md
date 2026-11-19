@@ -84,6 +84,19 @@ flowchart LR
 - **快速起草对照入口**：`POST /api/sessions/{id}/sales-audit/quick-draft` 不调用任何工具、关闭思考，直接把订单表交给模型写三行指标，作为核验器的对照输入；返回模型名、耗时、脱敏单元格数、丢弃行数与轨迹哈希 `trace_sha256`。轨迹写到 `draft_traces/<sha256>.json`；把 `trace_sha256` 作为 `draft_trace_sha256` 传给复算/确认接口，即可把「模型原话 → 过滤后的草稿 → 复算 → 确认」绑定起来。它刻意不提示去重口径，不能代表产品的分析能力。
 - **发布前质量闸门（可选）**：`data-agent-eval compare` 对同一套用例的基线与候选结果做配对 McNemar 精确检验，同时检查成本与延迟回归，给出接受 / 拒绝 / 证据不足三态裁决，并写入可校验的哈希链 ledger。见 [docs/agent-eval.md](docs/agent-eval.md)。
 
+## 演示数据目录
+
+首页「载入演示数据」内置四份可讲故事的数据：
+
+| kind | 演示点 |
+| --- | --- |
+| `sales_audit` | 草稿把销量当订单数，462 → 20 的差额复算、确认、验签 |
+| `regional_policy` | 区域 RLS + 手机号脱敏 + 预置口径/血缘 |
+| `quality_injection` | 缺失、负数、极端值、混合日期，备注含提示注入 |
+| `bigdata` | 服务端生成 20 万行，演示密度视图与大数据路径 |
+
+接口：`GET /api/samples`、`POST /api/sessions/sample?kind=...`。
+
 ## 技术栈
 
 - 后端：Python 3.11–3.13、FastAPI、Uvicorn、LangChain、LangGraph、LangSmith

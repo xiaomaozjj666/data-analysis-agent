@@ -75,7 +75,7 @@ describe("App 无障碍主流程", () => {
             max_upload_bytes: 52_428_800,
           });
         }
-        if (url === "/api/sessions/sample?audit=true") {
+        if (url === "/api/sessions/sample?audit=true" || url === "/api/sessions/sample?kind=sales_audit") {
           return Promise.resolve({
             id: "sample-audit",
             filename: "sample_sales_audit.csv",

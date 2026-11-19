@@ -364,3 +364,70 @@
 .sidebar-status-group .model-line,
 .sidebar-status-group .sidebar-foot,
 .sidebar-status-group .storage-status { padding: 8px 10px; }
+
+/* Gemini 评审后的微调：内外分隔分层，可点击行才给悬浮底。 */
+.sidebar-status-group {
+  border-color: #e4e4e7;
+}
+.sidebar-status-group .model-line,
+.sidebar-status-group .sidebar-foot,
+.sidebar-status-group .storage-status {
+  border-top-color: #ededf0;
+}
+.sidebar-status-group .model-line:hover {
+  background: #ededef;
+  border-top-color: #e4e4e7;
+}
+.sidebar-status-group .sidebar-foot:hover,
+.sidebar-status-group .storage-status:hover {
+  background: transparent;
+  transform: none;
+}
+.sidebar-status-group .model-line i,
+.sidebar-status-group .sidebar-foot i,
+.sidebar-status-group .storage-status i,
+.api-status i {
+  background: #a1a1aa;
+}
+.sidebar-status-group i.online,
+.api-status i.online {
+  background: #71717a;
+}
+.sidebar-status-group .model-line small,
+.api-status {
+  color: #52525b;
+}
+.sidebar-status-group .sidebar-foot small,
+.sidebar-status-group .storage-status small {
+  color: #606069;
+}
+[data-theme="dark"] .sidebar-status-group {
+  border-color: #27272c;
+}
+[data-theme="dark"] .sidebar-status-group .model-line,
+[data-theme="dark"] .sidebar-status-group .sidebar-foot,
+[data-theme="dark"] .sidebar-status-group .storage-status {
+  border-top-color: #1e1e23;
+}
+[data-theme="dark"] .sidebar-status-group .model-line:hover {
+  background: #18181a;
+  border-top-color: #3f3f46;
+}
+[data-theme="dark"] .sidebar-status-group .model-line i,
+[data-theme="dark"] .sidebar-status-group .sidebar-foot i,
+[data-theme="dark"] .sidebar-status-group .storage-status i,
+[data-theme="dark"] .api-status i {
+  background: #52525b;
+}
+[data-theme="dark"] .sidebar-status-group i.online,
+[data-theme="dark"] .api-status i.online {
+  background: #71717a;
+}
+[data-theme="dark"] .sidebar-status-group .model-line small,
+[data-theme="dark"] .api-status {
+  color: #a1a1aa;
+}
+[data-theme="dark"] .sidebar-status-group .sidebar-foot small,
+[data-theme="dark"] .sidebar-status-group .storage-status small {
+  color: #8e8e98;
+}
