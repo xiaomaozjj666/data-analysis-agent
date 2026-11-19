@@ -404,4 +404,21 @@ describe("SalesAudit", () => {
     );
     expect(screen.getByLabelText("简报草稿")).not.toBeDisabled();
   });
+
+  it("快速起草失败后可填入赛前录制输出", async () => {
+    apiMock.mockRejectedValue(new ApiError("模型服务暂时不可用", 502));
+    render(<SalesAudit sessionId="s1" filename="sales.csv" initialDemo={false} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /用模型直接起草/ }));
+    const fallback = await screen.findByRole("button", { name: "填入赛前录制输出" });
+    fireEvent.click(fallback);
+
+    const expected = [
+      "销售额合计：17224.00 元",
+      "销量合计：462 件",
+      "订单数：462 笔",
+    ].join(String.fromCharCode(10));
+    expect(screen.getByLabelText("简报草稿")).toHaveValue(expected);
+    expect(screen.getByText(/赛前录制的模型输出/)).toBeInTheDocument();
+  });
 });

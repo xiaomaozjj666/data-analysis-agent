@@ -21,6 +21,9 @@ import "./SalesAudit.css";
 
 const MAX_DRAFT_LENGTH = 6000;
 const DEMO_DRAFT = "销售额合计：17224.00 元\n销量合计：462 件\n订单数：462 笔\n市场份额：37%";
+const RECORDED_DRAFT = `销售额合计：17224.00 元
+销量合计：462 件
+订单数：462 笔`;
 const DRAFT_HEADING = "## 待核验指标（全表）";
 
 export const SALES_BRIEF_TASK = [
@@ -456,6 +459,8 @@ export default function SalesAudit({
   const [confirming, setConfirming] = useState(false);
   const [quickBusy, setQuickBusy] = useState(false);
   const [quickDraft, setQuickDraft] = useState<QuickDraftResult | null>(null);
+  const [quickFailed, setQuickFailed] = useState(false);
+  const [recordedNote, setRecordedNote] = useState(false);
   const [draftTrace, setDraftTrace] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [sessionLost, setSessionLost] = useState(false);
@@ -609,6 +614,8 @@ export default function SalesAudit({
       updateDraft(response.draft);
       setDraftTrace(response.trace_sha256);
       setQuickDraft(response);
+      setQuickFailed(false);
+      setRecordedNote(false);
     } catch (err) {
       if (isStatus(err, 404)) {
         setSessionLost(true);
@@ -621,10 +628,20 @@ export default function SalesAudit({
           : `模型起草请求过于频繁，请 ${seconds} 秒后再试。`);
         return;
       }
+      setQuickFailed(true);
       setError(err instanceof Error ? err.message : "快速起草失败，请重试。");
     } finally {
       setQuickBusy(false);
     }
+  }
+
+  function applyRecordedDraft() {
+    updateDraft(RECORDED_DRAFT, demoDraft);
+    setDraftTrace(null);
+    setQuickDraft(null);
+    setQuickFailed(false);
+    setRecordedNote(true);
+    setError("");
   }
 
   async function reloadSample() {
@@ -731,6 +748,9 @@ export default function SalesAudit({
           confirmed={confirmed}
           quickBusy={quickBusy}
           quickDraft={quickDraft}
+          quickFailed={quickFailed}
+          recordedNote={recordedNote}
+          onUseRecorded={applyRecordedDraft}
           canRun={Boolean(draft.trim()) && !tooLong}
           error={tooLong ? `草稿最多 ${MAX_DRAFT_LENGTH} 字符，请在工作台删减后重试。` : error}
           evidence={evidenceView}
@@ -802,6 +822,11 @@ export default function SalesAudit({
                   {quickBusy ? <LoaderCircle className="spin" size={16} /> : <Sparkles size={16} />}
                   {quickBusy ? "模型正在起草…" : "用模型直接起草"}
                 </button>
+                {quickFailed && (
+                  <button type="button" disabled={busy || quickBusy || confirming} onClick={applyRecordedDraft}>
+                    填入赛前录制输出
+                  </button>
+                )}
               </div>
               <textarea
                 ref={draftInput}
@@ -814,6 +839,11 @@ export default function SalesAudit({
                 rows={7}
                 disabled={busy || quickBusy || confirming}
               />
+              {recordedNote && (
+                <p className="sales-audit-recorded" role="status">
+                  已填入赛前录制的模型输出，非现场生成；仅用于网络或额度不可用时继续演示。
+                </p>
+              )}
               {quickDraft && (
                 <section className="sales-audit-quickdraft" role="status">
                   <p><strong>模型原始输出，尚未核验。</strong></p>

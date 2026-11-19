@@ -85,8 +85,8 @@ const CommandPalette = React.lazy(() => import("./components/CommandPalette"));
 const HelpPanel = React.lazy(() => import("./components/HelpPanel"));
 const LANGSMITH_STATUS = {
   configured: { label: "追踪已配置", dot: "online" },
-  missing_key: { label: "缺少密钥", dot: "warning" },
-  key_unconfirmed: { label: "密钥待核对", dot: "warning" },
+  missing_key: { label: "未配置（可选）", dot: "" },
+  key_unconfirmed: { label: "待核对", dot: "" },
   local: { label: "仅本地追踪", dot: "" },
   disabled: { label: "追踪关闭", dot: "" },
   unknown: { label: "状态未知", dot: "" },
@@ -1039,14 +1039,12 @@ function App() {
         <div className="storage-status">
           <span>
             <i
-              className={
-                settings?.storage_status === "ok" ? "online" : "warning"
-              }
+              className={settings?.storage_status === "ok" ? "online" : ""}
             />
             对象存储
           </span>
           <small>
-            {settings?.storage_status === "ok" ? "持久化正常" : "降级模式"}
+            {settings?.storage_status === "ok" ? "持久化正常" : "本地存储"}
           </small>
         </div>
       </aside>

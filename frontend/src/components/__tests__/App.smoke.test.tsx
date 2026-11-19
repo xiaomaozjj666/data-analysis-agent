@@ -120,7 +120,7 @@ describe("App 渲染冒烟", () => {
     ).toBeInTheDocument();
     // 历史列表拉取已被触发（鉴权通过后 fetchHistory）
     expect(apiMock).toHaveBeenCalledWith("/api/sessions?limit=30");
-    expect(screen.getByText("缺少密钥")).toBeInTheDocument();
+    expect(screen.getByText("未配置（可选）")).toBeInTheDocument();
     expect(screen.queryByRole("dialog", { name: "模型设置" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "体验简报核验" }));

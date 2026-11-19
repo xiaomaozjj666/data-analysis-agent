@@ -543,3 +543,8 @@
 .sales-showcase-status:focus-visible { outline: none; }
 .sales-showcase-intro h2:focus,
 .sales-showcase-intro h2:focus-visible { outline: none; }
+
+.sales-showcase-quick-banner.is-recorded {
+  border-left: 2px solid var(--border-strong);
+  padding-left: 10px;
+}

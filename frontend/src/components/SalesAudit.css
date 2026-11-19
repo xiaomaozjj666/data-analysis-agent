@@ -483,3 +483,12 @@
 
 .sales-audit-receipt:focus,
 .sales-audit-receipt:focus-visible { outline: none; }
+
+/* 赛前录制兜底：中性虚线提示，不伪装成实时结果。 */
+.sales-audit-recorded {
+  padding: 8px 10px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  color: var(--fg-muted);
+  font-size: 13px;
+}

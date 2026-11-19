@@ -26,6 +26,8 @@ interface SalesAuditDemoProps {
   confirmed: boolean;
   quickBusy?: boolean;
   quickDraft?: QuickDraftResult | null;
+  quickFailed?: boolean;
+  recordedNote?: boolean;
   canRun: boolean;
   error: string;
   evidence: ReactNode;
@@ -36,6 +38,7 @@ interface SalesAuditDemoProps {
   onRun: () => void;
   onConfirm: () => void;
   onQuickDraft?: () => void;
+  onUseRecorded?: () => void;
   onDownloadEvidence: () => void;
   onDownloadBrief: () => void;
   onDraftChange?: (value: string) => void;
@@ -152,8 +155,8 @@ function VerifyExport({ brief, expected }: { brief: string; expected: string }) 
 }
 
 export default function SalesAuditDemo({
-  draft, isExample, audit, busy, confirming, confirmed, quickBusy, quickDraft, canRun, error, evidence, brief, details,
-  receipt, briefText, onRun, onConfirm, onQuickDraft, onDownloadEvidence, onDownloadBrief, onDraftChange, onEdit, onReset,
+  draft, isExample, audit, busy, confirming, confirmed, quickBusy, quickDraft, quickFailed, recordedNote, canRun, error, evidence, brief, details,
+  receipt, briefText, onRun, onConfirm, onQuickDraft, onUseRecorded, onDownloadEvidence, onDownloadBrief, onDraftChange, onEdit, onReset,
 }: SalesAuditDemoProps) {
   const stage = useRef<HTMLElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
@@ -263,6 +266,11 @@ export default function SalesAuditDemo({
                   {quickBusy ? "模型起草中…" : "用模型直接起草"}
                 </button>
               )}
+              {quickFailed && onUseRecorded && (
+                <button type="button" onClick={onUseRecorded} disabled={busy || quickBusy} title="网络或额度不可用时，用赛前录制的真实模型输出继续演示">
+                  填入赛前录制输出
+                </button>
+              )}
               <button type="button" onClick={() => void editDraft()} disabled={busy || quickBusy}><Pencil size={14} />草稿工作台</button>
               {document.fullscreenEnabled && (
                 <button type="button" onClick={() => void toggleFullscreen()} title="快捷键 F">
@@ -276,6 +284,12 @@ export default function SalesAuditDemo({
           <div className="sales-showcase-intro">
             <h2 ref={heading} tabIndex={-1}>{title}</h2>
             {isExample && <p>示例数据 · 草稿把销量合计当成了订单数</p>}
+            {recordedNote && (
+              <p className="sales-showcase-quick-banner is-recorded" role="status">
+                <strong>赛前录制的模型输出（非现场生成）</strong>
+                <span>网络或额度不可用时用于继续演示；核验、确认与验签流程不变。</span>
+              </p>
+            )}
             {quickDraft && (
               <p className="sales-showcase-quick-banner" role="status">
                 <strong>模型原话（未调工具 · 尚未核验）</strong>
