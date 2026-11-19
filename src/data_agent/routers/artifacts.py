@@ -22,6 +22,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 
+from data_agent import _kaleido_compat
 from data_agent.chart_sampling import (  # noqa: F401
     _THUMB_MAX_POINTS,
     _decode_plotly_typed_arrays,
@@ -269,8 +270,8 @@ def get_chart_thumbnail(session_id: str, filename: str) -> FileResponse:
     """生成图表缩略图 PNG（best-effort，依赖 Kaleido）。
 
     优先返回已缓存的 ``{stem}_thumb.png``；缓存不存在时从 ``{stem}.plotly.json``
-    重新渲染。Kaleido 未安装时返回 503，其他渲染异常返回 500。缩略图尺寸
-    400×250，去掉 margin 节省空间。
+    重新渲染。服务器环境缺失（kaleido 未安装或没有 Chrome）时返回 503 并带
+    可操作提示，其他渲染异常返回 500。缩略图尺寸 400×250，去掉 margin 节省空间。
     """
     from data_agent import api
 
@@ -303,14 +304,18 @@ def get_chart_thumbnail(session_id: str, filename: str) -> FileResponse:
         # 临时文件名必须保留 .png 后缀：plotly/kaleido 从扩展名推断输出格式，
         # 用 .tmp 结尾会触发 "Invalid format 'tmp'" 导致缩略图渲染失败。
         tmp_thumb = thumb_path.with_name(thumb_path.name + ".tmp.png")
+        # 惰性安装 kaleido 1.5.1 的就绪等待补丁（绕 kaleido_scopes 竞态）。放在这里
+        # 而不是模块顶部，是为了不在导入 data_agent.api 时就加载 kaleido。
+        _kaleido_compat.install()
         fig.write_image(str(tmp_thumb), width=400, height=250, scale=1)
         os.replace(str(tmp_thumb), str(thumb_path))
         return FileResponse(thumb_path, media_type="image/png")
-    except ImportError:
-        raise HTTPException(
-            status_code=503, detail="服务器未安装图片渲染依赖（kaleido）。"
-        ) from None
     except Exception as exc:
+        # 环境缺失（没装 kaleido / 没有 Chrome，如 Render 的 python 运行时）是部署问题，
+        # 返回 503 并给出可操作提示；其他渲染异常仍是 500。
+        hint = _kaleido_compat.render_env_problem(exc)
+        if hint is not None:
+            raise HTTPException(status_code=503, detail=hint) from None
         raise HTTPException(status_code=500, detail=f"缩略图生成失败：{exc}") from exc
 
 

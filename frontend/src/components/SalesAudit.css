@@ -2,6 +2,7 @@
   display: grid;
   gap: 16px;
   margin-top: 20px;
+  font-size: 15px;
   line-height: 1.55;
 }
 
@@ -29,7 +30,12 @@
 
 .sales-audit h2 { font-size: 22px; }
 .sales-audit h3 { font-size: 16px; }
-.sales-audit p, .sales-audit small { color: var(--fg-muted); }
+.sales-audit p { color: var(--fg-muted); font-size: 15px; }
+/* 证据、告警与明细的最低字号：路演投影下也要能读清。 */
+.sales-audit small,
+.sales-audit pre,
+.sales-audit-table :is(th, td) { font-size: 14px; }
+.sales-audit small { color: var(--fg-muted); }
 
 .sales-audit-grid {
   display: grid;
@@ -56,6 +62,7 @@
   background: var(--canvas-subtle);
   color: var(--fg-default);
   font: inherit;
+  font-size: 15px;
   line-height: 1.7;
   white-space: pre;
   overflow-wrap: normal;
@@ -157,9 +164,138 @@
   background: var(--canvas-subtle);
   border-radius: var(--radius-md);
   font: inherit;
+  font-size: 15px;
   overflow-wrap: anywhere;
 }
 
+/* 焦点可见：按钮、草稿框和折叠标题统一 2px 高对比描边。 */
+.sales-audit :is(button, textarea, summary):focus-visible,
+.sales-showcase :is(button, summary):focus-visible {
+  outline: 2px solid var(--accent-fg);
+  outline-offset: 2px;
+}
+.sales-showcase :is(button, summary):focus-visible {
+  outline-color: var(--stage-cool);
+}
+
+.sales-audit-warnings {
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--accent-subtle);
+}
+.sales-audit-warnings-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent-fg);
+}
+.sales-audit-warnings ul {
+  margin: 6px 0 0;
+  padding-inline-start: 20px;
+}
+.sales-audit-warnings li { color: var(--fg-default); }
+
+.sales-audit-ledger {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--canvas-subtle);
+}
+.sales-audit-ledger code,
+.sales-audit-receipt code {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.sales-audit-ledger button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 30px;
+  padding: 2px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--canvas-default);
+  color: var(--fg-default);
+}
+
+.sales-audit-receipt {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-default);
+  border-left: 4px solid var(--success-fg);
+  border-radius: var(--radius-md);
+  background: var(--success-subtle);
+}
+.sales-audit-receipt dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 20px;
+  margin: 0;
+}
+.sales-audit-receipt dl > div {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.sales-audit-receipt dt { color: var(--fg-muted); font-size: 14px; }
+.sales-audit-receipt dd { margin: 0; font-size: 14px; }
+
+.sales-audit-caveat {
+  color: var(--accent-fg) !important;
+  font-size: 14px;
+}
+
+.sales-audit-trace {
+  color: var(--accent-fg) !important;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.sales-audit-quickdraft {
+  padding: 10px 12px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--canvas-subtle);
+}
+.sales-audit-quickdraft p { color: var(--fg-muted); }
+.sales-audit-quickdraft strong { color: var(--accent-fg); }
+.sales-audit-quickdraft .sales-audit-quickdraft-meta {
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sales-audit-recovery {
+  display: grid;
+  gap: 12px;
+  padding: 22px;
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-lg);
+  background: var(--danger-subtle);
+}
+.sales-audit-recovery h2 { color: var(--fg-default); }
+.sales-audit-recovery p { color: var(--fg-muted); }
+
 @media (max-width: 760px) {
   .sales-audit-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* 1366×768 等窄高度视口：压缩留白，保证「复算并核验」留在首屏。 */
+@media (max-height: 800px) {
+  .sales-audit { gap: 10px; margin-top: 10px; }
+  .sales-audit-header { padding: 10px 14px; gap: 10px; }
+  .sales-audit h2 { font-size: 18px; }
+  .sales-audit h3 { font-size: 15px; }
+  .sales-audit-grid { gap: 10px; }
+  .sales-audit-card { padding: 12px; }
+  .sales-audit-card > :not(:first-child) { margin-top: 8px; }
+  .sales-audit textarea { max-height: 160px; }
+  .sales-audit-actions button { min-height: 32px; }
 }

@@ -652,6 +652,37 @@ function App() {
     setError(message || "会话已失效，请重新上传数据集后再开始分析。");
   }
 
+  // 核验页会话失效后的「重新载入示例」：SalesAudit 负责创建示例会话，
+  // 这里只负责把新会话切为当前会话并清理旧会话残留的分析状态。
+  async function reloadAuditSession(id: string) {
+    if (!id) return;
+    closeArtifactPreview();
+    setError("");
+    try {
+      const latest = await api<Session>(`/api/sessions/${id}`);
+      auditDemoSession.current = id;
+      setSession(latest);
+      setTask("");
+      setPlan([]);
+      setCompleted([]);
+      setResult(null);
+      setCurrentNodeTitle("");
+      setRetryOffer(null);
+      setFollowUps([]);
+      setAwaitingApproval(false);
+      setPendingObjective("");
+      setStepProgress(null);
+      startedAtRef.current =
+        (latest as Session & { analysis_started_at?: number | null })
+          .analysis_started_at ?? null;
+      setElapsedSeconds(latest.elapsed_seconds ?? null);
+      setActiveTab("audit");
+      fetchHistory();
+    } catch (err) {
+      setError(`无法载入示例会话：${(err as Error).message}`);
+    }
+  }
+
   // offerOverride：SSE 断线自动恢复（useAnalysisRunner 的 autoRecover）直接
   // 传入刚构造的 offer——此时 store 的 retryOffer 虽已 set，但本函数闭包
   // 捕获的仍是上一次渲染的旧值（可能为 null），显式传参避开闭包陷阱。
@@ -1328,6 +1359,8 @@ function App() {
                   setTask(SALES_BRIEF_TASK);
                   setActiveTab("analysis");
                 } : undefined}
+                onReloadSession={(id) => void reloadAuditSession(id)}
+                onExitSession={() => handleSessionLost("已返回工作台，请重新上传数据。")}
               />
             </section>
 

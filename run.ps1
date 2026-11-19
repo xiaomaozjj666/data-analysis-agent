@@ -6,12 +6,27 @@ $Vite = Join-Path $FrontendDir "node_modules\vite\bin\vite.js"
 $RunsDir = Join-Path $ProjectDir "runs"
 $DefaultApiPort = 8000
 $DefaultWebPort = 5173
+# 与 pyproject.toml 的 requires-python = ">=3.11,<3.14" 对齐，按新到旧依次尝试。
+$SupportedPythons = @("3.13", "3.12", "3.11")
+# vite 8.3.8 要求 ^20.19.0 || >=22.12.0，frontend/package.json 声明 >=22，取交集 22.12。
+$MinNodeMajor = 22
+$MinNodeMinor = 12
+# 以 -NonInteractive 运行（CI、计划任务）时失败直接退出，不等回车。
+$Interactive = [Environment]::UserInteractive -and
+    -not ([Environment]::GetCommandLineArgs() -match '^-NonI')
 
 Set-Location $ProjectDir
 New-Item -ItemType Directory -Force -Path $RunsDir | Out-Null
 
 # Load local secrets for the child API process without committing them.
 $DotEnv = Join-Path $ProjectDir ".env"
+if (-not (Test-Path -LiteralPath $DotEnv)) {
+    # 不自动复制：.env 里放的是密钥，由用户自己决定写什么。没有 .env 也能启动——
+    # 「简报核验」内置样例不调用模型，API Key 也可以在页面侧栏保存。
+    Write-Host "[Data Analysis] 未找到 .env。需要调用模型时，可复制模板后填入自己的 API Key：" -ForegroundColor Yellow
+    Write-Host "    Copy-Item .env.example .env   （再编辑 .env 里的 DEEPSEEK_API_KEY）" -ForegroundColor Yellow
+    Write-Host "    也可以启动后在页面左侧「分析引擎」里填写 API Key。" -ForegroundColor Yellow
+}
 if (Test-Path -LiteralPath $DotEnv) {
     foreach ($Line in Get-Content -LiteralPath $DotEnv) {
         if ($Line -match '^\s*([^#=][^=]*)=(.*)$') {
@@ -35,6 +50,64 @@ function Test-PortBindable([int]$Port) {
     } catch {
         return $false
     }
+}
+
+function Invoke-Quiet {
+    # 调原生程序，只取退出码与标准输出。PS 5.1 在 $ErrorActionPreference = "Stop"
+    # 下会把原生程序写到 stderr 的一行当作终止错误抛出（实测 py -3.12 未安装时
+    # 直接抛出英文 "No suitable Python runtime found"），因此这里临时放宽并兜底。
+    param([string]$FilePath, [string[]]$Arguments = @())
+    $Previous = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    try {
+        $Output = & $FilePath @Arguments 2>$null
+        return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = (@($Output) -join "`n") }
+    } catch {
+        return [pscustomobject]@{ ExitCode = -1; Output = "" }
+    } finally {
+        $ErrorActionPreference = $Previous
+    }
+}
+
+function Find-SupportedPython {
+    # 返回用于创建 .venv 的解释器：先用 py 启动器按 3.13/3.12/3.11 依次尝试，
+    # 再看 PATH 上的 python.exe 是否在支持区间（跳过应用商店占位程序）。都没有返回 $null。
+    if (Get-Command py.exe -ErrorAction SilentlyContinue) {
+        foreach ($Version in $SupportedPythons) {
+            $Probe = Invoke-Quiet "py.exe" @("-$Version", "-c", "import sys")
+            if ($Probe.ExitCode -eq 0) {
+                return [pscustomobject]@{ Version = $Version; Launcher = "py.exe"; Prefix = @("-$Version") }
+            }
+        }
+    }
+    $PathPython = Get-Command python.exe -ErrorAction SilentlyContinue
+    if ($PathPython -and $PathPython.Source -notmatch "WindowsApps") {
+        $Probe = Invoke-Quiet $PathPython.Source @("-c", "import sys; print('%d.%d' % sys.version_info[:2])")
+        $Found = $Probe.Output.Trim()
+        if ($Probe.ExitCode -eq 0 -and $SupportedPythons -contains $Found) {
+            return [pscustomobject]@{ Version = $Found; Launcher = $PathPython.Source; Prefix = @() }
+        }
+    }
+    return $null
+}
+
+function Test-NodeVersion([string]$VersionText) {
+    # 解析 node --version 的 "v24.22.1"，判断是否 >= 22.12。
+    if ($VersionText -notmatch '^v?(\d+)\.(\d+)') { return $false }
+    $Major = [int]$Matches[1]
+    $Minor = [int]$Matches[2]
+    return ($Major -gt $MinNodeMajor) -or ($Major -eq $MinNodeMajor -and $Minor -ge $MinNodeMinor)
+}
+
+function Write-NetworkHint([string]$What) {
+    # 只给建议，不替用户改 pip / npm 的全局配置。
+    Write-Host ""
+    Write-Host "[Data Analysis] $($What)失败，常见原因是网络无法访问软件源。可以尝试：" -ForegroundColor Yellow
+    Write-Host "  1. 检查网络；如需代理，先在本窗口设置 HTTP_PROXY / HTTPS_PROXY。" -ForegroundColor Yellow
+    Write-Host "  2. 临时换国内镜像（只对这一次命令生效，不改全局配置）：" -ForegroundColor Yellow
+    Write-Host '     .\.venv\Scripts\python.exe -m pip install -e ".[dev]" -i https://mirrors.aliyun.com/pypi/simple/' -ForegroundColor Yellow
+    Write-Host "     cd frontend; npm install --registry=https://registry.npmmirror.com" -ForegroundColor Yellow
+    Write-Host "  3. 比赛或演示现场请提前在有网时启动一次；依赖装好后再启动不需要联网。" -ForegroundColor Yellow
 }
 
 function Find-UsablePort([int]$Start, [int]$Max = 10) {
@@ -70,26 +143,63 @@ function Stop-StaleApiProcess([int]$Port) {
 
 try {
     if (-not (Test-Path -LiteralPath $Python)) {
-        Write-Host "[Data Analysis] Creating Python environment..." -ForegroundColor Cyan
-        py -3.13 -m venv .venv
+        $BasePython = Find-SupportedPython
+        if (-not $BasePython) {
+            throw ("未找到受支持的 Python（需要 3.11、3.12 或 3.13）。请从 " +
+                "https://www.python.org/downloads/ 安装 Python 3.13，安装时勾选 " +
+                "「Add python.exe to PATH」和「py launcher」，然后重新双击 run.bat。")
+        }
+        Write-Host "[Data Analysis] 使用 Python $($BasePython.Version) 创建虚拟环境 .venv ..." -ForegroundColor Cyan
+        $Created = Invoke-Quiet $BasePython.Launcher (@($BasePython.Prefix) + @("-m", "venv", ".venv"))
+        if ($Created.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $Python)) {
+            throw ("创建虚拟环境失败。请确认项目目录可写，删除残留的 .venv 文件夹后重试；" +
+                "也可以手动执行：py -$($BasePython.Version) -m venv .venv")
+        }
     }
 
-    & $Python -c "import data_agent, fastapi, uvicorn" 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[Data Analysis] Installing backend dependencies..." -ForegroundColor Cyan
-        & $Python -m pip install -e ".[dev]"
-        if ($LASTEXITCODE -ne 0) { throw "Backend dependency installation failed" }
+    $Imports = Invoke-Quiet $Python @("-c", "import data_agent, fastapi, uvicorn")
+    if ($Imports.ExitCode -ne 0) {
+        Write-Host "[Data Analysis] 正在安装后端依赖（首次需要联网，约几分钟）..." -ForegroundColor Cyan
+        $PipExit = 0
+        try {
+            & $Python -m pip install -e ".[dev]"
+            $PipExit = $LASTEXITCODE
+        } catch {
+            # PS 5.1 下 pip 写 stderr 也会被当成终止错误，统一按失败处理。
+            $PipExit = -1
+        }
+        if ($PipExit -ne 0) {
+            Write-NetworkHint "安装后端依赖"
+            throw "后端依赖安装失败（pip 退出码 $PipExit），按上面的提示处理后重新双击 run.bat。"
+        }
     }
 
     $NodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
-    if (-not $NodeCommand) { throw "Node.js was not found. Install Node.js 22 or newer." }
+    if (-not $NodeCommand) {
+        throw ("未找到 Node.js。请从 https://nodejs.org/ 安装 22 LTS 或更高版本" +
+            "（至少 $MinNodeMajor.$MinNodeMinor），装好后重新打开窗口再双击 run.bat。")
+    }
     $Node = $NodeCommand.Source
+    $NodeVersion = (Invoke-Quiet $Node @("--version")).Output.Trim()
+    if (-not (Test-NodeVersion $NodeVersion)) {
+        throw ("当前 Node.js 版本为 $NodeVersion，前端需要 $MinNodeMajor.$MinNodeMinor 或更高。" +
+            "请从 https://nodejs.org/ 升级到 22 LTS 后重新双击 run.bat。")
+    }
     if (-not (Test-Path -LiteralPath $Vite)) {
-        Write-Host "[Data Analysis] Installing frontend dependencies..." -ForegroundColor Cyan
+        Write-Host "[Data Analysis] 正在安装前端依赖（首次需要联网）..." -ForegroundColor Cyan
         Push-Location $FrontendDir
         try {
-            npm install
-            if ($LASTEXITCODE -ne 0) { throw "Frontend dependency installation failed" }
+            $NpmExit = 0
+            try {
+                & npm install
+                $NpmExit = $LASTEXITCODE
+            } catch {
+                $NpmExit = -1
+            }
+            if ($NpmExit -ne 0) {
+                Write-NetworkHint "安装前端依赖"
+                throw "前端依赖安装失败（npm 退出码 $NpmExit），按上面的提示处理后重新双击 run.bat。"
+            }
         } finally {
             Pop-Location
         }
@@ -216,7 +326,9 @@ try {
     Write-Host "[Data Analysis] Frontend ready: $WebUrl" -ForegroundColor Green
     Start-Process $WebUrl
 } catch {
-    Write-Host "`nStartup error: $($_.Exception.Message)" -ForegroundColor Red
-    Read-Host "Press Enter to close"
+    Write-Host "`n[Data Analysis] 启动失败：$($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "[Data Analysis] 服务日志在 runs\api.stderr.log 与 runs\frontend.stderr.log。" -ForegroundColor Red
+    # 双击运行时窗口会立刻关闭，交互模式下停一下让人看清原因；非交互直接退出。
+    if ($Interactive) { Read-Host "按回车键关闭窗口" | Out-Null }
     exit 1
 }

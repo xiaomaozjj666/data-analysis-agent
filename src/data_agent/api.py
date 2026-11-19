@@ -72,6 +72,8 @@ from data_agent.registry import (
     session_storage,  # noqa: F401
 )
 from data_agent.routers import analysis, artifacts, provenance, sessions
+from data_agent.routers import audit_draft as audit_draft_router
+from data_agent.routers import audit_ledger as audit_ledger_router
 from data_agent.routers import settings as settings_router
 
 # 图表预览辅助需经 api._inline_echarts_bundle 访问（test_echarts_engine 直接调用）。
@@ -128,6 +130,8 @@ app.include_router(sessions.router)
 app.include_router(analysis.router)
 app.include_router(artifacts.router)
 app.include_router(provenance.router)
+app.include_router(audit_draft_router.router)
+app.include_router(audit_ledger_router.router)
 app.include_router(settings_router.router)
 
 

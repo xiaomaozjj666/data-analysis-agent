@@ -5,11 +5,15 @@ services:
     # env: python（cfd83ab 同步成功），但依赖未定义字段不可靠，故改用 runtime。
     runtime: python
     # 线上为 Free 实例；显式声明，避免默认值歧义。
+    # Free 档约 15 分钟无请求后休眠，冷启动通常 35–90 秒。不要臆造「禁止休眠」
+    # 的 schema 字段；保活只能靠外部定时请求（本仓库提供 scripts/keepalive.ps1）。
     plan: free
     buildCommand: |
       cd frontend && npm ci && npm run build && cd ..
       pip install . "reportlab>=5.1,<6"
     startCommand: uvicorn data_agent.api:app --host 0.0.0.0 --port $PORT
+    # 冷启动期间实例尚未监听端口，健康检查可能超时/失败，这不等于服务崩溃；
+    # 具体重试/重启行为以 Render 控制台为准。不要为此臆造 schema 字段。
     healthCheckPath: /api/health
     # 不声明 region：它是不可变字段，声明值与服务现状不一致时 sync 会失败。
     # 不声明 disk：Free 档不支持持久磁盘；/var/data 是容器临时层，重启即清空。

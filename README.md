@@ -7,7 +7,7 @@
   <img src="https://img.shields.io/badge/FastAPI-API-009688" alt="FastAPI" />
   <img src="https://img.shields.io/badge/LangGraph-agent-4D6BFE" alt="LangGraph" />
   <img src="https://img.shields.io/badge/Docker-ready-2496ED" alt="Docker" />
-  <img src="https://img.shields.io/badge/tests-2400%2B%20passing-brightgreen" alt="Tests passing" />
+  <img src="https://img.shields.io/badge/tests-1600%2B%20backend%20%C2%B7%20185%2B%20frontend-brightgreen" alt="后端 1600+ 项、前端 185+ 项自动化测试" />
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License" />
 </p>
 
@@ -79,6 +79,9 @@ flowchart LR
 - **设置与连接诊断**：设置面板用原生 `<dialog>`，支持「测试连接」——只探测模型服务连通性，不落盘、不回显 Key，按 401/429/超时/网络错误分类提示；LangSmith 状态细分为 configured / missing_key / key_unconfirmed / local / disabled。
 - **可观测与部署**：LangSmith 全链路 Trace（规划、每次工具调用、重规划、汇总）；LangGraph Agent Server 部署；Dockerfile（非 root 用户 + 健康检查）；Render Blueprint 一键部署；GitHub Actions 自动 CI。
 - **可复核的分析溯源与逐结论核验**：每次分析在会话目录生成哈希链，覆盖任务元信息、数据集、指标定义文件、逐条工具调用、产物文件与报告正文；finalize/replay 另将正文数字逐项判为 `verified` / `conflict` / `unsupported`，在报告追加结论核验表并生成可下载的 `report-verification.json`，按 trace 序号和 JSON Pointer 定位证据。见 [docs/analysis-provenance.md](docs/analysis-provenance.md)。
+- **有据经营简报核验（schema v2）**：工作台「简报核验」把待审草稿逐行判为 `verified` / `conflict` / `unsupported`，核验器独立读取原始 CSV 复算，不调用第二个模型。源文件只读一次字节快照，SHA-256、编码识别与 CSV 解析基于同一份 bytes，不存在读两遍的 TOCTOU；**范围门**要求登记指标整行精确匹配，「华东区订单数」「平均订单数」「订单数（华东区）」一律 `unsupported`，即使 `confirm_full_table=true` 也不放行；订单号近似重复（NFKC、大小写、零宽字符、前导 0）只进 `warnings` 并给相关指标附 `caveat`，不改变订单数口径；表头接受 订单号/金额/数量 等中文别名，仅唯一匹配时接受，歧义直接报错。指标口径为 销售额合计 / 销量合计 / 订单数 / 客单价（销售额合计 ÷ 订单数，按分 HALF_UP）。每次复算返回确定性 `audit_id`（源文件哈希 + 草稿 + 确认标志 + 复算结果，带起草轨迹时再绑定轨迹哈希，最终取 SHA-256 截断），未登记指标按单位给出口径候选 `candidates`。
+- **服务端确认门与核验账本**：`POST /api/sessions/{id}/sales-audit/confirm` 由服务端按会话里的原始 CSV 重新复算，重算的 `audit_id` 与提交值不一致返回 409；通过后写一条 `confirm` 记录并返回权威简报与回执（`seq` / `ts` / `hash` / `prev` / `brief_sha256`）。每次复算也会尝试追加一条 `audit` 记录（写失败时响应带 `ledger_error`，不影响本次核验结果），账本为 `runs/<会话>/audit_ledger.jsonl`，逐条 `prev` / `hash` 串联，追加前先校验整链。`GET /api/sessions/{id}/sales-audit/ledger` 返回最近记录与链校验结果；离线脚本 `scripts/verify_audit_ledger.py` 可校验链条，`--brief` 文件改 1 个字节即退出码 1，`--source` 校验原始 CSV，`--trace` 校验快速起草轨迹。账本无签名、无外部时间戳，属演示级篡改可见性。
+- **快速起草对照入口**：`POST /api/sessions/{id}/sales-audit/quick-draft` 不调用任何工具、关闭思考，直接把订单表交给模型写三行指标，作为核验器的对照输入；返回模型名、耗时、脱敏单元格数、丢弃行数与轨迹哈希 `trace_sha256`。轨迹写到 `draft_traces/<sha256>.json`；把 `trace_sha256` 作为 `draft_trace_sha256` 传给复算/确认接口，即可把「模型原话 → 过滤后的草稿 → 复算 → 确认」绑定起来。它刻意不提示去重口径，不能代表产品的分析能力。
 - **发布前质量闸门（可选）**：`data-agent-eval compare` 对同一套用例的基线与候选结果做配对 McNemar 精确检验，同时检查成本与延迟回归，给出接受 / 拒绝 / 证据不足三态裁决，并写入可校验的哈希链 ledger。见 [docs/agent-eval.md](docs/agent-eval.md)。
 
 ## 技术栈
@@ -162,6 +165,59 @@ data-agent-mcp              # stdio 传输，供本地 MCP 客户端拉起
 不在 MCP 数据面内。传输为 stdio、由本地受信客户端拉起，**不要**把该服务挂到
 网络上对外提供；远程访问请使用带令牌与限流的 HTTP API。
 
+### 有据经营简报（服务端确认与账本）
+
+「简报核验」页复算后会得到一个确定性的 `audit_id`。确认门不是前端本地状态：
+服务端会按会话里的原始 CSV 重新复算，只有重算的 `audit_id` 与提交值一致才写账本
+并返回权威简报。下面的命令在仓库根目录、后端已启动时执行：
+
+```powershell
+$base = "http://127.0.0.1:8000"
+$sid = "<会话 ID>"   # 上传 CSV 后从会话 URL 或 GET /api/sessions 取得
+$draft = @"
+销售额合计：17224.00 元
+销量合计：462 件
+订单数：20 笔
+"@
+
+# 1. 独立复算：返回逐行判定、warnings 与 audit_id
+$audit = Invoke-RestMethod "$base/api/sessions/$sid/sales-audit" -Method Post `
+  -ContentType "application/json; charset=utf-8" `
+  -Body ([Text.Encoding]::UTF8.GetBytes((@{ draft = $draft; confirm_full_table = $false } | ConvertTo-Json)))
+
+# 2. 服务端确认：audit_id 不一致返回 409；通过后写账本并返回回执
+$confirm = Invoke-RestMethod "$base/api/sessions/$sid/sales-audit/confirm" -Method Post `
+  -ContentType "application/json; charset=utf-8" `
+  -Body ([Text.Encoding]::UTF8.GetBytes((@{ draft = $draft; audit_id = $audit.audit_id; confirm_full_table = $false } | ConvertTo-Json)))
+$confirm.receipt   # seq / ts / hash / prev / brief_sha256
+
+# 3. 账本：最近记录与整链校验结果
+Invoke-RestMethod "$base/api/sessions/$sid/sales-audit/ledger"
+```
+
+把确认接口返回的 `brief` 存成 `经营简报-核验版.md` 后，可离线校验账本与导出文件：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\verify_audit_ledger.py "runs\$sid\audit_ledger.jsonl" `
+  --brief .\经营简报-核验版.md --source "runs\$sid\input\<上传文件名>.csv"
+# 退出码 0 = 通过；改动简报任意 1 个字节后再跑，退出码 1
+```
+
+快速起草用于展示「未经验证的模型输出」作为对照（不调用工具、关闭思考）：
+
+```powershell
+Invoke-RestMethod "$base/api/sessions/$sid/sales-audit/quick-draft" -Method Post
+```
+
+返回值里的 `trace_sha256` 可作为 `draft_trace_sha256` 传给复算或确认接口；离线时用
+`--trace "runs\$sid\draft_traces\<sha256>.json"` 一并校验「模型原话 → 草稿 → 复算」是否对应。
+
+演示页的「确认更正并生成简报」会调用上面的 confirm 接口：成功后在结果区展示
+回执（序号、时间、hash 前 16 位），下载的也是服务端返回的权威简报；若草稿或
+数据在核验后被改动，服务端返回 409，页面会要求重新复算。账本未签名、无外部
+时间戳，能发现内容被改动，不能证明「谁在何时确认」。完整路演步骤见
+[参赛演示说明](docs/wuxi-trusted-ai-challenge.md)。
+
 ## 配置
 
 复制 `.env.example` 为 `.env` 并填写（所有密钥均为占位符）：
@@ -204,7 +260,7 @@ AWS_SECRET_ACCESS_KEY=<your-secret-access-key>
 - **本进程是一个信任域。** 单一 `APP_ACCESS_TOKEN` 能列出并打开 `runs/` 下全部会话。团队共用一台机器时必须设令牌，也不要把不同客户的数据放进同一个服务。
 - **默认先审阅计划。** `⌘/Ctrl+Enter` 与主按钮「生成计划」只出步骤；确认后再批准执行。「跳过审阅」才会直接跑。
 - **指标要登记才会按同一口径算。** 工作台「业务口径」或 `DATA_AGENT_METRICS_PATH` 写入 `metrics.json`，表达式必须使用真实列名（如 `sales - returns`）。分析时会调用 `compute_registered_metrics`，报告里的「核验附录」默认收起。
-- **经营简报可以独立复算。** 工作台「简报核验」读取原始订单 CSV（UTF-8 / GB18030），核对销售额、销量和订单数，提供核验版简报及证据下载。见 [参赛演示说明](docs/wuxi-trusted-ai-challenge.md)。
+- **经营简报可以独立复算，并由服务端确认。** 工作台「简报核验」读取原始订单 CSV（UTF-8 / GB18030），核对销售额、销量、订单数和客单价，提供核验版简报及证据下载；范围限定指标（如「华东区订单数」）不会被当成全表口径放行。核验返回 `audit_id`，`/confirm` 由服务端按原始 CSV 重算后才写账本并返回回执，账本可用 `scripts/verify_audit_ledger.py` 离线校验（改简报 1 个字节即退出码 1）。页面上的「确认更正并生成简报」会直接调用该接口，成功后展示回执序号与 hash，并下载服务端返回的权威简报。见 [参赛演示说明](docs/wuxi-trusted-ai-challenge.md)。
 - **SQLite 大表不会整表进内存。** 超过 10 万行只载入前 10 万行；全量请用 `query_database` 聚合后再 `adopt`。CSV 也可用该工具，表名为 `data`。
 - **换新数据重跑：** 报告上的「按配方重跑」读取 `analysis_recipe.json`，按上次工具参数执行，不重新规划。
 - **给业务的文件：** 导出菜单可下载 Word / PPT；「分析溯源 (.json)」给出报告对应的数据集、工具调用与产物哈希链及复核结果。
@@ -227,6 +283,9 @@ src/data_agent/
   skill.py           分析配方 → 技能包导出 / 安装 / 清单与确定性重跑
   provenance.py      分析溯源哈希链（数据集 / 指标定义 / 工具 / 产物 / 报告）
   verification.py    逐结论确定性核验与 JSON 报告（verified/conflict/unsupported）
+  sales_audit.py     经营简报核验（单次字节快照 / 范围门 / audit_id）
+  audit_ledger.py    核验账本（prev/hash 哈希链，追加前整链校验）
+  audit_draft.py     快速起草对照入口（不调工具、关闭思考）
   evalkit/           发布前评测闸门（McNemar / Wilson / ledger / CLI）
   sqlite_source.py   只读 SQLite 数据源（表发现 / 结构描述 / 受限查询）
   postgres_source.py 只读 PostgreSQL 数据源（服务端只读 + statement_timeout）
