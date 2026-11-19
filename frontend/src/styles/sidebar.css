@@ -342,3 +342,25 @@
   color: var(--fg-muted);
 }
 .api-status:hover { border-color: var(--border-default); }
+
+/* 收敛：状态属于界面文字，不做成独立控件。 */
+.api-status {
+  min-height: 0;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-subtle);
+  font-size: 12px;
+  font-weight: 500;
+  gap: 6px;
+}
+.api-status:hover { border: 0; color: var(--fg-muted); }
+.api-status i { width: 6px; height: 6px; background: var(--fg-subtle); box-shadow: none; }
+.sidebar-status-group {
+  background: transparent;
+  border-color: var(--border-muted);
+}
+.sidebar-status-group .provider-block { padding: 8px 10px 0; }
+.sidebar-status-group .model-line,
+.sidebar-status-group .sidebar-foot,
+.sidebar-status-group .storage-status { padding: 8px 10px; }
