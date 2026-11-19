@@ -431,3 +431,9 @@
 [data-theme="dark"] .sidebar-status-group .storage-status small {
   color: #8e8e98;
 }
+
+/* 对齐：label 与三行共享同一条左边线，模型行不再二次缩进。 */
+.sidebar-status-group .provider-block { padding: 10px 12px 0; }
+.sidebar-status-group .model-line { padding: 8px 0; }
+.sidebar-status-group .sidebar-foot,
+.sidebar-status-group .storage-status { padding: 8px 12px; }

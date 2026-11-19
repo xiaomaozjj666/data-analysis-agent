@@ -149,6 +149,9 @@ async def create_sample_session(
     payload = _session_payload(actual_id, record)
     if kind:
         payload["demo"] = DEMOS[kind].public()
+        from data_agent.demo_insights import insights_for
+
+        payload["demo"]["insights"] = insights_for(kind, sample_csv)
     return payload
 
 

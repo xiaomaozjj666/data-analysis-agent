@@ -26,6 +26,41 @@ export interface AnalysisResult {
 }
 
 // 会话（前端使用的完整结构，含 chat / artifacts / preview 等）
+
+export interface DemoChart {
+  type: "line" | "bar" | "histogram" | "scatter" | "heatmap" | "donut";
+  title: string;
+  subtitle?: string;
+  unit?: string;
+  points?: { label: string; value: number }[];
+  items?: { label: string; value: number }[];
+  x_label?: string;
+  y_label?: string;
+  samples?: [number, number][];
+  outliers?: [number, number][];
+  cols?: number;
+  rows?: number;
+  values?: number[][];
+}
+
+export interface DemoInsights {
+  kind: string;
+  headline: string;
+  subline: string;
+  kpis: { label: string; value: string; note?: string; unit?: string }[];
+  charts: DemoChart[];
+  findings: string[];
+}
+
+export interface DemoPayload {
+  kind: string;
+  title: string;
+  blurb: string;
+  highlight: string;
+  open_audit: boolean;
+  insights?: DemoInsights | null;
+}
+
 export interface Session {
   id: string;
   filename: string;
@@ -44,6 +79,7 @@ export interface Session {
   chat?: ChatMessage[];
   // 计划审批：plan_only=true 时后端在 plan_analysis 后结束流，并写入待审阅计划
   pending_plan?: PlanStep[] | null;
+  demo?: DemoPayload;
   [key: string]: unknown;
 }
 

@@ -6,6 +6,8 @@ from fastapi.testclient import TestClient
 from test_api import _isolate_runtime
 
 from data_agent import api
+from data_agent._registry_payloads import _AUDIT_SAMPLE_SALES_CSV
+from data_agent.demo_insights import _histogram, _is_date, _unit, insights_for
 
 
 def test_samples_catalog_and_unknown_kind(tmp_path, monkeypatch):
@@ -40,6 +42,11 @@ def test_regional_demo_ships_policy_and_schema(tmp_path, monkeypatch):
     assert audit["schema_status"] == "approved"
     assert audit["lineage"]["upstream_table"] == "dwd.sales_orders"
 
+    insights = created.json()["demo"]["insights"]
+    kinds = [chart["type"] for chart in insights["charts"]]
+    assert kinds[:3] == ["line", "bar", "histogram"]
+    assert [kpi["label"] for kpi in insights["kpis"]][:2] == ["全部订单", "华东可见"]
+
 
 def test_quality_and_bigdata_demos(tmp_path, monkeypatch):
     _isolate_runtime(tmp_path, monkeypatch)
@@ -47,8 +54,30 @@ def test_quality_and_bigdata_demos(tmp_path, monkeypatch):
     quality = client.post("/api/sessions/sample?kind=quality_injection").json()
     assert quality["demo"]["kind"] == "quality_injection"
     assert quality["profile"]["rows"] == 37
+    charts = quality["demo"]["insights"]["charts"]
+    assert {"line", "bar", "scatter", "histogram"} <= {chart["type"] for chart in charts}
+    assert "忽略" in " ".join(quality["demo"]["insights"]["findings"])
 
     large = client.post("/api/sessions/sample?kind=bigdata").json()
     assert large["demo"]["kind"] == "bigdata"
     assert large["profile"]["rows"] == 200_000
     assert large["profile"]["columns"] == 4
+    kinds = [chart["type"] for chart in large["demo"]["insights"]["charts"]]
+    assert kinds[0] == "heatmap" and "bar" in kinds
+
+
+def test_insight_helpers_and_sales_insights():
+    sales = insights_for("sales_audit", _AUDIT_SAMPLE_SALES_CSV)
+    assert sales is not None
+    assert sales["charts"][0]["type"] == "line"
+    assert sales["charts"][0]["title"] == "销售额趋势"
+
+    assert _histogram([]) == []
+    assert _histogram([5, 5])[0]["value"] == 2
+    assert _is_date("2026-13-40") is False
+    assert _unit("quantity") == "件"
+    assert insights_for("unknown", "a" + chr(10) + "1" + chr(10)) is None
+    assert insights_for("bigdata", "x,y" + chr(10)) is None
+    assert insights_for(
+        "quality_injection", "store,revenue,note" + chr(10) + ",," + chr(10)
+    ) is not None

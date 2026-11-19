@@ -95,6 +95,8 @@ flowchart LR
 | `quality_injection` | 缺失、负数、极端值、混合日期，备注含提示注入 |
 | `bigdata` | 服务端生成 20 万行，演示密度视图与大数据路径 |
 
+加载后自动生成预分析：识别日期/数值/分类列，按语义选折线、条形、散点、直方图、占比环或密度网格，打开即有 KPI 与结论。
+
 接口：`GET /api/samples`、`POST /api/sessions/sample?kind=...`。
 
 ## 技术栈

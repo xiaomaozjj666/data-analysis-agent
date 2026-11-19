@@ -26,6 +26,7 @@ import ArtifactCenter from "./components/ArtifactCenter";
 import CommentsPanel from "./components/CommentsPanel";
 import ConversationThread from "./components/ConversationThread";
 import DatasetOverview from "./components/DatasetOverview";
+import DemoBrief from "./components/DemoBrief";
 import MetricsEditor from "./components/MetricsEditor";
 import EmptyWorkspace from "./components/EmptyWorkspace";
 import HistoryPanel from "./components/HistoryPanel";
@@ -1473,6 +1474,9 @@ function App() {
                 aria-labelledby="tab-analysis"
                 tabIndex={0}
               >
+                {session?.demo?.insights && (
+                  <DemoBrief insights={session.demo.insights} />
+                )}
                 <section className="analysis-column">
                   {result ? (
                     <>
