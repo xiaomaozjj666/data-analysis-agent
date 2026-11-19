@@ -130,7 +130,7 @@ const ArtifactCenter = React.memo(function ArtifactCenter({
               const { Icon, label } = pickChartIcon(item.name);
               const isSelected = selected.has(item.name);
               return (
-                <SpotlightCard key={item.name} className="chart-card-spotlight" spotlightColor="rgba(91, 91, 214, 0.12)" spotlightRadius={280} tiltMax={4} hoverScale={1.015}>
+                <SpotlightCard key={item.name} className="chart-card-spotlight" spotlightColor="rgba(77, 77, 143, 0.12)" spotlightRadius={280} tiltMax={4} hoverScale={1.015}>
                 <article className="chart-card" style={{ animationDelay: `${index * 60}ms` }}>
                   {hasBatchDownload && (
                     <input

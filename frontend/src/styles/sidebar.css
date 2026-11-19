@@ -1,7 +1,7 @@
 /* ---------- 侧栏 ---------- */
 .wordmark { height: 48px; display: flex; align-items: center; gap: 10px; padding: 0 8px; }
 /* 品牌色小方块：代替图标的极简标识，加柔和光晕提升品牌感 */
-.wordmark::before { content: ""; width: 12px; height: 12px; border-radius: 3px; background: var(--accent-fg); box-shadow: 0 0 0 3px var(--accent-ring), 0 2px 8px rgba(91, 91, 214, 0.3); }
+.wordmark::before { content: ""; width: 12px; height: 12px; border-radius: 3px; background: var(--accent-fg); box-shadow: 0 0 0 3px var(--accent-ring), 0 2px 8px rgba(77, 77, 143, 0.3); }
 .wordmark strong { font-size: 17px; font-weight: 700; letter-spacing: 0.01em; }
 .wordmark span { color: var(--fg-subtle); font-family: var(--font-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.08em; }
 

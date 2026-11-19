@@ -148,7 +148,7 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
           组件内联写死颜色会让暗色主题拿到同一组高饱和值，实测在深底上糊成
           一大片蓝紫、并盖住主文案的对比度。 */}
       <Aurora className="empty-aurora-bg" speed={0.7} blur={90} />
-      <DotField className="empty-grid-bg" dotRadius={2} dotSpacing={24} cursorRadius={460} bulgeStrength={88} gradientFrom="rgba(91, 91, 214, 0.32)" gradientTo="rgba(120, 120, 140, 0.22)" glowColor="transparent" />
+      <DotField className="empty-grid-bg" dotRadius={2} dotSpacing={24} cursorRadius={460} bulgeStrength={88} gradientFrom="rgba(77, 77, 143, 0.32)" gradientTo="rgba(120, 116, 104, 0.22)" glowColor="transparent" />
       <div className="empty-copy">
         <span className="section-kicker">新建分析</span>
         <h2>

@@ -241,16 +241,16 @@ h5, h6 { font-size: 13px; margin: 14px 0 6px; color: #6b7280; font-weight: 600; 
 p { margin: 12px 0; }
 ul, ol { margin: 12px 0; padding-left: 26px; }
 li { margin: 4px 0; }
-code { font-family: "IBM Plex Mono", SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9em; padding: 2px 6px; background: #f4f5f7; border-radius: 4px; }
-pre { background: #f4f5f7; border: 1px solid #eef0f3; border-radius: 8px; padding: 14px 16px; overflow: auto; margin: 16px 0; }
+code { font-family: "IBM Plex Mono", SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9em; padding: 2px 6px; background: #f5f3ec; border-radius: 4px; }
+pre { background: #f5f3ec; border: 1px solid #eef0f3; border-radius: 8px; padding: 14px 16px; overflow: auto; margin: 16px 0; }
 pre code { background: transparent; padding: 0; font-size: 13px; line-height: 1.55; }
-a { color: #5b5bd6; text-decoration: none; border-bottom: 1px solid #ddd; }
-blockquote { margin: 16px 0; padding: 6px 0 6px 16px; border-left: 3px solid #5b5bd6; color: #6b7280; background: #f4f5f7; border-radius: 0 4px 4px 0; }
+a { color: #4d4d8f; text-decoration: none; border-bottom: 1px solid #e3dfd4; }
+blockquote { margin: 16px 0; padding: 6px 0 6px 16px; border-left: 3px solid #4d4d8f; color: #6b7280; background: #f5f3ec; border-radius: 0 4px 4px 0; }
 blockquote p { margin: 4px 0; }
 hr { border: 0; border-top: 1px solid #eef0f3; margin: 24px 0; }
 table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 14px; }
 th, td { border: 1px solid #e4e6ea; padding: 8px 12px; text-align: left; vertical-align: top; }
-thead th { background: #f4f5f7; font-weight: 700; }
+thead th { background: #f5f3ec; font-weight: 700; }
 tbody tr:nth-child(even) td { background: #fafbfc; }
 img { max-width: 100%; height: auto; }
 /* 暗色适配：导出的 HTML 跟随系统主题，深底亮字避免晚间阅读刺眼 */
@@ -616,7 +616,7 @@ const ReportView = React.memo(function ReportView({
           {/* 流式中用 ShinyText 循环微光暗示"进行中"，完成后切 GradientText
               静态流动渐变，作为报告完成的视觉奖励 */}
           {streaming ? (
-            <ShinyText text="分析报告" color="var(--text-primary)" shineColor="var(--accent-color, #5b5bd6)" speed={4} yoyo />
+            <ShinyText text="分析报告" color="var(--text-primary)" shineColor="var(--accent-color, #4d4d8f)" speed={4} yoyo />
           ) : (
             <GradientText speed={7}>分析报告</GradientText>
           )}

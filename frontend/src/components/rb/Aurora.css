@@ -24,7 +24,7 @@
   height: 50%;
   top: -10%;
   left: 10%;
-  background: var(--aurora-primary, rgba(91, 91, 214, 0.3));
+  background: var(--aurora-primary, rgba(77, 77, 143, 0.3));
   animation: aurora-float-1 var(--aurora-duration, 8s) ease-in-out infinite alternate;
 }
 

@@ -239,7 +239,7 @@
   gap: 6px;
   padding: 10px 12px;
   border: 1px solid var(--border-default);
-  border-left: 4px solid var(--success-fg);
+  border-left: 3px solid var(--border-strong);
   border-radius: var(--radius-md);
   background: var(--canvas-default);
 }
@@ -254,6 +254,8 @@
   align-items: baseline;
   gap: 6px;
 }
+.sales-audit-receipt strong { display: inline-flex; align-items: center; gap: 7px; }
+.sales-audit-receipt strong::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--success-fg); }
 .sales-audit-receipt dt { color: var(--fg-muted); font-size: 14px; }
 .sales-audit-receipt dd { margin: 0; font-size: 14px; }
 

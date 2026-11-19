@@ -105,7 +105,7 @@ export default function TaskBox({
                 <Play size={15} fill="currentColor" />
                 跳过审阅
               </button>
-              <ClickSpark sparkColor="#5b5bd6" sparkCount={10} sparkLength={16}>
+              <ClickSpark sparkColor="#4d4d8f" sparkCount={10} sparkLength={16}>
                 <StarBorder disabled={!task.trim() || !configured || !hasSession}>
                   <button type="button" className="run-button" onClick={onRunPlanReview} disabled={!task.trim() || !configured || !hasSession} title={awaitingApproval ? "用当前问题重新生成计划" : "先生成计划，审阅后再执行"}>
                     <ListChecks size={15} />{awaitingApproval ? "重新生成" : "生成计划"}

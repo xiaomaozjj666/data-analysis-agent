@@ -26,7 +26,7 @@
   opacity: 0;
   background: radial-gradient(
     var(--spotlight-radius, 250px) circle at var(--spotlight-x, -9999px) var(--spotlight-y, -9999px),
-    var(--spotlight-color, rgba(91, 91, 214, 0.12)),
+    var(--spotlight-color, rgba(77, 77, 143, 0.12)),
     transparent 100%
   );
   transition: opacity 0.3s var(--ease-out);
@@ -62,7 +62,7 @@
 [data-theme="dark"] .spotlight-card-overlay {
   background: radial-gradient(
     var(--spotlight-radius, 250px) circle at var(--spotlight-x, -9999px) var(--spotlight-y, -9999px),
-    rgba(124, 124, 240, 0.15),
+    rgba(185, 186, 232, 0.15),
     transparent 100%
   );
 }

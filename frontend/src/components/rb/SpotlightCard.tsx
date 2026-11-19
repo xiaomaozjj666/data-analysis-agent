@@ -28,7 +28,7 @@ interface SpotlightCardProps {
 const SpotlightCard = memo(({
   children,
   spotlightRadius = 250,
-  spotlightColor = "rgba(91, 91, 214, 0.12)",
+  spotlightColor = "rgba(77, 77, 143, 0.12)",
   tilt = true,
   tiltMax = 5,
   perspective = 800,

@@ -15,13 +15,13 @@
    暗色主题把 alpha 压到约一半，避免整块画布被蓝紫糊满、并与主文案抢对比度。 */
 .empty-aurora-bg {
   z-index: 0;
-  --aurora-primary: rgba(91, 91, 214, 0.20);
+  --aurora-primary: rgba(77, 77, 143, 0.20);
   --aurora-secondary: rgba(139, 92, 246, 0.13);
   --aurora-tertiary: rgba(59, 130, 246, 0.10);
   --aurora-opacity: 0.85;
 }
 [data-theme="dark"] .empty-aurora-bg {
-  --aurora-primary: rgba(124, 124, 240, 0.11);
+  --aurora-primary: rgba(185, 186, 232, 0.11);
   --aurora-secondary: rgba(139, 92, 246, 0.08);
   --aurora-tertiary: rgba(59, 130, 246, 0.06);
   --aurora-opacity: 0.75;
@@ -49,14 +49,14 @@
   /* 鼠标跟随光斑：整个 section 都有效，radial-gradient 跟随 --mouse-x/y。
      用带透明度的靛蓝晕染，白底/暗底均可见且克制（非彩色光圈）。
      暗色底上浅靛蓝的 9% 几乎看不见，故用令牌给两种主题各一档透明度。 */
-  --empty-glow: rgba(91, 91, 214, 0.09);
+  --empty-glow: rgba(77, 77, 143, 0.07);
   background: radial-gradient(
     480px circle at var(--mouse-x, 50%) var(--mouse-y, 50%),
     var(--empty-glow),
     transparent 75%
   );
 }
-[data-theme="dark"] .empty-workspace { --empty-glow: rgba(124, 124, 240, 0.10); }
+[data-theme="dark"] .empty-workspace { --empty-glow: rgba(185, 186, 232, 0.09); }
 /* hover 时保持光斑不覆盖（光斑已由 --mouse-x/y 控制） */
 .empty-workspace:hover { background: radial-gradient(480px circle at var(--mouse-x, 50%) var(--mouse-y, 50%), var(--empty-glow), transparent 75%); }
 .empty-workspace.is-drag-over {
