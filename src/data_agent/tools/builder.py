@@ -1291,7 +1291,7 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                 # 惰性安装 kaleido 1.5.1 的就绪等待补丁（绕 kaleido_scopes 竞态）；
                 # 不在模块顶部装，避免导入时就加载 kaleido。
                 _kaleido_compat.install()
-                png_width = 1100 if chart_type == "scatter_3d" else 1400
+                png_width = 980 if chart_type == "scatter_3d" else 1400
                 fig.write_image(png_path, width=png_width, height=850, scale=1.5)
                 workspace.register_artifact(png_path, "image", title or chart_type)
                 response["png"] = png_path
