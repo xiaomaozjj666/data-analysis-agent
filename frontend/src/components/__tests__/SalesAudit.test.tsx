@@ -121,7 +121,7 @@ describe("SalesAudit", () => {
 
     expect(textarea).toHaveAttribute("aria-invalid", "true");
     expect(screen.getByRole("button", { name: /复算并核验/ })).toBeDisabled();
-    expect(screen.getByRole("button", { name: /让模型直接起草/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /用模型直接起草/ })).toBeDisabled();
   });
 
   it("范围未确认时二次请求带 confirm_full_table", async () => {
@@ -133,7 +133,7 @@ describe("SalesAudit", () => {
     fillDraft("## 标题\n订单数：1 笔");
     fireEvent.click(screen.getByRole("button", { name: /复算并核验/ }));
     fireEvent.click(
-      await screen.findByRole("button", { name: "确认指标范围为全表并复算" }),
+      await screen.findByRole("button", { name: "确认按全表复算" }),
     );
 
     await waitFor(() => expect(apiMock).toHaveBeenCalledTimes(2));
@@ -147,7 +147,7 @@ describe("SalesAudit", () => {
 
     fillDraft();
     await runAudit();
-    fireEvent.click(screen.getByRole("button", { name: /生成核验版简报/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^生成简报$/ }));
 
     await waitFor(() =>
       expect(apiMock).toHaveBeenCalledWith(
@@ -162,11 +162,11 @@ describe("SalesAudit", () => {
       confirm_full_table: false,
     });
 
-    expect(await screen.findByText("发布已记入账本")).toBeInTheDocument();
+    expect(await screen.findByText("确认记录")).toBeInTheDocument();
     expect(screen.getByText("#7")).toBeInTheDocument();
     expect(screen.getByText("b".repeat(16))).toBeInTheDocument();
     expect(screen.getByText(/服务端权威简报正文/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /下载核验版简报 \(\.md\)/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /下载简报 \(\.md\)/ })).toBeInTheDocument();
   });
 
   it("确认返回 409 时清空结果、提示重新核验并把焦点放回草稿框", async () => {
@@ -177,7 +177,7 @@ describe("SalesAudit", () => {
 
     fillDraft();
     await runAudit();
-    fireEvent.click(screen.getByRole("button", { name: /生成核验版简报/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^生成简报$/ }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "草稿或数据在核验后发生变化，请重新复算核验",
@@ -196,7 +196,7 @@ describe("SalesAudit", () => {
     );
     render(<SalesAudit sessionId="s1" filename="sales.csv" initialDemo={false} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /让模型直接起草（不调工具）/ }));
+    fireEvent.click(screen.getByRole("button", { name: /用模型直接起草/ }));
 
     await waitFor(() =>
       expect(screen.getByLabelText("简报草稿")).toHaveValue(QUICK.draft),
@@ -220,7 +220,7 @@ describe("SalesAudit", () => {
     });
     render(<SalesAudit sessionId="s1" filename="sales.csv" initialDemo={false} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /让模型直接起草（不调工具）/ }));
+    fireEvent.click(screen.getByRole("button", { name: /用模型直接起草/ }));
     await waitFor(() => expect(screen.getByLabelText("简报草稿")).toHaveValue(QUICK.draft));
     fireEvent.click(screen.getByRole("button", { name: /复算并核验/ }));
 
@@ -241,7 +241,7 @@ describe("SalesAudit", () => {
     });
     render(<SalesAudit sessionId="s1" filename="sales.csv" initialDemo={false} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /让模型直接起草（不调工具）/ }));
+    fireEvent.click(screen.getByRole("button", { name: /用模型直接起草/ }));
     await waitFor(() => expect(screen.getByLabelText("简报草稿")).toHaveValue(QUICK.draft));
 
     fireEvent.change(screen.getByLabelText("简报草稿"), {
@@ -277,7 +277,7 @@ describe("SalesAudit", () => {
     );
     render(<SalesAudit sessionId="s1" filename="sales.csv" initialDemo={false} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /让模型直接起草（不调工具）/ }));
+    fireEvent.click(screen.getByRole("button", { name: /用模型直接起草/ }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("12 秒");
   });
@@ -311,7 +311,7 @@ describe("SalesAudit", () => {
     expect(
       screen.getByText("订单号存在近似重复，订单数口径按原样去重，请人工复核。"),
     ).toBeInTheDocument();
-    expect(screen.getByText("复算已记入账本 #3")).toBeInTheDocument();
+    expect(screen.getByText("复算记录 #3")).toBeInTheDocument();
   });
 
   it("核验返回 404 时展示恢复面板，未传回调时给出切换说明", async () => {
@@ -370,7 +370,7 @@ describe("SalesAudit", () => {
     );
     render(<SalesAudit sessionId="s1" filename="sales.csv" initialDemo={false} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /让模型直接起草（不调工具）/ }));
+    fireEvent.click(screen.getByRole("button", { name: /用模型直接起草/ }));
     expect(screen.getByLabelText("简报草稿")).toBeDisabled();
     expect(screen.getByRole("button", { name: /复算并核验/ })).toBeDisabled();
 
@@ -394,11 +394,11 @@ describe("SalesAudit", () => {
 
     fillDraft();
     await runAudit();
-    fireEvent.click(screen.getByRole("button", { name: /生成核验版简报/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^生成简报$/ }));
     expect(screen.getByLabelText("简报草稿")).toBeDisabled();
 
     resolveConfirm(CONFIRMED);
-    const receipt = await screen.findByText("发布已记入账本");
+    const receipt = await screen.findByText("确认记录");
     await waitFor(() =>
       expect(document.activeElement).toBe(receipt.closest("section")),
     );

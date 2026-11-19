@@ -211,7 +211,7 @@ function VerifiedBrief({ brief, onDownload }: { brief: string; onDownload?: () =
         {onDownload && (
           <div className="sales-audit-actions">
             <button className="primary" type="button" onClick={onDownload}>
-              <Download size={16} />下载核验版简报 (.md)
+              <Download size={16} />下载简报 (.md)
             </button>
           </div>
         )}
@@ -264,7 +264,7 @@ function ResultNotices({
       )}
       {ledger && (
         <div className="sales-audit-ledger" role="status">
-          <span>复算已记入账本 #{ledger.seq}</span>
+          <span>复算记录 #{ledger.seq}</span>
           <code title={ledger.hash}>{ledger.hash.slice(0, 16)}…</code>
           <button type="button" onClick={() => onCopyHash(ledger.hash)}>
             {copiedHash === ledger.hash ? <Check size={14} /> : <Copy size={14} />}
@@ -278,13 +278,13 @@ function ResultNotices({
       )}
       {receipt && (
         <section className="sales-audit-receipt" role="status" ref={receiptRef} tabIndex={-1}>
-          <strong>发布已记入账本</strong>
+          <strong>确认记录</strong>
           <dl>
             <div><dt>序号</dt><dd>#{receipt.seq}</dd></div>
             <div><dt>时间</dt><dd>{formatReceiptTime(receipt.ts)}</dd></div>
             <div><dt>hash</dt><dd><code>{receipt.hash.slice(0, 16)}</code></dd></div>
           </dl>
-          <small>回执由服务端按原始 CSV 重算后写入；下载核验明细可逐项核对。</small>
+          <small>服务端按原始 CSV 重算后写入；可在核验明细中核对。</small>
         </section>
       )}
     </>
@@ -588,10 +588,13 @@ export default function SalesAudit({
           evidence={evidenceView}
           brief={briefView}
           details={noticesView}
+          receipt={receipt}
+          briefText={serverBrief}
           onRun={() => void runAudit()}
           onConfirm={() => void confirmBrief()}
           onDownloadEvidence={downloadAudit}
           onDownloadBrief={downloadBrief}
+          onDraftChange={(value) => updateDraft(value, demoDraft)}
           onEdit={() => {
             setShowcase(false);
             window.requestAnimationFrame(() => draftInput.current?.focus());
@@ -608,7 +611,7 @@ export default function SalesAudit({
         <ShieldCheck size={28} aria-hidden="true" />
         <div>
           <h2>经营简报核验</h2>
-          <p>独立复算销售额、销量、订单数与客单价；确认由服务端按原始 CSV 重算后写入账本。</p>
+          <p>核对销售额、销量、订单数和客单价。确认后由服务端重算并记录。</p>
         </div>
         {initialDemo && (
           <div className="sales-audit-actions sales-audit-showcase-action">
@@ -631,12 +634,12 @@ export default function SalesAudit({
               <p id="sales-audit-format-short" className="sales-audit-format-short">
                 每行一个指标：销售额合计 / 销量合计 / 订单数 / 客单价。
               </p>
-              {demoDraft && <p className="sales-audit-demo-note">示例草稿含预设错数与一条无依据结论。</p>}
+              {demoDraft && <p className="sales-audit-demo-note">示例草稿有 1 处错数、1 条无依据结论。</p>}
               <div className="sales-audit-actions">
                 {(filename === "sample_sales.csv" || filename === "sample_sales_audit.csv") && (
-                  <button type="button" disabled={busy || quickBusy || confirming} onClick={() => updateDraft(DEMO_DRAFT, true)}>填入演示草稿</button>
+                  <button type="button" disabled={busy || quickBusy || confirming} onClick={() => updateDraft(DEMO_DRAFT, true)}>填入示例草稿</button>
                 )}
-                {onPrepareDraft && <button type="button" disabled={busy || quickBusy || confirming} onClick={onPrepareDraft}>准备 AI 起草任务</button>}
+                {onPrepareDraft && <button type="button" disabled={busy || quickBusy || confirming} onClick={onPrepareDraft}>准备起草任务</button>}
                 {report && (
                   <button type="button" disabled={busy || quickBusy || confirming} onClick={() => updateDraft(extractDraft(report))}>
                     使用分析报告草稿
@@ -648,7 +651,7 @@ export default function SalesAudit({
                   onClick={() => void runQuickDraft()}
                 >
                   {quickBusy ? <LoaderCircle className="spin" size={16} /> : <Sparkles size={16} />}
-                  {quickBusy ? "模型正在起草…" : "让模型直接起草（不调工具）"}
+                  {quickBusy ? "模型正在起草…" : "用模型直接起草"}
                 </button>
               </div>
               <textarea
@@ -686,7 +689,7 @@ export default function SalesAudit({
 
             <section className="sales-audit-card" aria-label="核验结果">
               <h3>核验结果</h3>
-              {!audit ? <p>核验后查看草稿原值、复算值和计算口径。</p> : (
+              {!audit ? <p>核验后显示草稿原值、复算值与口径。</p> : (
                 <>
                   {noticesView}
                   <p className="sales-audit-summary" role="status">
@@ -730,14 +733,14 @@ export default function SalesAudit({
                   )}
                   <div className="sales-audit-actions">
                     {audit.needs_scope_confirmation && (
-                      <button type="button" onClick={() => void runAudit(true)}>确认指标范围为全表并复算</button>
+                      <button type="button" onClick={() => void runAudit(true)}>确认按全表复算</button>
                     )}
                     {audit.corrected_brief && !confirmed && (
                       <button className="primary" type="button" disabled={confirming} onClick={() => void confirmBrief()}>
                         {confirming ? <LoaderCircle className="spin" size={16} /> : <FileCheck2 size={16} />}
                         {confirming
                           ? "正在确认…"
-                          : audit.summary.conflict ? "确认更正并生成简报" : "生成核验版简报"}
+                          : audit.summary.conflict ? "确认并生成简报" : "生成简报"}
                       </button>
                     )}
                     <button type="button" onClick={downloadAudit}>

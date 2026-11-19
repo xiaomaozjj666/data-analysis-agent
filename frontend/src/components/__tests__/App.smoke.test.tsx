@@ -127,7 +127,7 @@ describe("App 渲染冒烟", () => {
     expect(await screen.findByRole("tab", { name: "简报核验", selected: true })).toBeInTheDocument();
     const showcase = screen.getByRole("region", { name: "有据经营简报路演" });
     expect(showcase).toHaveTextContent("462");
-    expect(showcase).toHaveTextContent("运行核验后揭晓");
+    expect(showcase).toHaveTextContent("按 COUNT(DISTINCT order_id) 计算");
     fireEvent.click(screen.getByRole("button", { name: "草稿工作台" }));
     const draft = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "简报草稿" });
     expect(draft.value).toContain("订单数：462 笔");

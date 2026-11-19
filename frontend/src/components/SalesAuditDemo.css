@@ -1,39 +1,44 @@
+/* 路演页沿用工作台的设计系统：靛蓝是唯一强调色，薄荷只做成功状态，
+   琥珀只标草稿差异。信息层级用排版和细分割线表达，不靠彩色色块。 */
+
 .sales-showcase {
   min-width: 0;
   container-type: inline-size;
 }
 
 .sales-showcase:fullscreen {
+  display: grid;
+  align-content: start;
   overflow: auto;
   overscroll-behavior: contain;
-  padding: clamp(12px, 4vw, 48px);
+  padding: clamp(12px, 3vw, 40px);
   background: var(--canvas-page);
 }
 
 .sales-showcase-layout {
-  width: min(100%, 1180px);
-  margin-inline: auto;
+  width: 100%;
+  margin-inline: 0;
   display: grid;
   gap: 16px;
 }
 
+.sales-showcase:fullscreen .sales-showcase-layout {
+  width: min(100%, 1320px);
+  margin-inline: auto;
+}
+
 .sales-showcase-hero {
-  --stage-text: #f2f7fa;
-  --stage-muted: #adc0ce;
-  --stage-stroke: #3c5368;
-  --stage-warm: #ffbb88;
-  --stage-cool: #7cebdd;
   display: grid;
-  gap: clamp(18px, 3cqw, 34px);
+  gap: clamp(18px, 2.6cqw, 28px);
   overflow: hidden;
-  padding: clamp(20px, 4cqw, 44px);
-  color: var(--stage-text);
+  padding: clamp(22px, 3.4cqw, 38px);
+  color: var(--fg-default);
   background:
-    radial-gradient(ellipse at 96% 0%, #203e4b 0%, transparent 60%),
-    linear-gradient(120deg, #111b2b, #142338);
-  border: 1px solid #334b60;
-  border-radius: 22px;
-  box-shadow: 0 14px 36px #08172426;
+    radial-gradient(120% 160% at 100% 0%, var(--accent-subtle) 0%, transparent 58%),
+    var(--canvas-default);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
 }
 
 .sales-showcase-bar,
@@ -47,138 +52,282 @@
 
 .sales-showcase-bar,
 .sales-showcase-footer { justify-content: space-between; }
-.sales-showcase-bar > span,
-.sales-showcase-status {
+.sales-showcase-bar > span {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-weight: 650;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
-
-.sales-showcase-bar > span svg,
-.sales-showcase-status svg { color: var(--stage-cool); }
+.sales-showcase-bar > span svg { color: var(--accent-fg); }
 
 .sales-showcase-tools button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 7px;
-  min-height: 38px;
-  padding: 8px 13px;
-  border: 1px solid var(--stage-stroke);
-  border-radius: 10px;
-  color: var(--stage-text);
-  background: #ffffff07;
+  min-height: 34px;
+  padding: 5px 12px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--fg-muted);
+  background: var(--canvas-default);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out),
+    background var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
 }
-
-.sales-showcase-tools button:hover:not(:disabled) { background: #ffffff18; }
-.sales-showcase-tools button:disabled { opacity: 0.6; }
+.sales-showcase-tools button:hover:not(:disabled) {
+  color: var(--fg-default);
+  border-color: var(--border-strong);
+  background: var(--control-hover);
+}
+.sales-showcase-tools button:active:not(:disabled) { transform: translateY(1px); }
+.sales-showcase-tools button:disabled { opacity: 0.55; cursor: default; }
 .sales-showcase-tools button:focus-visible {
-  outline: 2px solid var(--stage-cool);
-  outline-offset: 3px;
+  outline: 2px solid var(--accent-fg);
+  outline-offset: 2px;
 }
 .sales-showcase-tools .sales-showcase-primary {
   border-color: transparent;
-  background: var(--stage-cool);
-  color: #142333;
-  font-weight: 700;
+  background: var(--accent-solid);
+  color: #ffffff;
+  font-weight: 600;
+  box-shadow: var(--shadow-xs);
 }
-.sales-showcase-tools .sales-showcase-primary:hover:not(:disabled) { background: #a8f6ed; }
+.sales-showcase-tools .sales-showcase-primary:hover:not(:disabled) {
+  background: var(--accent-solid-hover);
+  color: #ffffff;
+  border-color: transparent;
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-1px);
+}
 
 .sales-showcase .sales-showcase-intro h2 {
-  color: var(--stage-text);
-  font-size: clamp(24px, 4.8cqw, 46px);
-  line-height: 1.22;
-  letter-spacing: -0.02em;
+  color: var(--fg-default);
+  font-size: clamp(24px, 4.2cqw, 40px);
+  line-height: 1.2;
+  letter-spacing: -0.025em;
+  font-weight: 650;
 }
 .sales-showcase .sales-showcase-intro p {
   margin-top: 7px;
-  color: var(--stage-muted);
+  color: var(--fg-muted);
   font-size: 14px;
 }
 
+/* 流程条：细线 + 文字，不用彩色圆形编号。 */
+.sales-showcase-steps {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 22px;
+  padding-bottom: 2px;
+  border-bottom: 1px solid var(--border-muted);
+}
+.sales-showcase-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 0;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  background: transparent;
+  color: var(--fg-subtle);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+.sales-showcase-step:hover:not(:disabled) { color: var(--fg-default); }
+.sales-showcase-step:disabled { cursor: default; }
+.sales-showcase-step-dot {
+  color: inherit;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  opacity: 0.75;
+}
+.sales-showcase-step.is-active {
+  color: var(--accent-fg);
+  border-bottom-color: var(--accent-fg);
+  font-weight: 600;
+}
+.sales-showcase-step.is-active .sales-showcase-step-dot { opacity: 1; }
+.sales-showcase-step.is-done { color: var(--fg-muted); }
+.sales-showcase-step.is-done .sales-showcase-step-dot { color: var(--success-fg); opacity: 1; }
+.sales-showcase-step:focus-visible { outline: 2px solid var(--accent-fg); outline-offset: 2px; }
+
+/* 对比面板：白色分层 + 细线分隔，不用灰色卡片。 */
 .sales-showcase-compare {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-  align-items: center;
-  gap: clamp(7px, 2cqw, 18px);
+  align-items: stretch;
+  gap: 0;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--canvas-default);
+  box-shadow: var(--shadow-xs);
+  overflow: hidden;
+  transition: box-shadow var(--duration) var(--ease-out);
 }
-.sales-showcase-arrow { color: var(--stage-muted); }
+.sales-showcase-compare:hover { box-shadow: var(--shadow-md); }
 
 .sales-showcase-figure {
-  --figure-accent: var(--stage-warm);
   min-width: 0;
-  min-height: 160px;
-  padding: clamp(12px, 2.5cqw, 24px);
-  border: 1px solid var(--stage-stroke);
-  border-radius: 14px;
-  background: #101b2bb3;
+  padding: clamp(20px, 2.8cqw, 30px);
+  display: grid;
+  align-content: start;
+  gap: 6px;
 }
-.sales-showcase-verified { --figure-accent: var(--stage-cool); }
 .sales-showcase-figure > span {
-  color: var(--stage-muted);
-  font-size: 14px;
-  font-weight: 650;
+  color: var(--fg-subtle);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
 }
 .sales-showcase-figure strong {
   display: block;
-  color: var(--figure-accent);
-  font-size: clamp(32px, 9cqw, 88px);
+  color: var(--fg-default);
+  font-family: inherit;
+  font-size: clamp(36px, 7.4cqw, 64px);
   font-variant-numeric: tabular-nums;
-  font-weight: 750;
-  line-height: 1.18;
+  font-feature-settings: "tnum";
+  font-weight: 650;
+  line-height: 1.06;
   letter-spacing: -0.045em;
   overflow-wrap: anywhere;
 }
 .sales-showcase-figure strong small {
-  margin-inline-start: 0.35em;
-  color: var(--figure-accent);
-  font-size: 0.27em;
+  margin-inline-start: 0.28em;
+  color: var(--fg-subtle);
+  font-family: inherit;
+  font-size: 0.24em;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+.sales-showcase-figure strong.is-pending {
+  color: var(--fg-subtle);
+  font-family: inherit;
+  font-size: clamp(20px, 2.4cqw, 24px);
+  font-weight: 600;
   letter-spacing: 0;
 }
 .sales-showcase .sales-showcase-figure p {
-  color: var(--stage-muted);
+  color: var(--fg-muted);
+  font-size: 13px;
+  min-height: 1.5em;
+}
+
+.sales-showcase-delta {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px 20px;
+  border-inline: 1px solid var(--border-muted);
+  background: var(--canvas-subtle);
+  text-align: center;
+  white-space: nowrap;
+}
+.sales-showcase-delta-pending {
+  color: var(--fg-subtle);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+.sales-showcase-delta-ok {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--success-fg);
+  font-size: 13px;
+  font-weight: 600;
+}
+.sales-showcase-delta-diff {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  padding: 2px 9px;
+  border: 1px solid var(--attention-fg);
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--attention-fg);
+  font-size: 13px;
+  font-weight: 600;
+}
+.sales-showcase-delta-diff b {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+.sales-showcase-delta-diff small { font-size: 11px; }
+
+.sales-showcase-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--fg-muted);
   font-size: 14px;
 }
-
-.sales-showcase-meter {
-  height: 5px;
-  margin-top: 13px;
-  overflow: hidden;
-  border-radius: 8px;
-  background: #ffffff15;
+.sales-showcase-status svg { color: var(--success-fg); }
+.sales-showcase-status > b {
+  color: var(--fg-default);
+  font-family: var(--font-mono);
+  font-size: 1.05em;
 }
-.sales-showcase-meter > span {
-  display: block;
-  height: 100%;
-  background: var(--figure-accent);
-  transform-origin: left;
-  animation: sales-showcase-reveal 540ms cubic-bezier(.2, .75, .3, 1) both;
-}
-@keyframes sales-showcase-reveal {
-  from { transform: scaleX(0); }
-  to { transform: scaleX(1); }
-}
-
-.sales-showcase-status > b { color: var(--stage-warm); font-size: 1.35em; }
 .sales-showcase-footer .sales-showcase-tools { margin-left: auto; }
-.sales-showcase .sales-showcase-error { color: var(--stage-warm); }
+.sales-showcase .sales-showcase-error { color: var(--danger-fg); font-size: 14px; }
 
-.sales-showcase-other-conflicts {
-  padding: 12px 16px;
-  border: 1px solid var(--stage-stroke);
-  border-radius: 12px;
-}
-.sales-showcase-other-conflicts h3 { color: var(--stage-warm); }
-.sales-showcase-other-conflicts ul { margin: 6px 0 0; padding: 0; list-style: none; }
-.sales-showcase-other-conflicts li {
+.sales-showcase-editline {
   display: flex;
   flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 4px 12px;
-  overflow-wrap: anywhere;
+  align-items: center;
+  gap: 6px 14px;
+  margin-top: -6px;
+}
+.sales-showcase-editline small { color: var(--fg-subtle); font-size: 12px; }
+.sales-showcase-link {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--accent-fg);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  border-bottom: 1px solid var(--accent-ring);
+  cursor: pointer;
+}
+.sales-showcase-link:hover { border-bottom-color: var(--accent-fg); }
+.sales-showcase-link:disabled { color: var(--fg-subtle); border-bottom-color: transparent; cursor: default; }
+.sales-showcase-link:focus-visible { outline: 2px solid var(--accent-fg); outline-offset: 2px; }
+
+.sales-showcase-editor {
+  width: 100%;
+  min-height: 120px;
+  resize: vertical;
+  padding: 14px 16px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--canvas-subtle);
+  color: var(--fg-default);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.75;
+  white-space: pre;
+  transition: border-color var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out);
+}
+.sales-showcase-editor:focus-visible {
+  outline: none;
+  border-color: var(--accent-fg);
+  box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
+/* 结果区：细边卡片，和主面板同一层级。 */
 .sales-showcase-results {
   display: grid;
   min-width: 0;
@@ -194,34 +343,89 @@
 .sales-showcase-result-cards p { overflow-wrap: anywhere; }
 .sales-showcase-result-cards h3 svg { color: var(--accent-fg); flex: none; }
 
-/* 1366×768：收紧 hero 的垂直留白，让「复算并核验」按钮留在首屏。 */
+.sales-showcase-other-conflicts {
+  padding: 12px 16px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--canvas-subtle);
+}
+.sales-showcase-other-conflicts h3 { color: var(--attention-fg); font-size: 14px; }
+.sales-showcase-other-conflicts ul { margin: 6px 0 0; padding: 0; list-style: none; }
+.sales-showcase-other-conflicts li {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+  overflow-wrap: anywhere;
+}
+
+.sales-showcase-verify {
+  display: grid;
+  gap: 9px;
+  padding: 18px 20px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--canvas-default);
+  box-shadow: var(--shadow-xs);
+}
+.sales-showcase-verify-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 14px;
+}
+.sales-showcase-verify-head h3 { font-size: 15px; letter-spacing: -0.01em; }
+.sales-showcase-verify-head small { color: var(--fg-subtle); font-size: 12px; }
+.sales-showcase-verify-hash {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.sales-showcase-verify-state {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+.sales-showcase-verify-state.is-ok { color: var(--success-fg); }
+.sales-showcase-verify-state.is-bad { color: var(--danger-fg); }
+.sales-showcase-verify-state.is-unsupported { color: var(--attention-fg); }
+
+/* 1366×768：收紧垂直留白，保证主操作在首屏。 */
 @media (max-height: 800px) {
   .sales-showcase-layout { gap: 10px; }
-  .sales-showcase-hero {
-    gap: 10px;
-    padding: 14px 18px;
-    border-radius: 16px;
-  }
-  .sales-showcase-intro h2 { font-size: clamp(20px, 3.4cqw, 30px); }
+  .sales-showcase-hero { gap: 12px; padding: 16px 20px; }
+  .sales-showcase-intro h2 { font-size: clamp(20px, 3.4cqw, 28px); }
   .sales-showcase-intro p { margin-top: 4px; }
-  .sales-showcase-figure {
-    min-height: 104px;
-    padding: 10px 14px;
-  }
-  .sales-showcase-figure strong { font-size: clamp(26px, 6cqw, 52px); }
-  .sales-showcase-meter { margin-top: 8px; }
+  .sales-showcase-figure { padding: 14px 18px; }
+  .sales-showcase-figure strong { font-size: clamp(28px, 6cqw, 46px); }
+  .sales-showcase-steps { gap: 2px 16px; }
+  .sales-showcase-step { padding: 4px 0; }
   .sales-showcase-bar button,
-  .sales-showcase-tools button { min-height: 32px; padding: 5px 10px; }
+  .sales-showcase-tools button { min-height: 30px; padding: 4px 10px; font-size: 12px; }
 }
 
 @container (max-width: 610px) {
-  .sales-showcase-hero { border-radius: 14px; }
-  .sales-showcase-figure { min-height: 126px; }
-  .sales-showcase-arrow { width: 20px; }
+  .sales-showcase-compare { grid-template-columns: minmax(0, 1fr); }
+  .sales-showcase-delta {
+    border-inline: 0;
+    border-block: 1px solid var(--border-muted);
+    padding: 8px 16px;
+    justify-content: flex-start;
+  }
   .sales-showcase-tools button { min-height: 44px; }
   .sales-showcase-footer .sales-showcase-tools { margin-left: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .sales-showcase-meter > span { animation: none; }
+  .sales-showcase-tools button,
+  .sales-showcase-compare,
+  .sales-showcase-editor { transition: none; }
 }
+
+/* 状态区是读屏播报节点，程序化聚焦不显示焦点框。 */
+.sales-showcase-status:focus,
+.sales-showcase-status:focus-visible { outline: none; }

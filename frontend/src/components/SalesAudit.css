@@ -241,7 +241,7 @@
   border: 1px solid var(--border-default);
   border-left: 4px solid var(--success-fg);
   border-radius: var(--radius-md);
-  background: var(--success-subtle);
+  background: var(--canvas-default);
 }
 .sales-audit-receipt dl {
   display: flex;
@@ -329,3 +329,7 @@
     font-size: 14px;
   }
 }
+
+/* 程序化聚焦的状态/回执区域只用于读屏播报，不需要可见焦点环。 */
+.sales-audit-receipt:focus,
+.sales-audit-receipt:focus-visible { outline: none; }
