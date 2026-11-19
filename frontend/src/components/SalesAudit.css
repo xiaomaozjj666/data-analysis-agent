@@ -300,7 +300,7 @@
 }
 
 /* 1366×768 等窄高度视口：压缩留白，保证「复算并核验」留在首屏。 */
-@media (max-height: 800px) {
+@media (max-height: 900px) {
   .sales-audit { gap: 8px; margin-top: 6px; }
   .sales-audit-header { padding: 8px 14px; gap: 10px; }
   /* 标题保留，说明文字让位给首屏的主操作。 */

@@ -404,7 +404,7 @@
 .sales-showcase-verify-state.is-unsupported::before { background: var(--attention-fg); }
 
 /* 1366×768：收紧垂直留白，保证主操作在首屏。 */
-@media (max-height: 800px) {
+@media (max-height: 900px) {
   .sales-showcase-layout { gap: 8px; }
   .sales-showcase-hero { gap: 8px; padding: 12px 16px; }
   .sales-showcase-intro h2 { font-size: clamp(20px, 3.2cqw, 26px); }

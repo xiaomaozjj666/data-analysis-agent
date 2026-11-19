@@ -60,6 +60,7 @@ const SURFACES = [
   "--canvas-default",
   "--canvas-subtle",
   "--canvas-inset",
+  "--sidebar-bg",
   "--topbar-bg",
   "--accent-subtle",
   "--control-hover",
@@ -86,19 +87,6 @@ describe("设计令牌对比度（WCAG AA）", () => {
           expect(failures, failures.join("\n")).toEqual([]);
         });
       }
-
-      it("深色侧栏作用域内的文字 ≥ 4.5:1", () => {
-        // 侧栏在 styles/layout.css 里局部覆盖了 --fg-* 令牌；这里按实际作用域校验。
-        // 侧栏两套主题都保持深炭底，文字取值相同。
-        const sidebarText = {
-          default: "#ece9e1",
-          muted: "#b4b0a6",
-          subtle: "#928e84",
-        };
-        for (const [name, color] of Object.entries(sidebarText)) {
-          expect(contrast(color, tokens["--sidebar-bg"]), `${name} on sidebar`).toBeGreaterThanOrEqual(4.5);
-        }
-      });
 
       it("白字压在实心强调色上 ≥ 4.5:1", () => {
         // 暗色主题会把 --accent-fg 提亮，所以"白字压底"必须用 --accent-solid，
