@@ -953,15 +953,20 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             paper_bgcolor="#fbfaf5",
             plot_bgcolor="#fbfaf5",
             colorway=_CHART_COLORS,
-            margin={
-                "l": 64,
-                "r": 36,
-                "t": 108
-                if scale_details["scale_mode"] == "robust" or coverage.get("missing_combinations")
-                else 76,
-                # 底部为横向图例预留空间（图例高约 30px + 刻度空间）
-                "b": 120,
-            },
+            margin=(
+                # 3D 场景本身是正方形；通用页边距会在四周留下大片空白。
+                {"l": 0, "r": 0, "t": 56, "b": 70}
+                if chart_type == "scatter_3d"
+                else {
+                    "l": 64,
+                    "r": 36,
+                    "t": 108
+                    if scale_details["scale_mode"] == "robust" or coverage.get("missing_combinations")
+                    else 76,
+                    # 底部为横向图例预留空间（图例高约 30px + 刻度空间）
+                    "b": 120,
+                }
+            ),
             hoverlabel={"bgcolor": "#102a2a", "font_color": "white"},
             title={"x": 0.01, "xanchor": "left", "font": {"size": 22, "color": "#102a2a"}},
             legend={
@@ -1286,7 +1291,8 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
                 # 惰性安装 kaleido 1.5.1 的就绪等待补丁（绕 kaleido_scopes 竞态）；
                 # 不在模块顶部装，避免导入时就加载 kaleido。
                 _kaleido_compat.install()
-                fig.write_image(png_path, width=1400, height=850, scale=1.5)
+                png_width = 1100 if chart_type == "scatter_3d" else 1400
+                fig.write_image(png_path, width=png_width, height=850, scale=1.5)
                 workspace.register_artifact(png_path, "image", title or chart_type)
                 response["png"] = png_path
             except Exception as exc:

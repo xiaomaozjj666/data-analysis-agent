@@ -80,14 +80,14 @@ def _refine_scatter_3d(fig: Any, *, rows: int) -> None:
     """
     size, opacity, border = scatter_symbol_style(rows)[:3]
     # 3D 里点需要比 2D 略小才不至于互相粘连（透视投影下近点会被放大）
-    point_size = max(2.4, size - 1.4)
+    point_size = max(1.6, size - 3.2)
     aspect = _scatter_3d_aspect(fig)
     fig.update_traces(
         marker={
             "size": point_size,
-            "opacity": min(0.92, opacity + 0.12),
+            "opacity": min(0.86, max(0.5, opacity - 0.04)),
             # 3D 描边只能靠 marker.line（scatter3d 支持），白描边给点之间留缝
-            "line": {"width": 0.6 if border else 0.4, "color": "rgba(255,255,255,0.85)"},
+            "line": {"width": 0.2 if border else 0, "color": "rgba(255,255,255,0.7)"},
             # 不要碰 showscale/colorbar：分类着色（color=地区）时强行显示色标
             # 会画出一条 1~9 的"类别编号色条"，看起来像多了一个连续维度
             # （实测踩到）。数值着色时 px 自己会带上 colorbar，保持原样即可。
@@ -100,21 +100,24 @@ def _refine_scatter_3d(fig: Any, *, rows: int) -> None:
         "aspectratio": aspect,
         # 相机：抬高俯视角（z 更大）。默认视角下竖轴几乎与视线平行，
         # 整团点看起来是"一张平板"，量纲差异被压没（实测截图对比后定的值）。
-        "camera": {"eye": {"x": 1.5, "y": 1.5, "z": 1.35}},
+        "camera": {"eye": {"x": 2.0, "y": 0.7, "z": 0.9}},
         "xaxis": {
-            "showbackground": False,
+            "showbackground": True,
+            "backgroundcolor": "rgba(148,163,184,0.04)",
             "gridcolor": "rgba(148,163,184,0.28)",
             "zerolinecolor": "rgba(148,163,184,0.45)",
             "showspikes": False,
         },
         "yaxis": {
-            "showbackground": False,
+            "showbackground": True,
+            "backgroundcolor": "rgba(148,163,184,0.04)",
             "gridcolor": "rgba(148,163,184,0.28)",
             "zerolinecolor": "rgba(148,163,184,0.45)",
             "showspikes": False,
         },
         "zaxis": {
-            "showbackground": False,
+            "showbackground": True,
+            "backgroundcolor": "rgba(148,163,184,0.04)",
             "gridcolor": "rgba(148,163,184,0.28)",
             "zerolinecolor": "rgba(148,163,184,0.45)",
             "showspikes": False,
