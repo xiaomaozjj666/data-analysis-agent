@@ -298,3 +298,44 @@ def test_schema_history_is_append_only(tmp_path):
     lines = (tmp_path / "audit_schema_history.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(lines) == 2
     assert json.loads(lines[0])["sha256"] != json.loads(lines[1])["sha256"]
+
+def test_ratio_metric(tmp_path):
+    path = tmp_path / "ratio.csv"
+    path.write_text("customer_id,revenue" + NL + "C1,100" + NL + "C2,150" + NL, encoding="utf-8")
+    specs = parse_schema(
+        {
+            "metrics": [
+                {"name": "收入合计", "column": "revenue", "aggregation": "sum", "unit": "元"},
+                {"name": "客户数", "column": "customer_id", "aggregation": "count_distinct", "unit": "人"},
+                {
+                    "name": "客单价",
+                    "aggregation": "ratio",
+                    "numerator": "收入合计",
+                    "denominator": "客户数",
+                    "unit": "元",
+                },
+            ]
+        }
+    )
+    read = read_metrics(path, specs)
+    assert read.metrics["客单价"] == "125.00"
+    result = audit_sales_brief(path, "客单价：125.00 元", metric_specs=specs)
+    assert result["summary"]["verified"] == 1
+
+    zero = parse_schema(
+        {
+            "metrics": [
+                {"name": "收入合计", "column": "revenue", "aggregation": "sum"},
+                {"name": "客户数", "column": "missing", "aggregation": "count_distinct"},
+                {"name": "客单价", "aggregation": "ratio", "numerator": "收入合计", "denominator": "客户数"},
+            ]
+        }
+    )
+    with pytest.raises(ValueError, match="缺少核验口径需要的列"):
+        read_metrics(path, zero)
+
+    no_ref = parse_schema(
+        {"metrics": [{"name": "比率", "aggregation": "ratio", "numerator": "A", "denominator": "B"}]}
+    )
+    with pytest.raises(ValueError, match="未在口径中登记"):
+        read_metrics(path, no_ref)

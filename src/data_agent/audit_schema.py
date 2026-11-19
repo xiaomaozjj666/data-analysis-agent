@@ -40,7 +40,7 @@ from data_agent._workspace_bundles import _atomic_write_text
 SCHEMA_FILENAME = "audit_schema.json"
 HISTORY_FILENAME = "audit_schema_history.jsonl"
 SCHEMA_VERSION = 2
-ALLOWED_AGGREGATIONS = frozenset({"sum", "count", "count_distinct", "min", "max", "mean"})
+ALLOWED_AGGREGATIONS = frozenset({"sum", "count", "count_distinct", "min", "max", "mean", "ratio"})
 _ALLOWED_TYPES = frozenset({"decimal", "integer", "date", "string"})
 _ALLOWED_NULL_POLICIES = frozenset({"exclude", "fail", "zero"})
 _ALLOWED_ROUNDING = frozenset({"HALF_UP", "HALF_EVEN"})
@@ -72,6 +72,8 @@ class AuditMetric:
     sign_policy: str = "allow"
     filters: tuple[dict[str, Any], ...] = ()
     time_window: dict[str, Any] | None = None
+    numerator: str | None = None
+    denominator: str | None = None
 
     @property
     def is_integer(self) -> bool:
@@ -79,6 +81,8 @@ class AuditMetric:
         return self.aggregation in _INTEGER_AGGREGATIONS
 
     def formula(self) -> str:
+        if self.aggregation == "ratio":
+            return f"{self.numerator} / {self.denominator}"
         parts = [f"{self.aggregation.upper()}({self.column})"]
         if self.data_type == "integer":
             parts.append("INTEGER")
@@ -177,8 +181,6 @@ def parse_schema(payload: Any) -> list[AuditMetric]:
             raise ValueError(f"metrics 第 {index + 1} 项缺少 name。")
         if name in seen:
             raise ValueError(f"指标名称重复：{name}。")
-        if not column:
-            raise ValueError(f"指标「{name}」缺少 column。")
         if aggregation not in ALLOWED_AGGREGATIONS:
             allowed = "、".join(sorted(ALLOWED_AGGREGATIONS))
             raise ValueError(f"指标「{name}」的 aggregation 必须是 {allowed} 之一。")
@@ -187,6 +189,19 @@ def parse_schema(payload: Any) -> list[AuditMetric]:
             raise ValueError(f"指标「{name}」的 data_type 不支持：{data_type}。")
         if aggregation in {"sum", "mean", "min", "max"} and data_type not in {"decimal", "integer"}:
             raise ValueError(f"指标「{name}」的数值聚合需要 data_type=decimal 或 integer。")
+        numerator = str(raw.get("numerator") or "").strip() or None
+        denominator = str(raw.get("denominator") or "").strip() or None
+        if aggregation == "ratio":
+            if not numerator or not denominator:
+                raise ValueError(f"指标「{name}」使用 ratio 时必须提供 numerator 与 denominator。")
+            if not column:
+                column = numerator
+            if raw.get("filters") or raw.get("time_window"):
+                raise ValueError(f"指标「{name}」的 ratio 口径不支持 filters/time_window。")
+        elif numerator or denominator:
+            raise ValueError(f"指标「{name}」只有 aggregation=ratio 才能使用 numerator/denominator。")
+        if not column:
+            raise ValueError(f"指标「{name}」缺少 column。")
         null_policy = str(raw.get("null_policy") or "exclude").strip().lower()
         if null_policy not in _ALLOWED_NULL_POLICIES:
             raise ValueError(f"指标「{name}」的 null_policy 不支持：{null_policy}。")
@@ -220,6 +235,8 @@ def parse_schema(payload: Any) -> list[AuditMetric]:
                 sign_policy=sign_policy,
                 filters=_parse_filters(raw.get("filters"), name),
                 time_window=_parse_window(raw.get("time_window"), name),
+                numerator=numerator,
+                denominator=denominator,
             )
         )
     return metrics
@@ -240,6 +257,8 @@ def _serialize(metrics: list[AuditMetric]) -> list[dict[str, Any]]:
             "sign_policy": metric.sign_policy,
             "filters": list(metric.filters),
             "time_window": metric.time_window,
+            "numerator": metric.numerator,
+            "denominator": metric.denominator,
         }
         for metric in metrics
     ]
@@ -388,7 +407,7 @@ def read_metrics(
     try:
         reader = csv.DictReader(io.StringIO(text, newline=""), strict=True)
         headers = reader.fieldnames or []
-        required = {metric.column for metric in metrics}
+        required = {metric.column for metric in metrics if metric.aggregation != "ratio"}
         for metric in metrics:
             required.update(item["column"] for item in metric.filters)
             if metric.time_window:
@@ -404,6 +423,8 @@ def read_metrics(
             rows = row_number
             matched_any = False
             for metric in metrics:
+                if metric.aggregation == "ratio":
+                    continue
                 if not _row_passes(row, metric, row_number):
                     continue
                 matched_any = True
@@ -453,7 +474,10 @@ def read_metrics(
         raise ValueError("CSV 至少需要一条记录。")
 
     values: dict[str, str] = {}
+    base_names = {metric.name for metric in metrics if metric.aggregation != "ratio"}
     for metric in metrics:
+        if metric.aggregation == "ratio":
+            continue
         if metric.aggregation == "count_distinct":
             values[metric.name] = str(len(distinct[metric.name]))
             continue
@@ -470,6 +494,19 @@ def read_metrics(
             if not counts[metric.name]:
                 raise ValueError(f"指标「{metric.name}」没有可计算的非空数值。")
             number = sums[metric.name] / counts[metric.name]
+        mode = ROUND_HALF_EVEN if metric.rounding == "HALF_EVEN" else ROUND_HALF_UP
+        quant = Decimal(1).scaleb(-metric.decimals)
+        values[metric.name] = f"{number.quantize(quant, rounding=mode):.{metric.decimals}f}"
+
+    for metric in metrics:
+        if metric.aggregation != "ratio":
+            continue
+        if metric.numerator not in base_names or metric.denominator not in base_names:
+            raise ValueError(f"指标「{metric.name}」的分子或分母未在口径中登记。")
+        denominator = Decimal(values[metric.denominator])
+        if denominator == 0:
+            raise ValueError(f"指标「{metric.name}」的分母为 0，无法计算比率。")
+        number = Decimal(values[metric.numerator]) / denominator
         mode = ROUND_HALF_EVEN if metric.rounding == "HALF_EVEN" else ROUND_HALF_UP
         quant = Decimal(1).scaleb(-metric.decimals)
         values[metric.name] = f"{number.quantize(quant, rounding=mode):.{metric.decimals}f}"
