@@ -492,3 +492,33 @@
   color: var(--fg-muted);
   font-size: 13px;
 }
+
+/* 核验口径：高级用户可登记声明式指标，默认收起。 */
+.sales-audit-schema {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  background: var(--canvas-subtle);
+}
+.sales-audit-schema summary {
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+}
+.sales-audit-schema p {
+  margin: 6px 0;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+.sales-audit-schema textarea {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--canvas-default);
+  color: var(--fg-default);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  resize: vertical;
+}

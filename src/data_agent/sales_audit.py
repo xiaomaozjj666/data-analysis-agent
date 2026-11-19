@@ -21,6 +21,7 @@ import json
 import re
 import unicodedata
 from collections import Counter, defaultdict
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
@@ -40,6 +41,8 @@ _RULES: dict[str, tuple[str, str]] = {
     "订单数": ("笔", "COUNT(DISTINCT order_id)，同一订单的多条明细只计一笔"),
     "客单价": ("元", "销售额合计 ÷ 订单数，按分四舍五入（HALF_UP）"),
 }
+_MONEY_METRICS = frozenset({"销售额合计", "客单价"})
+_INTEGER_METRICS = frozenset({"销量合计", "订单数"})
 # 依赖订单数的指标：订单号近似重复会让它们的更正值不可信。
 _ORDER_BASED = frozenset({"订单数", "客单价"})
 _CENT_METRICS = frozenset({"客单价"})
@@ -55,6 +58,8 @@ _SALES_CELL = re.compile(
 )
 _DRAFT_AMOUNT = re.compile(r"[+-]?[0-9]+(?:\.[0-9]{1,2})?")
 _DRAFT_INTEGER = re.compile(r"[0-9]+")
+# 声明式口径不限制小数位；比较仍按 Decimal 精确值。
+_DRAFT_NUMBER = re.compile(r"[+-]?[0-9]+(?:\.[0-9]+)?")
 # 非登记标签行里，只有 % 与「人」和统计范围无关，可以豁免范围门；元/件/笔 必须过范围门。
 _OTHER_NUMERIC_CLAIM = re.compile(r"[+-]?[0-9]+(?:\.[0-9]+)?\s*(?:%|％|人)")
 _FENCE = re.compile(r" {0,3}(?P<marker>`{3,}|~{3,})(?P<info>[^`~]*)")
@@ -276,32 +281,43 @@ def _clean_value(value: str) -> str:
     return cleaned.strip()
 
 
-def _scoped_metric(label: str) -> str | None:
+def _scoped_metric(
+    label: str, rules: Mapping[str, tuple[str, str]] | None = None
+) -> str | None:
     """label 里夹带了登记名（如「华东区订单数」）时返回被夹带的指标名。"""
-    for metric in _RULES:
+    for metric in rules or _RULES:
         if metric in label and label != metric:
             return metric
     return None
 
 
-def _candidates(value: str) -> list[dict[str, str]]:
-    """按单位与名称相似度给出口径候选，仅作提示，不自动采纳。"""
+def _candidates(
+    value: str, rules: Mapping[str, tuple[str, str]] | None = None
+) -> list[dict[str, str]]:
+    """按单位给出口径候选，仅作提示，不自动采纳。"""
+    active = rules or _RULES
     unit = next(
-        (unit for unit, _ in _RULES.values() if value.endswith(unit)),
+        (unit for unit, _ in active.values() if unit and value.endswith(unit)),
         None,
     )
     suggestions: list[dict[str, str]] = []
     if unit:
         suggestions.extend(
             {"metric": metric, "formula": formula}
-            for metric, (metric_unit, formula) in _RULES.items()
+            for metric, (metric_unit, formula) in active.items()
             if metric_unit == unit
         )
     return suggestions[:_SUGGEST_LIMIT]
 
 
 def _claims_for_line(
-    raw: str, line_number: int, *, in_fence: bool
+    raw: str,
+    line_number: int,
+    *,
+    in_fence: bool,
+    rules: Mapping[str, tuple[str, str]] | None = None,
+    money_metrics: frozenset[str] = _MONEY_METRICS,
+    integer_metrics: frozenset[str] = _INTEGER_METRICS,
 ) -> dict[str, Any]:
     claim: dict[str, Any] = {
         "line": line_number,
@@ -324,7 +340,7 @@ def _claims_for_line(
     claim["label"] = label
     claim["submitted"] = value
 
-    scoped = _scoped_metric(label)
+    scoped = _scoped_metric(label, rules)
     if scoped:
         claim["scoped_metric"] = scoped
         claim["reason"] = _SCOPED_REASON
@@ -333,19 +349,29 @@ def _claims_for_line(
         claim["context"] = True
         claim["reason"] = _CONTEXT_REASON
         return claim
-    if label not in _RULES:
-        claim["candidates"] = _candidates(value)
+    active = rules or _RULES
+    if label not in active:
+        claim["candidates"] = _candidates(value, rules)
         if not _OTHER_NUMERIC_CLAIM.fullmatch(value):
             claim["context"] = True
             claim["reason"] = _CONTEXT_REASON
         return claim
 
-    unit, formula = _RULES[label]
+    unit, formula = active[label]
     number = value.removesuffix(unit).strip()
-    valid = _DRAFT_AMOUNT if unit == "元" else _DRAFT_INTEGER
+    if label in money_metrics:
+        valid = _DRAFT_AMOUNT
+    elif label in integer_metrics:
+        valid = _DRAFT_INTEGER
+    else:
+        valid = _DRAFT_NUMBER
     claim.update(metric=label, formula=formula)
     if not (value.endswith(unit) and valid.fullmatch(number)):
-        claim["reason"] = f"数值格式或单位不符合口径，此项使用「{unit}」。"
+        claim["reason"] = (
+            f"数值格式或单位不符合口径，此项使用「{unit}」。"
+            if unit
+            else "数值格式不符合口径。"
+        )
         return claim
     claim["submitted"] = value
     claim["_number"] = number
@@ -359,6 +385,9 @@ def _audit_claims(
     *,
     confirm_full_table: bool,
     warnings: list[dict[str, Any]],
+    rules: Mapping[str, tuple[str, str]] | None = None,
+    money_metrics: frozenset[str] = _MONEY_METRICS,
+    integer_metrics: frozenset[str] = _INTEGER_METRICS,
 ) -> tuple[list[dict[str, Any]], bool]:
     claims: list[dict[str, Any]] = []
     fence = ""
@@ -371,19 +400,40 @@ def _audit_claims(
             marker, info = delimiter.group("marker"), delimiter.group("info")
             if not fence:
                 fence = marker
-                claim = _claims_for_line(raw, line_number, in_fence=True)
+                claim = _claims_for_line(
+                    raw,
+                    line_number,
+                    in_fence=True,
+                    rules=rules,
+                    money_metrics=money_metrics,
+                    integer_metrics=integer_metrics,
+                )
             else:
                 closes = (
                     marker[0] == fence[0]
                     and len(marker) >= len(fence)
                     and not info.strip()
                 )
-                claim = _claims_for_line(raw, line_number, in_fence=True)
+                claim = _claims_for_line(
+                    raw,
+                    line_number,
+                    in_fence=True,
+                    rules=rules,
+                    money_metrics=money_metrics,
+                    integer_metrics=integer_metrics,
+                )
                 if closes:
                     fence = ""
             claims.append(claim)
             continue
-        claim = _claims_for_line(raw, line_number, in_fence=bool(fence))
+        claim = _claims_for_line(
+            raw,
+            line_number,
+            in_fence=bool(fence),
+            rules=rules,
+            money_metrics=money_metrics,
+            integer_metrics=integer_metrics,
+        )
         has_context = has_context or bool(claim.pop("context", False))
         claims.append(claim)
 
@@ -392,6 +442,11 @@ def _audit_claims(
     order_warning = any(
         warning.get("code") == "near_duplicate_order_id" for warning in warnings
     )
+    near_duplicate_metrics = {
+        warning.get("metric")
+        for warning in warnings
+        if warning.get("code") == "near_duplicate_value"
+    }
     for claim in claims:
         number = claim.pop("_number", None)
         unit = claim.pop("_unit", None)
@@ -405,19 +460,19 @@ def _audit_claims(
         if number is None or unit is None:
             continue
         expected = metrics[metric]
-        if unit == "元" and metric == "客单价":
-            agrees = Decimal(number) == Decimal(expected)
-        elif unit == "元":
-            agrees = Decimal(number) == Decimal(expected)
-        else:
+        if metric in integer_metrics:
             agrees = int(number) == int(expected)
+        else:
+            agrees = Decimal(number) == Decimal(expected)
         claim.update(
             status="verified" if agrees else "conflict",
-            recalculated=f"{expected} {unit}",
+            recalculated=f"{expected} {unit}".strip(),
             reason="原值与明细复算一致。" if agrees else "原值与明细复算不一致。",
         )
         if metric in _ORDER_BASED and order_warning:
             claim["caveat"] = "订单号存在近似重复，订单数口径按原样去重，请人工复核。"
+        elif metric in near_duplicate_metrics:
+            claim["caveat"] = "该指标的去重列存在近似重复，按原样去重，请人工复核。"
 
     for claim in claims:
         if claim.get("metric") and counts[claim["metric"]] == 1:
@@ -443,6 +498,7 @@ def _audit_id(
     confirm_full_table: bool,
     metrics: dict[str, str],
     draft_trace_sha256: str | None = None,
+    schema_fingerprint: str | None = None,
 ) -> str:
     payload = json.dumps(
         {
@@ -453,6 +509,7 @@ def _audit_id(
             "metrics": metrics,
             # 有起草轨迹时把它绑进 audit_id：换了轨迹（例如重新起草）就是另一个审计对象。
             "draft_trace_sha256": draft_trace_sha256,
+            "schema_fingerprint": schema_fingerprint,
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -468,14 +525,32 @@ def audit_sales_brief(
     confirm_full_table: bool = False,
     max_rows: int | None = None,
     draft_trace_sha256: str | None = None,
+    metric_specs: Sequence[Any] | None = None,
 ) -> dict[str, Any]:
-    read = _read_sales(source, max_rows=max_rows)
-    metrics = read.metrics
+    schema_fingerprint: str | None = None
+    rules: Mapping[str, tuple[str, str]] | None = None
+    money_metrics = _MONEY_METRICS
+    integer_metrics = _INTEGER_METRICS
+    if metric_specs:
+        from data_agent import audit_schema
+
+        read = audit_schema.read_metrics(source, list(metric_specs), max_rows=max_rows)
+        metrics = read.metrics
+        rules = {spec.name: (spec.unit, spec.formula()) for spec in metric_specs}
+        money_metrics = frozenset()
+        integer_metrics = frozenset(spec.name for spec in metric_specs if spec.is_integer)
+        schema_fingerprint = audit_schema.schema_fingerprint(list(metric_specs))
+    else:
+        read = _read_sales(source, max_rows=max_rows)
+        metrics = read.metrics
     claims, needs_scope_confirmation = _audit_claims(
         draft,
         metrics,
         confirm_full_table=confirm_full_table,
         warnings=read.warnings,
+        rules=rules,
+        money_metrics=money_metrics,
+        integer_metrics=integer_metrics,
     )
     summary = {
         key: sum(claim["status"] == key for claim in claims)
@@ -507,8 +582,10 @@ def audit_sales_brief(
             confirm_full_table,
             metrics,
             draft_trace_sha256,
+            schema_fingerprint,
         ),
         "draft_trace_sha256": draft_trace_sha256,
+        "schema_fingerprint": schema_fingerprint,
         "source": read.evidence,
         "metrics": metrics,
         "summary": summary,

@@ -61,12 +61,19 @@ def confirm_brief(session_id: str, payload: ConfirmRequest) -> dict[str, Any]:
         except QuickDraftError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     try:
+        from data_agent.audit_schema import load_schema
+
+        metric_specs = load_schema(workspace.root)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
         result = audit_sales_brief(
             source,
             payload.draft,
             confirm_full_table=payload.confirm_full_table,
             max_rows=api.bootstrap_settings.max_rows,
             draft_trace_sha256=trace_digest,
+            metric_specs=metric_specs,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -92,6 +99,7 @@ def confirm_brief(session_id: str, payload: ConfirmRequest) -> dict[str, Any]:
                 "source_filename": result["source"]["filename"],
                 "draft_sha256": sha256_text(payload.draft),
                 "draft_trace_sha256": trace_digest,
+                "schema_fingerprint": result.get("schema_fingerprint"),
                 "brief_sha256": sha256_text(brief),
                 "confirm_full_table": payload.confirm_full_table,
                 "summary": result["summary"],

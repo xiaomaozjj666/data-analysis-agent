@@ -92,6 +92,16 @@ export interface AuditResult {
   corrected_brief: string | null;
   ledger?: AuditLedgerEntry;
   ledger_error?: string;
+  schema_fingerprint?: string | null;
+}
+
+export interface AuditSchemaSpec {
+  name: string;
+  column: string;
+  aggregation: "sum" | "count" | "count_distinct" | "min" | "max" | "mean";
+  unit?: string;
+  decimals?: number;
+  aliases?: string[];
 }
 
 export interface ConfirmResult {
@@ -348,6 +358,11 @@ function ResultNotices({
       {trace && (
         <p className="sales-audit-trace">已绑定起草轨迹 {trace.slice(0, 12)}…</p>
       )}
+      {audit.schema_fingerprint && (
+        <p className="sales-audit-trace" title={audit.schema_fingerprint}>
+          核验口径指纹 {audit.schema_fingerprint.slice(0, 12)}…
+        </p>
+      )}
       {warnings.length > 0 && (
         <section className="sales-audit-warnings" role="status">
           <p className="sales-audit-warnings-heading">
@@ -461,6 +476,13 @@ export default function SalesAudit({
   const [quickDraft, setQuickDraft] = useState<QuickDraftResult | null>(null);
   const [quickFailed, setQuickFailed] = useState(false);
   const [recordedNote, setRecordedNote] = useState(false);
+  const [schemaSpecs, setSchemaSpecs] = useState<AuditSchemaSpec[]>([]);
+  const [schemaText, setSchemaText] = useState(`{
+  "metrics": []
+}`);
+  const [schemaBusy, setSchemaBusy] = useState(false);
+  const [schemaLoaded, setSchemaLoaded] = useState(false);
+  const [schemaMessage, setSchemaMessage] = useState("");
   const [draftTrace, setDraftTrace] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [sessionLost, setSessionLost] = useState(false);
@@ -635,6 +657,61 @@ export default function SalesAudit({
     }
   }
 
+  async function loadSchema() {
+    if (schemaLoaded) return;
+    setSchemaLoaded(true);
+    try {
+      const payload = await api<{ metrics?: AuditSchemaSpec[] }>(
+        `/api/sessions/${sessionId}/audit-schema`,
+      );
+      const metrics = Array.isArray(payload?.metrics) ? payload.metrics : [];
+      setSchemaSpecs(metrics);
+      setSchemaText(JSON.stringify({ metrics }, null, 2));
+    } catch {
+      // 口径接口不可用时保持内置销售口径，不阻断核验。
+    }
+  }
+
+  async function saveSchemaPayload(payload: { metrics: AuditSchemaSpec[] }) {
+    setSchemaBusy(true);
+    setSchemaMessage("");
+    try {
+      const saved = await api<{ metrics: AuditSchemaSpec[] }>(
+        `/api/sessions/${sessionId}/audit-schema`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        },
+      );
+      setSchemaSpecs(saved.metrics);
+      setSchemaText(JSON.stringify({ metrics: saved.metrics }, null, 2));
+      setSchemaMessage(
+        saved.metrics.length
+          ? `已保存 ${saved.metrics.length} 项核验口径。`
+          : "已恢复内置销售口径。",
+      );
+      setAudit(null);
+      setReceipt(null);
+      setServerBrief(null);
+    } catch (err) {
+      setSchemaMessage(err instanceof Error ? err.message : "核验口径保存失败。");
+    } finally {
+      setSchemaBusy(false);
+    }
+  }
+
+  function saveSchema() {
+    let parsed: { metrics?: AuditSchemaSpec[] };
+    try {
+      parsed = JSON.parse(schemaText) as { metrics?: AuditSchemaSpec[] };
+    } catch {
+      setSchemaMessage("JSON 格式不正确，请检查逗号与引号。");
+      return;
+    }
+    void saveSchemaPayload({ metrics: parsed.metrics ?? [] });
+  }
+
   function applyRecordedDraft() {
     updateDraft(RECORDED_DRAFT, demoDraft);
     setDraftTrace(null);
@@ -708,6 +785,10 @@ export default function SalesAudit({
       brief_confirmed: confirmed,
     }, null, 2), "application/json");
   }
+
+  const activeMetricNames = schemaSpecs.length
+    ? schemaSpecs.map((spec) => spec.name)
+    : ["销售额合计", "销量合计", "订单数", "客单价"];
 
   if (sessionLost) {
     return (
@@ -794,14 +875,55 @@ export default function SalesAudit({
         <p className="sales-audit-notice">请用「替换数据」上传含 order_id、sales、quantity 三列的 UTF-8 CSV。</p>
       ) : (
         <>
+          <details
+            className="sales-audit-schema"
+            onToggle={(event) => {
+              if (event.currentTarget.open) void loadSchema();
+            }}
+          >
+            <summary>
+              核验口径 · {schemaSpecs.length ? `${schemaSpecs.length} 项自定义` : "内置销售四项"}
+            </summary>
+            <p>
+              核验器按登记口径独立读取原始 CSV 复算。支持 sum / count / count_distinct / min / max / mean；
+              留空使用内置的销量、订单数、销售额与客单价口径。
+            </p>
+            <textarea
+              aria-label="核验口径 JSON"
+              value={schemaText}
+              onChange={(event) => setSchemaText(event.target.value)}
+              rows={8}
+              disabled={schemaBusy}
+            />
+            <div className="sales-audit-actions">
+              <button type="button" disabled={schemaBusy} onClick={() => saveSchema()}>
+                {schemaBusy ? "保存中…" : "保存口径"}
+              </button>
+              <button
+                type="button"
+                disabled={schemaBusy}
+                onClick={() => void saveSchemaPayload({ metrics: [] })}
+              >
+                恢复内置口径
+              </button>
+              <button
+                type="button"
+                disabled={schemaBusy}
+                onClick={() => setSchemaText(JSON.stringify({ metrics: schemaSpecs }, null, 2))}
+              >
+                撤销修改
+              </button>
+            </div>
+            {schemaMessage && <p role="status">{schemaMessage}</p>}
+          </details>
           <div className="sales-audit-grid">
             <form className="sales-audit-card" onSubmit={(event) => { event.preventDefault(); void runAudit(); }}>
               <h3><label htmlFor="sales-audit-draft">简报草稿</label></h3>
               <p id="sales-audit-format">
-                统计范围为原始 CSV 全表。每行一个指标：「销售额合计：… 元」「销量合计：… 件」「订单数：… 笔」「客单价：… 元」。范围限定或口径不明的行会标为待复核。
+                统计范围为原始 CSV 全表。当前口径：{activeMetricNames.join(" / ")}。每行一个指标，格式为「名称：数值 单位」；范围限定或口径不明的行会标为待复核。
               </p>
               <p id="sales-audit-format-short" className="sales-audit-format-short">
-                每行一个指标：销售额合计 / 销量合计 / 订单数 / 客单价。
+                当前口径：{activeMetricNames.join(" / ")}。
               </p>
               {demoDraft && <p className="sales-audit-demo-note">示例草稿有 1 处错数、1 条无依据结论。</p>}
               <div className="sales-audit-actions">
