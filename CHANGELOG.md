@@ -20,6 +20,7 @@
   匹配时接受，歧义直接报错；新增「客单价」口径（销售额合计 ÷ 订单数，按分
   HALF_UP）；未登记指标按单位给出口径候选 `candidates`。`audit_id` 为源文件
   哈希、草稿、确认标志与复算结果的确定性哈希。
+- **零信任证据包**：新增 `POST /api/sessions/{id}/sales-audit/bundle` 导出 ZIP（原始 CSV、草稿、口径、血缘、账本、核验结果与 manifest）；`scripts/independent_replay.py` 不 import 项目代码，只用标准库复算全部指标并重现 `audit_id`，manifest 与账本任一被改动即退出码 1。
 - **来源血缘与新鲜度**：会话可登记 `audit_lineage.json`（上游表、catalog URN、抽取时间、负责人、新鲜度 SLA），超期在核验结果标记 `source_stale`，血缘指纹写入账本并可用 `verify_audit_ledger.py --lineage` 校验。
 - **口径审批**：口径文档带草稿/已批准状态与批准人，批准人与作者分离；每次保存或批准追加版本历史。
 - **声明式核验口径**：会话可登记 `audit_schema.json`，按
