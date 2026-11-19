@@ -34,7 +34,7 @@ USER appuser
 
 EXPOSE 8000
 ENV DATA_AGENT_STATIC_DIR=/app/frontend/dist
-ENV DATA_AGENT_DATA_DIR=/app/data
+ENV DATA_AGENT_RUNS_DIR=/app/data/runs
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8000/api/health || exit 1

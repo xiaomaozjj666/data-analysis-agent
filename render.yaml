@@ -1,8 +1,8 @@
 services:
   - type: web
     name: data-analysis-agent
-    # runtime 是官方 schema 的 required 字段；env 不在 schema 中。线上同步曾容忍
-    # env: python（cfd83ab 同步成功），但依赖未定义字段不可靠，故改用 runtime。
+    # runtime 是官方 schema 的 required 字段；env 已被 runtime 取代（deprecated），
+    # 不再是可靠写法。线上同步曾容忍 env: python（cfd83ab），这里统一用 runtime。
     runtime: python
     # 线上为 Free 实例；显式声明，避免默认值歧义。
     # Free 档约 15 分钟无请求后休眠，冷启动通常 35–90 秒。不要臆造「禁止休眠」
@@ -25,8 +25,9 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.8
-      - key: DATA_AGENT_DATA_DIR
-        value: /var/data
+      # 应用只读取 DATA_AGENT_RUNS_DIR；挂载持久磁盘时应让它指向磁盘内目录。
+      - key: DATA_AGENT_RUNS_DIR
+        value: /var/data/runs
       - key: DATA_AGENT_STATIC_DIR
         value: frontend/dist
       - key: DATA_AGENT_CORS_ORIGINS

@@ -7,7 +7,7 @@
   <img src="https://img.shields.io/badge/FastAPI-API-009688" alt="FastAPI" />
   <img src="https://img.shields.io/badge/LangGraph-agent-4D6BFE" alt="LangGraph" />
   <img src="https://img.shields.io/badge/Docker-ready-2496ED" alt="Docker" />
-  <img src="https://img.shields.io/badge/tests-1600%2B%20backend%20%C2%B7%20185%2B%20frontend-brightgreen" alt="后端 1600+ 项、前端 185+ 项自动化测试" />
+  <img src="https://img.shields.io/badge/tests-1600%2B%20backend%20%C2%B7%20187%2B%20frontend-brightgreen" alt="后端 1600+ 项、前端 187+ 项自动化测试" />
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License" />
 </p>
 
@@ -87,7 +87,7 @@ flowchart LR
 ## 技术栈
 
 - 后端：Python 3.11–3.13、FastAPI、Uvicorn、LangChain、LangGraph、LangSmith
-- 模型接入：DeepSeek（默认，支持 thinking mode）/ OpenAI 及任意 OpenAI 兼容服务
+- 模型接入：DeepSeek（Web 默认，支持 thinking mode）；CLI / MCP 通过 `MODEL_PROVIDER` 也支持 OpenAI 及任意 OpenAI 兼容服务
 - 数据分析：pandas、NumPy、SciPy、scikit-learn、Plotly、Kaleido、openpyxl、PyArrow、pdfplumber、python-docx
 - 存储：本地文件系统 / boto3（S3 / R2）
 - 前端：TypeScript、React 19、Vite、Zustand、lucide-react、motion、react-markdown（Vitest）
@@ -97,8 +97,8 @@ flowchart LR
 
 ### 环境要求
 - Python 3.11–3.13
-- Node.js 22 或更高版本
-- 一个 LLM API Key（默认 DeepSeek，也兼容 OpenAI）
+- Node.js 22.12 或更高版本（Vite 8 的最低要求）
+- 一个 LLM API Key（Web 默认 DeepSeek；CLI / MCP 兼容 OpenAI）
 
 ### 一键启动（Windows）
 双击 `run.bat`。首次运行会自动创建虚拟环境、安装后端依赖并 `npm install`，随后分别启动：
@@ -229,7 +229,7 @@ DEEPSEEK_MODEL=deepseek-flash
 DEEPSEEK_THINKING=true
 DEEPSEEK_REASONING_EFFORT=high
 
-# 或使用 OpenAI 兼容服务
+# 或使用 OpenAI 兼容服务（CLI / MCP；Web 演示默认 DeepSeek）
 OPENAI_API_KEY=<your-api-key>
 OPENAI_MODEL=gpt-4.1-mini
 

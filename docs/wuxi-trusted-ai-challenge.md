@@ -89,7 +89,7 @@ Invoke-RestMethod "$base/api/sessions/$sid/sales-audit/ledger"
 `POST /api/sessions/{id}/sales-audit/quick-draft` 用来回答「462 笔是预设的，真实模型会错吗」。它不绑定任何工具、关闭思考，只把表按 CSV 文本交给模型写三行指标；提示词不给去重口径、不给公式、不举例。返回：
 
 - `draft`：模型原话里符合三行格式的内容，不做修正或补算；
-- `model` / `thinking`：实际模型名；若网关忽略关闭思考的参数并返回推理内容，`thinking` 为 `true`；
+- `model` / `thinking`：实际模型名；`thinking` 仅在响应的 `additional_kwargs.reasoning_content` 非空时为 `true`（以 content 块返回的推理只计入 `dropped`，不改变该字段）；
 - `elapsed_ms`：本次调用耗时；
 - `rows_sent` / `masked` / `masked_cells`：发送行数与非指标列的脱敏情况（`order_id` / `sales` / `quantity` 不脱敏，否则会改变真值）；
 - `dropped`：被丢弃的非指标行与推理块数量；
