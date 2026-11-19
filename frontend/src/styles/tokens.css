@@ -1,98 +1,87 @@
 /* ==========================================================================
-   Data Desk 设计系统 · 极简高级感（Linear/Vercel/Notion 风格 v5 升级）
+   Data Desk 设计系统 · 建筑编辑感与可信精度（Editorial Archival v6）
    --------------------------------------------------------------------------
    设计原则：
-   1. 极简高级：低饱和深靛蓝主色 + 冷灰画布，状态色仅承载语义；
-   2. 8px 主圆角 + 1px 细边框 + 柔和散开阴影，三层分层（侧栏/主面板/卡片）；
-   3. 全部交互元素共享同一组 150-250ms ease-out 过渡，克制且高级；
-   4. 字号收敛为 7 档阶梯（11–26px），字重仅用 500/600/700，弱化次要文字；
-   5. 留白节奏：4/8/12/16/24/32/48 八档标尺，消除拥挤与错落；
-   6. 页面底色为极淡多层渐变，营造空间纵深感，告别纯白死板。
+   1. 彻底去 AI 味：告别廉价紫蓝光晕与冷暖割裂，采用温润档案纸画布 +
+      深建筑松石青（Architectural Pine Teal）作为唯一可信强调色；
+   2. 严格三层表面阶梯（页底 / 侧栏 / 卡片），1px 精密发丝边框 + 极克制环境影；
+   3. 亮暗双主题全矩阵通过 WCAG AA (≥4.5:1) 与三级文字 1.2× 阶梯门禁；
+   4. 全部动效克制在 150–240ms ease-out，绝不使用廉价流光、火花或霓虹描边。
    ========================================================================== */
 
 /* ---------- 设计令牌 ---------- */
 :root {
-  font-family: "Inter", "IBM Plex Sans", "Noto Sans SC", -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", sans-serif;
-  /* 文字色必须走令牌：暗色模式仅覆盖 --fg-default（[data-theme="dark"]），
-     若这里硬编码亮色值，继承 :root 颜色的元素（表格单元格、标题、
-     默认文本）在暗色下会与深色画布同色不可见。 */
+  font-family: "IBM Plex Sans", "Inter", "Noto Sans SC", -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", sans-serif;
   color: var(--fg-default);
-  background: #efede6;
+  background: var(--canvas-page);
   font-synthesis: none;
   letter-spacing: 0;
 
-  /* 文本色（冷灰调，三级阶梯全部满足 WCAG AA 4.5:1）
-     取值按"最差背景"标定而不是页面底色：全站审计里 --fg-subtle 会在略深的
-     面板底（--control-hover / --canvas-subtle）上使用，10~11px 小字在那里
-     只有 4.2:1，因而比页面底所需值再深一档。 */
-  --fg-default: #232321;   /* 标题、正文主色（近黑带冷色调）  15.6:1 */
-  --fg-muted: #5e5b53;     /* 次级说明文字                    ≈6.4:1 */
-  --fg-subtle: #6b675f;    /* 辅助标签、占位符                4.6:1（深面板底上仍 ≥4.5） */
+  /* 文本色（暖炭墨三级阶梯，全部满足全表面 WCAG AA ≥4.5:1 及 ≥1.2× 对比度区分） */
+  --fg-default: #181816;   /* 标题、正文主色（深炭墨）        ≈16.3:1 */
+  --fg-muted: #46443e;     /* 次级说明文字                    ≈8.8:1  */
+  --fg-subtle: #615e56;    /* 辅助标签、占位符（最差底 ≥4.8） ≈5.9:1  */
 
-  /* 画布色（更洁净的白，带冷色调） */
-  --canvas-default: #ffffff;  /* 卡片、弹层 */
-  --canvas-subtle: #f5f3ec;   /* 表头、内凹底 */
-  --canvas-inset: #e9e6dc;    /* 分段控件槽、内凹底 */
-  --canvas-page: #efede6;     /* 页面底色（极淡渐变基准） */
+  /* 画布色（温润档案纸体系，消除冷蓝灰冲突） */
+  --canvas-default: #ffffff;  /* 卡片、弹层、工作台主面板 */
+  --canvas-subtle: #f2f0e9;   /* 表头、内凹底、次级区块 */
+  --canvas-inset: #e8e5db;    /* 分段控件槽、徽章中性底 */
+  --canvas-page: #f6f5f0;     /* 页面底色（统一 html 与 body） */
 
-  /* 分层底色：侧栏 / 顶栏独立底色，强化三层分层 */
-  --sidebar-bg: #f5f3ec;      /* 侧栏底色，极淡偏白 */
-  --topbar-bg: #ffffff;       /* 顶栏白底，与主画布分区 */
+  /* 分层底色：侧栏 / 顶栏与画布形成克制的建筑层次 */
+  --sidebar-bg: #efede5;      /* 侧栏温润石底 */
+  --topbar-bg: #ffffff;       /* 顶栏净白分区 */
 
-  /* 边框色（更冷、更克制） */
-  --border-default: #e3dfd4;
-  --border-muted: #edeae2;
-  --border-strong: #c9c4b7;  /* hover 加深 */
+  /* 边框色（低对比精密发丝线） */
+  --border-default: #dfdcd2;
+  --border-muted: #ebe8df;
+  --border-strong: #c5c0b3;   /* hover / 输入框聚焦前边界 */
 
-  /* 品牌色：深靛蓝（Linear 风格） */
-  --accent-fg: #4d4d8f;       /* 深靛蓝 */
-  --accent-hover: #3d3d75;    /* hover 加深 */
-  --accent-subtle: #e7e7f5;   /* 极淡靛蓝晕染 */
-  --accent-ring: rgba(77, 77, 143, 0.16);
-  /* 实心强调填充（按钮/气泡/徽章等"白字压底"的场合）：
-     与 --accent-fg 分开是必要的——暗色主题会把 --accent-fg 提亮到 #7c7cf0
-     以保证"作为文字/图标"时的对比度，但同一个值当**背景**时白字只剩 3.5:1
-     （WCAG AA 正文需 4.5:1）。实心填充在两种主题下都取够深的靛蓝，
-     白字稳定在 5.4:1；暗色的 hover 提亮一档仍保持 4.7:1。 */
-  --accent-solid: #4d4d8f;
-  --accent-solid-hover: #3d3d75;
+  /* 品牌与可信强调色：深建筑松石青（Architectural Pine Teal） */
+  --accent-fg: #175953;       /* 文字、图标、激活指示（白底 7.9:1 AAA） */
+  --accent-hover: #10433e;    /* hover 加深 */
+  --accent-subtle: #e6f1ef;   /* 极淡松石晕染 */
+  --accent-ring: rgba(23, 89, 83, 0.16);
+  /* 实心强调填充（白字压底）：亮暗双主题白字均 ≥5.5:1 */
+  --accent-solid: #175953;
+  --accent-solid-hover: #10433e;
 
-  /* 语义状态色：薄荷绿表示成功（更轻、更现代） */
-  --success-fg: #4f6b4a;      /* 薄荷青 */
-  --success-subtle: #e4ebde;  /* 浅薄荷背景 */
-  --attention-fg: #8a6418;
-  --danger-fg: #a3453c;
-  --danger-subtle: #f5e4e1;
-  --danger-border: #e3c4bf;
+  /* 语义状态色（精准克制：翡翠绿=已核验，焦琥珀=待复核，朱红=冲突） */
+  --success-fg: #1e6a4b;
+  --success-subtle: #e6f4ec;
+  --attention-fg: #8c5512;
+  --danger-fg: #b23a2e;
+  --danger-subtle: #fbeceb;
+  --danger-border: #e6c2be;
 
-  /* 中性控件底（列表 hover / 徽章 / 骨架屏） */
-  --control-hover: #f1efe8;
-  --control-active: #e7e4da;
-  --neutral-muted: #e9e6dc;
-  --tint-butter: #f8f2e3;
-  --tint-sage: #edf2e8;
+  /* 中性控件底与路演对比轻底 */
+  --control-hover: #edeae1;
+  --control-active: #e3dfd4;
+  --neutral-muted: #e8e5db;
+  --tint-butter: #fbf6ea;     /* 路演草稿区（待核验微暖底） */
+  --tint-sage: #eef7f3;       /* 路演复算区（真值微青底） */
 
-  /* 圆角（8px 主圆角，统一所有组件） */
+  /* 圆角（克制精密感） */
   --radius-sm: 6px;
   --radius-md: 10px;
-  --radius-lg: 16px;
+  --radius-lg: 14px;
   --radius-full: 999px;
 
-  /* 阴影（更柔和、更散开，高级质感） */
-  --shadow-xs: 0 1px 2px rgba(60, 52, 38, 0.05);
-  --shadow-sm: 0 1px 3px rgba(60, 52, 38, 0.07), 0 1px 2px rgba(60, 52, 38, 0.04);
-  --shadow-md: 0 6px 18px rgba(60, 52, 38, 0.09), 0 1px 3px rgba(60, 52, 38, 0.05);
-  --shadow-lg: 0 8px 24px rgba(17, 24, 39, 0.10), 0 2px 8px rgba(17, 24, 39, 0.06);
-  --shadow-xl: 0 16px 48px rgba(17, 24, 39, 0.14), 0 4px 16px rgba(17, 24, 39, 0.08);
+  /* 阴影（极轻环境漫射，拒绝浮夸投影） */
+  --shadow-xs: 0 1px 2px rgba(24, 24, 22, 0.04);
+  --shadow-sm: 0 1px 3px rgba(24, 24, 22, 0.06), 0 1px 2px rgba(24, 24, 22, 0.03);
+  --shadow-md: 0 8px 24px rgba(24, 24, 22, 0.07), 0 2px 6px rgba(24, 24, 22, 0.04);
+  --shadow-lg: 0 12px 32px rgba(24, 24, 22, 0.10), 0 3px 10px rgba(24, 24, 22, 0.05);
+  --shadow-xl: 0 20px 52px rgba(24, 24, 22, 0.14), 0 6px 18px rgba(24, 24, 22, 0.07);
 
-  /* 动效：150-250ms 区间，ease-out 高级感 */
-  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);  /* 更明显的 ease-out */
+  /* 动效：150–240ms ease-out */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-spring: cubic-bezier(0.2, 0, 0.13, 1);
   --duration-fast: 0.15s;
   --duration: 0.2s;
   --duration-slow: 0.25s;
 
-  /* 字号阶梯（标题加大，强化层级） */
+  /* 字号阶梯（7 档） */
   --text-xs: 11px;
   --text-sm: 12px;
   --text-base: 13px;
@@ -101,7 +90,7 @@
   --text-xl: 20px;
   --text-2xl: 26px;
 
-  /* 间距标尺：8 档，消除拥挤与错落 */
+  /* 间距标尺 */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
@@ -111,106 +100,86 @@
   --space-7: 48px;
   --space-8: 64px;
 
-  /* 等宽字体：编号、代码、强调数字 */
+  /* 等宽字体：编号、代码、哈希、对齐数字 */
   --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
-/* ==========================================================================
-   暗色模式 + 9 项主流 Agent 体验组件
-   --------------------------------------------------------------------------
-   全部基于已有 CSS 变量体系扩展，暗色模式只覆盖 :root 变量，
-   组件样式同时兼容亮/暗两种主题。
-   ========================================================================== */
-
-/* ---------- 暗色模式：覆盖设计令牌 ---------- */
+/* ---------- 暗色模式：曜石炭黑 + 海沫松石青 ---------- */
 [data-theme="dark"] {
-  /* 文本：亮字暗底，三级阶梯按"最差背景"标定——暗色下 --control-hover /
-     --canvas-inset / --neutral-muted 同为 #2a2b2f，是最暗的可承载文字底。
-     取值使最差配对仍有 4.51:1，页面底上形成 15.3 / 8.1 / 5.9 的三级间距。 */
-  --fg-default: #ece9e1;   /* 15.3:1（页面底） */
-  --fg-muted: #b4b0a6;     /*  8.1:1 */
-  --fg-subtle: #9e9a90;    /*  5.9:1；最差底上 4.51:1（旧值 #5f6368 仅 2.97:1） */
+  /* 文本：暖白曜石三级阶梯，全表面 ≥4.5:1 且每级 ≥1.2× 区分 */
+  --fg-default: #f1efe9;   /* ≈16.6:1 */
+  --fg-muted: #bcb8ae;     /* ≈9.5:1  */
+  --fg-subtle: #979389;    /* ≈6.2:1；最差底 --canvas-inset 上 ≥4.65:1 */
 
-  /* 画布：深冷灰，分层与亮色保持一致语义 */
-  --canvas-default: #242320;
-  --canvas-subtle: #2b2a26;
-  --canvas-inset: #33312c;
-  --canvas-page: #1b1a17;
+  /* 画布：纯净曜石炭黑，告别脏泥棕 */
+  --canvas-default: #1a1a18;
+  --canvas-subtle: #22221f;
+  --canvas-inset: #2a2a26;
+  --canvas-page: #121210;
 
   /* 分层底色 */
-  --sidebar-bg: #242320;
-  --topbar-bg: #242320;
+  --sidebar-bg: #161614;
+  --topbar-bg: #1a1a18;
 
-  /* 边框：暗色下加深但保留可见性 */
-  --border-default: #3a3832;
-  --border-muted: #322f2a;
-  --border-strong: #55514a;
+  /* 边框：极克制深灰发丝线 */
+  --border-default: #2e2e29;
+  --border-muted: #242420;
+  --border-strong: #47463f;
 
-  /* 品牌色：暗色下提亮一档，保持对比度 */
-  --accent-fg: #b9bae8;       /* 暗色下更亮的靛蓝（用于文字/图标/描边） */
-  --accent-hover: #d0d1f5;
-  --accent-subtle: #2e2e45;
-  --accent-ring: rgba(185, 186, 232, 0.22);
-  /* 实心填充不跟着提亮：白字压在 #7c7cf0 上只有 3.5:1，达不到 AA。
-     保持与亮色同一档深靛蓝（白字 5.4:1），hover 提亮一档仍有 4.7:1。 */
-  --accent-solid: #4d4d8f;
-  --accent-solid-hover: #6b6bbd;
+  /* 品牌色：海沫松石青（文字/图标）+ 深松石青（实心白字底） */
+  --accent-fg: #6fd1c5;
+  --accent-hover: #96e4da;
+  --accent-subtle: #192c2a;
+  --accent-ring: rgba(111, 209, 197, 0.22);
+  --accent-solid: #175953;
+  --accent-solid-hover: #1f726a;
 
-  /* 语义色：暗色下提亮 */
-  --success-fg: #9dbb95;
-  --success-subtle: #2c3a2a;
-  --attention-fg: #e0b65e;
-  --danger-fg: #e08a80;
-  --danger-subtle: #3a2320;
-  --danger-border: #54302b;
+  /* 语义色 */
+  --success-fg: #73c99f;
+  --success-subtle: #192e24;
+  --attention-fg: #e2b45d;
+  --danger-fg: #e6867a;
+  --danger-subtle: #341e1c;
+  --danger-border: #522e2a;
 
-  /* 中性控件 */
-  --control-hover: #33322d;
-  --control-active: #3d3b35;
-  --neutral-muted: #33312c;
-  --tint-butter: #2f2a20;
-  --tint-sage: #28302a;
+  /* 中性控件与路演轻底 */
+  --control-hover: #282824;
+  --control-active: #32322d;
+  --neutral-muted: #2a2a26;
+  --tint-butter: #252118;
+  --tint-sage: #172520;
 
-  /* 阴影：暗色下减弱（深底上阴影本就不显眼） */
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.45), 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.35);
-  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(0, 0, 0, 0.4);
-  --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.7), 0 4px 16px rgba(0, 0, 0, 0.5);
+  /* 阴影 */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.36);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.44), 0 1px 2px rgba(0, 0, 0, 0.28);
+  --shadow-md: 0 6px 18px rgba(0, 0, 0, 0.50), 0 2px 6px rgba(0, 0, 0, 0.34);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.60), 0 3px 10px rgba(0, 0, 0, 0.40);
+  --shadow-xl: 0 20px 52px rgba(0, 0, 0, 0.72), 0 6px 18px rgba(0, 0, 0, 0.50);
 }
 
-/* 暗色模式下页面渐变也要切换，避免亮色渐变在深底上突兀 */
 [data-theme="dark"] body {
-  background: linear-gradient(135deg, #242320 0%, #1e1d1a 45%, #1b1a17 100%) fixed;
+  background: var(--canvas-page);
 }
 
-/* 暗色模式兜底：根节点 `<html>` 也覆盖为暗色。body 的渐变只铺满内容
-   区域，任何布局未覆盖的边缘（如窄窗口/大屏缩放时容器未撑满）会露出
-   html 的默认浅色背景，在暗色主题下形成刺眼的白边（"不能全屏"的
-   观感）。html 换深色后，任何状态下都不会露白。 */
-html[data-theme="dark"] { background: #1b1a17; }
+html[data-theme="dark"] { background: #121210; }
 
-/* 暗色下 iframe 内的 ECharts 图表无法感知主题，预览模态框给一个深底适配 */
 [data-theme="dark"] .preview-stage {
   background: var(--canvas-subtle);
 }
 
-/* 暗色下滚动条颜色适配深底 */
-[data-theme="dark"] ::-webkit-scrollbar-thumb { background: #2e2f33; border: 3px solid transparent; border-radius: 8px; background-clip: content-box; }
-[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background: #4a4b50; border: 3px solid transparent; background-clip: content-box; }
-[data-theme="dark"] * { scrollbar-color: #2e2f33 transparent; }
+[data-theme="dark"] ::-webkit-scrollbar-thumb { background: #33332e; border: 3px solid transparent; border-radius: 8px; background-clip: content-box; }
+[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background: #4c4b44; border: 3px solid transparent; background-clip: content-box; }
+[data-theme="dark"] * { scrollbar-color: #33332e transparent; }
 
-/* 暗色下硬编码的浅色背景适配：retry-button hover、resume-button hover、状态点 */
-[data-theme="dark"] .retry-button:hover { background: #4a2020; border-color: var(--danger-fg); }
-[data-theme="dark"] .resume-button:hover { background: #2dd4bf; border-color: #2dd4bf; }
-[data-theme="dark"] .history-status-dot.is-cancelled { background: #5f6368; }
-[data-theme="dark"] .history-status-dot.is-idle { background: #4a4b50; }
+[data-theme="dark"] .retry-button:hover { background: #472420; border-color: var(--danger-fg); }
+[data-theme="dark"] .resume-button:hover { background: #268660; border-color: #268660; }
+[data-theme="dark"] .history-status-dot.is-cancelled { background: #64635c; }
+[data-theme="dark"] .history-status-dot.is-idle { background: #4c4b45; }
 [data-theme="dark"] .model-line i,
 [data-theme="dark"] .sidebar-foot i,
 [data-theme="dark"] .api-status i,
-[data-theme="dark"] .storage-status i { background: #5f6368; }
+[data-theme="dark"] .storage-status i { background: #64635c; }
 
-/* 暗色下折叠遮罩渐变要改为深底，否则亮色渐变在深底上形成白条 */
 [data-theme="dark"] .report-body:not(.is-expanded)::after {
-  background: linear-gradient(180deg, rgba(26, 27, 30, 0) 0%, var(--canvas-default) 90%);
+  background: linear-gradient(180deg, rgba(26, 26, 24, 0) 0%, var(--canvas-default) 90%);
 }

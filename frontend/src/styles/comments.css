@@ -10,7 +10,7 @@
 .comments-panel-meta strong { color: var(--fg-default); font-size: var(--text-sm); }
 .comments-panel-meta time { margin-right: auto; }
 .comments-panel-delete { display: inline-flex; padding: 4px; color: var(--fg-subtle); background: transparent; border: 0; border-radius: var(--radius-sm); cursor: pointer; }
-.comments-panel-delete:hover:not(:disabled) { color: var(--danger-fg, #f87171); background: var(--canvas-default); }
+.comments-panel-delete:hover:not(:disabled) { color: var(--danger-fg); background: var(--canvas-default); }
 .comments-panel-delete:disabled { opacity: 0.5; cursor: not-allowed; }
 .comments-panel-text { margin: 0; color: var(--fg-default); font-size: var(--text-sm); line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .comments-panel-compose { display: flex; flex-direction: column; gap: 10px; }
@@ -19,10 +19,11 @@
 .comments-panel-label-text textarea { resize: vertical; min-height: 72px; }
 .comments-panel-actions { display: flex; align-items: center; gap: 12px; }
 .comments-panel-hint { margin-left: auto; color: var(--fg-subtle); font-size: var(--text-xs); }
-.comments-panel-error { color: var(--danger-fg, #f87171); font-size: var(--text-xs); }
+.comments-panel-error { color: var(--danger-fg); font-size: var(--text-xs); }
 .comments-panel input,
 .comments-panel textarea { padding: 8px 10px; color: var(--fg-default); background: var(--canvas-subtle); border: 1px solid var(--border-default); border-radius: var(--radius-sm); font: inherit; }
 .comments-panel input:focus,
 .comments-panel textarea:focus { outline: 2px solid var(--accent-fg); outline-offset: 1px; }
-.comments-panel button[type="button"]:not(.comments-panel-delete) { padding: 8px 16px; color: var(--accent-contrast, #fff); background: var(--accent-fg); border: 0; border-radius: var(--radius-sm); cursor: pointer; }
+.comments-panel button[type="button"]:not(.comments-panel-delete) { padding: 8px 16px; color: #ffffff; background: var(--accent-solid); border: 0; border-radius: var(--radius-sm); font-weight: 600; cursor: pointer; }
+.comments-panel button[type="button"]:not(.comments-panel-delete):hover:not(:disabled) { background: var(--accent-solid-hover); }
 .comments-panel button[type="button"]:not(.comments-panel-delete):disabled { opacity: 0.5; cursor: not-allowed; }

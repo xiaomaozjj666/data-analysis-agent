@@ -45,7 +45,7 @@
 
 /* 图表内嵌卡片：报告正文中的 ![描述](artifact:文件名) 渲染为可点击的紧凑卡片，
    让图表直接图文混排在报告流中，点击在模态框打开交互版。 */
-.embedded-chart { display: inline-flex; align-items: center; gap: 6px; margin: 6px 2px; padding: 6px 12px; background: var(--canvas-subtle); border: 1px solid var(--accent-emphasis, #b6cce8); border-radius: var(--radius-md); color: var(--accent-fg); font-size: var(--text-sm); font-weight: 600; cursor: pointer; transition: all var(--duration-fast) var(--ease-out); vertical-align: middle; }
+.embedded-chart { display: inline-flex; align-items: center; gap: 6px; margin: 6px 2px; padding: 6px 12px; background: var(--canvas-subtle); border: 1px solid var(--border-strong); border-radius: var(--radius-md); color: var(--accent-fg); font-size: var(--text-sm); font-weight: 600; cursor: pointer; transition: all var(--duration-fast) var(--ease-out); vertical-align: middle; }
 .embedded-chart:hover { background: var(--accent-subtle); border-color: var(--accent-fg); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
 .embedded-chart svg { flex-shrink: 0; }
 .embedded-chart svg:last-child { color: var(--fg-subtle); }

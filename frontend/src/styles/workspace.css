@@ -16,11 +16,11 @@
 .error-expand-toggle:hover { opacity: 0.8; }
 
 /* retry-bar：用户关掉错误横幅后，独立保留的恢复入口（柔蓝底，非错误色） */
-.retry-bar { min-height: 40px; display: flex; align-items: center; gap: 10px; margin: 12px 0; padding: 8px 12px; background: var(--accent-subtle); border: 1px solid #c5dbf3; border-radius: var(--radius-md); color: var(--accent-hover); font-size: var(--text-sm); animation: banner-in var(--duration) var(--ease-out); }
+.retry-bar { min-height: 40px; display: flex; align-items: center; gap: 10px; margin: 12px 0; padding: 8px 12px; background: var(--accent-subtle); border: 1px solid var(--border-default); border-radius: var(--radius-md); color: var(--accent-fg); font-size: var(--text-sm); animation: banner-in var(--duration) var(--ease-out); }
 .retry-bar > svg { color: var(--accent-fg); flex: 0 0 auto; }
 .retry-bar span { min-width: 0; flex: 1; }
 .retry-bar .error-close { width: 26px; height: 26px; display: grid; place-items: center; margin-left: auto; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--fg-muted); }
-.retry-bar .error-close:hover { background: rgba(59, 108, 179, 0.12); color: var(--accent-fg); }
+.retry-bar .error-close:hover { background: var(--accent-ring); color: var(--accent-fg); }
 
 /* ---------- 数据集头部 / 指标带 / 标签页 ---------- */
 .dataset-header { min-height: 104px; display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 8px 0; }

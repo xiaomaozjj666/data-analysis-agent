@@ -1,5 +1,18 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Check, CircleHelp, Download, FileCheck2, LoaderCircle, Maximize, Minimize, Pencil, RotateCcw, ShieldCheck } from "lucide-react";
+import {
+  AlertTriangle,
+  Check,
+  CircleHelp,
+  Download,
+  FileCheck2,
+  LoaderCircle,
+  Maximize,
+  Minimize,
+  Pencil,
+  Plus,
+  RotateCcw,
+  ShieldCheck,
+} from "lucide-react";
 import type { AuditResult, ConfirmReceipt } from "./SalesAudit";
 import "./SalesAuditDemo.css";
 
@@ -25,6 +38,8 @@ interface SalesAuditDemoProps {
   onEdit: () => void;
   onReset: () => void;
 }
+
+const SCOPE_GATE_SAMPLE = "华东区订单数：8 笔";
 
 function orderCount(text?: string) {
   const match = text?.match(/^\s*([0-9]+)\s*笔\s*$/);
@@ -71,24 +86,34 @@ function VerifyExport({ brief, expected }: { brief: string; expected: string }) 
   }
 
   return (
-    <section className="sales-showcase-verify" aria-label="导出文件校验">
+    <section className={`sales-showcase-verify is-${state}`} aria-label="导出文件校验">
       <div className="sales-showcase-verify-head">
         <h3>导出校验</h3>
         <small>与 scripts/verify_audit_ledger.py 使用同一 SHA-256 比对</small>
       </div>
-      <p className="sales-showcase-verify-hash">
-        <span>回执 {expected.slice(0, 16)}…</span>
-        <span>{actual ? `当前 ${actual.slice(0, 16)}…` : "尚未校验"}</span>
-      </p>
+      <div className="sales-showcase-verify-hash">
+        <div>
+          <label>回执指纹</label>
+          <code title={expected}>{expected.slice(0, 16)}…</code>
+        </div>
+        <div>
+          <label>当前简报</label>
+          <code title={actual || undefined}>{actual ? `${actual.slice(0, 16)}…` : "尚未校验"}</code>
+        </div>
+      </div>
       <div className="sales-showcase-tools">
         <button type="button" onClick={() => void check(brief)}>校验简报</button>
-        <button type="button" onClick={toggleTamper}>
+        <button
+          type="button"
+          className={tampered ? "is-tampered" : undefined}
+          onClick={toggleTamper}
+        >
           {tampered ? "还原这 1 个字节" : "改动 1 个字节"}
         </button>
       </div>
       <p className={`sales-showcase-verify-state is-${state}`} role="status">
         {state === "ok" && <><Check size={15} />内容与回执一致</>}
-        {state === "bad" && <>内容与回执不一致，导出文件已被改动</>}
+        {state === "bad" && <><AlertTriangle size={15} />内容与回执不一致，导出文件已被改动</>}
         {state === "unsupported" && <>当前浏览器不支持 Web Crypto，请在本地运行离线脚本</>}
         {state === "idle" && <>当前简报 {brief.length} 个字符</>}
       </p>
@@ -123,9 +148,9 @@ export default function SalesAuditDemo({
     : submitted !== null
       ? `订单数：${formatCount.format(submitted)}，待复算`
       : "核对订单数";
+  const hasScopeSample = draft.includes(SCOPE_GATE_SAMPLE);
 
   useEffect(() => {
-    // 仅在舞台实际可见时抢焦点，避免会话恢复/面板隐藏时把焦点拉走。
     if (stage.current?.getClientRects().length) heading.current?.focus();
     function updateFullscreen() {
       setFullscreen(document.fullscreenElement === stage.current);
@@ -154,6 +179,13 @@ export default function SalesAuditDemo({
     window.requestAnimationFrame(() => editor.current?.focus());
   }
 
+  function insertScopeSample() {
+    if (!onDraftChange || hasScopeSample) return;
+    const trimmed = draft.trimEnd();
+    onDraftChange(trimmed ? `${trimmed}\n${SCOPE_GATE_SAMPLE}` : SCOPE_GATE_SAMPLE);
+    window.requestAnimationFrame(() => editor.current?.focus());
+  }
+
   function advance(action: () => void) {
     status.current?.focus({ preventScroll: true });
     action();
@@ -164,12 +196,18 @@ export default function SalesAuditDemo({
       <div className="sales-showcase-layout">
         <div className="sales-showcase-hero">
           <header className="sales-showcase-bar">
-            <span><ShieldCheck size={20} />有据经营简报</span>
+            <div className="sales-showcase-brand">
+              <span className="sales-showcase-brand-title">
+                <ShieldCheck size={19} />
+                有据经营简报
+              </span>
+              <span className="sales-showcase-badge">可信复算 · 哈希链存证</span>
+            </div>
             <div className="sales-showcase-tools">
-              <button type="button" onClick={() => void editDraft()} disabled={busy}><Pencil size={15} />草稿工作台</button>
+              <button type="button" onClick={() => void editDraft()} disabled={busy}><Pencil size={14} />草稿工作台</button>
               {document.fullscreenEnabled && (
                 <button type="button" onClick={() => void toggleFullscreen()}>
-                  {fullscreen ? <Minimize size={15} /> : <Maximize size={15} />}
+                  {fullscreen ? <Minimize size={14} /> : <Maximize size={14} />}
                   {fullscreen ? "退出全屏" : "全屏"}
                 </button>
               )}
@@ -202,7 +240,7 @@ export default function SalesAuditDemo({
                   disabled={!step.enabled}
                   onClick={step.action}
                 >
-                  <span className="sales-showcase-step-dot">{step.n < current ? "✓" : step.n}</span>
+                  <span className="sales-showcase-step-dot">{step.n < current ? "✓" : `0${step.n}`}</span>
                   {step.label}
                 </button>
               );
@@ -211,7 +249,7 @@ export default function SalesAuditDemo({
 
           <div className="sales-showcase-compare" aria-live="polite">
             <div className="sales-showcase-figure sales-showcase-draft">
-              <span>草稿</span>
+              <span className="sales-showcase-figure-tag">草稿声明</span>
               <strong><Figure value={submitted} />{submitted !== null && <small>笔</small>}</strong>
               <p>{orderClaim ? `第 ${orderClaim.line} 行` : submitted !== null ? "草稿中的订单数" : "从草稿中识别指标行"}</p>
             </div>
@@ -224,13 +262,13 @@ export default function SalesAuditDemo({
               ) : (
                 <span className="sales-showcase-delta-diff">
                   <b>{difference > 0n ? "−" : "+"}{formatCount.format(difference < 0n ? -difference : difference)}</b>
-                  <small>笔</small>
+                  <small>笔差额</small>
                 </span>
               )}
             </div>
 
             <div className="sales-showcase-figure sales-showcase-verified">
-              <span>原始明细</span>
+              <span className="sales-showcase-figure-tag">原始明细复算</span>
               {recalculated === null ? (
                 <>
                   <strong className="is-pending">待复算</strong>
@@ -249,6 +287,11 @@ export default function SalesAuditDemo({
             <button type="button" className="sales-showcase-link" onClick={toggleEditor} disabled={busy || !onDraftChange}>
               {editing ? "收起草稿" : "改一个数试试"}
             </button>
+            {editing && onDraftChange && !hasScopeSample && (
+              <button type="button" className="sales-showcase-chip" onClick={insertScopeSample} disabled={busy || confirming}>
+                <Plus size={12} />插入范围门测试（华东区订单数）
+              </button>
+            )}
             <small>Ctrl / ⌘ + Enter 直接复算</small>
           </div>
 
@@ -286,7 +329,7 @@ export default function SalesAuditDemo({
 
           <div className="sales-showcase-footer">
             <div className="sales-showcase-status" ref={status} tabIndex={-1} role="status">
-              {confirmed ? <><Check size={18} />已生成简报</> :
+              {confirmed ? <><Check size={17} />已生成简报</> :
                 difference !== null && difference !== 0n
                   ? <>草稿{difference > 0n ? "多报" : "少报"} <b>{formatCount.format(difference < 0n ? -difference : difference)}</b> 笔</>
                   : audit ? `${audit.summary.verified} 项已核验 · ${audit.summary.conflict} 项冲突 · ${audit.summary.unsupported} 项待复核` : null}
@@ -294,24 +337,24 @@ export default function SalesAuditDemo({
             <div className="sales-showcase-tools">
               {audit && (
                 <button type="button" onClick={() => advance(onReset)} disabled={busy}>
-                  <RotateCcw size={15} />重新演示
+                  <RotateCcw size={14} />重新演示
                 </button>
               )}
               {!audit && (
                 <button className="sales-showcase-primary" type="button" onClick={() => advance(onRun)} disabled={busy || !canRun}>
-                  {busy ? <LoaderCircle size={17} className="spin" /> : <ShieldCheck size={17} />}
+                  {busy ? <LoaderCircle size={16} className="spin" /> : <ShieldCheck size={16} />}
                   {busy ? "正在复算…" : "复算"}
                 </button>
               )}
               {audit?.corrected_brief && !confirmed && (
                 <button className="sales-showcase-primary" type="button" disabled={confirming} onClick={() => advance(onConfirm)}>
-                  {confirming ? <LoaderCircle size={17} className="spin" /> : <FileCheck2 size={17} />}
+                  {confirming ? <LoaderCircle size={16} className="spin" /> : <FileCheck2 size={16} />}
                   {confirming ? "正在确认…" : "确认并生成简报"}
                 </button>
               )}
               {confirmed && (
                 <button className="sales-showcase-primary" type="button" onClick={onDownloadBrief}>
-                  <Download size={17} />下载简报 (.md)
+                  <Download size={16} />下载简报 (.md)
                 </button>
               )}
             </div>
@@ -325,14 +368,14 @@ export default function SalesAuditDemo({
             <div className="sales-showcase-result-cards">
               {order?.formula && (
                 <article className="sales-audit-card">
-                  <h3><ShieldCheck size={17} />订单数口径</h3>
+                  <h3><ShieldCheck size={16} />订单数口径</h3>
                   <p>{order.formula}</p>
                   {quantity?.recalculated && <small>同一份原表的销量为 {quantity.recalculated}，按 quantity 求和。</small>}
                 </article>
               )}
               {held.length > 0 && (
                 <article className="sales-audit-card">
-                  <h3><CircleHelp size={17} />{held.length} 行未通过核验</h3>
+                  <h3><CircleHelp size={16} />{held.length} 行未通过核验</h3>
                   {held.length === 1 && <p>第 {held[0].line} 行 · {held[0].text}</p>}
                   <small>保留在核验明细中，不进入发布。</small>
                 </article>
@@ -351,7 +394,7 @@ export default function SalesAuditDemo({
               <VerifyExport brief={briefText} expected={receipt.brief_sha256} />
             )}
             <div className="sales-audit-actions">
-              <button type="button" onClick={onDownloadEvidence}><Download size={16} />下载核验明细 (.json)</button>
+              <button type="button" onClick={onDownloadEvidence}><Download size={15} />下载核验明细 (.json)</button>
             </div>
           </div>
         )}

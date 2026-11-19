@@ -11,9 +11,11 @@
   align-items: center;
   gap: 14px;
   padding: 18px 20px;
-  background: var(--accent-subtle);
+  background: var(--canvas-default);
   border: 1px solid var(--border-default);
+  border-left: 3px solid var(--accent-fg);
   border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xs);
 }
 
 .sales-audit-header > svg {
@@ -28,13 +30,12 @@
   margin: 0;
 }
 
-.sales-audit h2 { font-size: 22px; }
-.sales-audit h3 { font-size: 16px; }
-.sales-audit p { color: var(--fg-muted); font-size: 15px; }
-/* 证据、告警与明细的最低字号：路演投影下也要能读清。 */
+.sales-audit h2 { font-size: 21px; font-weight: 700; letter-spacing: -0.015em; }
+.sales-audit h3 { font-size: 15px; font-weight: 650; }
+.sales-audit p { color: var(--fg-muted); font-size: 14px; }
 .sales-audit small,
 .sales-audit pre,
-.sales-audit-table :is(th, td) { font-size: 14px; }
+.sales-audit-table :is(th, td) { font-size: 13px; }
 .sales-audit small { color: var(--fg-muted); }
 
 .sales-audit-grid {
@@ -46,10 +47,11 @@
 
 .sales-audit-card {
   min-width: 0;
-  padding: 18px;
+  padding: 18px 20px;
   background: var(--canvas-default);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xs);
 }
 
 .sales-audit-card > :not(:first-child) { margin-top: 10px; }
@@ -58,16 +60,22 @@
   display: block;
   width: 100%;
   resize: vertical;
-  padding: 12px;
+  padding: 12px 14px;
   background: var(--canvas-subtle);
   color: var(--fg-default);
-  font: inherit;
-  font-size: 15px;
-  line-height: 1.7;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  line-height: 1.75;
   white-space: pre;
   overflow-wrap: normal;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
+  transition: border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
+}
+.sales-audit textarea:focus-visible {
+  outline: none;
+  border-color: var(--accent-fg);
+  box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
 .sales-audit-actions, .sales-audit-claim-heading, .sales-audit-summary {
@@ -81,28 +89,33 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 36px;
-  padding: 6px 10px;
+  min-height: 35px;
+  padding: 6px 12px;
   border-radius: var(--radius-md);
+  font-size: 13px;
+  font-weight: 500;
 }
 
 .sales-audit-actions button:not(.primary) {
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border-default);
   background: var(--canvas-default);
   color: var(--fg-default);
 }
 
-.sales-audit-actions button:not(.primary):hover { background: var(--canvas-subtle); }
-.sales-audit-actions button:disabled { opacity: 0.65; }
+.sales-audit-actions button:not(.primary):hover:not(:disabled) {
+  background: var(--control-hover);
+  border-color: var(--border-strong);
+}
+.sales-audit-actions button:disabled { opacity: 0.55; }
 .sales-audit .sales-audit-error { color: var(--danger-fg); }
 .sales-audit-format-short { display: none; }
 
 .sales-audit .sales-audit-demo-note {
   color: var(--fg-muted);
-  padding: 6px 10px;
-  background: var(--canvas-subtle);
-  border-left: 3px solid var(--border-strong);
-  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  padding: 7px 12px;
+  background: var(--tint-butter);
+  border-left: 3px solid var(--attention-fg);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
 .sales-audit-locate {
   border: 0;
@@ -110,6 +123,7 @@
   background: transparent;
   color: var(--accent-fg);
   font: inherit;
+  font-weight: 600;
   text-decoration: underline;
   text-underline-offset: 3px;
   cursor: pointer;
@@ -124,79 +138,98 @@
   list-style: none;
   padding: 0;
   margin-bottom: 0;
+  display: grid;
+  gap: 8px;
 }
 
 .sales-audit-claims > li {
-  padding: 10px 0;
-  border-top: 1px solid var(--border-default);
+  padding: 12px 14px;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-md);
+  background: var(--canvas-subtle);
 }
 
 .sales-audit-verdict {
   flex: none;
-  padding: 3px 8px;
+  padding: 3px 9px;
   border-radius: var(--radius-full);
   background: var(--canvas-inset);
   color: var(--fg-default);
   font-size: 12px;
+  font-weight: 600;
 }
 
-.sales-audit-verified { background: var(--success-subtle); }
-.sales-audit-conflict { background: var(--danger-subtle); }
+.sales-audit-verified { background: var(--success-subtle); color: var(--success-fg); }
+.sales-audit-conflict { background: var(--danger-subtle); color: var(--danger-fg); }
+.sales-audit-unsupported { background: var(--tint-butter); color: var(--attention-fg); }
 
 .sales-audit-comparison {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 16px;
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 13px;
   font-variant-numeric: tabular-nums;
 }
 
 .sales-audit-comparison > span:first-child { color: var(--fg-muted); }
-.sales-audit-evidence summary { cursor: pointer; font-weight: 600; }
+.sales-audit-evidence summary { cursor: pointer; font-weight: 600; color: var(--fg-default); }
 .sales-audit-table { overflow-x: auto; }
 .sales-audit-table table { width: 100%; border-collapse: collapse; }
 .sales-audit-table :is(th, td) {
-  padding: 6px 10px;
+  padding: 7px 10px;
   text-align: left;
-  border-bottom: 1px solid var(--border-default);
+  border-bottom: 1px solid var(--border-muted);
+  font-variant-numeric: tabular-nums;
 }
-.sales-audit-table td:nth-child(2) { white-space: pre-wrap; }
+.sales-audit-table th {
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--canvas-subtle);
+}
+.sales-audit-table td:nth-child(2) { white-space: pre-wrap; font-family: var(--font-mono); }
 
 .sales-audit pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   margin-bottom: 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--canvas-subtle);
+  font-family: var(--font-mono);
 }
 
 .sales-audit-report {
-  padding: 12px;
+  padding: 14px 16px;
   background: var(--canvas-subtle);
+  border: 1px solid var(--border-muted);
   border-radius: var(--radius-md);
   font: inherit;
-  font-size: 15px;
+  font-size: 14px;
   overflow-wrap: anywhere;
 }
 
-/* 焦点可见：按钮、草稿框和折叠标题统一 2px 高对比描边。 */
+/* 修复原 --stage-cool 未定义 Bug：统一使用 --accent-fg 高对比焦点环 */
 .sales-audit :is(button, textarea, summary):focus-visible,
 .sales-showcase :is(button, summary):focus-visible {
   outline: 2px solid var(--accent-fg);
   outline-offset: 2px;
 }
-.sales-showcase :is(button, summary):focus-visible {
-  outline-color: var(--stage-cool);
-}
 
 .sales-audit-warnings {
-  padding: 10px 12px;
-  border: 1px solid var(--border-strong);
+  padding: 10px 14px;
+  border: 1px solid var(--border-default);
+  border-left: 3px solid var(--attention-fg);
   border-radius: var(--radius-md);
-  background: var(--accent-subtle);
+  background: var(--tint-butter);
 }
 .sales-audit-warnings-heading {
   display: flex;
   align-items: center;
   gap: 6px;
-  color: var(--accent-fg);
+  color: var(--attention-fg);
 }
 .sales-audit-warnings ul {
   margin: 6px 0 0;
@@ -209,7 +242,7 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
+  padding: 9px 12px;
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
   background: var(--canvas-subtle);
@@ -217,29 +250,33 @@
 .sales-audit-ledger code,
 .sales-audit-receipt code {
   font-family: var(--font-mono);
-  font-size: 14px;
+  font-size: 13px;
   overflow-wrap: anywhere;
 }
-/* 账本区块只展示截断 hash；完整值放在 title，避免 64 字符撑爆一行。 */
 .sales-audit-ledger code { white-space: nowrap; }
 .sales-audit-ledger button {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  min-height: 30px;
-  padding: 2px 8px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-md);
+  min-height: 28px;
+  padding: 2px 9px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
   background: var(--canvas-default);
   color: var(--fg-default);
+  font-size: 12px;
+}
+.sales-audit-ledger button:hover {
+  border-color: var(--border-strong);
+  background: var(--control-hover);
 }
 
 .sales-audit-receipt {
   display: grid;
-  gap: 6px;
-  padding: 10px 12px;
+  gap: 8px;
+  padding: 12px 14px;
   border: 1px solid var(--border-default);
-  border-left: 3px solid var(--border-strong);
+  border-left: 3px solid var(--success-fg);
   border-radius: var(--radius-md);
   background: var(--canvas-default);
 }
@@ -254,33 +291,34 @@
   align-items: baseline;
   gap: 6px;
 }
-.sales-audit-receipt strong { display: inline-flex; align-items: center; gap: 7px; }
-.sales-audit-receipt strong::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--success-fg); }
-.sales-audit-receipt dt { color: var(--fg-muted); font-size: 14px; }
-.sales-audit-receipt dd { margin: 0; font-size: 14px; }
+.sales-audit-receipt strong { display: inline-flex; align-items: center; gap: 7px; font-size: 14px; }
+.sales-audit-receipt strong::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--success-fg); }
+.sales-audit-receipt dt { color: var(--fg-subtle); font-size: 12px; }
+.sales-audit-receipt dd { margin: 0; font-size: 13px; font-weight: 500; }
 
 .sales-audit-caveat {
   color: var(--accent-fg) !important;
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .sales-audit-trace {
   color: var(--accent-fg) !important;
   font-family: var(--font-mono);
-  font-size: 14px;
+  font-size: 13px;
   overflow-wrap: anywhere;
 }
 
 .sales-audit-quickdraft {
-  padding: 10px 12px;
+  padding: 10px 14px;
   border: 1px solid var(--border-default);
+  border-left: 3px solid var(--accent-fg);
   border-radius: var(--radius-md);
   background: var(--canvas-subtle);
 }
 .sales-audit-quickdraft p { color: var(--fg-muted); }
 .sales-audit-quickdraft strong { color: var(--accent-fg); }
 .sales-audit-quickdraft .sales-audit-quickdraft-meta {
-  font-size: 14px;
+  font-size: 13px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -299,22 +337,17 @@
   .sales-audit-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
-/* 1366×768 等窄高度视口：压缩留白，保证「复算并核验」留在首屏。 */
 @media (max-height: 900px) {
-  .sales-audit { gap: 8px; margin-top: 6px; }
-  .sales-audit-header { padding: 8px 14px; gap: 10px; }
-  /* 标题保留，说明文字让位给首屏的主操作。 */
+  .sales-audit { gap: 10px; margin-top: 8px; }
+  .sales-audit-header { padding: 10px 16px; gap: 10px; }
   .sales-audit-header p { display: none; }
   .sales-audit h2 { font-size: 18px; }
-  .sales-audit h3 { font-size: 15px; }
-  .sales-audit-grid { gap: 10px; }
-  .sales-audit-card { padding: 10px 12px; }
-  .sales-audit-card > :not(:first-child) { margin-top: 6px; }
-  /* rows=7 的原生高度约 200px；显式 height 才能压到 120px。 */
+  .sales-audit h3 { font-size: 14px; }
+  .sales-audit-grid { gap: 12px; }
+  .sales-audit-card { padding: 12px 14px; }
+  .sales-audit-card > :not(:first-child) { margin-top: 8px; }
   .sales-audit textarea { height: 120px; min-height: 120px; }
-  .sales-audit-actions button { min-height: 30px; padding: 4px 8px; }
-  /* 格式说明在窄高度下视觉隐藏，但保留在读屏树里（aria-describedby 仍然有效），
-     腾出的高度让「复算并核验」留在首屏。 */
+  .sales-audit-actions button { min-height: 30px; padding: 4px 10px; }
   #sales-audit-format {
     position: absolute;
     width: 1px;
@@ -328,10 +361,9 @@
   }
   .sales-audit-format-short {
     display: block;
-    font-size: 14px;
+    font-size: 13px;
   }
 }
 
-/* 程序化聚焦的状态/回执区域只用于读屏播报，不需要可见焦点环。 */
 .sales-audit-receipt:focus,
 .sales-audit-receipt:focus-visible { outline: none; }

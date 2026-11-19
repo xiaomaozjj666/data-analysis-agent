@@ -132,7 +132,7 @@ i.warning { background: var(--attention-fg); box-shadow: 0 0 0 3px rgba(154, 103
 /* resume-button：断点续跑主操作按钮（绿色，与"重新运行"区分）。
    canResume 时优先展示此按钮，让用户一眼看出"可以继续"而非只能重来。 */
 .resume-button { min-height: 28px; margin: 0 4px; padding: 0 12px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--success-fg); border-radius: var(--radius-md); background: var(--success-fg); color: #fff; font-size: var(--text-xs); font-weight: 600; cursor: pointer; transition: all var(--duration-fast) var(--ease-out); box-shadow: 0 1px 3px rgba(21, 128, 61, 0.25); }
-.resume-button:hover { background: #16a34a; border-color: #16a34a; transform: translateY(-1px); box-shadow: 0 2px 6px rgba(21, 128, 61, 0.3); }
+.resume-button:hover { background: #16553b; border-color: #16553b; transform: translateY(-1px); box-shadow: var(--shadow-sm); }
 .resume-button:active { transform: translateY(0); }
 .resume-button svg { flex-shrink: 0; }
 

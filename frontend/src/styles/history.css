@@ -241,7 +241,7 @@
 .skeleton-row { display: flex; align-items: center; gap: 8px; padding: 10px 6px; }
 .skeleton-icon { width: 14px; height: 14px; border-radius: var(--radius-sm); background: var(--neutral-muted); flex-shrink: 0; }
 .skeleton-lines { flex: 1; display: flex; flex-direction: column; gap: 6px; }
-.skeleton-line { height: 8px; border-radius: var(--radius-full); background: linear-gradient(90deg, var(--neutral-muted) 25%, #f3f5f7 50%, var(--neutral-muted) 75%); background-size: 200% 100%; animation: skeleton-shimmer 1.4s ease-in-out infinite; }
+.skeleton-line { height: 8px; border-radius: var(--radius-full); background: linear-gradient(90deg, var(--neutral-muted) 25%, var(--canvas-subtle) 50%, var(--neutral-muted) 75%); background-size: 200% 100%; animation: skeleton-shimmer 1.4s ease-in-out infinite; }
 .skeleton-line-wide { width: 70%; }
 .skeleton-line-narrow { width: 45%; }
 

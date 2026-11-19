@@ -1,39 +1,47 @@
 /* ---------- 侧栏 ---------- */
-.wordmark { height: 48px; display: flex; align-items: center; gap: 10px; padding: 0 8px; }
-/* 品牌色小方块：代替图标的极简标识，加柔和光晕提升品牌感 */
-.wordmark::before { content: ""; width: 12px; height: 12px; border-radius: 3px; background: var(--accent-fg); box-shadow: 0 0 0 3px var(--accent-ring), 0 2px 8px rgba(77, 77, 143, 0.3); }
-.wordmark strong { font-size: 17px; font-weight: 700; letter-spacing: 0.01em; }
-.wordmark span { color: var(--fg-subtle); font-family: var(--font-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.08em; }
+.wordmark { height: 44px; display: flex; align-items: center; gap: 10px; padding: 0 6px; }
+/* 建筑感极简印记：深松石青几何方印，克制且具辨识度 */
+.wordmark::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border-radius: 2.5px;
+  background: var(--accent-solid);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+.wordmark strong { font-size: 16px; font-weight: 700; letter-spacing: -0.01em; color: var(--fg-default); }
+.wordmark span { color: var(--fg-subtle); font-family: var(--font-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.1em; }
 
-/* 新建分析：填充式品牌蓝主按钮，hover 加深 + 上浮，提升左侧主操作辨识度 */
+/* 新建分析：克制的深松石青实心主操作，告别廉价大紫块 */
 .new-analysis {
   width: 100%;
-  height: 42px;
-  margin-top: 14px;
+  height: 40px;
+  margin-top: 12px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  border: 1px solid var(--accent-fg);
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
   background: var(--accent-solid);
-  color: #fff;
-  font-size: var(--text-md);
+  color: #ffffff;
+  font-size: var(--text-sm);
   font-weight: 600;
-  box-shadow: var(--shadow-sm), 0 1px 0 rgba(255, 255, 255, 0.18) inset;
-  transition: background-color var(--duration) var(--ease-out), border-color var(--duration) var(--ease-out), box-shadow var(--duration) var(--ease-out), transform var(--duration) var(--ease-out);
+  letter-spacing: 0.01em;
+  box-shadow: var(--shadow-xs);
+  transition: background-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-out);
 }
-.new-analysis:hover { background: var(--accent-solid-hover); border-color: var(--accent-hover); box-shadow: var(--shadow-md); transform: translateY(-1px); }
-.new-analysis:active { transform: translateY(0); box-shadow: var(--shadow-xs); }
+.new-analysis:hover { background: var(--accent-solid-hover); box-shadow: var(--shadow-sm); transform: translateY(-1px); }
+.new-analysis:active { transform: translateY(0); box-shadow: none; }
 .new-analysis:disabled { opacity: 0.55; transform: none; }
 
-/* 四模块分区：细分隔线 + 顶部留白，强化模块层级（首个分区不画线） */
-.sidebar-section { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border-muted); }
+/* 分区节奏：极细水平分隔线 */
+.sidebar-section { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--border-muted); }
 .sidebar-section:first-of-type { border-top: none; padding-top: 0; }
 
 .upload-button, .dataset-button {
   width: 100%;
-  min-height: 48px;
+  min-height: 46px;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -42,15 +50,14 @@
   border-radius: var(--radius-md);
   background: transparent;
   color: var(--fg-default);
-  transition: background-color var(--duration) var(--ease-out), border-color var(--duration) var(--ease-out), color var(--duration) var(--ease-out), transform var(--duration) var(--ease-out), box-shadow var(--duration) var(--ease-out);
+  transition: background-color var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
 }
-/* 上传入口：虚线框 + 悬浮态，明确引导用户投放数据 */
 .upload-button {
   position: relative;
   justify-content: flex-start;
-  min-height: 52px;
-  padding: 12px 14px;
-  border: 1.5px dashed var(--border-strong);
+  min-height: 48px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border-strong);
   color: var(--fg-muted);
   font-size: var(--text-sm);
   background: var(--canvas-default);
@@ -60,61 +67,56 @@
   border-style: solid;
   color: var(--accent-fg);
   background: var(--accent-subtle);
-  transform: translateX(2px);
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-xs);
 }
-.upload-button:active { transform: translateX(0); box-shadow: none; }
-.upload-button:disabled { transform: none; }
-/* 数据集按钮：当前数据高亮，左侧品牌色竖条 + 浅底标识活跃态 */
+.upload-button:active { box-shadow: none; }
 .dataset-button {
   position: relative;
   text-align: left;
   padding-left: 14px;
   background: var(--canvas-default);
-  border: 1px solid var(--border-muted);
+  border: 1px solid var(--border-default);
   box-shadow: var(--shadow-xs);
 }
 .dataset-button::before {
   content: "";
   position: absolute;
   left: 0;
-  top: 6px;
-  bottom: 6px;
-  width: 3px;
+  top: 8px;
+  bottom: 8px;
+  width: 2.5px;
   border-radius: 0 2px 2px 0;
   background: var(--accent-fg);
-  box-shadow: 0 0 8px var(--accent-ring);
 }
-.dataset-button:hover { background: var(--canvas-subtle); border-color: var(--border-default); box-shadow: var(--shadow-sm); transform: translateX(2px); }
-.dataset-button:active { transform: translateX(0); box-shadow: var(--shadow-xs); }
+.dataset-button:hover { background: var(--canvas-subtle); border-color: var(--border-strong); box-shadow: var(--shadow-sm); }
+.dataset-button:active { box-shadow: var(--shadow-xs); }
 .dataset-button > svg:first-child { color: var(--accent-fg); flex: 0 0 auto; }
-.dataset-button > svg:last-child { margin-left: auto; color: var(--fg-subtle); flex: 0 0 auto; transition: color var(--duration) var(--ease-out), transform var(--duration) var(--ease-out); }
-.dataset-button:hover > svg:last-child { color: var(--accent-fg); transform: rotate(-60deg); }
+.dataset-button > svg:last-child { margin-left: auto; color: var(--fg-subtle); flex: 0 0 auto; transition: color var(--duration-fast) var(--ease-out), transform var(--duration) var(--ease-out); }
+.dataset-button:hover > svg:last-child { color: var(--accent-fg); transform: rotate(-45deg); }
 .dataset-button span { min-width: 0; }
 .dataset-button strong, .dataset-button small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dataset-button strong { max-width: 160px; font-size: var(--text-sm); font-weight: 600; }
 .dataset-button small { margin-top: 2px; color: var(--fg-muted); font-size: var(--text-xs); }
 
-.sidebar-spacer { flex: 1; min-height: 24px; }
+.sidebar-spacer { flex: 1; min-height: 20px; }
 .provider-block { position: relative; }
-/* 分析引擎列表：精致卡片式，带边框 + 在线状态标识 + hover 高亮 */
 .model-line {
   width: 100%;
-  min-height: 50px;
+  min-height: 48px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 10px 12px;
-  border: 1px solid var(--border-muted);
+  border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
   background: var(--canvas-default);
   color: var(--fg-default);
   text-align: left;
   box-shadow: var(--shadow-xs);
-  transition: background-color var(--duration) var(--ease-out), border-color var(--duration) var(--ease-out), box-shadow var(--duration) var(--ease-out), transform var(--duration) var(--ease-out);
+  transition: background-color var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
 }
-.model-line:hover { background: var(--canvas-subtle); border-color: var(--border-default); box-shadow: var(--shadow-sm); transform: translateX(2px); }
-.model-line:active { transform: translateX(0); box-shadow: var(--shadow-xs); }
+.model-line:hover { background: var(--canvas-subtle); border-color: var(--border-strong); box-shadow: var(--shadow-sm); }
+.model-line:active { box-shadow: var(--shadow-xs); }
 .model-line > span, .sidebar-foot > span, .api-status, .storage-status > span { display: flex; align-items: center; gap: 8px; }
 .model-line > span > span { min-width: 0; }
 .model-line strong, .model-line small { display: block; }
@@ -135,10 +137,10 @@
   animation: rise var(--duration) var(--ease-out);
 }
 .settings-dialog::backdrop {
-  background: rgba(0, 0, 0, 0.2);
-  backdrop-filter: blur(2px);
+  background: rgba(18, 18, 16, 0.28);
+  backdrop-filter: blur(3px);
 }
-.settings-form { padding: 16px; }
+.settings-form { padding: 18px; }
 .settings-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .settings-title h2 { margin: 0; font-size: var(--text-md); font-weight: 600; }
 .settings-title button { width: 28px; height: 28px; display: grid; place-items: center; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--fg-muted); }
@@ -156,16 +158,14 @@
 .segment { display: grid; grid-template-columns: 1fr 1fr; padding: 2px; background: var(--canvas-inset); border-radius: var(--radius-md); }
 .segment button { height: 30px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--fg-muted); font-size: var(--text-sm); font-weight: 500; }
 .segment button:hover { color: var(--fg-default); }
-.segment button.selected { background: var(--canvas-default); color: var(--fg-default); box-shadow: var(--shadow-sm); font-weight: 600; }
+.segment button.selected { background: var(--canvas-default); color: var(--fg-default); box-shadow: var(--shadow-xs); font-weight: 600; }
 .save-button { width: 100%; height: 34px; margin-top: 14px; }
 
-/* 操作区：测试连接（次操作）+ 保存（主操作）并排，主操作 flex 撑满 */
 .settings-actions {
   display: flex;
   gap: 8px;
   margin-top: 14px;
 }
-/* 在 settings-actions 内的 save-button 覆盖默认全宽 + 上边距，由容器统一控制 */
 .settings-actions .save-button {
   flex: 1 1 auto;
   margin-top: 0;
@@ -190,7 +190,6 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
-/* 连接测试结果：成功绿色、失败红色，沿用 tokens 的语义色变量 */
 .test-result {
   margin-top: 10px;
   padding: 6px 10px;
@@ -207,67 +206,61 @@
   color: var(--danger-fg);
 }
 
-/* 底部状态区：卡片式精致列表，与侧栏底色区分，提升精致度 */
+/* 底部状态区 */
 .sidebar-foot {
-  min-height: 40px;
+  min-height: 38px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-top: 10px;
-  padding: 10px 12px;
-  border: 1px solid var(--border-muted);
+  margin-top: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
   background: var(--canvas-default);
-  box-shadow: var(--shadow-xs);
   color: var(--fg-muted);
   font-size: var(--text-xs);
-  transition: border-color var(--duration) var(--ease-out), box-shadow var(--duration) var(--ease-out), transform var(--duration) var(--ease-out);
+  transition: border-color var(--duration-fast) var(--ease-out);
 }
-.sidebar-foot:hover { border-color: var(--border-default); box-shadow: var(--shadow-sm); transform: translateX(2px); }
+.sidebar-foot:hover { border-color: var(--border-strong); }
 .sidebar-foot small { color: var(--fg-subtle); }
 .storage-status {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-top: 8px;
-  padding: 10px 12px;
-  border: 1px solid var(--border-muted);
+  padding: 8px 12px;
+  border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
   background: var(--canvas-default);
-  box-shadow: var(--shadow-xs);
   color: var(--fg-muted);
   font-size: var(--text-xs);
-  transition: border-color var(--duration) var(--ease-out), box-shadow var(--duration) var(--ease-out), transform var(--duration) var(--ease-out);
+  transition: border-color var(--duration-fast) var(--ease-out);
 }
-.storage-status:hover { border-color: var(--border-default); box-shadow: var(--shadow-sm); transform: translateX(2px); }
+.storage-status:hover { border-color: var(--border-strong); }
 .storage-status small { color: var(--fg-subtle); }
 
-/* ---------- 状态指示灯：精致圆点 + 语义色光晕（覆盖 buttons.css 默认值）---------- */
-/* 8px 圆点 + 过渡，在线/降级用语义色 + 柔和光环；idle 用中性灰。
-   来源在 buttons.css，此处因侧栏加载顺序更靠后而生效。 */
+/* ---------- 状态指示灯 ---------- */
 .model-line i, .sidebar-foot i, .api-status i, .storage-status i {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  background: #c7ccd4;
+  background: var(--border-strong);
   flex: 0 0 auto;
-  transition: background-color var(--duration) var(--ease-out), box-shadow var(--duration) var(--ease-out);
+  transition: background-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
 }
 :is(.model-line, .sidebar-foot, .api-status, .storage-status) i.online {
   background: var(--success-fg);
-  box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.15);
+  box-shadow: 0 0 0 3px rgba(30, 106, 75, 0.14);
 }
 :is(.model-line, .sidebar-foot, .api-status, .storage-status) i.warning {
   background: var(--attention-fg);
-  box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.15);
+  box-shadow: 0 0 0 3px rgba(140, 85, 18, 0.14);
 }
-/* 暗色模式：tokens.css 的 [data-theme="dark"] .model-line i 等规则特异性更高，
-   会把 online/warning 也染成灰；此处用同等特异性 + 更靠后的源顺序恢复语义色。 */
 [data-theme="dark"] :is(.model-line, .sidebar-foot, .api-status, .storage-status) i.online {
   background: var(--success-fg);
-  box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.18);
+  box-shadow: 0 0 0 3px rgba(115, 201, 159, 0.18);
 }
 [data-theme="dark"] :is(.model-line, .sidebar-foot, .api-status, .storage-status) i.warning {
   background: var(--attention-fg);
-  box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.18);
+  box-shadow: 0 0 0 3px rgba(226, 180, 93, 0.18);
 }

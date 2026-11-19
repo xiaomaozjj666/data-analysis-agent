@@ -1,7 +1,5 @@
 import { useRef, type RefObject } from "react";
 import { ListChecks, LoaderCircle, Play, Square } from "lucide-react";
-import ClickSpark from "./rb/ClickSpark";
-import StarBorder from "./rb/StarBorder";
 import { formatDuration } from "../utils/format";
 import { presets } from "../constants";
 
@@ -33,8 +31,6 @@ export default function TaskBox({
   currentNodeTitle, elapsedSeconds,
   onTaskChange, onRun, onRunPlanReview, onStop, onFocusPlan, taskInputRef,
 }: TaskBoxProps) {
-  // 点击预设时先填入任务文本，下一帧把焦点送回输入框（preset 按钮被
-  // 点击后焦点还在按钮上，直接 focus 会被 React 重渲染吞掉）
   const presetFocusTimer = useRef<number | null>(null);
   return (
     <div className={`task-box ${running ? "is-running" : ""} ${awaitingApproval ? "is-awaiting" : ""}`}>
@@ -79,7 +75,8 @@ export default function TaskBox({
       <div className="task-actions">
         <div className="preset-row">
           {presets.map(({ title, detail, icon: Icon, task: presetTask }) => (
-            <button type="button"
+            <button
+              type="button"
               key={title}
               title={configured ? detail : "请先在左下角配置 API Key"}
               onClick={() => {
@@ -101,17 +98,25 @@ export default function TaskBox({
             </button>
           ) : (
             <>
-              <button type="button" className="plan-review-button" onClick={onRun} disabled={!task.trim() || !configured || awaitingApproval} title={awaitingApproval ? "请先批准或取消当前计划" : "跳过计划审阅，直接执行（适合已确认过的重复任务）"}>
-                <Play size={15} fill="currentColor" />
+              <button
+                type="button"
+                className="plan-review-button"
+                onClick={onRun}
+                disabled={!task.trim() || !configured || awaitingApproval}
+                title={awaitingApproval ? "请先批准或取消当前计划" : "跳过计划审阅，直接执行（适合已确认过的重复任务）"}
+              >
+                <Play size={14} fill="currentColor" />
                 跳过审阅
               </button>
-              <ClickSpark sparkColor="#4d4d8f" sparkCount={10} sparkLength={16}>
-                <StarBorder disabled={!task.trim() || !configured || !hasSession}>
-                  <button type="button" className="run-button" onClick={onRunPlanReview} disabled={!task.trim() || !configured || !hasSession} title={awaitingApproval ? "用当前问题重新生成计划" : "先生成计划，审阅后再执行"}>
-                    <ListChecks size={15} />{awaitingApproval ? "重新生成" : "生成计划"}
-                  </button>
-                </StarBorder>
-              </ClickSpark>
+              <button
+                type="button"
+                className="run-button"
+                onClick={onRunPlanReview}
+                disabled={!task.trim() || !configured || !hasSession}
+                title={awaitingApproval ? "用当前问题重新生成计划" : "先生成计划，审阅后再执行"}
+              >
+                <ListChecks size={15} />{awaitingApproval ? "重新生成" : "生成计划"}
+              </button>
             </>
           )}
         </div>
