@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import enum
+import json
 import re
 import time
 import urllib.parse
@@ -283,7 +284,15 @@ def _session_payload(session_id: str, record: SessionRecord) -> dict[str, Any]:
     except (ValueError, OSError):
         policy = None
 
-    return {
+    demo = None
+    demo_file = workspace.root / "demo.json"
+    if demo_file.is_file():
+        try:
+            demo = json.loads(demo_file.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            demo = None
+
+    payload = {
         "id": session_id,
         "filename": workspace.source_path.name if workspace.source_path else "dataset",
         "title": record.title,
@@ -303,11 +312,13 @@ def _session_payload(session_id: str, record: SessionRecord) -> dict[str, Any]:
         # plan_only 模式产出的待审批计划，前端据此渲染审批面板；
         # 为 None 表示当前没有待审批计划。
         "pending_plan": record.pending_plan,
+        **({"demo": demo} if demo else {}),
         **({"policy": {
             "principal_id": policy["principal_id"],
             "pii_columns": list(policy.get("pii_columns") or ()),
         }} if policy else {}),
     }
+    return payload
 
 
 def _result_payload(session_id: str, result: AnalysisResult) -> dict[str, Any]:

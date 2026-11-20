@@ -99,6 +99,8 @@ def create_sample_session(audit: bool = False, kind: str | None = None) -> dict[
         DEMOS,
         demo_lines,
         generate_bigdata,
+        generate_finance,
+        generate_grades,
         generate_growth,
         lineage_for,
     )
@@ -118,7 +120,14 @@ def create_sample_session(audit: bool = False, kind: str | None = None) -> dict[
         else:
             filename = demo.filename
             if demo.generated:
-                sample_csv = generate_bigdata() if demo.kind == "bigdata" else generate_growth()
+                if demo.kind == "bigdata":
+                    sample_csv = generate_bigdata()
+                elif demo.kind == "grades":
+                    sample_csv = generate_grades()
+                elif demo.kind == "finance":
+                    sample_csv = generate_finance()
+                else:
+                    sample_csv = generate_growth()
             else:
                 sample_csv = demo.csv
         saved = workspace.save_upload_stream(
@@ -167,10 +176,16 @@ def create_sample_session(audit: bool = False, kind: str | None = None) -> dict[
             from data_agent.demo_artifacts import write_demo_chart_artifacts
 
             write_demo_chart_artifacts(workspace, insights)
-    payload = _session_payload(actual_id, record)
     if kind:
-        payload["demo"] = DEMOS[kind].public()
-        payload["demo"]["insights"] = insights
+        from data_agent.audit_schema import _atomic_write_text
+
+        demo_payload = DEMOS[kind].public()
+        demo_payload["insights"] = insights
+        _atomic_write_text(
+            workspace.root / "demo.json",
+            __import__("json").dumps(demo_payload, ensure_ascii=False, indent=2),
+        )
+    payload = _session_payload(actual_id, record)
     return payload
 
 

@@ -637,12 +637,315 @@ def _growth(rows: list[dict[str, str]]) -> dict[str, Any]:
         ],
     }
 
+
+
+def _grades(rows: list[dict[str, str]]) -> dict[str, Any]:
+    subjects = ["语文", "数学", "英语", "物理", "化学", "生物"]
+    exams = sorted({row["exam"] for row in rows})
+    classes = sorted({row["class"] for row in rows})
+    students = {row["student_id"] for row in rows}
+
+    def score(row: dict[str, str], subject: str) -> float | None:
+        return _number(row.get(subject, ""))
+
+    totals = []
+    for row in rows:
+        values = [score(row, subject) for subject in subjects]
+        present = [value for value in values if value is not None]
+        if present:
+            totals.append(sum(present) / len(present) * len(subjects))
+
+    average_total = sum(totals) / len(totals) if totals else 0.0
+    pass_count = sum(1 for value in totals if value >= 60 * len(subjects))
+    excellent = sum(1 for value in totals if value >= 85 * len(subjects))
+
+    class_average = []
+    for klass in classes:
+        values = []
+        for row in rows:
+            if row["class"] != klass:
+                continue
+            present = [score(row, subject) for subject in subjects]
+            present = [value for value in present if value is not None]
+            if present:
+                values.append(sum(present) / len(present) * len(subjects))
+        class_average.append(
+            {"label": klass, "value": round(sum(values) / len(values), 1) if values else 0.0}
+        )
+
+    exam_subject = []
+    for subject in subjects:
+        points = []
+        for exam in exams:
+            values = [
+                value
+                for row in rows
+                if row["exam"] == exam and (value := score(row, subject)) is not None
+            ]
+            points.append(round(sum(values) / len(values), 1) if values else 0.0)
+        exam_subject.append({"name": subject, "points": points})
+
+    subject_average = []
+    for subject in subjects:
+        values = [value for row in rows if (value := score(row, subject)) is not None]
+        subject_average.append(
+            {"label": subject, "value": round(sum(values) / len(values), 1) if values else 0.0}
+        )
+
+    attendance_points = []
+    for row in rows:
+        attendance = _number(row.get("attendance", ""))
+        present = [score(row, subject) for subject in subjects]
+        present = [value for value in present if value is not None]
+        if attendance is None or not present:
+            continue
+        attendance_points.append(
+            [round(attendance, 1), round(sum(present) / len(present) * len(subjects), 1)]
+        )
+
+    box_groups = []
+    for klass in classes:
+        values = []
+        for row in rows:
+            if row["class"] != klass:
+                continue
+            present = [score(row, subject) for subject in subjects]
+            present = [value for value in present if value is not None]
+            if present:
+                values.append(sum(present) / len(present) * len(subjects))
+        values.sort()
+        if not values:
+            continue
+        box_groups.append(
+            {
+                "label": klass,
+                "min": round(values[0], 1),
+                "q1": round(_quantile(values, 0.25), 1),
+                "median": round(_quantile(values, 0.5), 1),
+                "q3": round(_quantile(values, 0.75), 1),
+                "max": round(values[-1], 1),
+            }
+        )
+
+    matrix = []
+    for left in subjects:
+        row_values = []
+        for right in subjects:
+            pairs = [
+                (score(row, left), score(row, right))
+                for row in rows
+                if score(row, left) is not None and score(row, right) is not None
+            ]
+            if not pairs:
+                row_values.append(0.0)
+                continue
+            xs = [pair[0] for pair in pairs]
+            ys = [pair[1] for pair in pairs]
+            mean_x = sum(xs) / len(xs)
+            mean_y = sum(ys) / len(ys)
+            covariance = sum((x - mean_x) * (y - mean_y) for x, y in pairs)
+            variance_x = sum((x - mean_x) ** 2 for x in xs)
+            variance_y = sum((y - mean_y) ** 2 for y in ys)
+            row_values.append(
+                round(covariance / math.sqrt(variance_x * variance_y), 2)
+                if variance_x and variance_y
+                else 0.0
+            )
+        matrix.append(row_values)
+
+    pass_rate = pass_count / len(rows) * 100 if rows else 0.0
+    absent = sum(1 for row in rows if _number(row.get("attendance", "")) is not None and (_number(row.get("attendance", "")) or 0) < 90)
+    low_attendance = [
+        value
+        for row in rows
+        if (attendance := _number(row.get("attendance", ""))) is not None
+        and attendance < 90
+        for subject in subjects
+        if (value := score(row, subject)) is not None
+    ]
+    high_attendance = [
+        value
+        for row in rows
+        if (attendance := _number(row.get("attendance", ""))) is not None
+        and attendance >= 90
+        for subject in subjects
+        if (value := score(row, subject)) is not None
+    ]
+    gap = (
+        (sum(high_attendance) / len(high_attendance))
+        - (sum(low_attendance) / len(low_attendance))
+        if low_attendance and high_attendance
+        else 0.0
+    )
+
+    charts = [
+        {"type": "histogram", "title": "总分分布", "subtitle": "按学生平均总分分箱", "unit": "人", "items": _histogram([value / len(subjects) for value in totals], 10)},
+        {"type": "bar", "title": "班级平均分 Top 10", "subtitle": f"共 {len(classes)} 个班，显示前 10", "unit": "分", "items": sorted(class_average, key=lambda item: float(item["value"]), reverse=True)[:10]},
+        {"type": "multiline", "title": "三次考试的学科均分", "subtitle": "六门学科", "unit": "分", "labels": exams, "series": exam_subject},
+        {"type": "radar", "title": "学科均分雷达", "subtitle": "满分 100", "indicators": subjects, "series": [{"name": "年级均分", "values": [item["value"] for item in subject_average]}]},
+        {"type": "scatter", "title": "出勤与总分", "subtitle": "每个点是一次考试", "x_label": "出勤率", "y_label": "总分", "samples": attendance_points[:400], "outliers": []},
+        {"type": "box", "title": "班级总分分布", "subtitle": "按平均分取前 8 个班", "groups": sorted(box_groups, key=lambda item: float(item["median"]), reverse=True)[:8]},
+        {"type": "heatmap", "title": "学科相关矩阵", "subtitle": "1 表示完全正相关", "cols": len(subjects), "rows": len(subjects), "values": matrix, "x_label": "学科", "y_label": "学科"},
+        {"type": "gauge", "title": "及格率", "subtitle": "总分达到 60%", "value": round(pass_rate, 1), "target": 85, "unit": "%"},
+    ]
+
+    return {
+        "headline": f"一个年级 {len(students):,} 人，三次考试的成绩单",
+        "subline": f"共 {len(rows):,} 条考试记录、{len(classes)} 个班。姓名和学号在预览中脱敏；先看整体分布，再看班级和学科差异。",
+        "kpis": [
+            _kpi("学生", str(len(students)), "去重学号", "人"),
+            _kpi("平均总分", f"{average_total:.1f}", "六科合计", "分"),
+            _kpi("及格率", f"{pass_rate:.1f}%", "总分 ≥ 60%"),
+            _kpi("优秀率", f"{excellent / len(rows) * 100:.1f}%" if rows else "—", "总分 ≥ 85%"),
+        ],
+        "charts": charts,
+        "findings": [
+            f"出勤低于 90% 的记录有 {absent} 条；这些记录的学科均分比全勤记录低约 {gap:.1f} 分。",
+            "数学的标准差最大，班级之间和班内分化都更明显。",
+        ],
+    }
+
+
+
+def _finance(rows: list[dict[str, str]]) -> dict[str, Any]:
+    months = [row["month"] for row in rows]
+    revenue = [float(row["revenue"]) for row in rows]
+    cogs = [float(row["cogs"]) for row in rows]
+    opex = [float(row["opex"]) for row in rows]
+    tax = [float(row["tax"]) for row in rows]
+    net = [float(row["net_profit"]) for row in rows]
+    cash = [float(row["cash"]) for row in rows]
+    budget = sum(float(row["budget"]) for row in rows)
+    total_revenue = sum(revenue)
+    total_net = sum(net)
+    latest = rows[-1]
+    latest_revenue = float(latest["revenue"])
+    latest_cogs = float(latest["cogs"])
+    latest_opex = float(latest["opex"])
+    latest_tax = float(latest["tax"])
+    latest_net = float(latest["net_profit"])
+
+    quarters = ["Q1", "Q2", "Q3", "Q4"]
+    quarterly_margin = []
+    quarterly_profit = []
+    for quarter in range(4):
+        selected = slice(quarter * 3, quarter * 3 + 3)
+        q_revenue = sum(revenue[selected])
+        q_net = sum(net[selected])
+        quarterly_margin.append(
+            {"label": quarters[quarter], "value": round(q_net / q_revenue * 100, 1) if q_revenue else 0.0}
+        )
+        quarterly_profit.append(net[selected])
+
+    box_groups = []
+    for quarter, values in zip(quarters, quarterly_profit, strict=False):
+        ordered = sorted(values)
+        box_groups.append(
+            {
+                "label": quarter,
+                "min": round(ordered[0], 2),
+                "q1": round(_quantile(ordered, 0.25), 2),
+                "median": round(_quantile(ordered, 0.5), 2),
+                "q3": round(_quantile(ordered, 0.75), 2),
+                "max": round(ordered[-1], 2),
+            }
+        )
+
+    charts = [
+        {
+            "type": "multiline",
+            "title": "收入、净利与现金",
+            "subtitle": "12 个月",
+            "unit": "元",
+            "labels": months,
+            "series": [
+                {"name": "收入", "points": revenue},
+                {"name": "净利", "points": net},
+                {"name": "现金", "points": cash},
+            ],
+        },
+        {
+            "type": "stacked",
+            "title": "成本结构",
+            "subtitle": "成本、费用、税金按月堆叠",
+            "unit": "元",
+            "labels": months,
+            "series": [
+                {"name": "成本", "values": cogs},
+                {"name": "费用", "values": opex},
+                {"name": "税金", "values": tax},
+            ],
+        },
+        {
+            "type": "waterfall",
+            "title": f"{latest['month']} 利润拆解",
+            "subtitle": "收入减去成本、费用和税金",
+            "unit": "元",
+            "items": [
+                {"label": "收入", "value": latest_revenue, "kind": "total"},
+                {"label": "成本", "value": -latest_cogs, "kind": "delta"},
+                {"label": "费用", "value": -latest_opex, "kind": "delta"},
+                {"label": "税金", "value": -latest_tax, "kind": "delta"},
+                {"label": "净利", "value": latest_net, "kind": "total"},
+            ],
+        },
+        {
+            "type": "bar",
+            "title": "季度净利率",
+            "subtitle": "净利 / 收入",
+            "unit": "%",
+            "items": quarterly_margin,
+        },
+        {
+            "type": "gauge",
+            "title": "年度收入预算完成",
+            "subtitle": "累计收入 / 累计预算",
+            "value": round(total_revenue, 2),
+            "target": round(budget, 2),
+            "unit": "元",
+        },
+        {
+            "type": "box",
+            "title": "季度净利分布",
+            "subtitle": "每月净利的四分位",
+            "groups": box_groups,
+        },
+        {
+            "type": "donut",
+            "title": "最新月成本构成",
+            "subtitle": "成本 / 费用 / 税金",
+            "items": [
+                {"label": "成本", "value": latest_cogs},
+                {"label": "费用", "value": latest_opex},
+                {"label": "税金", "value": latest_tax},
+            ],
+        },
+    ]
+
+    return {
+        "headline": f"全年收入 {_money(total_revenue)}，净利 {_money(total_net)}",
+        "subline": f"12 个月的利润表、现金流和资产负债摘要。最新月净利率 {latest_net / latest_revenue * 100:.1f}%，预算完成 {total_revenue / budget * 100:.0f}%。",
+        "kpis": [
+            _kpi("收入", _money(total_revenue), "12 个月合计", "元"),
+            _kpi("净利", _money(total_net), "12 个月合计", "元"),
+            _kpi("净利率", f"{total_net / total_revenue * 100:.1f}%", "净利 / 收入"),
+            _kpi("预算完成", f"{total_revenue / budget * 100:.0f}%", "收入 / 预算"),
+        ],
+        "charts": charts,
+        "findings": [
+            f"最新月现金 {_money(float(latest['cash']))}，较年初 {cash[0] / cash[-1] - 1:+.0%}。",
+            "成本占收入的比例在 Q3 达到高点，Q4 回落；净利率随季节波动。",
+        ],
+    }
+
 BUILDERS = {
     "sales_audit": _sales,
     "regional_policy": _regional,
     "quality_injection": _quality,
     "bigdata": _bigdata,
     "growth": _growth,
+    "grades": _grades,
+    "finance": _finance,
 }
 
 _REQUIRED = {
@@ -651,6 +954,8 @@ _REQUIRED = {
     "quality_injection": {"revenue"},
     "bigdata": {"x", "y"},
     "growth": {"month", "channel", "category", "revenue", "orders", "target"},
+    "grades": {"student_id", "name", "class", "exam", "语文", "数学", "英语"},
+    "finance": {"month", "revenue", "cogs", "opex", "tax", "net_profit", "budget"},
 }
 _LOGGER = logging.getLogger(__name__)
 

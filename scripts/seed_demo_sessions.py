@@ -21,6 +21,8 @@ DEMOS = (
     ("regional_policy", "区域权限与 PII"),
     ("quality_injection", "脏数据与提示注入"),
     ("growth", "多维增长月报"),
+    ("grades", "年级成绩分析"),
+    ("finance", "公司财报分析"),
     ("bigdata", "20 万行密度视图"),
 )
 

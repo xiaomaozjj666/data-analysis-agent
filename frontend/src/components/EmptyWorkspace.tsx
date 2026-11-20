@@ -247,6 +247,18 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
                   audit: false,
                 },
                 {
+                  kind: "finance",
+                  title: "公司财报分析",
+                  blurb: "12 个月利润表、现金流和预算，拆开看钱去哪了。",
+                  audit: false,
+                },
+                {
+                  kind: "grades",
+                  title: "年级成绩分析",
+                  blurb: "3,000 名学生、60 个班，姓名和学号脱敏。",
+                  audit: false,
+                },
+                {
                   kind: "bigdata",
                   title: "20 万行密度视图",
                   blurb: "20 万行聚成格子看，不卡。",

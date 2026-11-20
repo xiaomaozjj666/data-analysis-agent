@@ -200,6 +200,30 @@ DEMOS: dict[str, Demo] = {
         highlight="同一份明细，覆盖 10 种图形",
         generated=True,
     ),
+    "grades": Demo(
+        kind="grades",
+        filename="demo_grade_scores.csv",
+        title="年级成绩分析",
+        blurb="3,000 名学生、60 个班、3 次考试，姓名与学号脱敏。",
+        highlight="分布、班级对比、学科相关、出勤与成绩",
+        generated=True,
+        policy={
+            "principal_id": "grade_director",
+            "claims": {},
+            "pii_columns": ["name", "student_id"],
+            "rls": None,
+        },
+        principals=(),
+    ),
+    "finance": Demo(
+        kind="finance",
+        filename="demo_finance_monthly.csv",
+        title="公司财报分析",
+        blurb="12 个月利润表、现金流与预算：利润瀑布、成本结构、季度净利率。",
+        highlight="利润拆解、成本结构、预算完成、季度分布",
+        generated=True,
+        principals=(),
+    ),
     "bigdata": Demo(
         kind="bigdata",
         filename="demo_bigdata_200k.csv",
@@ -236,6 +260,81 @@ def lineage_for(kind: str) -> dict[str, Any] | None:
     }
 
 
+
+
+
+
+def generate_grades() -> str:
+    """3,000 名学生 × 3 次考试 × 6 门学科，确定性地生成。"""
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    subjects = ("语文", "数学", "英语", "物理", "化学", "生物")
+    writer.writerow(
+        ["student_id", "name", "class", "exam", *subjects, "attendance"]
+    )
+    exams = ("月考", "期中", "期末")
+    for class_index in range(60):
+        class_name = f"高一({class_index + 1:02d})班"
+        for student_index in range(50):
+            number = class_index * 50 + student_index
+            ability = 58 + (number * 37 % 35)
+            attendance = 82 + (number * 13 % 19)
+            for exam_index, exam in enumerate(exams):
+                base = ability + exam_index * 1.8 + ((number + exam_index) % 7) - 3
+                scores = []
+                for subject_index, _subject in enumerate(subjects):
+                    bias = (subject_index - 2.5) * 2.2
+                    noise = ((number * (subject_index + 3) + exam_index * 11) % 13) - 6
+                    scores.append(max(18, min(100, round(base + bias + noise))))
+                writer.writerow(
+                    [
+                        f"S{number + 1:05d}",
+                        f"学生{number + 1:05d}",
+                        class_name,
+                        exam,
+                        *scores,
+                        attendance,
+                    ]
+                )
+    return buffer.getvalue()
+
+
+
+
+def generate_finance() -> str:
+    """12 个月公司财报，确定性地生成。"""
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator=chr(10))
+    writer.writerow(
+        [
+            "month", "revenue", "cogs", "opex", "tax", "net_profit",
+            "cash", "receivables", "inventory", "payables",
+            "assets", "liabilities", "equity", "budget",
+        ]
+    )
+    cash = 4_200_000.0
+    for month in range(1, 13):
+        season = 1 + 0.14 * math.sin(month * 0.8)
+        revenue = (8_000_000 + month * 260_000) * season
+        cogs = revenue * 0.58
+        opex = revenue * 0.22
+        tax = (revenue - cogs - opex) * 0.25
+        net = revenue - cogs - opex - tax
+        cash += net * 0.55
+        receivables = revenue * 0.18
+        inventory = cogs * 0.35
+        payables = cogs * 0.22
+        assets = cash + receivables + inventory + 6_000_000
+        liabilities = payables + 2_400_000
+        equity = assets - liabilities
+        budget = revenue * (1.02 + ((month % 4) - 1.5) * 0.01)
+        writer.writerow([
+            f"2026-{month:02d}", f"{revenue:.2f}", f"{cogs:.2f}", f"{opex:.2f}",
+            f"{tax:.2f}", f"{net:.2f}", f"{cash:.2f}", f"{receivables:.2f}",
+            f"{inventory:.2f}", f"{payables:.2f}", f"{assets:.2f}",
+            f"{liabilities:.2f}", f"{equity:.2f}", f"{budget:.2f}",
+        ])
+    return buffer.getvalue()
 
 
 def generate_growth() -> str:

@@ -19,6 +19,8 @@ def test_samples_catalog_and_unknown_kind(tmp_path, monkeypatch):
         "regional_policy",
         "quality_injection",
         "growth",
+        "grades",
+        "finance",
         "bigdata",
     }
     assert client.post("/api/sessions/sample?kind=nope").status_code == 422
@@ -221,3 +223,48 @@ def test_growth_demo_covers_ten_chart_types(tmp_path, monkeypatch):
     assert payload["demo"]["insights"]["kpis"][0]["label"] == "收入"
     assert len(payload["artifacts"]) == 10
     assert all(item["kind"] == "visualization" for item in payload["artifacts"])
+
+
+def test_grades_demo_has_scale_and_masks_pii(tmp_path, monkeypatch):
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    created = client.post("/api/sessions/sample?kind=grades")
+    assert created.status_code == 201
+    payload = created.json()
+    assert payload["profile"]["rows"] == 9000
+    assert payload["demo"]["insights"]["kpis"][0]["value"] == "3000"
+    assert {chart["type"] for chart in payload["demo"]["insights"]["charts"]} == {
+        "histogram",
+        "bar",
+        "multiline",
+        "radar",
+        "scatter",
+        "box",
+        "heatmap",
+        "gauge",
+    }
+    assert len(payload["artifacts"]) == 8
+    assert payload["preview"][0]["name"] == "[已脱敏]"
+    assert payload["preview"][0]["student_id"] == "[已脱敏]"
+    reloaded = client.get(f"/api/sessions/{payload['id']}").json()
+    assert reloaded["demo"]["insights"]["kpis"][0]["value"] == "3000"
+
+
+def test_finance_demo_products(tmp_path, monkeypatch):
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    created = client.post("/api/sessions/sample?kind=finance")
+    assert created.status_code == 201
+    payload = created.json()
+    assert payload["profile"]["rows"] == 12
+    assert {chart["type"] for chart in payload["demo"]["insights"]["charts"]} == {
+        "multiline",
+        "stacked",
+        "waterfall",
+        "bar",
+        "gauge",
+        "box",
+        "donut",
+    }
+    assert len(payload["artifacts"]) == 7
+    assert payload["demo"]["insights"]["kpis"][0]["label"] == "收入"
