@@ -69,12 +69,12 @@ describe("DemoBrief", () => {
       expect(screen.getByText(title)).toBeInTheDocument();
     }
     expect(screen.getByText("销量与订单数是两个口径。")).toBeInTheDocument();
-    for (const label of ["SHA-256", "RLS / PII", "独立复算", "Ed25519", "证据包"]) {
+    for (const label of ["原始快照", "权限过滤", "独立复算", "数字签名", "证据包"]) {
       expect(screen.getByRole("button", { name: new RegExp(label) })).toBeInTheDocument();
     }
     fireEvent.click(document.querySelector(".demo-bar-row") as HTMLElement);
     expect(screen.getByText(/已选/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "含极端值" }));
+    fireEvent.click(screen.getByRole("button", { name: "包含极端值" }));
     expect(screen.getByText(/99,999/)).toBeInTheDocument();
     const area = document.querySelector(".demo-line-area");
     expect(area?.getAttribute("d")).toMatch(/L \d+\.\d,\d+\.\d L \d+\.\d,\d+\.\d/);

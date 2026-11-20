@@ -359,8 +359,8 @@ def _sales(rows: list[dict[str, str]]) -> dict[str, Any]:
     lines = Counter(row.get("order_id", "") for row in rows)
     multi = sum(1 for count in lines.values() if count > 1)
     return {
-        "headline": "订单只有 20 笔，销量却是 462 件",
-        "subline": "同一订单的多条明细只算一笔订单；销量按件数求和。草稿把销量当成了订单数。",
+        "headline": "草稿写了 462 笔，明细里只有 20 单",
+        "subline": "同一订单有多条商品明细。按订单去重是 20 单；462 是销量件数，两个口径不能混。",
         "kpis": [
             _kpi("订单数", str(len(orders)), "订单去重"),
             _kpi("销量", f"{sum(quantities):g}", "按件求和", "件"),
@@ -378,8 +378,8 @@ def _regional(rows: list[dict[str, str]]) -> dict[str, Any]:
     east = [row for row in rows if row.get("region") == "华东"]
     revenue = sum(_number(row.get("revenue", "")) or 0.0 for row in east)
     return {
-        "headline": "同一份数据，不同主体看到不同的行",
-        "subline": "演示策略以 u_east 核验：只统计华东 8 行，另外 12 行在聚合前被行级权限过滤。",
+        "headline": "这份数据，华东主体只能看到 8 行",
+        "subline": "行级权限先过滤掉另外 12 行，再开始聚合；手机号在预览中已脱敏。",
         "kpis": [
             _kpi("全部订单", str(len(rows)), "原始 CSV 行数"),
             _kpi("华东可见", str(len(east)), "RLS 过滤后", "行"),
@@ -403,8 +403,8 @@ def _quality(rows: list[dict[str, str]]) -> dict[str, Any]:
     outliers = sum(1 for row in rows if (_number(row.get("revenue", "")) or 0) > 100_000)
     injected = any("忽略" in (row.get("note") or "") for row in rows)
     return {
-        "headline": "先看清数据，再谈结论",
-        "subline": f"{len(rows)} 行里有缺失、负数、极端值和混合日期；备注里还藏了一句注入文本。",
+        "headline": f"{len(rows)} 行里，有 {missing} 行缺销售额、{negatives} 行为负、{outliers} 行是极端值",
+        "subline": "先处理这些问题，再谈结论；备注里那句话按数据内容处理，不会执行。",
         "kpis": [
             _kpi("行数", str(len(rows)), "全部记录"),
             _kpi("缺失", str(missing), "销售额为空", "行"),
@@ -433,8 +433,8 @@ def _bigdata(rows: list[dict[str, str]]) -> dict[str, Any]:
     variance_y = sum((y - mean_y) ** 2 for y in ys)
     correlation = covariance / math.sqrt(variance_x * variance_y) if variance_x and variance_y else 0.0
     return {
-        "headline": "20 万行，先聚合再渲染",
-        "subline": "散点按网格聚合成密度图：颜色深浅表示落点数量，交互仍保持顺滑。",
+        "headline": "20 万行，按网格聚合后再画",
+        "subline": "每个格子记录落点数量。颜色浅不是没数据，是密度低。",
         "kpis": [
             _kpi("行数", f"{len(rows):,}", "服务端生成"),
             _kpi("分组", str(len(groups)), "A / B / C", "组"),
@@ -622,8 +622,8 @@ def _growth(rows: list[dict[str, str]]) -> dict[str, Any]:
     ]
 
     return {
-        "headline": "一份月报，十种看法",
-        "subline": f"{len(months)} 个月、{len(channels)} 个渠道、{len(categories)} 个品类；同一份数据从趋势、构成、漏斗、能力与分布十个角度拆开看。",
+        "headline": f"{len(months)} 个月，{len(channels)} 个渠道，{len(categories)} 个品类",
+        "subline": "趋势看渠道，构成看品类，漏斗看转化；每个数都来自这 144 行。",
         "kpis": [
             _kpi("收入", _money(revenue), "SUM(revenue)", "元"),
             _kpi("订单", f"{orders:,.0f}", "SUM(orders)", "笔"),

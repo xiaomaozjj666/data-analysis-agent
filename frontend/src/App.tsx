@@ -627,7 +627,7 @@ function App() {
       const detail = (event as CustomEvent<{ auditDemo?: boolean; kind?: string }>).detail;
       const auditDemo = detail?.auditDemo === true;
       const kind = detail?.kind;
-      setLiveMessage(auditDemo ? "正在载入体验简报…" : "正在载入演示数据…");
+      setLiveMessage(auditDemo ? "正在载入体验简报…" : "正在打开示例…");
       if (auditDemo) focusAuditOnLoad.current = true;
       setUploading(true);
       setError("");

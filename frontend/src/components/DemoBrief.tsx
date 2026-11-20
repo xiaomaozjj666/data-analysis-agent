@@ -142,7 +142,7 @@ function Bars({
         {chart.subtitle && (
           <small>
             {chart.subtitle}
-            {showRaw && chart.raw_items ? " · 含极端值" : ""}
+            {showRaw && chart.raw_items ? " · 包含极端值" : ""}
           </small>
         )}
       </figcaption>
@@ -411,11 +411,11 @@ function Chart({
 }
 
 const TRUST_STEPS = [
-  { key: "sha", label: "SHA-256", detail: "原始 CSV 单次字节快照，哈希绑定到 audit_id。" },
-  { key: "policy", label: "RLS / PII", detail: "聚合前按主体过滤行，证据预览不输出 PII 原值。" },
-  { key: "replay", label: "独立复算", detail: "从 CSV 与口径快照重建指标与 audit_id。" },
-  { key: "sign", label: "Ed25519", detail: "每条账本记录签名链哈希，公钥随证据包导出。" },
-  { key: "bundle", label: "证据包", detail: "manifest、账本与公钥一起交给评委离线复算。" },
+  { key: "sha", label: "原始快照", detail: "原始 CSV 只读一次，哈希写进 audit_id。" },
+  { key: "policy", label: "权限过滤", detail: "先按访问主体过滤行，手机号等字段在预览里脱敏。" },
+  { key: "replay", label: "独立复算", detail: "从 CSV 和口径快照重算指标，得到同一个 audit_id。" },
+  { key: "sign", label: "数字签名", detail: "每条账本记录签名链哈希，公钥随证据包导出。" },
+  { key: "bundle", label: "证据包", detail: "manifest、账本和公钥一起打包，可离线复核。" },
 ];
 
 export default function DemoBrief({
@@ -534,16 +534,16 @@ export default function DemoBrief({
         </div>
       )}
       <header className="demo-brief-head">
-        <span className="demo-brief-kicker">预分析 · 打开即有</span>
+        <span className="demo-brief-kicker">预分析</span>
         <h2>{data.headline}</h2>
         <p>{data.subline}</p>
         <p className="demo-brief-meta">
-          自动选图 {data.charts.length} 张 · 基于 {data.scope?.visible ?? liveRows.length} 行
+          共 {data.scope?.visible ?? liveRows.length} 行 · 生成 {data.charts.length} 张图
           {data.scope?.rls_column ? " · 已按主体过滤" : ""}
         </p>
         {data.scope && data.scope.visible < data.scope.rows && (
           <p className="demo-scope">
-            预分析基于主体可见的 {data.scope.visible} 行（共 {data.scope.rows} 行）。
+            当前主体可见 {data.scope.visible} 行，共 {data.scope.rows} 行。
           </p>
         )}
         {hasOutliers && (
@@ -556,7 +556,7 @@ export default function DemoBrief({
                 setSelected(null);
               }}
             >
-              稳健口径
+              排除极端值
             </button>
             <button
               type="button"
@@ -566,9 +566,9 @@ export default function DemoBrief({
                 setSelected(null);
               }}
             >
-              含极端值
+              包含极端值
             </button>
-            <span>极端值已从柱状与直方图中排除，切换可对比原始值。</span>
+            <span>趋势和结构默认不包含极端值；切换后可看原始数字。</span>
           </div>
         )}
       </header>
@@ -605,13 +605,13 @@ export default function DemoBrief({
         ))}
       </div>
       {!selected && (
-        <p className="demo-hint">悬停看数值；点击条形或图例，可在下方查看命中行。</p>
+        <p className="demo-hint">悬停看数值；点柱子或图例，下面会列出对应的行。</p>
       )}
       <p className={`demo-selection${selected ? "" : " is-empty"}`} role="status">
         {selected ? (
           <>
             已选 <strong>{selected.label}</strong> · {formatValue(selected.value, selected.unit)}
-            <span>来自「{selected.title}」；柱值按当前可见行与标注口径计算。</span>
+            <span>来自「{selected.title}」，按当前可见行计算。</span>
             <button type="button" onClick={() => setSelected(null)}>清除</button>
           </>
         ) : (

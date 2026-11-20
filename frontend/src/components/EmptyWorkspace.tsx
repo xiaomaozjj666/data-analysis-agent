@@ -218,38 +218,38 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
           >
             <summary className="empty-sample-button">
               <Sparkles size={13} />
-              载入演示数据
+              打开示例
             </summary>
             <div className="empty-demo-list">
               {[
                 {
                   kind: "sales_audit",
                   title: "经营简报核验",
-                  blurb: "462 → 20 的差额，现场复算、确认、验签。",
+                  blurb: "草稿写 462 笔，核验后是 20 单。",
                   audit: true,
                 },
                 {
                   kind: "regional_policy",
                   title: "区域权限与 PII",
-                  blurb: "只算华东可见行，手机号自动脱敏。",
+                  blurb: "华东主体只看到 8 行，手机号已脱敏。",
                   audit: true,
                 },
                 {
                   kind: "quality_injection",
                   title: "脏数据与提示注入",
-                  blurb: "缺失、负数、极端值，备注里还藏了指令。",
+                  blurb: "37 行里有缺失、负数、极端值和一句注入文本。",
                   audit: false,
                 },
                 {
                   kind: "growth",
                   title: "多维增长月报",
-                  blurb: "一份数据十种图：趋势、漏斗、雷达、箱线、瀑布……",
+                  blurb: "12 个月、3 个渠道、4 个品类，10 张图。",
                   audit: false,
                 },
                 {
                   kind: "bigdata",
                   title: "20 万行密度视图",
-                  blurb: "大数据聚合渲染，交互不卡。",
+                  blurb: "20 万行按网格聚合，不逐点画。",
                   audit: false,
                 },
               ].map((demo) => (
