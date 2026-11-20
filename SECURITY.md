@@ -40,4 +40,5 @@ Data Analysis Agent 是一个基于 LangGraph 的数据分析工作台：上传�
 - 覆盖后端 API、React 前端、上传与解析链路、受限 Python 沙箱、只读 SQL / MCP 数据面，以及本地或 S3 兼容的会话存储。
 - 访问控制：两个令牌都未设置时服务只允许绑定环回地址，否则启动即失败；`APP_ACCESS_TOKEN` 为全权，`APP_VIEWER_TOKEN` 仅允许 GET/HEAD（写请求 403），只配置后者时服务进入只读模式。对外提供服务时至少设置一个令牌，并置于可信反向代理之后（见 `src/data_agent/middleware.py`）。审计日志可选写入 `DATA_AGENT_AUDIT_LOG`。
 - 上传的数据集、会话与报告产物保存在 `DATA_AGENT_RUNS_DIR`（默认 `./runs`）或对象存储中，请自行负责目录权限、备份与清理。
+- **会话导出 ZIP 不含账本签名私钥**（`audit_keys/*.key` 永不打包）：分享/归档会话不会连带签名能力；公钥随包保留，导入后旧账本仍可验签，但继续追加需恢复私钥或设置同一 `DATA_AGENT_LEDGER_SEED`（否则显式失败，不会静默换钥匙）。独立证据包（`/sales-audit/bundle`）同样只含公钥。
 - 不覆盖：上传数据本身的合规性、LLM 供应商与第三方数据源，以及分析结论的正确性。
