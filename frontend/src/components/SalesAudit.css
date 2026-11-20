@@ -542,3 +542,18 @@
   font-size: 10px;
   letter-spacing: 0.04em;
 }
+
+.sales-audit-signature-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0 10px; }
+.sales-audit-signature-actions > button {
+  padding: 4px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+.sales-audit-signature-actions > button:hover { background: var(--canvas-subtle); color: var(--fg-default); }
+.sales-audit-signature-result { font-size: 11px; }
+.sales-audit-signature-result.is-valid { color: var(--success-fg); }
+.sales-audit-signature-result.is-broken { color: var(--danger-fg); }

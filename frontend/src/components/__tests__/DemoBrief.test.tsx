@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import DemoBrief from "../DemoBrief";
 import type { DemoInsights } from "../../types";
@@ -26,6 +26,8 @@ const insights: DemoInsights = {
       title: "区域对比",
       unit: "元",
       items: [{ label: "华东", value: 1200 }],
+      raw_items: [{ label: "华东", value: 99999 }],
+      excluded: 1,
     },
     {
       type: "scatter",
@@ -67,6 +69,13 @@ describe("DemoBrief", () => {
       expect(screen.getByText(title)).toBeInTheDocument();
     }
     expect(screen.getByText("销量与订单数是两个口径。")).toBeInTheDocument();
+    for (const label of ["SHA-256", "RLS / PII", "独立复算", "Ed25519", "证据包"]) {
+      expect(screen.getByRole("button", { name: new RegExp(label) })).toBeInTheDocument();
+    }
+    fireEvent.click(document.querySelector(".demo-bar-row") as HTMLElement);
+    expect(screen.getByText(/已选/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "含极端值" }));
+    expect(screen.getByText(/99,999/)).toBeInTheDocument();
     const area = document.querySelector(".demo-line-area");
     expect(area?.getAttribute("d")).toMatch(/L \d+\.\d,\d+\.\d L \d+\.\d,\d+\.\d/);
   });

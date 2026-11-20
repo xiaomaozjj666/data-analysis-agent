@@ -104,3 +104,62 @@ def test_insights_validation_and_non_finite(tmp_path):
     quality = insights_for("quality_injection", bad)
     assert quality is not None
     assert quality["kpis"][1]["value"] == "6"
+
+
+def test_constant_axes_and_empty_policy_are_safe(tmp_path, monkeypatch):
+    constant = "x,y,group" + chr(10)
+    constant += chr(10).join("1,1,A" for _ in range(6)) + chr(10)
+    insight = insights_for("bigdata", constant)
+    assert insight is not None
+    scatter = [chart for chart in insight["charts"] if chart["type"] == "scatter"][0]
+    assert len(scatter["samples"]) == 6
+
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session = client.post("/api/sessions/sample?kind=sales_audit").json()
+    workspace = api.registry.get(session["id"]).workspace
+    (workspace.root / "audit_policy.json").write_text("{broken", encoding="utf-8")
+    assert client.get(f"/api/sessions/{session['id']}").status_code == 200
+
+
+def test_principal_switch_rewires_charts_and_preview(tmp_path, monkeypatch):
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    created = client.post("/api/sessions/sample?kind=regional_policy").json()
+    session_id = created["id"]
+    assert len(created["demo"]["principals"]) == 2
+
+    full = client.post(
+        f"/api/sessions/{session_id}/audit-policy/switch",
+        json={"principal_id": "admin"},
+    )
+    assert full.status_code == 200
+    payload = full.json()
+    assert payload["insights"]["scope"]["visible"] == 20
+    assert {row["region"] for row in payload["preview"]} == {"华东", "华南", "华北"}
+    assert payload["preview"][0]["phone"] == "[已脱敏]"
+    assert "区域对比" in [chart["title"] for chart in payload["insights"]["charts"]]
+
+    scoped = client.post(
+        f"/api/sessions/{session_id}/audit-policy/switch",
+        json={"principal_id": "u_east"},
+    ).json()
+    assert scoped["insights"]["scope"]["visible"] == 8
+    assert {row["region"] for row in scoped["preview"]} == {"华东"}
+
+    assert (
+        client.post(
+            f"/api/sessions/{session_id}/audit-policy/switch",
+            json={"principal_id": "nobody"},
+        ).status_code
+        == 404
+    )
+
+
+def test_policy_get_reports_corrupt_document(tmp_path, monkeypatch):
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session = client.post("/api/sessions/sample?kind=regional_policy").json()
+    workspace = api.registry.get(session["id"]).workspace
+    (workspace.root / "audit_policy.json").write_text("{broken", encoding="utf-8")
+    assert client.get(f"/api/sessions/{session['id']}/audit-policy").status_code == 422

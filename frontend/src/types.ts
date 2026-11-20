@@ -34,6 +34,10 @@ export interface DemoChart {
   unit?: string;
   points?: { label: string; value: number }[];
   items?: { label: string; value: number }[];
+  raw_items?: { label: string; value: number }[] | null;
+  excluded?: number;
+  dimension?: string;
+  measure?: string;
   x_label?: string;
   y_label?: string;
   samples?: [number, number][];
@@ -60,6 +64,7 @@ export interface DemoPayload {
   highlight: string;
   open_audit: boolean;
   insights?: DemoInsights | null;
+  principals?: { id: string; label: string; policy: Record<string, unknown> }[];
 }
 
 export interface Session {

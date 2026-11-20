@@ -351,6 +351,15 @@ function ResultNotices({
   const [chainLoading, setChainLoading] = useState(false);
   const [chainError, setChainError] = useState("");
   const [chainData, setChainData] = useState<LedgerChainResponse | null>(null);
+  const [signatureResult, setSignatureResult] = useState<{
+    valid: boolean;
+    status?: "signed" | "partial" | "unsigned";
+    chain_valid?: boolean;
+    signed?: number;
+    errors?: string[];
+    note?: string;
+  } | null>(null);
+  const [signatureBusy, setSignatureBusy] = useState(false);
 
   useEffect(() => {
     if (receipt) receiptRef.current?.focus({ preventScroll: true });
@@ -360,6 +369,7 @@ function ResultNotices({
   useEffect(() => {
     setChainData(null);
     setChainError("");
+    setSignatureResult(null);
   }, [audit.audit_id, receipt?.seq]);
 
   async function toggleLedgerChain() {
@@ -377,6 +387,31 @@ function ResultNotices({
       setChainError(err instanceof Error ? err.message : "读取账本链失败");
     } finally {
       setChainLoading(false);
+    }
+  }
+
+  async function checkSignature(mode: "signature-check" | "signature-tamper-demo") {
+    setSignatureBusy(true);
+    setSignatureResult(null);
+    try {
+      const res = await api<{
+        valid: boolean;
+        status?: "signed" | "partial" | "unsigned";
+        chain_valid?: boolean;
+        signed?: number;
+        errors?: string[];
+        note?: string;
+      }>(
+        `/api/sessions/${sessionId}/sales-audit/${mode}`,
+      );
+      setSignatureResult(res);
+    } catch (err) {
+      setSignatureResult({
+        valid: false,
+        errors: [err instanceof Error ? err.message : "验签失败"],
+      });
+    } finally {
+      setSignatureBusy(false);
     }
   }
 
@@ -473,6 +508,29 @@ function ResultNotices({
                       ? ` · Ed25519 已签名 ${chainData.verification.signed} 条`
                       : "")
                   : "链校验失败"}
+              </span>
+            )}
+          </div>
+          <div className="sales-audit-signature-actions">
+            <button type="button" disabled={signatureBusy} onClick={() => void checkSignature("signature-check")}>
+              验证 Ed25519
+            </button>
+            <button type="button" disabled={signatureBusy} onClick={() => void checkSignature("signature-tamper-demo")}>
+              模拟改签名
+            </button>
+            {signatureResult && (
+              <span
+                className={`sales-audit-signature-result ${signatureResult.valid ? "is-valid" : "is-broken"}`}
+                role="status"
+              >
+                {signatureResult.valid
+                  ? `签名有效${signatureResult.signed ? ` · ${signatureResult.signed} 条` : ""}`
+                  : signatureResult.status === "unsigned"
+                    ? "账本尚未签名（历史会话）"
+                    : signatureResult.status === "partial"
+                      ? `部分记录已签名${signatureResult.signed ? ` · ${signatureResult.signed} 条` : ""}`
+                      : `签名无效${signatureResult.errors?.[0] ? ` · ${signatureResult.errors[0]}` : ""}`}
+                {signatureResult.note ? `（${signatureResult.note}）` : ""}
               </span>
             )}
           </div>

@@ -1478,7 +1478,13 @@ function App() {
                 tabIndex={0}
               >
                 {session?.demo?.insights && (
-                  <DemoBrief insights={session.demo.insights} />
+                  <DemoBrief
+                    key={session.id}
+                    sessionId={session.id}
+                    insights={session.demo.insights}
+                    rows={session.preview}
+                    principals={session.demo.principals}
+                  />
                 )}
                 <section className="analysis-column">
                   {result ? (

@@ -216,6 +216,11 @@ def _auto_charts(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
             category_unit = _unit(column)
         if summary:
             category_summary = summary
+            raw_summary = {
+                label: sum(values)
+                for label, values in groups.items()
+                if values
+            } if measure_like else summary
             charts.append(
                 {
                     "type": "bar",
@@ -224,7 +229,10 @@ def _auto_charts(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
                     + (f" · 已排除 {excluded} 条极端值" if excluded else "")
                     + " · Top 8",
                     "unit": category_unit,
+                    "dimension": categorical[0],
                     "items": _top(summary),
+                    "raw_items": _top(raw_summary),
+                    "excluded": excluded,
                 }
             )
 
@@ -240,7 +248,7 @@ def _auto_charts(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
             q3 = ordered[int(len(ordered) * 0.75)]
             spread = q3 - q1
             if spread <= 0:
-                return max((abs(value) for value in values), default=0.0) * 0.999
+                return math.inf
             return q3 + 3 * spread
 
         fence_x = fence(column_values(x_column))
@@ -282,23 +290,34 @@ def _auto_charts(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
                     + (" · 已排除极端值" if len(usable) < len(values) else ""),
                     "unit": "行",
                     "items": _histogram(usable),
+                    "raw_items": _histogram(values) if len(usable) < len(values) else None,
+                    "excluded": len(values) - len(usable),
                 }
             )
 
     if categorical:
         if category_summary:
-            donut_items = _top(category_summary, 8)
+            source = category_summary
             donut_basis = category_basis or "按行数"
         else:
-            counts = Counter(row.get(categorical[0], "未命名") for row in rows)
-            donut_items = _top({key: float(value) for key, value in counts.items()}, 8)
+            source = {key: float(value) for key, value in Counter(row.get(categorical[0], "未命名") for row in rows).items()}
             donut_basis = "按行数"
-        if 2 <= len(donut_items) <= 8:
+        ordered = sorted(source.items(), key=lambda item: item[1], reverse=True)
+        if len(ordered) > 5:
+            head = ordered[:4]
+            rest = sum(value for _, value in ordered[4:])
+            donut_items = [{"label": label, "value": round(value, 2)} for label, value in head]
+            donut_items.append({"label": "其他", "value": round(rest, 2)})
+            donut_basis += " · 其余合并为其他"
+        else:
+            donut_items = [{"label": label, "value": round(value, 2)} for label, value in ordered]
+        if 2 <= len(donut_items) <= 5:
             charts.append(
                 {
                     "type": "donut",
                     "title": f"{_label(categorical[0])}占比",
                     "subtitle": donut_basis,
+                    "dimension": categorical[0],
                     "items": donut_items,
                 }
             )

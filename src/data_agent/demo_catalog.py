@@ -37,6 +37,7 @@ class Demo:
     lineage_table: str | None = None
     open_audit: bool = False
     generated: bool = False
+    principals: tuple[dict[str, Any], ...] = ()
 
     def public(self) -> dict[str, Any]:
         return {
@@ -46,6 +47,7 @@ class Demo:
             "blurb": self.blurb,
             "highlight": self.highlight,
             "open_audit": self.open_audit,
+            "principals": list(self.principals),
         }
 
 
@@ -159,6 +161,28 @@ DEMOS: dict[str, Demo] = {
         },
         lineage_table="dwd.sales_orders",
         open_audit=True,
+        principals=(
+            {
+                "id": "u_east",
+                "label": "华东主体 · 8 行",
+                "policy": {
+                    "principal_id": "u_east",
+                    "claims": {"region": "华东"},
+                    "pii_columns": ["phone"],
+                    "rls": {"column": "region", "claim": "region"},
+                },
+            },
+            {
+                "id": "admin",
+                "label": "管理员 · 20 行",
+                "policy": {
+                    "principal_id": "admin",
+                    "claims": {"region": "华东"},
+                    "pii_columns": ["phone"],
+                    "rls": None,
+                },
+            },
+        ),
     ),
     "quality_injection": Demo(
         kind="quality_injection",

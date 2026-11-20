@@ -88,9 +88,7 @@ def list_samples() -> dict[str, Any]:
 
 
 @router.post("/api/sessions/sample", status_code=201)
-def create_sample_session(
-    audit: bool = False, kind: str | None = None
-) -> dict[str, Any]:
+def create_sample_session(audit: bool = False, kind: str | None = None) -> dict[str, Any]:
     """用内置演示数据创建会话，供新用户快速体验。
 
     ``kind`` 选择演示目录中的数据集；不传时保持旧的 ``audit`` 布尔行为。
@@ -128,7 +126,10 @@ def create_sample_session(
         dataframe = workspace.dataframe
         # 演示是可信常量，可以大于普通上传上限，但仍设硬上限，避免无界加载。
         demo_limit = 250_000 if demo is not None and kind == "bigdata" else settings.max_rows
-        if len(dataframe) > demo_limit or len(dataframe) * len(dataframe.columns) > settings.max_cells:
+        if (
+            len(dataframe) > demo_limit
+            or len(dataframe) * len(dataframe.columns) > settings.max_cells
+        ):
             raise ValueError(
                 f"演示数据规模超过限制：最多 {demo_limit:,} 行或 {settings.max_cells:,} 个单元格。"
             )
@@ -272,11 +273,7 @@ def sales_audit(session_id: str, payload: SalesAuditRequest) -> dict[str, Any]:
         )
         result["schema_status"] = (schema_document or {}).get("status")
         policy_sha = policy_fingerprint(policy) if policy else None
-        rls_sha = (
-            rls_filter_hash(rls_column, rls_value_matched or "")
-            if rls_column
-            else None
-        )
+        rls_sha = rls_filter_hash(rls_column, rls_value_matched or "") if rls_column else None
         if policy:
             result["policy"] = {
                 "principal_id": policy["principal_id"],
