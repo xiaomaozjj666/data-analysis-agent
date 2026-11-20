@@ -173,6 +173,18 @@ export default function SalesAuditDemo({
   const submitted = orderCount(audit ? orderClaim?.submitted : previewOrder);
   const recalculated = orderCount(order?.recalculated);
   const difference = submitted !== null && recalculated !== null ? submitted - recalculated : null;
+  const [morphing, setMorphing] = useState(false);
+  const previousVerified = useRef<bigint | null>(null);
+  useEffect(() => {
+    if (recalculated !== null && previousVerified.current === null) {
+      setMorphing(true);
+      const timer = window.setTimeout(() => setMorphing(false), 1300);
+      previousVerified.current = recalculated;
+      return () => window.clearTimeout(timer);
+    }
+    previousVerified.current = recalculated;
+    return undefined;
+  }, [recalculated]);
   const held = audit?.claims.filter(claim => claim.status === "unsupported") ?? [];
   const additionalConflicts = audit?.claims.filter(claim => claim.status === "conflict" && claim !== order) ?? [];
   const quantity = audit?.claims.find(claim => claim.metric === "销量合计" && claim.status === "verified");
@@ -329,7 +341,15 @@ export default function SalesAuditDemo({
             })}
           </nav>
 
-          <div className="sales-showcase-compare" aria-live="polite">
+          <div
+            className={`sales-showcase-compare${morphing ? " is-morphing" : ""}${recalculated !== null ? " has-verdict" : ""}${confirmed ? " is-sealed" : ""}`}
+            aria-live="polite"
+          >
+            {confirmed && (
+              <span className="sales-showcase-seal" role="status">
+                ED25519 VERIFIED
+              </span>
+            )}
             <div className="sales-showcase-figure sales-showcase-draft">
               <span className="sales-showcase-figure-tag">草稿声明</span>
               <strong><Figure value={submitted} />{submitted !== null && <small>笔</small>}</strong>
