@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { DemoChart } from "../types";
 import "./DemoExtraCharts.css";
 
@@ -36,6 +37,9 @@ function Legend({ series }: { series: { name: string }[] }) {
 export function MultiLine({ chart }: { chart: DemoChart }) {
   const labels = chart.labels ?? [];
   const series = chart.series ?? [];
+  const [solo, setSolo] = useState<string | null>(null);
+  const [hoverSeries, setHoverSeries] = useState<string | null>(null);
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   if (!labels.length || !series.length) return null;
   const width = 340;
   const height = 150;
@@ -46,14 +50,33 @@ export function MultiLine({ chart }: { chart: DemoChart }) {
   const span = max - min || 1;
   const x = (index: number) => pad + (index / Math.max(1, labels.length - 1)) * (width - pad * 2);
   const y = (value: number) => height - pad - ((value - min) / span) * (height - pad * 2);
+  const focused = solo ?? hoverSeries;
   return (
     <figure className="demo-chart demo-multiline">
       <Caption chart={chart} />
-      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${chart.title}多序列图`}>
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        role="img"
+        aria-label={`${chart.title}多序列图`}
+        onPointerMove={(event) => {
+          const rect = event.currentTarget.getBoundingClientRect();
+          const ratio = (event.clientX - rect.left) / rect.width;
+          const index = Math.round(
+            ((Math.min(width - pad, Math.max(pad, ratio * width)) - pad) /
+              (width - pad * 2)) *
+              (labels.length - 1),
+          );
+          setHoverIndex(Math.min(labels.length - 1, Math.max(0, index)));
+        }}
+        onPointerLeave={() => setHoverIndex(null)}
+      >
         {series.map((item, index) => {
-          const points = (item.points ?? []).map((value, pointIndex) => `${x(pointIndex).toFixed(1)},${y(value).toFixed(1)}`).join(" ");
+          const points = (item.points ?? [])
+            .map((value, pointIndex) => `${x(pointIndex).toFixed(1)},${y(value).toFixed(1)}`)
+            .join(" ");
+          const dimmed = focused !== null && focused !== item.name;
           return (
-            <g key={item.name}>
+            <g key={item.name} opacity={dimmed ? 0.18 : 1}>
               {chart.type === "area" && (
                 <polygon
                   className="demo-area-fill"
@@ -61,16 +84,67 @@ export function MultiLine({ chart }: { chart: DemoChart }) {
                   points={`${x(0)},${height - pad} ${points} ${x(labels.length - 1)},${height - pad}`}
                 />
               )}
-              <polyline className="demo-series-line" style={{ stroke: SERIES[index % SERIES.length] }} points={points} />
+              <polyline
+                className="demo-series-line"
+                style={{ stroke: SERIES[index % SERIES.length], strokeDasharray: item.dash ? "4 3" : undefined }}
+                points={points}
+              />
             </g>
           );
         })}
+        {hoverIndex !== null && (
+          <g className="demo-line-hover" aria-hidden="true">
+            <line
+              x1={x(hoverIndex)}
+              y1={pad}
+              x2={x(hoverIndex)}
+              y2={height - pad}
+            />
+            {series.map((item, index) => {
+              const value = item.points?.[hoverIndex];
+              if (value === undefined) return null;
+              return (
+                <circle
+                  key={item.name}
+                  cx={x(hoverIndex)}
+                  cy={y(value)}
+                  r={2.4}
+                  style={{ fill: SERIES[index % SERIES.length] }}
+                />
+              );
+            })}
+          </g>
+        )}
       </svg>
       <div className="demo-line-axis">
         <span>{labels[0]}</span>
-        <span>{labels[labels.length - 1]}</span>
+        <span>{hoverIndex !== null ? labels[hoverIndex] : labels[labels.length - 1]}</span>
       </div>
-      <Legend series={series} />
+      {hoverIndex !== null && (
+        <div className="demo-multi-readout" role="status">
+          <span>{labels[hoverIndex]}</span>
+          {series.map((item) => (
+            <em key={item.name}>
+              {item.name} {fmt(item.points?.[hoverIndex] ?? 0, chart.unit)}
+            </em>
+          ))}
+        </div>
+      )}
+      <div className="demo-legend">
+        {series.map((item, index) => (
+          <button
+            key={item.name}
+            type="button"
+            aria-pressed={solo === item.name}
+            onMouseEnter={() => setHoverSeries(item.name)}
+            onMouseLeave={() => setHoverSeries(null)}
+            onClick={() => setSolo((current) => (current === item.name ? null : item.name))}
+          >
+            <i style={{ background: SERIES[index % SERIES.length] }} />
+            {item.name}
+          </button>
+        ))}
+      </div>
     </figure>
   );
 }
@@ -78,6 +152,7 @@ export function MultiLine({ chart }: { chart: DemoChart }) {
 export function Stacked({ chart }: { chart: DemoChart }) {
   const labels = chart.labels ?? [];
   const series = chart.series ?? [];
+  const [hoverSeries, setHoverSeries] = useState<string | null>(null);
   const width = 340;
   const height = 150;
   const pad = 14;
@@ -106,6 +181,9 @@ export function Stacked({ chart }: { chart: DemoChart }) {
                     width={barWidth}
                     height={Math.max(0, barHeight)}
                     fill={SERIES[index % SERIES.length]}
+                    opacity={hoverSeries && hoverSeries !== item.name ? 0.22 : 1}
+                    onPointerEnter={() => setHoverSeries(item.name)}
+                    onPointerLeave={() => setHoverSeries(null)}
                   >
                     <title>{`${label} · ${item.name} ${fmt(value, chart.unit)}`}</title>
                   </rect>
@@ -119,7 +197,21 @@ export function Stacked({ chart }: { chart: DemoChart }) {
         <span>{labels[0]}</span>
         <span>{labels[labels.length - 1]}</span>
       </div>
-      <Legend series={series} />
+      <div className="demo-legend">
+        {series.map((item, index) => (
+          <button
+            key={item.name}
+            type="button"
+            aria-pressed={hoverSeries === item.name}
+            onMouseEnter={() => setHoverSeries(item.name)}
+            onMouseLeave={() => setHoverSeries(null)}
+            onClick={() => setHoverSeries((current) => (current === item.name ? null : item.name))}
+          >
+            <i style={{ background: SERIES[index % SERIES.length] }} />
+            {item.name}
+          </button>
+        ))}
+      </div>
     </figure>
   );
 }

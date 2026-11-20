@@ -134,6 +134,7 @@ function Bars({
   const items = (showRaw && chart.raw_items) || chart.items || [];
   const linked = selectedTitle === chart.title;
   const max = Math.max(...items.map((item) => Math.abs(item.value)), 1);
+  const peakIndex = items.findIndex((item) => Math.abs(item.value) === max);
   return (
     <figure className="demo-chart demo-bars">
       <figcaption>
@@ -147,7 +148,7 @@ function Bars({
         )}
       </figcaption>
       <div className="demo-bar-list">
-        {items.map((item) => (
+        {items.map((item, itemIndex) => (
           <button
             type="button"
             className={`demo-bar-row${linked && selectedLabel === item.label ? " is-selected" : ""}${linked && selectedLabel && selectedLabel !== item.label ? " is-dim" : ""}`}
@@ -162,7 +163,7 @@ function Bars({
               <span style={{ width: `${Math.max(2, (Math.abs(item.value) / max) * 100)}%` }} />
             </span>
             <span className="demo-bar-value">
-              {Math.abs(item.value) === max && <em className="demo-bar-flag">峰值</em>}
+              {itemIndex === peakIndex && <em className="demo-bar-flag">峰值</em>}
               {formatValue(item.value, chart.unit)}
             </span>
           </button>

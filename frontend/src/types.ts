@@ -62,7 +62,7 @@ export interface DemoChart {
   dimension?: string;
   measure?: string;
   labels?: string[];
-  series?: { name: string; points?: number[]; values?: number[] }[];
+  series?: { name: string; points?: number[]; values?: number[]; dash?: boolean }[];
   indicators?: string[];
   groups?: {
     label: string;

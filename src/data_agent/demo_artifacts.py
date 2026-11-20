@@ -20,8 +20,9 @@ import plotly.graph_objects as go
 
 from data_agent.workspace import DataWorkspace
 
-_SERIES = ["#18181b", "#52525b", "#8a8a93", "#b8b8c0"]
+_SERIES = ["#18181b", "#0d9488", "#71717a", "#a1a1aa"]
 _DANGER = "#b91c1c"
+_POSITIVE = "#0d9488"
 
 
 def _safe(name: str) -> str:
@@ -54,7 +55,11 @@ def _figure(chart: dict[str, Any]) -> go.Figure:
                     y=item.get("points") or item.get("values") or [],
                     mode="lines+markers",
                     name=item.get("name"),
-                    line={"width": 2, "color": _SERIES[index % len(_SERIES)]},
+                    line={
+                        "width": 2,
+                        "color": _SERIES[index % len(_SERIES)],
+                        "dash": "dash" if item.get("dash") else "solid",
+                    },
                 )
             )
     elif kind == "stacked":
@@ -200,7 +205,7 @@ def _figure(chart: dict[str, Any]) -> go.Figure:
                 x=[item["label"] for item in items],
                 y=[item["value"] for item in items],
                 measure=["relative" for _ in items],
-                increasing={"marker": {"color": _SERIES[0]}},
+                increasing={"marker": {"color": _POSITIVE}},
                 decreasing={"marker": {"color": _DANGER}},
             )
         )

@@ -145,23 +145,23 @@
 }
 :root {
   --donut-1: #18181b;
-  --donut-2: #3f3f46;
-  --donut-3: #52525b;
-  --donut-4: #71717a;
-  --donut-5: #8a8a93;
-  --donut-6: #6b6b74;
-  --donut-7: #4b4b52;
-  --donut-8: #2b2b30;
+  --donut-2: #0d9488;
+  --donut-3: #71717a;
+  --donut-4: #a1a1aa;
+  --donut-5: #d4d4d8;
+  --donut-6: #0f766e;
+  --donut-7: #b91c1c;
+  --donut-8: #e4e4e7;
 }
 [data-theme="dark"] {
   --donut-1: #f4f4f5;
-  --donut-2: #d4d4d8;
-  --donut-3: #a1a1aa;
-  --donut-4: #71717a;
-  --donut-5: #71717a;
-  --donut-6: #8e8e98;
-  --donut-7: #b4b4bc;
-  --donut-8: #d4d4d8;
+  --donut-2: #2dd4bf;
+  --donut-3: #71717a;
+  --donut-4: #a1a1aa;
+  --donut-5: #52525b;
+  --donut-6: #14b8a6;
+  --donut-7: #f87171;
+  --donut-8: #3f3f46;
 }
 @media (max-width: 860px) {
   .demo-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }

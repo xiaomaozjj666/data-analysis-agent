@@ -120,6 +120,8 @@ export function simplifyPlotlyForThumb(
   // gl 画布背景色需重渲染，卡片内没有该修复链）；卡片点击本来就是
   // 打开完整交互图。dragmode=false 禁用拖拽缩放层。
   layout.dragmode = false;
+  delete layout.height;
+  delete layout.width;
   // 图内按钮（"主体尺度/全量视图"、"显示抽样原始点/只看密度图"）在 209×131 的
   // 迷你图里既占地方又点不动（缩略图本来就不是交互目标，点卡片才是打开完整图），
   // 实测会在卡片上浮出两枚按钮遮住数据。所有缩略图统一去掉。

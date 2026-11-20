@@ -316,8 +316,8 @@ def generate_finance() -> str:
     for month in range(1, 13):
         season = 1 + 0.14 * math.sin(month * 0.8)
         revenue = (8_000_000 + month * 260_000) * season
-        cogs = revenue * 0.58
-        opex = revenue * 0.22
+        cogs = revenue * (0.56 + 0.02 * math.cos(month * 0.7))
+        opex = revenue * (0.20 + 0.035 * math.sin(month * 1.1))
         tax = (revenue - cogs - opex) * 0.25
         net = revenue - cogs - opex - tax
         cash += net * 0.55

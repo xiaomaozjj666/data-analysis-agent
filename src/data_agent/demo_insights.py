@@ -861,7 +861,7 @@ def _finance(rows: list[dict[str, str]]) -> dict[str, Any]:
             "series": [
                 {"name": "收入", "points": revenue},
                 {"name": "净利", "points": net},
-                {"name": "现金", "points": cash},
+                {"name": "现金", "points": cash, "dash": True},
             ],
         },
         {

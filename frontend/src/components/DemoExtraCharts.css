@@ -1,14 +1,18 @@
 :root {
   --series-1: #18181b;
-  --series-2: #52525b;
-  --series-3: #8a8a93;
-  --series-4: #b8b8c0;
+  --series-2: #0d9488;
+  --series-3: #71717a;
+  --series-4: #a1a1aa;
+  --chart-positive: #0d9488;
+  --chart-negative: #b91c1c;
 }
 [data-theme="dark"] {
   --series-1: #f4f4f5;
-  --series-2: #a1a1aa;
+  --series-2: #2dd4bf;
   --series-3: #71717a;
-  --series-4: #52525b;
+  --series-4: #a1a1aa;
+  --chart-positive: #2dd4bf;
+  --chart-negative: #f87171;
 }
 .demo-series-line { fill: none; stroke-width: 1.6; stroke-linejoin: round; stroke-linecap: round; }
 .demo-area-fill { opacity: 0.1; stroke: none; }
@@ -58,5 +62,32 @@
 .demo-bubble circle:hover { opacity: 0.7; }
 .demo-bubble-label { fill: var(--fg-default); font-size: 8px; pointer-events: none; }
 .demo-waterfall rect { fill: var(--fg-default); }
-.demo-waterfall .demo-waterfall-negative { fill: var(--danger-fg); opacity: 0.75; }
-.demo-waterfall .demo-waterfall-total { fill: var(--fg-subtle); }
+.demo-waterfall .demo-waterfall-negative { fill: var(--chart-negative); opacity: 0.9; }
+.demo-waterfall .demo-waterfall-total { fill: var(--series-1); }
+.demo-waterfall .demo-waterfall-positive, .demo-waterfall rect:not(.demo-waterfall-negative):not(.demo-waterfall-total) { fill: var(--chart-positive); }
+
+.demo-legend button {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 3px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.demo-legend button:hover, .demo-legend button[aria-pressed="true"] { background: var(--canvas-subtle); color: var(--fg-default); }
+.demo-multi-readout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid var(--border-muted);
+  color: var(--fg-subtle);
+  font-size: 9px;
+}
+.demo-multi-readout span { color: var(--fg-muted); }
+.demo-multi-readout em { font-style: normal; white-space: nowrap; }
