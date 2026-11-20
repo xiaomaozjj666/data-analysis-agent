@@ -3,6 +3,15 @@ import { api } from "../utils/api";
 import type { DemoChart, DemoInsights } from "../types";
 import "./DemoBrief.css";
 
+const CHART_TYPES: Record<string, string> = {
+  line: "趋势",
+  bar: "结构",
+  histogram: "分布",
+  scatter: "关系",
+  donut: "占比",
+  heatmap: "密度",
+};
+
 const DONUT_TOKENS = ["--donut-1", "--donut-2", "--donut-3", "--donut-4", "--donut-5", "--donut-6", "--donut-7", "--donut-8"];
 
 function formatValue(value: number, unit?: string): string {
@@ -29,6 +38,7 @@ function LineChart({ chart }: { chart: DemoChart }) {
     return [x, y] as const;
   });
   const path = coords.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+  const peak = values.reduce((best, value, index) => (value > values[best] ? index : best), 0);
   const area =
     `M ${coords[0][0]},${height - pad} L ` +
     coords.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" L ") +
@@ -36,6 +46,7 @@ function LineChart({ chart }: { chart: DemoChart }) {
   return (
     <figure className="demo-chart demo-line">
       <figcaption>
+        <span className="demo-chart-kicker">{CHART_TYPES[chart.type] ?? chart.type}</span>
         <strong>{chart.title}</strong>
         {chart.subtitle && <small>{chart.subtitle}</small>}
       </figcaption>
@@ -71,6 +82,13 @@ function LineChart({ chart }: { chart: DemoChart }) {
             <title>{`${points[index]?.label} · ${formatValue(points[index]?.value ?? 0, chart.unit)}`}</title>
           </circle>
         ))}
+        {peak >= 0 && coords[peak] && (
+          <g className="demo-line-peak" aria-hidden="true">
+            <text x={coords[peak][0]} y={Math.max(9, coords[peak][1] - 7)} textAnchor="middle">
+              峰值
+            </text>
+          </g>
+        )}
         {hover !== null && coords[hover] && (
           <g className="demo-line-hover" aria-hidden="true">
             <line x1={coords[hover][0]} y1={pad} x2={coords[hover][0]} y2={height - pad} />
@@ -108,6 +126,7 @@ function Bars({
   return (
     <figure className="demo-chart demo-bars">
       <figcaption>
+        <span className="demo-chart-kicker">{CHART_TYPES[chart.type] ?? chart.type}</span>
         <strong>{chart.title}</strong>
         {chart.subtitle && (
           <small>
@@ -131,7 +150,10 @@ function Bars({
             <span className="demo-bar-track">
               <span style={{ width: `${Math.max(2, (Math.abs(item.value) / max) * 100)}%` }} />
             </span>
-            <span className="demo-bar-value">{formatValue(item.value, chart.unit)}</span>
+            <span className="demo-bar-value">
+              {Math.abs(item.value) === max && <em className="demo-bar-flag">峰值</em>}
+              {formatValue(item.value, chart.unit)}
+            </span>
           </button>
         ))}
       </div>
@@ -177,6 +199,7 @@ function Scatter({ chart }: { chart: DemoChart }) {
   return (
     <figure className="demo-chart demo-scatter">
       <figcaption>
+        <span className="demo-chart-kicker">{CHART_TYPES[chart.type] ?? chart.type}</span>
         <strong>{chart.title}</strong>
         {chart.subtitle && <small>{chart.subtitle}</small>}
       </figcaption>
@@ -199,6 +222,11 @@ function Scatter({ chart }: { chart: DemoChart }) {
             </circle>
           );
         })}
+        {outliers.length > 0 && (
+          <text className="demo-chart-note" x={width - pad} y={pad + 10} textAnchor="end">
+            离群 {outliers.length} 个
+          </text>
+        )}
       </svg>
       <div className="demo-scatter-axis">
         <span>{chart.x_label}</span>
@@ -214,6 +242,7 @@ function Heatmap({ chart }: { chart: DemoChart }) {
   return (
     <figure className="demo-chart demo-heatmap">
       <figcaption>
+        <span className="demo-chart-kicker">{CHART_TYPES[chart.type] ?? chart.type}</span>
         <strong>{chart.title}</strong>
         {chart.subtitle && <small>{chart.subtitle}</small>}
       </figcaption>
@@ -280,6 +309,7 @@ function Donut({
   return (
     <figure className="demo-chart demo-donut">
       <figcaption>
+        <span className="demo-chart-kicker">{CHART_TYPES[chart.type] ?? chart.type}</span>
         <strong>{chart.title}</strong>
         {chart.subtitle && <small>{chart.subtitle}</small>}
       </figcaption>
@@ -487,6 +517,10 @@ export default function DemoBrief({
         <span className="demo-brief-kicker">预分析 · 打开即有</span>
         <h2>{data.headline}</h2>
         <p>{data.subline}</p>
+        <p className="demo-brief-meta">
+          自动选图 {data.charts.length} 张 · 基于 {data.scope?.visible ?? liveRows.length} 行
+          {data.scope?.rls_column ? " · 已按主体过滤" : ""}
+        </p>
         {data.scope && data.scope.visible < data.scope.rows && (
           <p className="demo-scope">
             预分析基于主体可见的 {data.scope.visible} 行（共 {data.scope.rows} 行）。
