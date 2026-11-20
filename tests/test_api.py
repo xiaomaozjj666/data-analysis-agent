@@ -3814,3 +3814,22 @@ def test_admin_token_comment_uses_admin_author(tmp_path, monkeypatch):
     )
     assert created.status_code == 201
     assert created.json()["author"] == "管理员"
+
+
+def test_session_export_streams_via_temp_file(tmp_path, monkeypatch):
+    """导出改为临时文件 + FileResponse：响应正确、临时文件在响应后清理。"""
+    import tempfile as tempfile_module
+
+    download_dir = tmp_path / "downloads"
+    download_dir.mkdir()
+    monkeypatch.setattr(tempfile_module, "tempdir", str(download_dir))
+
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session = client.post("/api/sessions/sample?kind=sales_audit").json()
+    response = client.get(f"/api/sessions/{session['id']}/export")
+    assert response.status_code == 200
+    assert response.content[:2] == b"PK"
+    assert "attachment" in response.headers["content-disposition"]
+    assert session["id"] in response.headers["content-disposition"]
+    assert not list(download_dir.glob("data-agent-download-*.zip"))

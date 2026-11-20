@@ -8,9 +8,7 @@ Python 标准库复算指标并重现 audit_id，把「相信服务端」变成�
 from __future__ import annotations
 
 import hashlib
-import io
 import json
-import zipfile
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -32,8 +30,21 @@ def _sha256(raw: bytes) -> str:
 
 _BUILTIN_SCHEMA = {
     "metrics": [
-        {"name": "销售额合计", "column": "sales", "aggregation": "sum", "unit": "元", "decimals": 2},
-        {"name": "销量合计", "column": "quantity", "aggregation": "sum", "unit": "件", "decimals": 0, "data_type": "integer"},
+        {
+            "name": "销售额合计",
+            "column": "sales",
+            "aggregation": "sum",
+            "unit": "元",
+            "decimals": 2,
+        },
+        {
+            "name": "销量合计",
+            "column": "quantity",
+            "aggregation": "sum",
+            "unit": "件",
+            "decimals": 0,
+            "data_type": "integer",
+        },
         {"name": "订单数", "column": "order_id", "aggregation": "count_distinct", "unit": "笔"},
         {
             "name": "客单价",
@@ -141,14 +152,15 @@ def export_bundle(session_id: str, payload: BundleRequest) -> Response:
         "audit_id": audit["audit_id"],
         "files": {name: _sha256(raw) for name, raw in files.items()},
     }
-    files["manifest.json"] = (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    files["manifest.json"] = (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode(
+        "utf-8"
+    )
 
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    from data_agent._downloads import zip_file_response
+
+    def write_archive(archive) -> None:  # type: ignore[no-untyped-def]
         for name, raw in files.items():
             archive.writestr(name, raw)
-    return Response(
-        content=buffer.getvalue(),
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="evidence-{session_id}.zip"'},
-    )
+
+    # 证据包可能含大 CSV + 报告 + 账本：写临时文件后流式发送，避免整包驻留内存。
+    return zip_file_response(f"evidence-{session_id}.zip", write_archive)

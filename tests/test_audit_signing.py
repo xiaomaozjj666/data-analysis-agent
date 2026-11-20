@@ -348,3 +348,23 @@ def test_session_export_never_includes_private_key(tmp_path, monkeypatch):
     assert again.status_code == 200
     ledger_error = again.json().get("ledger_error") or ""
     assert "私钥" in ledger_error and "公钥" in ledger_error, again.text
+
+
+def test_bundle_download_uses_temp_file_and_cleans_up(tmp_path, monkeypatch):
+    import tempfile as tempfile_module
+
+    download_dir = tmp_path / "downloads"
+    download_dir.mkdir()
+    monkeypatch.setattr(tempfile_module, "tempdir", str(download_dir))
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = client.post("/api/sessions/sample?kind=sales_audit").json()["id"]
+    draft = "订单数：20 笔"
+    client.post(f"/api/sessions/{session_id}/sales-audit", json={"draft": draft})
+    response = client.post(
+        f"/api/sessions/{session_id}/sales-audit/bundle", json={"draft": draft}
+    )
+    assert response.status_code == 200
+    assert response.content[:2] == b"PK"
+    assert "evidence-" in response.headers["content-disposition"]
+    assert not list(download_dir.glob("data-agent-download-*.zip"))

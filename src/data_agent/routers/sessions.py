@@ -19,7 +19,7 @@ from typing import Annotated, Any
 from uuid import uuid4
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from data_agent._registry_payloads import _AUDIT_SAMPLE_SALES_CSV
@@ -118,9 +118,7 @@ def create_sample_session(audit: bool = False, kind: str | None = None) -> dict[
         else:
             filename = demo.filename
             if demo.generated:
-                sample_csv = (
-                    generate_bigdata() if demo.kind == "bigdata" else generate_growth()
-                )
+                sample_csv = generate_bigdata() if demo.kind == "bigdata" else generate_growth()
             else:
                 sample_csv = demo.csv
         saved = workspace.save_upload_stream(
@@ -430,29 +428,26 @@ def rename_session(session_id: str, payload: dict[str, Any]) -> dict[str, str]:
 
 
 @router.get("/api/sessions/{session_id}/export")
-def export_session(session_id: str) -> StreamingResponse:
+def export_session(session_id: str) -> Response:
     """导出会话完整状态为 ZIP 归档。
 
     将会话工作区根目录下所有文件（input/、artifacts/、session.json、
-    workspace_state.parquet 等）打包成 ZIP 流式返回。前端下载后可在
-    其他实例通过 /api/sessions/import 导入恢复完整会话状态。
+    workspace_state.parquet 等）打包成 ZIP 返回。前端下载后可在其他实例
+    通过 /api/sessions/import 导入恢复完整会话状态。
 
     安全：仅打包会话根目录内的文件，不跟随符号链接（防止通过 symlink
-    泄漏宿主任意文件）；rglob("*") 遍历后通过 path.is_file() 且
-    not path.is_symlink() 过滤，避免 ZipFile 写入空目录条目和链接目标。
-    账本签名私钥（audit_keys/*.key）**永不导出**：会话 ZIP 会被转发/归档，
-    带走私钥等于允许任何人伪造账本；公钥保留以便导入后继续验签。
+    泄漏宿主任意文件）；账本签名私钥（audit_keys/*.key）**永不导出**。
+    内存：打包到临时文件后用 FileResponse 流式发送，响应结束即删除——
+    大产物不会让"源数据 + 压缩包"两份同时驻留内存（2026-11-20 收口）。
     """
-    import zipfile
-
     from data_agent import api
+    from data_agent._downloads import zip_file_response
+    from data_agent.audit_signing import KEY_DIR
 
     record = api.registry.get(session_id)
     root = record.workspace.root
-    buffer = io.BytesIO()
-    from data_agent.audit_signing import KEY_DIR
 
-    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+    def write(bundle) -> None:  # type: ignore[no-untyped-def]
         for path in sorted(root.rglob("*")):
             # 跳过符号链接：rglob 默认跟随 symlink，若工作区被植入
             # 指向 /etc/passwd 的链接，导出的 ZIP 会泄漏宿主文件。
@@ -462,12 +457,8 @@ def export_session(session_id: str) -> StreamingResponse:
             if relative.parts and relative.parts[0] == KEY_DIR and relative.name.endswith(".key"):
                 continue
             bundle.write(path, relative)
-    buffer.seek(0)
-    return StreamingResponse(
-        buffer,
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{session_id}.zip"'},
-    )
+
+    return zip_file_response(f"{session_id}.zip", write)
 
 
 @router.post("/api/sessions/import", status_code=201)
