@@ -411,11 +411,11 @@ function Chart({
 }
 
 const TRUST_STEPS = [
-  { key: "sha", label: "原始快照", detail: "原始 CSV 只读一次，哈希写进 audit_id。" },
-  { key: "policy", label: "权限过滤", detail: "先按访问主体过滤行，手机号等字段在预览里脱敏。" },
-  { key: "replay", label: "独立复算", detail: "从 CSV 和口径快照重算指标，得到同一个 audit_id。" },
-  { key: "sign", label: "数字签名", detail: "每条账本记录签名链哈希，公钥随证据包导出。" },
-  { key: "bundle", label: "证据包", detail: "manifest、账本和公钥一起打包，可离线复核。" },
+  { key: "sha", label: "原始文件", detail: "原始 CSV 只读一次，哈希记下来。" },
+  { key: "policy", label: "谁能看", detail: "先看你是谁，再决定给你看哪些行。" },
+  { key: "replay", label: "再算一遍", detail: "拿原始文件和口径重算，数字对得上才继续。" },
+  { key: "sign", label: "签名", detail: "每条记录都签个名，公钥跟证据一起给你。" },
+  { key: "bundle", label: "打包", detail: "把明细、账本和公钥装进一个包，拿走也能验。" },
 ];
 
 export default function DemoBrief({
@@ -538,7 +538,7 @@ export default function DemoBrief({
         <h2>{data.headline}</h2>
         <p>{data.subline}</p>
         <p className="demo-brief-meta">
-          共 {data.scope?.visible ?? liveRows.length} 行 · 生成 {data.charts.length} 张图
+          {data.charts.length} 张视图 · {data.scope?.visible ?? liveRows.length} 条原始记录
           {data.scope?.rls_column ? " · 已按主体过滤" : ""}
         </p>
         {data.scope && data.scope.visible < data.scope.rows && (
@@ -556,7 +556,7 @@ export default function DemoBrief({
                 setSelected(null);
               }}
             >
-              排除极端值
+              剔除异常值
             </button>
             <button
               type="button"
@@ -566,9 +566,9 @@ export default function DemoBrief({
                 setSelected(null);
               }}
             >
-              包含极端值
+              保留全量值
             </button>
-            <span>趋势和结构默认不包含极端值；切换后可看原始数字。</span>
+            <span>默认剔除异常值，免得几个大数把图压扁；切过去可以看全量值。</span>
           </div>
         )}
       </header>
@@ -605,7 +605,7 @@ export default function DemoBrief({
         ))}
       </div>
       {!selected && (
-        <p className="demo-hint">悬停看数值；点柱子或图例，下面会列出对应的行。</p>
+        <p className="demo-hint">点一下柱子或图例，下面会列出是哪几行。</p>
       )}
       <p className={`demo-selection${selected ? "" : " is-empty"}`} role="status">
         {selected ? (

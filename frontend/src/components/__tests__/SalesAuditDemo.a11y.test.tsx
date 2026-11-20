@@ -147,7 +147,7 @@ describe("有据经营简报演示流程", () => {
 
       // 2) Ctrl+Enter 直接复算（不使用鼠标提交）。
       fireEvent.keyDown(draft, { key: "Enter", ctrlKey: true });
-      const confirmButton = await screen.findByRole("button", { name: "确认并生成简报" });
+      const confirmButton = await screen.findByRole("button", { name: "签章并出具简报" });
       expect(apiMock).toHaveBeenCalledWith(
         "/api/sessions/s-audit/sales-audit",
         expect.objectContaining({ method: "POST" }),

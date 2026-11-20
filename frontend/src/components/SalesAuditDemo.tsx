@@ -315,9 +315,9 @@ export default function SalesAuditDemo({
 
           <nav className="sales-showcase-steps" aria-label="核验流程">
             {[
-              { n: 1, label: "草稿", action: toggleEditor, enabled: Boolean(onDraftChange) },
-              { n: 2, label: "复算", action: onRun, enabled: !audit && canRun && !busy && !quickBusy },
-              { n: 3, label: "确认", action: onConfirm, enabled: Boolean(audit?.corrected_brief) && !confirmed && !confirming },
+              { n: 1, label: "原稿", action: toggleEditor, enabled: Boolean(onDraftChange) },
+              { n: 2, label: "按原表复算", action: onRun, enabled: !audit && canRun && !busy && !quickBusy },
+              { n: 3, label: "签章", action: onConfirm, enabled: Boolean(audit?.corrected_brief) && !confirmed && !confirming },
               {
                 n: 4,
                 label: "验签",
@@ -445,13 +445,13 @@ export default function SalesAuditDemo({
               {!audit && (
                 <button className="sales-showcase-primary" type="button" onClick={() => advance(onRun)} disabled={busy || quickBusy || !canRun}>
                   {busy ? <LoaderCircle size={16} className="spin" /> : <ShieldCheck size={16} />}
-                  {busy ? "正在复算…" : "复算"}
+                  {busy ? "正在按原表复算…" : "按原表复算"}
                 </button>
               )}
               {audit?.corrected_brief && !confirmed && (
                 <button className="sales-showcase-primary" type="button" disabled={confirming} onClick={() => advance(onConfirm)}>
                   {confirming ? <LoaderCircle size={16} className="spin" /> : <FileCheck2 size={16} />}
-                  {confirming ? "正在确认…" : "确认并生成简报"}
+                  {confirming ? "正在签章…" : "签章并出具简报"}
                 </button>
               )}
               {confirmed && (

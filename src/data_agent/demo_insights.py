@@ -359,8 +359,8 @@ def _sales(rows: list[dict[str, str]]) -> dict[str, Any]:
     lines = Counter(row.get("order_id", "") for row in rows)
     multi = sum(1 for count in lines.values() if count > 1)
     return {
-        "headline": "草稿写了 462 笔，明细里只有 20 单",
-        "subline": "同一订单有多条商品明细。按订单去重是 20 单；462 是销量件数，两个口径不能混。",
+        "headline": "实际 20 笔订单，462 为商品件数",
+        "subline": "同一单买了多件，只算一单。462 是件数，不是订单数。",
         "kpis": [
             _kpi("订单数", str(len(orders)), "订单去重"),
             _kpi("销量", f"{sum(quantities):g}", "按件求和", "件"),
@@ -378,8 +378,8 @@ def _regional(rows: list[dict[str, str]]) -> dict[str, Any]:
     east = [row for row in rows if row.get("region") == "华东"]
     revenue = sum(_number(row.get("revenue", "")) or 0.0 for row in east)
     return {
-        "headline": "这份数据，华东主体只能看到 8 行",
-        "subline": "行级权限先过滤掉另外 12 行，再开始聚合；手机号在预览中已脱敏。",
+        "headline": "华东的同事打开，只能看到自己的 8 行",
+        "subline": "另外 12 行不在权限里，手机号也只露出脱敏后的样子。",
         "kpis": [
             _kpi("全部订单", str(len(rows)), "原始 CSV 行数"),
             _kpi("华东可见", str(len(east)), "RLS 过滤后", "行"),
@@ -403,8 +403,8 @@ def _quality(rows: list[dict[str, str]]) -> dict[str, Any]:
     outliers = sum(1 for row in rows if (_number(row.get("revenue", "")) or 0) > 100_000)
     injected = any("忽略" in (row.get("note") or "") for row in rows)
     return {
-        "headline": f"{len(rows)} 行里，有 {missing} 行缺销售额、{negatives} 行为负、{outliers} 行是极端值",
-        "subline": "先处理这些问题，再谈结论；备注里那句话按数据内容处理，不会执行。",
+        "headline": "这张表现在还不能直接用",
+        "subline": f"{len(rows)} 行里，{missing} 行没填销售额，{negatives} 行成本是负数，还有 {outliers} 个 1 亿级的异常值。备注里那句话是数据，不是命令。",
         "kpis": [
             _kpi("行数", str(len(rows)), "全部记录"),
             _kpi("缺失", str(missing), "销售额为空", "行"),
@@ -433,8 +433,8 @@ def _bigdata(rows: list[dict[str, str]]) -> dict[str, Any]:
     variance_y = sum((y - mean_y) ** 2 for y in ys)
     correlation = covariance / math.sqrt(variance_x * variance_y) if variance_x and variance_y else 0.0
     return {
-        "headline": "20 万行，按网格聚合后再画",
-        "subline": "每个格子记录落点数量。颜色浅不是没数据，是密度低。",
+        "headline": "20 万行，别一个一个点",
+        "subline": "先把点聚成格子，颜色越深人越多。点还是那些点，只是终于看得清了。",
         "kpis": [
             _kpi("行数", f"{len(rows):,}", "服务端生成"),
             _kpi("分组", str(len(groups)), "A / B / C", "组"),
@@ -622,8 +622,8 @@ def _growth(rows: list[dict[str, str]]) -> dict[str, Any]:
     ]
 
     return {
-        "headline": f"{len(months)} 个月，{len(channels)} 个渠道，{len(categories)} 个品类",
-        "subline": "趋势看渠道，构成看品类，漏斗看转化；每个数都来自这 144 行。",
+        "headline": "这 12 个月，钱是怎么进来的",
+        "subline": "按渠道拆、按品类拆、按转化拆。每个数都能回到这 144 行明细。",
         "kpis": [
             _kpi("收入", _money(revenue), "SUM(revenue)", "元"),
             _kpi("订单", f"{orders:,.0f}", "SUM(orders)", "笔"),

@@ -513,10 +513,10 @@ function ResultNotices({
           </div>
           <div className="sales-audit-signature-actions">
             <button type="button" disabled={signatureBusy} onClick={() => void checkSignature("signature-check")}>
-              校验签名
+              校验签章
             </button>
             <button type="button" disabled={signatureBusy} onClick={() => void checkSignature("signature-tamper-demo")}>
-              演示篡改
+              测试篡改拦截
             </button>
             {signatureResult && (
               <span

@@ -225,31 +225,31 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
                 {
                   kind: "sales_audit",
                   title: "经营简报核验",
-                  blurb: "草稿写 462 笔，核验后是 20 单。",
+                  blurb: "草稿把 462 件当成 462 单，实际只有 20 单。",
                   audit: true,
                 },
                 {
                   kind: "regional_policy",
                   title: "区域权限与 PII",
-                  blurb: "华东主体只看到 8 行，手机号已脱敏。",
+                  blurb: "华东同事只看到 8 行，手机号还是脱敏的。",
                   audit: true,
                 },
                 {
                   kind: "quality_injection",
                   title: "脏数据与提示注入",
-                  blurb: "37 行里有缺失、负数、极端值和一句注入文本。",
+                  blurb: "37 行里，缺数、负数、1 亿级异常值都齐了。",
                   audit: false,
                 },
                 {
                   kind: "growth",
                   title: "多维增长月报",
-                  blurb: "12 个月、3 个渠道、4 个品类，10 张图。",
+                  blurb: "12 个月、3 个渠道、4 个品类，能拆出 10 张图。",
                   audit: false,
                 },
                 {
                   kind: "bigdata",
                   title: "20 万行密度视图",
-                  blurb: "20 万行按网格聚合，不逐点画。",
+                  blurb: "20 万行聚成格子看，不卡。",
                   audit: false,
                 },
               ].map((demo) => (
