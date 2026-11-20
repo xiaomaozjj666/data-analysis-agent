@@ -20,9 +20,12 @@ REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "scripts" / "independent_replay.py"
 NL = chr(10)
 CSV = (
-    "customer_id,region,phone,revenue" + NL
-    + "C1,East,13800000000,100" + NL
-    + "C2,West,13900000000,50" + NL
+    "customer_id,region,phone,revenue"
+    + NL
+    + "C1,East,13800000000,100"
+    + NL
+    + "C2,West,13900000000,50"
+    + NL
 ).encode()
 SCHEMA = {
     "metrics": [
@@ -85,7 +88,13 @@ def test_policy_requires_declarative_schema(tmp_path, monkeypatch):
     client = TestClient(api.app)
     session_id = client.post(
         "/api/sessions",
-        files={"file": ("sales.csv", b"order_id,sales,quantity" + NL.encode() + b"A,1,1" + NL.encode(), "text/csv")},
+        files={
+            "file": (
+                "sales.csv",
+                b"order_id,sales,quantity" + NL.encode() + b"A,1,1" + NL.encode(),
+                "text/csv",
+            )
+        },
     ).json()["id"]
     client.put(f"/api/sessions/{session_id}/audit-policy", json=POLICY)
     response = client.post(
@@ -99,9 +108,7 @@ def test_bundle_replays_with_policy(tmp_path, monkeypatch):
     client, session_id = _session(tmp_path, monkeypatch)
     client.put(f"/api/sessions/{session_id}/audit-policy", json=POLICY)
     draft = "记录数：1 条" + NL + "收入合计：100.00 元"
-    response = client.post(
-        f"/api/sessions/{session_id}/sales-audit/bundle", json={"draft": draft}
-    )
+    response = client.post(f"/api/sessions/{session_id}/sales-audit/bundle", json={"draft": draft})
     assert response.status_code == 200
     bundle = tmp_path / "policy.zip"
     bundle.write_bytes(response.content)
@@ -135,6 +142,7 @@ def test_bundle_replays_with_policy(tmp_path, monkeypatch):
         timeout=120,
     )
     assert failed.returncode == 1
+
 
 def test_policy_get_and_invalid_put(tmp_path, monkeypatch):
     client, session_id = _session(tmp_path, monkeypatch)
@@ -175,3 +183,15 @@ def test_policy_load_errors_and_rls_value_guard(tmp_path):
         load_policy(tmp_path)
     with pytest.raises(ValueError, match="缺少 RLS"):
         rls_value({"principal_id": "u", "claims": {}, "rls": {"column": "r", "claim": "r"}})
+
+
+def test_policy_strings_rejects_non_list():
+    """Pydantic 会在 HTTP 层拦类型；直接调解析函数锁定防御分支。"""
+    import pytest
+
+    from data_agent.audit_policy import _strings
+
+    with pytest.raises(ValueError, match="字符串数组"):
+        _strings("not-a-list", "pii_columns")
+    assert _strings(None, "pii_columns") == ()
+    assert _strings([" a ", ""], "pii_columns") == ("a",)

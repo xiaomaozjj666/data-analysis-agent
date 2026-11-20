@@ -3757,3 +3757,60 @@ def test_audit_log_write_failure_does_not_break_request(tmp_path, monkeypatch, c
     )
     assert response.status_code == 403
     assert any("cannot write audit log" in record.message for record in caplog.records)
+
+
+def test_audit_policy_parse_error_returns_403(tmp_path, monkeypatch):
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session = client.post("/api/sessions/sample?kind=sales_audit").json()
+    workspace = api.registry.get(session["id"]).workspace
+    (workspace.root / "audit_policy.json").write_text("{broken", encoding="utf-8")
+    response = client.post(
+        f"/api/sessions/{session['id']}/sales-audit",
+        json={"draft": "订单数：1 笔"},
+    )
+    assert response.status_code == 403
+
+
+def test_audit_csv_read_error_returns_422(tmp_path, monkeypatch):
+    import data_agent.sales_audit as sales_audit
+
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session = client.post("/api/sessions/sample?kind=sales_audit").json()
+    monkeypatch.setattr(
+        sales_audit,
+        "audit_sales_brief",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk")),
+    )
+    response = client.post(
+        f"/api/sessions/{session['id']}/sales-audit",
+        json={"draft": "订单数：1 笔"},
+    )
+    assert response.status_code == 422
+    assert "重新上传" in response.json()["detail"]
+
+
+def test_session_metrics_reports_corrupt_file(tmp_path, monkeypatch):
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session = client.post("/api/sessions/sample?kind=sales_audit").json()
+    workspace = api.registry.get(session["id"]).workspace
+    (workspace.root / "metrics.json").write_text("{broken", encoding="utf-8")
+    response = client.get(f"/api/sessions/{session['id']}/metrics")
+    assert response.status_code == 422
+
+
+def test_admin_token_comment_uses_admin_author(tmp_path, monkeypatch):
+    _isolate_runtime(tmp_path, monkeypatch)
+    monkeypatch.setenv("APP_ACCESS_TOKEN", "full-token")
+    client = TestClient(api.app)
+    headers = {"X-App-Token": "full-token"}
+    session = client.post("/api/sessions/sample?kind=sales_audit", headers=headers).json()
+    created = client.post(
+        f"/api/sessions/{session['id']}/comments",
+        headers=headers,
+        json={"text": "管理员复核意见"},
+    )
+    assert created.status_code == 201
+    assert created.json()["author"] == "管理员"
