@@ -630,3 +630,48 @@
   .sales-showcase-seal,
   .sales-showcase-verify.is-bad { animation: none; }
 }
+
+/* 62 / 38 cinematic stage: one action on the left, evidence on the right. */
+.sales-showcase.is-cinematic .sales-showcase-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 62fr) minmax(340px, 38fr);
+  gap: 26px;
+  height: 100vh;
+  padding: 22px 30px;
+  overflow: hidden;
+  align-items: stretch;
+}
+.sales-showcase.is-cinematic .sales-showcase-hero,
+.sales-showcase.is-cinematic .sales-showcase-results {
+  overflow-y: auto;
+  min-height: 0;
+  padding-right: 10px;
+}
+.sales-showcase.is-cinematic .sales-showcase-results {
+  padding: 0 4px 24px 22px;
+  border-left: 1px solid var(--border-muted);
+  align-content: start;
+}
+.sales-showcase.is-cinematic .sales-showcase-intro h2 { font-size: clamp(34px, 4.2vw, 62px); }
+.sales-showcase-rail-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 2px 0 12px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--border-muted);
+}
+.sales-showcase-rail-head span { font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--fg-subtle); }
+.sales-showcase-rail-head small { font-size: 11px; color: var(--fg-subtle); }
+.sales-showcase-results.is-empty p { color: var(--fg-subtle); font-size: 13px; line-height: 1.8; }
+@media (max-width: 900px) {
+  .sales-showcase.is-cinematic .sales-showcase-layout { grid-template-columns: minmax(0, 1fr); height: auto; overflow: visible; }
+  .sales-showcase.is-cinematic .sales-showcase-hero,
+  .sales-showcase.is-cinematic .sales-showcase-results { overflow: visible; }
+  .sales-showcase.is-cinematic .sales-showcase-results { border-left: 0; border-top: 1px solid var(--border-muted); padding: 16px 0 0; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .sales-showcase.is-cinematic .sales-showcase-results { animation: rail-in 260ms var(--ease-out, ease-out); }
+  @keyframes rail-in { from { opacity: 0; transform: translateX(8px); } to { opacity: 1; transform: none; } }
+}

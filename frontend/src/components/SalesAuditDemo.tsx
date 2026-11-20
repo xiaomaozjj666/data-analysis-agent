@@ -255,7 +255,7 @@ export default function SalesAuditDemo({
   }
 
   return (
-    <section className="sales-showcase" ref={stage} aria-label="有据经营简报路演">
+    <section className={`sales-showcase${fullscreen ? " is-cinematic" : ""}`} ref={stage} aria-label="有据经营简报路演">
       <div className="sales-showcase-layout">
         <div className="sales-showcase-hero">
           <header className="sales-showcase-bar">
@@ -465,8 +465,21 @@ export default function SalesAuditDemo({
           {fullscreenError && <p className="sales-showcase-error" role="status">浏览器暂时无法进入全屏。</p>}
         </div>
 
+        {!audit && fullscreen && (
+          <aside className="sales-showcase-results is-empty" aria-label="证据轨">
+            <div className="sales-showcase-rail-head">
+              <span>证据轨</span>
+              <small>复算后出现</small>
+            </div>
+            <p>复算后，这里依次出现：口径与差额、逐行明细、确认回执、Ed25519 验签与证据包。</p>
+          </aside>
+        )}
         {audit && (
-          <div className="sales-showcase-results">
+          <div className="sales-showcase-results" aria-label="证据轨">
+            <div className="sales-showcase-rail-head">
+              <span>证据轨</span>
+              <small>{confirmed ? "已确认 · 可验签" : "复算结果"}</small>
+            </div>
             <div className="sales-showcase-result-cards">
               {order?.formula && (
                 <article className="sales-audit-card">
