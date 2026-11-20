@@ -219,3 +219,5 @@ def test_growth_demo_covers_ten_chart_types(tmp_path, monkeypatch):
         "waterfall",
     } == chart_types
     assert payload["demo"]["insights"]["kpis"][0]["label"] == "收入"
+    assert len(payload["artifacts"]) == 10
+    assert all(item["kind"] == "visualization" for item in payload["artifacts"])

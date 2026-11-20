@@ -183,7 +183,7 @@ def _curate_artifacts(artifacts: list[dict[str, str]]) -> list[dict[str, str]]:
         datasets, key=lambda item: (_dataset_priority(item.get("name", "")),)
     )[-2:]
     return [
-        *list(latest_visualizations.values())[-6:],
+        *list(latest_visualizations.values())[-12:],
         *list(images.values())[-3:],
         *selected_datasets,
         *documents[-2:],

@@ -158,12 +158,19 @@ def create_sample_session(audit: bool = False, kind: str | None = None) -> dict[
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         raise HTTPException(status_code=500, detail="示例数据初始化失败。") from exc
     actual_id, record = api.registry.create(workspace)
+    insights = None
+    if kind:
+        from data_agent.demo_insights import insights_for
+
+        insights = insights_for(kind, sample_csv, DEMOS[kind].policy)
+        if insights:
+            from data_agent.demo_artifacts import write_demo_chart_artifacts
+
+            write_demo_chart_artifacts(workspace, insights)
     payload = _session_payload(actual_id, record)
     if kind:
         payload["demo"] = DEMOS[kind].public()
-        from data_agent.demo_insights import insights_for
-
-        payload["demo"]["insights"] = insights_for(kind, sample_csv, DEMOS[kind].policy)
+        payload["demo"]["insights"] = insights
     return payload
 
 
