@@ -11,9 +11,11 @@ visualization，产物页、预览和会话统计都能看到。
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path
 from typing import Any
 
+import plotly
 import plotly.graph_objects as go
 
 from data_agent.workspace import DataWorkspace
@@ -235,13 +237,23 @@ def write_demo_chart_artifacts(
     if not insights:
         return []
     written: list[Path] = []
+    bundle = workspace.artifacts_dir / "plotly.min.js"
+    if not bundle.is_file():
+        source = Path(plotly.__file__).parent / "package_data" / "plotly.min.js"
+        if source.is_file():
+            shutil.copyfile(source, bundle)
     for index, chart in enumerate(insights.get("charts") or [], start=1):
         try:
             figure = _figure(chart)
             html = figure.to_html(
                 full_html=True,
-                include_plotlyjs="cdn",
+                include_plotlyjs=False,
                 config={"displayModeBar": False, "responsive": True},
+            )
+            html = html.replace(
+                "</head>",
+                '<script src="plotly.min.js"></script></head>',
+                1,
             )
         except Exception:  # noqa: BLE001 - 单个图失败不影响其它产物
             continue

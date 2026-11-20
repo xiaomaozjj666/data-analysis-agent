@@ -223,6 +223,12 @@ def test_growth_demo_covers_ten_chart_types(tmp_path, monkeypatch):
     assert payload["demo"]["insights"]["kpis"][0]["label"] == "收入"
     assert len(payload["artifacts"]) == 10
     assert all(item["kind"] == "visualization" for item in payload["artifacts"])
+    workspace = api.registry.get(payload["id"]).workspace
+    first = next((workspace.artifacts_dir).glob("预分析-01-*.html"))
+    html = first.read_text(encoding="utf-8")
+    assert "plotly.min.js" in html
+    assert "cdn.plot.ly" not in html
+    assert (workspace.artifacts_dir / "plotly.min.js").is_file()
 
 
 def test_grades_demo_has_scale_and_masks_pii(tmp_path, monkeypatch):

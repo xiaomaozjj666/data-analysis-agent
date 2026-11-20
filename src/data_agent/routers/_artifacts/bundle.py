@@ -20,7 +20,7 @@ from data_agent.workspace import (
 )
 
 _PLOTLY_TAG_PATTERN = re.compile(
-    r"<script\s+src=['\"]plotly\.min\.js['\"]\s*></script>",
+    r"<script[^>]*src=['\"](?:https?://cdn\.plot\.ly/plotly[^'\"]*|plotly\.min\.js)['\"][^>]*>\s*</script>",
     flags=re.IGNORECASE,
 )
 
