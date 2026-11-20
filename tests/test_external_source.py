@@ -262,3 +262,15 @@ def test_external_thread_cap_bounds_non_interruptible_drivers():
     assert time.perf_counter() - started < 4.0
     # 守护线程被放弃：不能阻塞进程退出
     assert threading.active_count() >= 1
+
+
+def test_external_driver_connect_error_is_actionable(monkeypatch):
+    """驱动鉴权/网络异常必须转成 ValueError（MCP 才能返回 ToolError 而非 500）。"""
+    module = SimpleNamespace(
+        connect=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("auth failed"))
+    )
+    monkeypatch.setattr(external_source.importlib, "import_module", lambda name: module)
+    monkeypatch.setenv(external_source.MODULE_ENV, "snowflake.connector")
+    monkeypatch.setenv(external_source.KWARGS_ENV, '{"account": "demo"}')
+    with pytest.raises(ValueError, match="连接失败.*auth failed"):
+        external_source.connect_readonly()

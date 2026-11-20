@@ -1161,3 +1161,130 @@ def test_email_real_smtp_handshake(monkeypatch):
     assert "To: ops@example.test" in wire
     assert "Subject:" in wire
     assert "From: alerts@example.test" in wire
+
+
+def test_pinned_https_connection_real_tls_and_cert_check(tmp_path):
+    """真实 TLS：连钉扎 IP，但 SNI/证书校验针对原域名。
+
+    自签证书仅用于测试上下文；这里验证的是 `_PinnedHTTPSConnection.connect`
+    的握手顺序（socket→wrap_socket(server_hostname=real_host)）与证书主机名校验，
+    不依赖任何外部服务或凭据。
+    """
+    import datetime
+    import ssl
+    import threading
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
+    now = datetime.datetime.now(datetime.UTC)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(minutes=1))
+        .not_valid_after(now + datetime.timedelta(hours=1))
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName("localhost")]), critical=False)
+        .sign(key, hashes.SHA256())
+    )
+    cert_path = tmp_path / "cert.pem"
+    key_path = tmp_path / "key.pem"
+    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption(),
+        )
+    )
+
+    server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_context.load_cert_chain(cert_path, key_path)
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(2)
+    port = listener.getsockname()[1]
+
+    def serve() -> None:
+        try:
+            raw, _ = listener.accept()
+        except OSError:
+            return
+        with raw, server_context.wrap_socket(raw, server_side=True) as tls:
+            tls.recv(65536)
+            tls.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    client_context = ssl.create_default_context(cafile=str(cert_path))
+    connection = automation._PinnedHTTPSConnection(
+        "localhost", ("127.0.0.1", port), 5.0, context=client_context
+    )
+    try:
+        connection.request("GET", "/")
+        response = connection.getresponse()
+        assert response.status == 200
+        assert response.read() == b"ok"
+    finally:
+        connection.close()
+        listener.close()
+        thread.join(timeout=3)
+
+    # 证书主机名不匹配必须失败（证明 wrap_socket 的 server_hostname 真的生效）
+    listener2 = socket.socket()
+    listener2.bind(("127.0.0.1", 0))
+    listener2.listen(1)
+    port2 = listener2.getsockname()[1]
+
+    def serve2() -> None:
+        try:
+            raw, _ = listener2.accept()
+        except OSError:
+            return
+        with raw, server_context.wrap_socket(raw, server_side=True):
+            pass
+
+    thread2 = threading.Thread(target=serve2, daemon=True)
+    thread2.start()
+    bad = automation._PinnedHTTPSConnection(
+        "wrong.example", ("127.0.0.1", port2), 5.0, context=client_context
+    )
+    try:
+        with pytest.raises(ssl.SSLCertVerificationError):
+            bad.connect()
+    finally:
+        bad.close()
+        listener2.close()
+        thread2.join(timeout=3)
+
+
+def test_twilio_error_contract_maps_status_without_leaking_secrets(monkeypatch):
+    """401/429/400 的 HTTPError 必须映射成可读错误 + 状态码，且不泄露 SID/token。"""
+    import io
+    import urllib.error
+
+    monkeypatch.setenv(automation.TWILIO_SID_ENV, "AC_TEST_SID")
+    monkeypatch.setenv(automation.TWILIO_TOKEN_ENV, "test-token-secret")
+    monkeypatch.setenv(automation.TWILIO_FROM_ENV, "+12025550123")
+    for code, message in ((401, "Authenticate"), (429, "Too Many Requests"), (400, "Bad To")):
+
+        def failing(request, _code=code, _message=message):
+            raise urllib.error.HTTPError(
+                request.full_url,
+                _code,
+                _message,
+                {},
+                io.BytesIO(b'{"code": 20003, "message": "provider detail"}'),
+            )
+
+        monkeypatch.setattr(automation, "_post_request", failing)
+        error, status, _ = automation._send_sms_result(("+8613800000000",), "告警")
+        assert status == code
+        assert error and str(code) in error
+        assert "AC_TEST_SID" not in error and "test-token-secret" not in error

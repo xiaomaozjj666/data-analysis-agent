@@ -211,8 +211,20 @@ def _validated_sockaddrs(url: str) -> list[tuple[int, tuple[str, int]]]:
 class _PinnedHTTPSConnection(http_client.HTTPSConnection):
     """连接到已校验 IP，但 TLS 握手/SNI/证书校验仍针对原域名。"""
 
-    def __init__(self, real_host: str, sockaddr: tuple[str, int], timeout: float) -> None:
-        super().__init__(sockaddr[0], sockaddr[1], timeout=timeout)
+    def __init__(
+        self,
+        real_host: str,
+        sockaddr: tuple[str, int],
+        timeout: float,
+        *,
+        context: ssl.SSLContext | None = None,
+    ) -> None:
+        super().__init__(
+            sockaddr[0],
+            sockaddr[1],
+            timeout=timeout,
+            context=context or ssl.create_default_context(),
+        )
         self._real_host = real_host
 
     def connect(self) -> None:  # noqa: D102 - 覆写内置行为

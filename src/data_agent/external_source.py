@@ -119,7 +119,17 @@ def connect_readonly() -> Any:
     except ImportError as exc:
         hint = _ALLOWED_MODULES[name]
         raise ValueError(f"未安装驱动 {hint}，请先安装后再启用外部数据源。") from exc
-    return _connect(module, name, kwargs)
+    try:
+        return _connect(module, name, kwargs)
+    except (ValueError, TypeError):
+        raise
+    except Exception as exc:  # noqa: BLE001 - 驱动异常类型各异，统一成可操作错误
+        # 驱动层异常（鉴权失败/网络不可达/TLS 等）不能裸抛：MCP 只把 ValueError
+        # 转成 ToolError，其他异常会变成 500 且用户看不到可操作提示。
+        raise ValueError(
+            f"外部数据源连接失败（{type(exc).__name__}）：{str(exc)[:300]}。"
+            "请检查连接参数、网络与账号权限。"
+        ) from exc
 
 
 def _row_value(row: Any, *names: str, index: int = 0) -> Any:
