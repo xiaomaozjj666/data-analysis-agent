@@ -448,11 +448,201 @@ def _bigdata(rows: list[dict[str, str]]) -> dict[str, Any]:
     }
 
 
+
+
+def _quantile(values: list[float], fraction: float) -> float:
+    position = (len(values) - 1) * fraction
+    lower = int(position)
+    upper = min(lower + 1, len(values) - 1)
+    weight = position - lower
+    return values[lower] * (1 - weight) + values[upper] * weight
+
+
+def _growth(rows: list[dict[str, str]]) -> dict[str, Any]:
+    months = sorted({row["month"] for row in rows})
+    channels = sorted({row["channel"] for row in rows})
+    categories = sorted({row["category"] for row in rows})
+
+    def total(column: str, predicate=lambda row: True) -> float:
+        return sum(_number(row.get(column, "")) or 0.0 for row in rows if predicate(row))
+
+    revenue = total("revenue")
+    target = total("target")
+    orders = total("orders")
+    clicks = total("clicks")
+    impressions = total("impressions")
+    cost = total("cost")
+
+    def by_month(column: str, channel: str) -> list[float]:
+        return [
+            round(
+                sum(
+                    _number(row.get(column, "")) or 0.0
+                    for row in rows
+                    if row["month"] == month and row["channel"] == channel
+                ),
+                2,
+            )
+            for month in months
+        ]
+
+    series = [
+        {"name": channel, "points": by_month("revenue", channel)} for channel in channels
+    ]
+    stacked = [
+        {"name": channel, "values": by_month("revenue", channel)} for channel in channels
+    ]
+    order_series = [
+        {"name": channel, "points": by_month("orders", channel)} for channel in channels
+    ]
+
+    treemap = []
+    for category in categories:
+        value = sum(
+            _number(row.get("revenue", "")) or 0.0
+            for row in rows
+            if row["category"] == category
+        )
+        leader = max(
+            channels,
+            key=lambda channel, cat=category: sum(
+                _number(row.get("revenue", "")) or 0.0
+                for row in rows
+                if row["category"] == cat and row["channel"] == channel
+            ),
+        )
+        treemap.append(
+            {"label": category, "value": round(value, 2), "group": leader}
+        )
+
+    funnel = [
+        {"label": "曝光", "value": round(impressions)},
+        {"label": "点击", "value": round(clicks)},
+        {"label": "下单", "value": round(orders)},
+    ]
+
+    channel_stats = []
+    for channel in channels:
+        channel_revenue = total("revenue", lambda row, ch=channel: row["channel"] == ch)
+        channel_orders = total("orders", lambda row, ch=channel: row["channel"] == ch)
+        channel_clicks = total("clicks", lambda row, ch=channel: row["channel"] == ch)
+        channel_cost = total("cost", lambda row, ch=channel: row["channel"] == ch)
+        channel_stats.append(
+            {
+                "name": channel,
+                "revenue": channel_revenue,
+                "orders": channel_orders,
+                "conversion": channel_orders / channel_clicks if channel_clicks else 0,
+                "margin": (channel_revenue - channel_cost) / channel_revenue if channel_revenue else 0,
+            }
+        )
+
+    def normalize(key: str) -> list[float]:
+        values = [float(stat[key]) for stat in channel_stats]
+        peak = max(values) or 1
+        return [round(value / peak * 100, 1) for value in values]
+
+    radar = {
+        "indicators": ["收入", "订单", "转化率", "毛利率"],
+        "series": [
+            {
+                "name": stat["name"],
+                "values": [
+                    normalize("revenue")[index],
+                    normalize("orders")[index],
+                    normalize("conversion")[index],
+                    normalize("margin")[index],
+                ],
+            }
+            for index, stat in enumerate(channel_stats)
+        ],
+    }
+
+    box_groups = []
+    for channel in channels:
+        values = sorted(
+            _number(row.get("revenue", "")) or 0.0
+            for row in rows
+            if row["channel"] == channel
+        )
+        if not values:
+            continue
+        box_groups.append(
+            {
+                "label": channel,
+                "min": round(values[0], 2),
+                "q1": round(_quantile(values, 0.25), 2),
+                "median": round(_quantile(values, 0.5), 2),
+                "q3": round(_quantile(values, 0.75), 2),
+                "max": round(values[-1], 2),
+            }
+        )
+
+    bubble = [
+        {
+            "x": round(sum(_number(row.get("orders", "")) or 0.0 for row in rows if row["channel"] == channel), 2),
+            "y": round(sum(_number(row.get("revenue", "")) or 0.0 for row in rows if row["channel"] == channel), 2),
+            "size": round(sum(_number(row.get("impressions", "")) or 0.0 for row in rows if row["channel"] == channel), 2),
+            "label": channel,
+        }
+        for channel in channels
+    ]
+
+    monthly_revenue = [
+        round(sum(_number(row.get("revenue", "")) or 0.0 for row in rows if row["month"] == month), 2)
+        for month in months
+    ]
+    waterfall = [
+        {
+            "label": months[index],
+            "value": round(monthly_revenue[index] - monthly_revenue[index - 1], 2),
+            "kind": "delta",
+        }
+        for index in range(1, len(months))
+    ]
+
+    charts = [
+        {"type": "multiline", "title": "渠道收入趋势", "subtitle": "12 个月 × 3 渠道", "unit": "元", "labels": months, "series": series},
+        {"type": "stacked", "title": "收入构成", "subtitle": "按月堆叠渠道", "unit": "元", "labels": months, "series": stacked},
+        {"type": "area", "title": "订单走势", "subtitle": "多序列面积", "unit": "笔", "labels": months, "series": order_series},
+        {"type": "treemap", "title": "品类贡献", "subtitle": "面积 = 收入", "unit": "元", "items": treemap},
+        {"type": "funnel", "title": "转化漏斗", "subtitle": "曝光 → 点击 → 下单", "items": funnel},
+        {"type": "radar", "title": "渠道能力雷达", "subtitle": "归一化到 100", "indicators": radar["indicators"], "series": radar["series"]},
+        {
+            "type": "gauge",
+            "title": "目标完成度",
+            "subtitle": "收入 / 目标",
+            "value": round(revenue, 2),
+            "target": round(target, 2),
+            "unit": "元",
+        },
+        {"type": "box", "title": "渠道收入分布", "subtitle": "箱线：中位数与四分位", "groups": box_groups},
+        {"type": "bubble", "title": "订单 × 收入 × 曝光", "subtitle": "气泡大小 = 曝光", "items": bubble},
+        {"type": "waterfall", "title": "月度收入环比", "subtitle": "正值增长，负值回落", "unit": "元", "items": waterfall},
+    ]
+
+    return {
+        "headline": "一份月报，十种看法",
+        "subline": f"{len(months)} 个月、{len(channels)} 个渠道、{len(categories)} 个品类；同一份数据从趋势、构成、漏斗、能力与分布十个角度拆开看。",
+        "kpis": [
+            _kpi("收入", _money(revenue), "SUM(revenue)", "元"),
+            _kpi("订单", f"{orders:,.0f}", "SUM(orders)", "笔"),
+            _kpi("转化率", f"{orders / clicks * 100:.1f}%" if clicks else "—", "订单 / 点击"),
+            _kpi("毛利率", f"{(revenue - cost) / revenue * 100:.1f}%" if revenue else "—", "(收入 - 成本) / 收入"),
+        ],
+        "charts": charts,
+        "findings": [
+            f"收入完成目标的 {revenue / target * 100:.0f}%；目标线在仪表盘上单独标出。",
+            "漏斗与雷达使用同一份明细，切换图表不换口径。",
+        ],
+    }
+
 BUILDERS = {
     "sales_audit": _sales,
     "regional_policy": _regional,
     "quality_injection": _quality,
     "bigdata": _bigdata,
+    "growth": _growth,
 }
 
 _REQUIRED = {
@@ -460,6 +650,7 @@ _REQUIRED = {
     "regional_policy": {"region", "revenue"},
     "quality_injection": {"revenue"},
     "bigdata": {"x", "y"},
+    "growth": {"month", "channel", "category", "revenue", "orders", "target"},
 }
 _LOGGER = logging.getLogger(__name__)
 
@@ -488,7 +679,8 @@ def insights_for(
                 visible = [row for row in rows if row.get(rls_column) == str(value)]
         insight = builder(rows)
         insight["kind"] = kind
-        insight["charts"] = _auto_charts(visible)
+        curated = insight.pop("charts", None)
+        insight["charts"] = curated or _auto_charts(visible)
         insight["scope"] = {
             "rows": len(rows),
             "visible": len(visible),

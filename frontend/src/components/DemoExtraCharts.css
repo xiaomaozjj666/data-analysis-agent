@@ -1,0 +1,62 @@
+:root {
+  --series-1: #18181b;
+  --series-2: #52525b;
+  --series-3: #8a8a93;
+  --series-4: #b8b8c0;
+}
+[data-theme="dark"] {
+  --series-1: #f4f4f5;
+  --series-2: #a1a1aa;
+  --series-3: #71717a;
+  --series-4: #52525b;
+}
+.demo-series-line { fill: none; stroke-width: 1.6; stroke-linejoin: round; stroke-linecap: round; }
+.demo-area-fill { opacity: 0.1; stroke: none; }
+.demo-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--fg-subtle);
+  font-size: 10px;
+}
+.demo-legend li { display: flex; align-items: center; gap: 5px; }
+.demo-legend i { width: 7px; height: 7px; border-radius: 2px; }
+.demo-treemap-label {
+  fill: var(--canvas-default);
+  font-size: 10px;
+  font-weight: 600;
+  paint-order: stroke;
+  stroke: rgba(0, 0, 0, 0.25);
+  stroke-width: 2px;
+}
+.demo-treemap-value { fill: var(--canvas-default); font-size: 8px; opacity: 0.8; }
+.demo-funnel-list { display: grid; gap: 6px; }
+.demo-funnel-row { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.demo-funnel-label { color: var(--fg-muted); font-size: 11px; }
+.demo-funnel-track { height: 12px; border-radius: 3px; background: var(--canvas-subtle); overflow: hidden; }
+.demo-funnel-track > span { display: block; height: 100%; background: var(--fg-default); border-radius: inherit; }
+.demo-funnel-value { color: var(--fg-subtle); font-size: 10px; white-space: nowrap; }
+.demo-funnel-value em { margin-left: 5px; font-style: normal; color: var(--fg-subtle); }
+.demo-radar { display: grid; justify-items: center; }
+.demo-radar svg { max-width: 190px; }
+.demo-radar-grid { fill: none; stroke: var(--border-default); stroke-width: 0.7; }
+.demo-radar-label { fill: var(--fg-subtle); font-size: 7px; }
+.demo-gauge svg { max-width: 220px; margin: 0 auto; }
+.demo-gauge-track { fill: none; stroke: var(--border-default); stroke-width: 10; stroke-linecap: round; }
+.demo-gauge-value { fill: none; stroke: var(--fg-default); stroke-width: 10; stroke-linecap: round; }
+.demo-gauge-target { stroke: var(--danger-fg); stroke-width: 2; }
+.demo-gauge-number { fill: var(--fg-default); font-size: 20px; font-weight: 600; }
+.demo-gauge-note { fill: var(--fg-subtle); font-size: 8px; }
+.demo-box-whisker { stroke: var(--fg-subtle); stroke-width: 1; }
+.demo-box-body { fill: var(--canvas-subtle); stroke: var(--fg-muted); stroke-width: 1; }
+.demo-box-median { stroke: var(--fg-default); stroke-width: 1.6; }
+.demo-box-label { fill: var(--fg-subtle); font-size: 7px; }
+.demo-bubble circle { transition: opacity 120ms ease-out; }
+.demo-bubble circle:hover { opacity: 0.7; }
+.demo-bubble-label { fill: var(--fg-default); font-size: 8px; pointer-events: none; }
+.demo-waterfall rect { fill: var(--fg-default); }
+.demo-waterfall .demo-waterfall-negative { fill: var(--danger-fg); opacity: 0.75; }
+.demo-waterfall .demo-waterfall-total { fill: var(--fg-subtle); }

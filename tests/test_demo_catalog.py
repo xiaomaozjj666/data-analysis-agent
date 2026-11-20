@@ -18,6 +18,7 @@ def test_samples_catalog_and_unknown_kind(tmp_path, monkeypatch):
         "sales_audit",
         "regional_policy",
         "quality_injection",
+        "growth",
         "bigdata",
     }
     assert client.post("/api/sessions/sample?kind=nope").status_code == 422
@@ -192,3 +193,29 @@ def test_principal_switch_reports_unreadable_csv(tmp_path, monkeypatch):
         json={"principal_id": "admin"},
     )
     assert response.status_code == 422
+
+
+def test_growth_demo_covers_ten_chart_types(tmp_path, monkeypatch):
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    samples = client.get("/api/samples").json()["samples"]
+    assert "growth" in {item["kind"] for item in samples}
+
+    created = client.post("/api/sessions/sample?kind=growth")
+    assert created.status_code == 201
+    payload = created.json()
+    assert payload["profile"]["rows"] == 144
+    chart_types = {chart["type"] for chart in payload["demo"]["insights"]["charts"]}
+    assert {
+        "multiline",
+        "stacked",
+        "area",
+        "treemap",
+        "funnel",
+        "radar",
+        "gauge",
+        "box",
+        "bubble",
+        "waterfall",
+    } == chart_types
+    assert payload["demo"]["insights"]["kpis"][0]["label"] == "收入"

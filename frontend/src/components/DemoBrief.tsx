@@ -1,6 +1,7 @@
 import { useEffect, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { api } from "../utils/api";
 import type { DemoChart, DemoInsights } from "../types";
+import { BoxPlot, Bubble, Funnel, Gauge, MultiLine, Radar, Stacked, Treemap, Waterfall } from "./DemoExtraCharts";
 import "./DemoBrief.css";
 
 const CHART_TYPES: Record<string, string> = {
@@ -10,6 +11,16 @@ const CHART_TYPES: Record<string, string> = {
   scatter: "关系",
   donut: "占比",
   heatmap: "密度",
+  multiline: "多序列",
+  stacked: "堆叠",
+  area: "面积",
+  treemap: "层级",
+  funnel: "漏斗",
+  radar: "对比",
+  gauge: "目标",
+  box: "分布",
+  bubble: "气泡",
+  waterfall: "瀑布",
 };
 
 const DONUT_TOKENS = ["--donut-1", "--donut-2", "--donut-3", "--donut-4", "--donut-5", "--donut-6", "--donut-7", "--donut-8"];
@@ -370,6 +381,15 @@ function Chart({
   if (chart.type === "line") return <LineChart chart={chart} />;
   if (chart.type === "scatter") return <Scatter chart={chart} />;
   if (chart.type === "heatmap") return <Heatmap chart={chart} />;
+  if (chart.type === "multiline" || chart.type === "area") return <MultiLine chart={chart} />;
+  if (chart.type === "stacked") return <Stacked chart={chart} />;
+  if (chart.type === "treemap") return <Treemap chart={chart} />;
+  if (chart.type === "funnel") return <Funnel chart={chart} />;
+  if (chart.type === "radar") return <Radar chart={chart} />;
+  if (chart.type === "gauge") return <Gauge chart={chart} />;
+  if (chart.type === "box") return <BoxPlot chart={chart} />;
+  if (chart.type === "bubble") return <Bubble chart={chart} />;
+  if (chart.type === "waterfall") return <Waterfall chart={chart} />;
   if (chart.type === "donut")
     return (
       <Donut

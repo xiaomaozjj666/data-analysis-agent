@@ -241,6 +241,12 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
                   audit: false,
                 },
                 {
+                  kind: "growth",
+                  title: "多维增长月报",
+                  blurb: "一份数据十种图：趋势、漏斗、雷达、箱线、瀑布……",
+                  audit: false,
+                },
+                {
                   kind: "bigdata",
                   title: "20 万行密度视图",
                   blurb: "大数据聚合渲染，交互不卡。",

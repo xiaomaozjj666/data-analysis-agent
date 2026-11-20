@@ -192,6 +192,14 @@ DEMOS: dict[str, Demo] = {
         highlight="数据被当数据、异常可见、不被注入带偏",
         csv=_QUALITY_CSV,
     ),
+    "growth": Demo(
+        kind="growth",
+        filename="demo_growth_monthly.csv",
+        title="多维增长月报",
+        blurb="一份月报十种看法：趋势、构成、面积、树图、漏斗、雷达、仪表、箱线、气泡、瀑布。",
+        highlight="同一份明细，覆盖 10 种图形",
+        generated=True,
+    ),
     "bigdata": Demo(
         kind="bigdata",
         filename="demo_bigdata_200k.csv",
@@ -226,6 +234,54 @@ def lineage_for(kind: str) -> dict[str, Any] | None:
         "owner": "数据平台组",
         "freshness_sla_hours": 24,
     }
+
+
+
+
+def generate_growth() -> str:
+    """12 个月 × 3 渠道 × 4 品类的增长月报，确定性地生成。"""
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow(
+        [
+            "month",
+            "channel",
+            "category",
+            "impressions",
+            "clicks",
+            "orders",
+            "revenue",
+            "cost",
+            "target",
+        ]
+    )
+    channels = ("直营", "分销", "线上")
+    categories = ("电子", "家居", "办公", "耗材")
+    prices = {"电子": 680.0, "家居": 920.0, "办公": 120.0, "耗材": 35.0}
+    for month in range(1, 13):
+        for channel_index, channel in enumerate(channels):
+            for category_index, category in enumerate(categories):
+                impressions = 8000 + month * 450 + channel_index * 1200 + category_index * 700
+                clicks = round(impressions * (0.062 + channel_index * 0.005))
+                orders = max(1, round(clicks * (0.18 + category_index * 0.012)))
+                season = 1 + 0.12 * math.sin(month * 0.9 + channel_index * 1.4)
+                revenue = orders * prices[category] * (1 + month * 0.008) * season
+                cost = revenue * (0.58 + category_index * 0.02)
+                target = revenue * (0.95 + ((month + channel_index + category_index) % 5) * 0.03)
+                writer.writerow(
+                    [
+                        f"2026-{month:02d}",
+                        channel,
+                        category,
+                        impressions,
+                        clicks,
+                        orders,
+                        f"{revenue:.2f}",
+                        f"{cost:.2f}",
+                        f"{target:.2f}",
+                    ]
+                )
+    return buffer.getvalue()
 
 
 def generate_bigdata(rows: int = 200_000) -> str:

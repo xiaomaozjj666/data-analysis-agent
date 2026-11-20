@@ -99,6 +99,7 @@ def create_sample_session(audit: bool = False, kind: str | None = None) -> dict[
         DEMOS,
         demo_lines,
         generate_bigdata,
+        generate_growth,
         lineage_for,
     )
     from data_agent.workspace import DataWorkspace
@@ -116,7 +117,12 @@ def create_sample_session(audit: bool = False, kind: str | None = None) -> dict[
             )
         else:
             filename = demo.filename
-            sample_csv = generate_bigdata() if demo.generated else demo.csv
+            if demo.generated:
+                sample_csv = (
+                    generate_bigdata() if demo.kind == "bigdata" else generate_growth()
+                )
+            else:
+                sample_csv = demo.csv
         saved = workspace.save_upload_stream(
             filename,
             io.BytesIO(sample_csv.encode("utf-8")),

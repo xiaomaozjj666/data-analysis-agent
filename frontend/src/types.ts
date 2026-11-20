@@ -28,16 +28,52 @@ export interface AnalysisResult {
 // 会话（前端使用的完整结构，含 chat / artifacts / preview 等）
 
 export interface DemoChart {
-  type: "line" | "bar" | "histogram" | "scatter" | "heatmap" | "donut";
+  type:
+    | "line"
+    | "bar"
+    | "histogram"
+    | "scatter"
+    | "heatmap"
+    | "donut"
+    | "multiline"
+    | "stacked"
+    | "area"
+    | "treemap"
+    | "funnel"
+    | "radar"
+    | "gauge"
+    | "box"
+    | "bubble"
+    | "waterfall";
   title: string;
   subtitle?: string;
   unit?: string;
   points?: { label: string; value: number }[];
-  items?: { label: string; value: number }[];
+  items?: {
+    label: string;
+    value: number;
+    x?: number;
+    y?: number;
+    size?: number;
+    kind?: "total" | "delta";
+  }[];
   raw_items?: { label: string; value: number }[] | null;
   excluded?: number;
   dimension?: string;
   measure?: string;
+  labels?: string[];
+  series?: { name: string; points?: number[]; values?: number[] }[];
+  indicators?: string[];
+  groups?: {
+    label: string;
+    min: number;
+    q1: number;
+    median: number;
+    q3: number;
+    max: number;
+  }[];
+  value?: number;
+  target?: number;
   x_label?: string;
   y_label?: string;
   samples?: [number, number][];
