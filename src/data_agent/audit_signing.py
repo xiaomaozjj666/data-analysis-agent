@@ -46,6 +46,11 @@ def _private_key(root: str | Path) -> Ed25519PrivateKey:
     if seed is not None:
         return Ed25519PrivateKey.from_private_bytes(seed)
     path = key_dir(root) / PRIVATE_KEY
+    if not path.is_file() and public_key_path(root).is_file():
+        raise ValueError(
+            f"检测到公钥 {public_key_path(root)} 但私钥 {path} 缺失：拒绝重新生成，"
+            "否则新条目将无法用旧公钥验证。"
+        )
     if path.is_file():
         return serialization.load_pem_private_key(path.read_bytes(), password=None)  # type: ignore[return-value]
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -96,13 +101,20 @@ def public_key_bytes(root: str | Path) -> bytes:
     seed = _env_seed()
     if seed is not None:
         private = Ed25519PrivateKey.from_private_bytes(seed)
-        return _public_pem(private)
+        raw = _public_pem(private)
+        path = public_key_path(root)
+        if path.is_file() and path.read_bytes() != raw:
+            raise ValueError(
+                "DATA_AGENT_LEDGER_SEED 与工作区已有公钥不一致："
+                "验签会全部失败；请使用导出时的种子或删除旧公钥。"
+            )
+        return raw
     path = public_key_path(root)
     private_key_path = key_dir(root) / PRIVATE_KEY
     if path.is_file() and not private_key_path.is_file():
         raise ValueError(
-            f"检测到公钥 {path} 但私钥 {private_key_path} 缺失：密钥曾被动过。"
-            "请恢复私钥，或删除旧公钥后重新生成（历史条目将无法验签）。"
+            f"检测到公钥 {path} 但私钥 {private_key_path} 缺失：签名身份不完整。"
+            "验签请直接读公钥文件；追加需恢复私钥或使用同一 DATA_AGENT_LEDGER_SEED。"
         )
     if path.is_file():
         return path.read_bytes()
@@ -119,11 +131,18 @@ def key_id(root: str | Path) -> str:
 
 
 def _persist_public_key(root: str | Path, private: Ed25519PrivateKey) -> None:
-    """首次签名时把公钥落盘（含 env 种子）：证据包导出依赖 .pub 文件存在。"""
+    """首次签名时把公钥落盘；已有公钥必须与当前签名身份一致。"""
     path = public_key_path(root)
-    if not path.is_file():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(_public_pem(private))
+    raw = _public_pem(private)
+    if path.is_file():
+        if path.read_bytes() != raw:
+            raise ValueError(
+                "当前签名身份与工作区已有公钥不一致："
+                "请删除旧公钥（历史条目将无法验签）或恢复对应私钥/种子。"
+            )
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
 
 
 def sign_hash(root: str | Path, entry_hash: str) -> dict[str, str]:

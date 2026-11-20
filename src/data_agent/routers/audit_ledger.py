@@ -19,6 +19,7 @@ from data_agent.audit_ledger import (
     read_entries,
     recent_entries,
     sha256_text,
+    verify_entries,
 )
 
 router = APIRouter()
@@ -194,22 +195,29 @@ def get_ledger(session_id: str, limit: int = 50) -> dict[str, Any]:
 def check_signatures(session_id: str) -> dict[str, Any]:
     """按会话公钥复核每条账本记录的 Ed25519 签名。"""
     from data_agent import api
-    from data_agent.audit_signing import public_key_bytes, verify_entries_signatures
+    from data_agent.audit_signing import public_key_path, verify_entries_signatures
 
     workspace = api.registry.get(session_id).workspace
     try:
         entries = read_entries(ledger_path(workspace.root))
         if not entries:
             raise HTTPException(status_code=404, detail="账本还没有记录。")
-        public_pem = public_key_bytes(workspace.root)
+        public_pem = public_key_path(workspace.root).read_bytes()
+        chain = verify_entries(entries)
+        result = verify_entries_signatures(entries, public_pem)
+    except LedgerError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    result = verify_entries_signatures(entries, public_pem)
+    signed = int(result["signed"])
+    status = "signed" if signed == len(entries) else ("unsigned" if signed == 0 else "partial")
     return {
-        "valid": result["valid"],
-        "signed": result["signed"],
+        "valid": bool(chain["valid"] and result["valid"] and status == "signed"),
+        "chain_valid": bool(chain["valid"]),
+        "status": status,
+        "signed": signed,
         "entries": len(entries),
-        "errors": result["errors"],
+        "errors": list(chain["errors"]) + list(result["errors"]),
     }
 
 
@@ -219,22 +227,30 @@ def tamper_signature_demo(session_id: str) -> dict[str, Any]:
     import base64
 
     from data_agent import api
-    from data_agent.audit_signing import public_key_bytes, verify_entries_signatures
+    from data_agent.audit_signing import public_key_path, verify_entries_signatures
 
     workspace = api.registry.get(session_id).workspace
     try:
         entries = read_entries(ledger_path(workspace.root))
         if not entries:
             raise HTTPException(status_code=404, detail="账本还没有记录。")
-        public_pem = public_key_bytes(workspace.root)
+        public_pem = public_key_path(workspace.root).read_bytes()
+    except LedgerError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    target = next(
+        (index for index, entry in enumerate(entries) if entry.get("signature")),
+        None,
+    )
+    if target is None:
+        raise HTTPException(status_code=422, detail="账本没有可篡改的签名。")
     tampered = [dict(entry) for entry in entries]
-    signature = str(tampered[0].get("signature") or "")
+    signature = str(tampered[target].get("signature") or "")
     try:
         raw = bytearray(base64.b64decode(signature))
         raw[0] ^= 1
-        tampered[0]["signature"] = base64.b64encode(raw).decode("ascii")
+        tampered[target]["signature"] = base64.b64encode(raw).decode("ascii")
     except (ValueError, TypeError, IndexError) as exc:
         raise HTTPException(status_code=422, detail="账本没有可篡改的签名。") from exc
     result = verify_entries_signatures(tampered, public_pem)

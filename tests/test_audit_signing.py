@@ -227,17 +227,14 @@ def test_verify_script_warns_when_signatures_unchecked(tmp_path, monkeypatch):
     import base64 as b64
 
     monkeypatch.setenv("DATA_AGENT_LEDGER_SEED", b64.b64encode(b"3" * 32).decode())
-    from data_agent.audit_ledger import append_entry
-    from data_agent.audit_signing import key_id
+    import pytest
+
+    from data_agent.audit_ledger import LedgerError, append_entry
 
     root = tmp_path / "ws"
     append_entry(root, kind="audit", session_id="s", payload={"note": "x"})
     pub_path = root / "audit_keys" / "ledger_ed25519.pub"
     assert pub_path.is_file()
-    monkeypatch.setenv("DATA_AGENT_LEDGER_SEED", b64.b64encode(b"4" * 32).decode())
-    # env 种子切换后 key_id 与签名必须同源（I2）：同一 root 续写也用新身份签
-    entry = append_entry(root, kind="audit", session_id="s", payload={"note": "y"})
-    assert entry["signature_key_id"] == key_id(root)
 
     from scripts.verify_audit_ledger import main as verify_main
 
@@ -255,11 +252,99 @@ def test_verify_script_warns_when_signatures_unchecked(tmp_path, monkeypatch):
     assert payload["signatures_checked"] is False
     assert any("签名未校验" in item for item in payload["verification"]["errors"])
 
+    # I2 fail-closed：同一工作区切换种子 = 换身份，必须拒绝续写；若新种子
+    # 与旧公钥不一致却继续追加，新旧条目会分属两把钥匙、验签必然一半失败。
+    monkeypatch.setenv("DATA_AGENT_LEDGER_SEED", b64.b64encode(b"4" * 32).decode())
+    with pytest.raises((LedgerError, ValueError), match="不一致|公钥"):
+        append_entry(root, kind="audit", session_id="s", payload={"note": "y"})
+
     pub_args = [str(root / "audit_ledger.jsonl"), "--json", "--pubkey", str(pub_path)]
     buffer2 = io.StringIO()
     with contextlib.redirect_stdout(buffer2):
         assert verify_main(pub_args) in {0, 1}
     payload2 = _json.loads(buffer2.getvalue())
     assert payload2["signatures_checked"] is True
-    # 第二条由新种子签名，公钥是旧身份 → 第二条签名无效（I2 语义被测试锁定）
-    assert payload2["checks"]["signature"]["valid"] is False
+    # 单一身份（种子 3）签署的账本，用对应公钥验签必须全部有效
+    assert payload2["checks"]["signature"]["valid"] is True
+
+
+def test_signature_endpoints_without_ledger(tmp_path, monkeypatch):
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = client.post(
+        "/api/sessions", files={"file": ("sales.csv", b"a,b\n1,2\n", "text/csv")}
+    ).json()["id"]
+    assert client.get(f"/api/sessions/{session_id}/sales-audit/signature-check").status_code == 404
+    assert (
+        client.get(f"/api/sessions/{session_id}/sales-audit/signature-tamper-demo").status_code
+        == 404
+    )
+
+
+def test_public_key_without_private_is_an_error(tmp_path):
+    import pytest
+
+    public_key_bytes(tmp_path)
+    (tmp_path / "audit_keys" / "ledger_ed25519.key").unlink()
+    from data_agent.audit_signing import key_id
+
+    with pytest.raises(ValueError, match="私钥"):
+        key_id(tmp_path)
+
+
+def test_tamper_demo_requires_a_signature(tmp_path, monkeypatch):
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = client.post(
+        "/api/sessions", files={"file": ("sales.csv", b"a,b\n1,2\n", "text/csv")}
+    ).json()["id"]
+    workspace = api.registry.get(session_id).workspace
+    (workspace.root / "audit_ledger.jsonl").write_text(
+        '{"seq": 1, "prev": "' + "0" * 64 + '", "hash": "' + "a" * 64 + '"}' + chr(10),
+        encoding="utf-8",
+    )
+    response = client.get(f"/api/sessions/{session_id}/sales-audit/signature-tamper-demo")
+    assert response.status_code == 422
+
+
+def test_session_export_never_includes_private_key(tmp_path, monkeypatch):
+    """会话 ZIP 会被转发/归档：私钥必须留在本机；导入后旧账本仍可验签，
+    但新增追加必须显式失败而不是静默换钥匙。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session_id = client.post(
+        "/api/sessions",
+        files={"file": ("sales.csv", b"order_id,sales,quantity\nA,10,1\n", "text/csv")},
+    ).json()["id"]
+    audit = client.post(
+        f"/api/sessions/{session_id}/sales-audit",
+        json={"draft": "订单数：1 笔" + chr(10) + "销售额：10.00 元"},
+    )
+    assert audit.status_code == 200 and audit.json().get("ledger_error") is None, audit.text
+
+    exported = client.get(f"/api/sessions/{session_id}/export")
+    assert exported.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
+        names = archive.namelist()
+    assert "audit_ledger.jsonl" in names
+    assert any(name.endswith("ledger_ed25519.pub") for name in names)
+    assert not any(name.endswith(".key") for name in names), names
+
+    imported = client.post(
+        "/api/sessions/import",
+        files={"file": ("session.zip", exported.content, "application/zip")},
+    )
+    assert imported.status_code == 201, imported.text
+    imported_id = imported.json()["id"]
+    check = client.get(f"/api/sessions/{imported_id}/sales-audit/signature-check")
+    assert check.status_code == 200, check.text
+    assert check.json()["valid"] is True
+
+    # 私钥没随包走：追加必须失败并给出可操作原因（不再生成新钥匙冒充旧身份）
+    again = client.post(
+        f"/api/sessions/{imported_id}/sales-audit",
+        json={"draft": "订单数：1 笔" + chr(10) + "销售额：10.00 元"},
+    )
+    assert again.status_code == 200
+    ledger_error = again.json().get("ledger_error") or ""
+    assert "私钥" in ledger_error and "公钥" in ledger_error, again.text

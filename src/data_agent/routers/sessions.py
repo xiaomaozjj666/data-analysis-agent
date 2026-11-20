@@ -437,6 +437,8 @@ def export_session(session_id: str) -> StreamingResponse:
     安全：仅打包会话根目录内的文件，不跟随符号链接（防止通过 symlink
     泄漏宿主任意文件）；rglob("*") 遍历后通过 path.is_file() 且
     not path.is_symlink() 过滤，避免 ZipFile 写入空目录条目和链接目标。
+    账本签名私钥（audit_keys/*.key）**永不导出**：会话 ZIP 会被转发/归档，
+    带走私钥等于允许任何人伪造账本；公钥保留以便导入后继续验签。
     """
     import zipfile
 
@@ -445,12 +447,18 @@ def export_session(session_id: str) -> StreamingResponse:
     record = api.registry.get(session_id)
     root = record.workspace.root
     buffer = io.BytesIO()
+    from data_agent.audit_signing import KEY_DIR
+
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
         for path in sorted(root.rglob("*")):
             # 跳过符号链接：rglob 默认跟随 symlink，若工作区被植入
             # 指向 /etc/passwd 的链接，导出的 ZIP 会泄漏宿主文件。
-            if path.is_file() and not path.is_symlink():
-                bundle.write(path, path.relative_to(root))
+            if not path.is_file() or path.is_symlink():
+                continue
+            relative = path.relative_to(root)
+            if relative.parts and relative.parts[0] == KEY_DIR and relative.name.endswith(".key"):
+                continue
+            bundle.write(path, relative)
     buffer.seek(0)
     return StreamingResponse(
         buffer,
