@@ -21,7 +21,6 @@ from data_agent import api
 from data_agent.agent import AnalysisResult
 from data_agent.config import AgentSettings
 from data_agent.tools import build_tools
-
 from tests.test_api import _isolate_runtime
 
 _UPLOAD_CSV = (

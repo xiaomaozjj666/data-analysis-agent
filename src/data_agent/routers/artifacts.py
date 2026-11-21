@@ -23,13 +23,13 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 
 from data_agent import _kaleido_compat
+from data_agent._registry_payloads import _artifact_payload
 from data_agent.chart_sampling import (  # noqa: F401
     _THUMB_MAX_POINTS,
     _decode_plotly_typed_arrays,
     _sample_echarts_option_for_thumb,
     _sample_plotly_figure_for_thumb,
 )
-from data_agent._registry_payloads import _artifact_payload
 from data_agent.registry import ChartEditRequest, _artifact_file
 from data_agent.tools import _PLOTLY_DARK_MODE_SCRIPT
 from data_agent.tools.builder import _render_plotly_html

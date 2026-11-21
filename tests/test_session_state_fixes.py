@@ -16,16 +16,14 @@ from conftest import _skip_kaleido  # noqa: F401
 from fastapi.testclient import TestClient
 
 from data_agent import api
-from data_agent.audit_state import last_audit_path, load_last_audit
+from data_agent.audit_state import load_last_audit
 from data_agent.tools import build_tools
 from data_agent.tools._charts.validate import (
     _ensure_echarts_series_has_data,
     _ensure_plotly_fig_has_data,
 )
 from data_agent.workspace import DataWorkspace
-
 from tests.test_api import _isolate_runtime
-
 
 # ---------------------------------------------------------------------------
 # 产物磁盘同步
