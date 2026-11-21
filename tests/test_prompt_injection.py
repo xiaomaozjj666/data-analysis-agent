@@ -88,6 +88,7 @@ def test_plan_template_rendered_with_injection_keeps_fence() -> None:
         query=_INJECTION_PAYLOAD,
         profile_text=_INJECTION_PAYLOAD,
         metric_context="",
+        memory_context="",
     )
     # fence 结构未被破坏
     assert rendered.count("<DATA_FENCE") >= 3

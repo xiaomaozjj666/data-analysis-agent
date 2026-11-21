@@ -205,6 +205,57 @@ class CommentRequest(BaseModel):
     author: str = Field(default="", max_length=40)
 
 
+class MemoryRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=500)
+    kind: str = Field(default="lesson")
+    session_id: str = Field(default="", max_length=64)
+
+
+@router.get("/api/memories")
+def list_memories_endpoint(limit: int = 50) -> dict[str, Any]:
+    from data_agent import api
+    from data_agent.memory import list_memories
+
+    return {"memories": list_memories(api.bootstrap_settings.runs_dir, limit=limit)}
+
+
+@router.post("/api/memories", status_code=201)
+def create_memory_endpoint(payload: MemoryRequest, request: Request) -> dict[str, Any]:
+    from data_agent import api
+    from data_agent.memory import add_memory
+
+    actor = str(getattr(request.state, "actor", "") or "")
+    session_id = payload.session_id or session_id_from_path(request) or actor
+    try:
+        entry = add_memory(
+            api.bootstrap_settings.runs_dir,
+            payload.text,
+            session_id=session_id,
+            kind=payload.kind,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"memory": entry}
+
+
+@router.delete("/api/memories/{memory_id}")
+def delete_memory_endpoint(memory_id: str) -> dict[str, bool]:
+    from data_agent import api
+    from data_agent.memory import delete_memory
+
+    if not delete_memory(api.bootstrap_settings.runs_dir, memory_id):
+        raise HTTPException(status_code=404, detail="记忆条目不存在。")
+    return {"deleted": True}
+
+
+def session_id_from_path(request: Request) -> str:
+    """从请求路径里取会话 id（便于把记忆归因到来源会话）。"""
+    parts = [part for part in request.url.path.split("/") if part]
+    if len(parts) >= 4 and parts[2] == "sessions":
+        return parts[3]
+    return ""
+
+
 @router.get("/api/sessions/{session_id}/comments")
 def list_session_comments(session_id: str) -> dict[str, Any]:
     from data_agent import api

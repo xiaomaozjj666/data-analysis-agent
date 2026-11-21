@@ -6,6 +6,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
+from data_agent.memory import render_memory_context
 from data_agent.metrics import load_metrics_for_workspace, render_metric_context
 from data_agent.models import AnalysisPlan
 from data_agent.nodes.state import WorkflowState
@@ -41,8 +42,14 @@ def plan_analysis(agent: DataAnalysisAgent, state: WorkflowState) -> dict[str, A
     metric_context = render_metric_context(
         state["query"], load_metrics_for_workspace(agent.workspace.root)
     )
+    # 跨会话记忆：历史会话沉淀的口径教训与用户偏好（claude-mem 式注入）。
+    # 记忆存全局 runs_dir（跨会话共享），渲染有界并明确「非当前指令」。
+    memory_context = render_memory_context(agent.settings.runs_dir)
     prompt = agent.prompts["plan_template"].format(
-        query=state["query"], profile_text=profile_text, metric_context=metric_context
+        query=state["query"],
+        profile_text=profile_text,
+        metric_context=metric_context,
+        memory_context=memory_context,
     )
     plan_source = "model"
     try:
