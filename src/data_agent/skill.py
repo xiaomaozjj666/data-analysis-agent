@@ -31,6 +31,7 @@ from uuid import uuid4
 
 from data_agent._workspace_bundles import _atomic_write_text
 from data_agent.recipe import RECIPE_FILENAME
+from data_agent.skill_scan import scan_skill_bundle
 
 _log = logging.getLogger(__name__)
 
@@ -110,12 +111,23 @@ def _render_skill_doc(
     recipe: dict[str, Any],
     *,
     name: str,
+    slug: str,
     created_at: str,
     recipe_sha256: str,
 ) -> str:
     fingerprint = recipe.get("data_fingerprint") or {}
     columns = fingerprint.get("columns") or []
+    description = " ".join(str(recipe.get("task") or "").split())[:200] or "data-agent analysis recipe"
     lines = [
+        # SKILL.md 规范（anthropics/skills / agentskills.io）：name + description
+        # 是消费方解析的最小 front-matter；保持与 skill.json 的 slug 一致。
+        "---",
+        f"name: {slug}",
+        f"description: {description}",
+        f"version: {SKILL_VERSION}",
+        "license: MIT",
+        "---",
+        "",
         f"# {name}",
         "",
         f"> 由 data-analysis-agent 的分析配方导出（技能格式 v{SKILL_VERSION}，{created_at}）。",
@@ -199,7 +211,7 @@ def build_skill_bundle(
     }
     return {
         SKILL_DOC: _render_skill_doc(
-            recipe, name=skill_name, created_at=timestamp, recipe_sha256=digest
+            recipe, name=skill_name, slug=manifest["slug"], created_at=timestamp, recipe_sha256=digest
         ),
         RECIPE_FILENAME: json.dumps(recipe, ensure_ascii=False, indent=2) + "\n",
         MANIFEST_FILE: json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
@@ -335,14 +347,29 @@ def install_skill(
     scope: str = "project",
     root: str | Path | None = None,
     force: bool = False,
+    accept_risk: bool = False,
 ) -> dict[str, Any]:
     """把技能包安装到项目级/全局技能目录，返回安装摘要。
 
     与 :func:`export_skill` 一样先写 staging 再整体替换，失败时回滚旧版本；
     覆盖需要显式 ``force``——技能目录可能被其他 Agent 复用，静默覆盖会让
     对方手里的旧版本凭空变化。
+
+    安装前强制做一次**静态安全扫描**（对标 NVIDIA SkillSpector 的评分口径，
+    纯文本检查、绝不执行内容）：评分落在 HIGH/CRITICAL 档时默认拒绝，
+    确认来源可信后用 ``accept_risk=True`` 越过并留下记录。
     """
     _bundle, _recipe, manifest, slug, digest, texts = _load_bundle_contract(bundle_dir)
+    scan = scan_skill_bundle(_bundle)
+    if scan["severity"] in ("HIGH", "CRITICAL") and not accept_risk:
+        top = "；".join(
+            f"{item['id']}@{item['file']}:{item['line']}" for item in scan["findings"][:5]
+        )
+        raise ValueError(
+            f"技能包安全扫描未通过（score={scan['score']} / {scan['severity']} / "
+            f"{scan['verdict']}）：{top}。"
+            "确认来源可信后可用 accept_risk=True 越过并自行承担风险。"
+        )
     target = resolve_skills_root(scope, root=root) / slug
     target.parent.mkdir(parents=True, exist_ok=True)
     replaced = target.exists()
@@ -386,6 +413,13 @@ def install_skill(
         "version": manifest.get("version"),
         "recipe_sha256": digest,
         "tools": manifest.get("tools") or [],
+        "scan": {
+            "score": scan["score"],
+            "severity": scan["severity"],
+            "verdict": scan["verdict"],
+            "findings": len(scan["findings"]),
+            "accept_risk": accept_risk,
+        },
         "replaced": replaced,
     }
 
@@ -499,6 +533,15 @@ def main(argv: list[str] | None = None) -> int:
     install.add_argument("--scope", choices=("project", "global"), default="project")
     install.add_argument("--root", help="自定义技能安装根目录（覆盖 scope 默认值）")
     install.add_argument("--force", action="store_true", help="覆盖同 slug 的已安装技能")
+    install.add_argument(
+        "--accept-risk",
+        dest="accept_risk",
+        action="store_true",
+        help="越过安全扫描的 HIGH/CRITICAL 拒绝（确认来源可信后使用）",
+    )
+    scan = sub.add_parser("scan", help="静态安全扫描技能包（不执行内容）")
+    scan.add_argument("--bundle", required=True, help="技能包目录")
+    scan.add_argument("--json", action="store_true", help="输出原始 JSON 报告")
     listing = sub.add_parser("list", help="列出已安装技能并校验完整性")
     listing.add_argument("--scope", choices=("project", "global"), default="project")
     listing.add_argument("--root", help="自定义技能安装根目录（覆盖 scope 默认值）")
@@ -507,7 +550,30 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "export":
             result = export_skill(args.session, args.out, name=args.name, force=args.force)
         elif args.command == "install":
-            result = install_skill(args.bundle, scope=args.scope, root=args.root, force=args.force)
+            result = install_skill(
+                args.bundle,
+                scope=args.scope,
+                root=args.root,
+                force=args.force,
+                accept_risk=args.accept_risk,
+            )
+        elif args.command == "scan":
+            result = scan_skill_bundle(args.bundle)
+            if not args.json:
+                finding_lines = [
+                    f"  [{item['severity']:>8}] {item['id']} @ {item['file']}:{item['line']}"
+                    f" — {item['snippet']}"
+                    for item in result["findings"][:20]
+                ]
+                result = {
+                    "bundle": result["bundle"],
+                    "score": result["score"],
+                    "severity": result["severity"],
+                    "verdict": result["verdict"],
+                    "executable": result["executable"],
+                    "findings_count": len(result["findings"]),
+                    "findings_preview": finding_lines,
+                }
         elif args.command == "list":
             result = list_skills(scope=args.scope, root=args.root)
         else:

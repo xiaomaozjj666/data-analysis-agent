@@ -80,6 +80,36 @@ python -m data_agent.skill list
 - 覆盖同名技能必须 `--force`；写入先落 staging 再整体替换，失败回滚旧版本；
 - `list` 对坏包只标记 `valid: false` 与 `error`，不会因一个坏包让整张清单失败。
 
+## 3.1 安装前强制安全扫描
+
+安装的技能包等于把外部指令引入 Agent 上下文。对标 NVIDIA SkillSpector
+（GitHub 趋势月增 27k★ 的技能安全扫描器）的公开评分口径，`install` 前会
+自动做一次**纯静态扫描**（不执行包内任何内容）：
+
+- 检测类别：指令覆盖（中英文）、零宽/隐藏文本、HTML 注释指令、
+  数据外传（`curl|sh`、POST 上传）、密钥收集（环境变量/凭据文件）、
+  混淆（base64 解码、eval/exec）、过度授权（`rm -rf /`、sudo、chmod 777）、
+  约定外可执行文件；
+- 评分：critical +50 / high +25 / medium +10 / low +5；配方含
+  `run_python_code` 或包内有额外可执行文件时 ×1.3；
+- 分级：≤20 LOW（SAFE）/ ≤50 MEDIUM（CAUTION）/ ≤80 HIGH / >80 CRITICAL；
+- **HIGH / CRITICAL 默认拒绝安装**，确认来源可信后加
+  `--accept-risk`（函数参数 `accept_risk=True`）越过，安装结果里记录
+  `scan.accept_risk: true`；
+- 也可单独扫描不安装：
+
+```bash
+python -m data_agent.skill scan --bundle ./skills/下载来的技能
+python -m data_agent.skill scan --bundle ./skills/下载来的技能 --json
+```
+
+已知边界：规则是模式级子集（不做 LLM 复核与 OSV 在线查询），能拦住常见
+恶意模式与明显注入，不能替代人工审查来源。
+
+SKILL.md 顶部现在按 Agent Skills 规范写入 YAML front-matter
+（`name` / `description` / `version` / `license`），`name` 与 `skill.json`
+的 slug 一致；扫描会对不一致给出 low 级提示。
+
 ## 4. 边界
 
 - 固化的是**工具调用参数**，不是模型推理；结论解释仍需重新生成。

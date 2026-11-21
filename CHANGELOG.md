@@ -9,6 +9,18 @@
 
 ## [2026-11-21]
 
+### 新增
+
+- **技能包安装前强制安全扫描**（对标 GitHub 趋势榜 NVIDIA SkillSpector 的
+  公开评分口径）：纯静态检测指令覆盖（中英文）、零宽隐藏文本、数据外传
+  （`curl|sh`、POST）、密钥收集、base64/eval 混淆、`rm -rf`/sudo、约定外
+  可执行文件等 15 类模式；评分 critical +50 / high +25 / medium +10 / low +5
+  （配方含 `run_python_code` 或包内可执行文件 ×1.3），≤20 SAFE / ≤50 CAUTION /
+  >80 拒绝安装。新增 `skill scan --bundle [--json]` 子命令；`install` 默认
+  拒绝 HIGH/CRITICAL，`--accept-risk` 显式越过并留痕。SKILL.md 顶部按
+  Agent Skills 规范写入 `name/description/version/license` front-matter，
+  与 `skill.json` slug 一致性由扫描校验。
+
 ### 修复
 
 - **核验结果随会话持久化**：经营简报复算结果此前只活在前端组件 state，刷新/重开/切标签即丢，只能重新复算。现在每次复算原子写入会话工作区 `audit/last_audit.json`（含草稿正文与时间戳），确认发布把回执并入同一状态；新增 `GET /api/sessions/{id}/sales-audit/last`，前端打开核验页自动恢复"上次核验结果"横幅并提示草稿是否已改动。演示会话从路演退入工作台时也会恢复（实测发现挂载即拉取会让演示路径永远不恢复）。
