@@ -106,9 +106,23 @@ python -m data_agent.skill scan --bundle ./skills/下载来的技能 --json
 已知边界：规则是模式级子集（不做 LLM 复核与 OSV 在线查询），能拦住常见
 恶意模式与明显注入，不能替代人工审查来源。
 
+**SARIF 输出**：`scan --bundle <目录> --sarif` 输出 SARIF v2.1.0（GitHub
+Code Scanning 兼容），`critical/high → error`、`medium → warning`、
+`low → note`，逐条带文件与行号定位——可直接接入代码扫描门禁。
+
 SKILL.md 顶部现在按 Agent Skills 规范写入 YAML front-matter
 （`name` / `description` / `version` / `license`），`name` 与 `skill.json`
 的 slug 一致；扫描会对不一致给出 low 级提示。
+
+**`references/` 资源目录**（Agent Skills 规范的可选文档资源）：技能包可带
+`references/` 放给人读的口径/方法文档。安装时与三件套同级校验并一起复制：
+
+- 只允许 `.md` / `.txt` / `.json` / `.csv`，拒绝符号链接与 junction；
+- 单文件 ≤5 MB、整目录 ≤20 MB，超限直接报错而不是静默截断；
+- `references/` 内容按一等文本参与安全扫描（注入模式同样会被拦）；
+- 可执行后缀（`.py` / `.sh` 等）在 references 里视为「约定外可执行」，
+  计入评分倍率并默认拒绝安装；
+- `list` 会给出每个技能的 `references` 文件数。
 
 ## 4. 边界
 

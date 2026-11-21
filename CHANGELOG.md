@@ -11,6 +11,12 @@
 
 ### 新增
 
+- **技能包扫描 SARIF 输出与 references/ 资源目录**：`skill scan --sarif`
+  输出 SARIF v2.1.0（GitHub Code Scanning 兼容，critical/high→error、
+  medium→warning、low→note，逐条带文件行号）；技能包支持 Agent Skills
+  规范的 `references/` 文档目录——install 与三件套同级校验（仅
+  `.md/.txt/.json/.csv`、拒绝链接、单文件 ≤5MB / 总量 ≤20MB）并一起复制，
+  内容按一等文本参与安全扫描，`list` 给出每个技能的 references 文件数。
 - **跨会话记忆（claude-mem 式沉淀注入）**：新增 `memory.py` 与
   `/api/memories`（GET/POST/DELETE）。用户显式沉淀口径教训与偏好——
   `memories.json` 原子写、上限 100 条、单条 ≤500 字、重复文本只加复用计数；

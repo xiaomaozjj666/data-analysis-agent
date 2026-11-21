@@ -31,7 +31,13 @@ from uuid import uuid4
 
 from data_agent._workspace_bundles import _atomic_write_text
 from data_agent.recipe import RECIPE_FILENAME
-from data_agent.skill_scan import scan_skill_bundle
+from data_agent.skill_scan import (
+    REFERENCE_DIRNAME,
+    _is_link_like,
+    audit_reference_files,
+    build_sarif,
+    scan_skill_bundle,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -55,18 +61,6 @@ _WINDOWS_RESERVED_NAMES = frozenset(
     | {f"COM{i}" for i in range(1, 10)}
     | {f"LPT{i}" for i in range(1, 10)}
 )
-
-
-def _is_link_like(path: Path) -> bool:
-    """是否为符号链接或 Windows junction（两者都能把路径指到目录之外）。
-
-    Python 3.12+ 的 ``Path.is_junction()`` 对 junction 返回 True，但
-    ``is_symlink()`` 返回 False；只判 is_symlink 会漏掉 junction 逃逸。
-    """
-    if path.is_symlink():
-        return True
-    is_junction = getattr(path, "is_junction", None)
-    return bool(is_junction and is_junction())
 
 
 def _validate_slug(slug: str) -> str:
@@ -341,6 +335,28 @@ def _load_bundle_contract(
     return bundle, recipe, manifest, slug, actual, texts
 
 
+def _collect_reference_texts(bundle: Path) -> dict[str, str]:
+    """收集 ``references/`` 文档资源（可选目录）。
+
+    它们会随三件套一起被 install 复制，因此与扫描共用同一个 fail-closed
+    遍历（:func:`data_agent.skill_scan.audit_reference_files`）：目录/文件级
+    链接、后缀白名单、大小上限任一命中即拒绝安装——文档里写「拒绝符号
+    链接与 junction」就必须对 references 整棵子树成立，不能静默跳过
+    （2026-11 评审实测：references 目录本身是 junction 时会把包外文件搬进
+    技能目录）。
+    """
+    allowed, issues = audit_reference_files(bundle)
+    if issues:
+        detail = "；".join(
+            f"{item['id']}@{item['file']}（{item['severity']}）" for item in issues[:5]
+        )
+        raise ValueError(f"references/ 校验未通过：{detail}。请修正技能包后重试。")
+    collected: dict[str, str] = {}
+    for file_path, relative_posix, _size in allowed:
+        collected[relative_posix] = file_path.read_text(encoding="utf-8", errors="replace")
+    return collected
+
+
 def install_skill(
     bundle_dir: str | Path,
     *,
@@ -370,6 +386,10 @@ def install_skill(
             f"{scan['verdict']}）：{top}。"
             "确认来源可信后可用 accept_risk=True 越过并自行承担风险。"
         )
+    # references/ 文档资源（Agent Skills 规范可选目录）：只收文档类后缀，
+    # 拒绝符号链接/junction 与超限文件——它们会随包一起被 install 复制，
+    # 因此必须走与三件套同级的校验。
+    references = _collect_reference_texts(_bundle)
     target = resolve_skills_root(scope, root=root) / slug
     target.parent.mkdir(parents=True, exist_ok=True)
     replaced = target.exists()
@@ -385,6 +405,10 @@ def install_skill(
             os.replace(target, backup)
         for filename in _SKILL_FILES:
             _atomic_write_text(staging / filename, texts[filename])
+        for relative_path, text in references.items():
+            destination = staging / relative_path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            _atomic_write_text(destination, text)
         os.replace(staging, target)
     except Exception:
         # 回滚：旧版本在 .bak 里时尽量复位；若目标已被并发方重建则保留 .bak
@@ -413,6 +437,7 @@ def install_skill(
         "version": manifest.get("version"),
         "recipe_sha256": digest,
         "tools": manifest.get("tools") or [],
+        "references": len(references),
         "scan": {
             "score": scan["score"],
             "severity": scan["severity"],
@@ -458,11 +483,18 @@ def list_skills(*, scope: str = "project", root: str | Path | None = None) -> di
                     raise ValueError("skill.json 缺少 recipe_sha256")
                 if expected != digest:
                     raise ValueError("配方哈希与 skill.json 不一致")
+                ref_dir = child / REFERENCE_DIRNAME
+                reference_count = (
+                    sum(1 for item in ref_dir.rglob("*") if item.is_file())
+                    if ref_dir.is_dir()
+                    else 0
+                )
                 entry.update(
                     name=str(manifest.get("name") or child.name),
                     version=manifest.get("version"),
                     recipe_sha256=digest,
                     tools=manifest.get("tools") or [],
+                    references=reference_count,
                     valid=True,
                 )
             except (OSError, ValueError) as exc:
@@ -541,7 +573,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     scan = sub.add_parser("scan", help="静态安全扫描技能包（不执行内容）")
     scan.add_argument("--bundle", required=True, help="技能包目录")
-    scan.add_argument("--json", action="store_true", help="输出原始 JSON 报告")
+    format_group = scan.add_mutually_exclusive_group()
+    format_group.add_argument("--json", action="store_true", help="输出原始 JSON 报告")
+    format_group.add_argument(
+        "--sarif",
+        action="store_true",
+        help="输出 SARIF v2.1.0（可上传 GitHub Code Scanning 作为门禁）",
+    )
     listing = sub.add_parser("list", help="列出已安装技能并校验完整性")
     listing.add_argument("--scope", choices=("project", "global"), default="project")
     listing.add_argument("--root", help="自定义技能安装根目录（覆盖 scope 默认值）")
@@ -559,7 +597,9 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "scan":
             result = scan_skill_bundle(args.bundle)
-            if not args.json:
+            if args.sarif:
+                result = build_sarif(result)
+            elif not args.json:
                 finding_lines = [
                     f"  [{item['severity']:>8}] {item['id']} @ {item['file']}:{item['line']}"
                     f" — {item['snippet']}"

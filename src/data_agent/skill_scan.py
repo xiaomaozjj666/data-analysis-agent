@@ -20,7 +20,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +31,12 @@ SKILL_MD_NAME = "SKILL.md"
 RECIPE_JSON_NAME = "analysis_recipe.json"
 MANIFEST_JSON_NAME = "skill.json"
 BUNDLE_FILES: tuple[str, ...] = (SKILL_MD_NAME, RECIPE_JSON_NAME, MANIFEST_JSON_NAME)
+
+#: references/ 资源目录（Agent Skills 规范的可选文档资源）。
+REFERENCE_DIRNAME = "references"
+_REFERENCE_SUFFIXES = frozenset({".md", ".txt", ".json", ".csv"})
+_REFERENCE_MAX_FILE_BYTES = 5 * 1024 * 1024
+_REFERENCE_MAX_TOTAL_BYTES = 20 * 1024 * 1024
 
 #: 可执行内容判定：额外文件后缀 / 目录名。
 _EXEC_SUFFIXES = frozenset({".sh", ".py", ".pyc", ".exe", ".bat", ".cmd", ".ps1", ".js", ".mjs"})
@@ -103,8 +111,141 @@ def _front_matter(text: str) -> dict[str, str] | None:
     return fields or None
 
 
+def _is_link_like(path: Path) -> bool:
+    """是否为符号链接或 Windows junction（两者都能把路径指到目录之外）。
+
+    Python 3.12+ 的 ``Path.is_junction()`` 对 junction 返回 True，但
+    ``is_symlink()`` 返回 False；只判 is_symlink 会漏掉 junction 逃逸。
+    """
+    if path.is_symlink():
+        return True
+    is_junction = getattr(path, "is_junction", None)
+    return bool(is_junction and is_junction())
+
+
 def _line_of(text: str, position: int) -> int:
     return text.count("\n", 0, position) + 1
+
+
+def audit_reference_files(
+    bundle: Path,
+) -> tuple[list[tuple[Path, str]], list[dict[str, Any]]]:
+    """fail-closed 遍历 ``references/``：返回 ``(允许的文件, 问题列表)``。
+
+    单一实现供扫描与安装两个消费方共用——install 把任何问题都转为 ValueError
+    （拒绝安装），扫描把问题转为 finding（超限文件升级为 high 并声明
+    「内容未扫描」，避免 6MB 尾部藏 payload 的文件只拿一条 medium warning
+    还给出 SAFE 判定的盲区，2026-11 评审实测）。
+
+    fail-closed 语义：
+    - ``references`` 目录本身或任何中间子目录是符号链接/junction → 记
+      SC-REF-LINK（high）并整棵跳过（目录逃逸路径，2026-11 评审实测可把
+      包外文件搬进技能目录）；
+    - 文件是指向目录外的链接/junction → 记 SC-REF-LINK（high）；
+    - 后缀不在白名单 → 记 SC-REF-SUFFIX（medium）；
+    - 超过单文件上限 → 记 SC-REF-TOO-LARGE（high，内容未扫描）。
+    """
+    ref_dir = bundle / REFERENCE_DIRNAME
+    issues: list[dict[str, Any]] = []
+    allowed: list[tuple[Path, str]] = []
+    if not ref_dir.is_dir():
+        return allowed, issues
+    if _is_link_like(ref_dir):
+        issues.append(
+            {
+                "id": "SC-REF-LINK",
+                "severity": "high",
+                "file": REFERENCE_DIRNAME,
+                "line": 0,
+                "snippet": "references 目录本身是指向目录外的链接/junction，已拒绝",
+            }
+        )
+        return allowed, issues
+    for root, dirs, filenames in os.walk(ref_dir):
+        pruned: list[str] = []
+        for dirname in dirs:
+            dir_path = Path(root) / dirname
+            if _is_link_like(dir_path):
+                issues.append(
+                    {
+                        "id": "SC-REF-LINK",
+                        "severity": "high",
+                        "file": dir_path.relative_to(bundle).as_posix(),
+                        "line": 0,
+                        "snippet": "子目录是指向目录外的链接/junction，已整棵跳过",
+                    }
+                )
+            else:
+                pruned.append(dirname)
+        dirs[:] = pruned
+        for filename in filenames:
+            file_path = Path(root) / filename
+            relative_posix = file_path.relative_to(bundle).as_posix()
+            if _is_link_like(file_path):
+                issues.append(
+                    {
+                        "id": "SC-REF-LINK",
+                        "severity": "high",
+                        "file": relative_posix,
+                        "line": 0,
+                        "snippet": "文件是指向目录外的链接/junction，已拒绝",
+                    }
+                )
+                continue
+            if file_path.suffix.lower() not in _REFERENCE_SUFFIXES:
+                issues.append(
+                    {
+                        "id": "SC-REF-SUFFIX",
+                        "severity": "medium",
+                        "file": relative_posix,
+                        "line": 0,
+                        "snippet": f"后缀不在白名单（{'、'.join(sorted(_REFERENCE_SUFFIXES))}）",
+                    }
+                )
+                continue
+            try:
+                size = file_path.stat().st_size
+            except OSError as exc:
+                issues.append(
+                    {
+                        "id": "SC-REF-STAT",
+                        "severity": "medium",
+                        "file": relative_posix,
+                        "line": 0,
+                        "snippet": f"无法读取文件大小：{exc}",
+                    }
+                )
+                continue
+            if size > _REFERENCE_MAX_FILE_BYTES:
+                issues.append(
+                    {
+                        "id": "SC-REF-TOO-LARGE",
+                        "severity": "high",
+                        "file": relative_posix,
+                        "line": 0,
+                        "snippet": (
+                            f"超过单文件上限（{size} bytes），内容未扫描——"
+                            "install 会拒绝该包"
+                        ),
+                    }
+                )
+                continue
+            allowed.append((file_path, relative_posix, size))
+    total_bytes = sum(item[2] for item in allowed)
+    if total_bytes > _REFERENCE_MAX_TOTAL_BYTES:
+        issues.append(
+            {
+                "id": "SC-REF-TOTAL",
+                "severity": "high",
+                "file": REFERENCE_DIRNAME,
+                "line": 0,
+                "snippet": (
+                    f"references 总大小 {total_bytes} bytes 超过 "
+                    f"{_REFERENCE_MAX_TOTAL_BYTES} bytes 上限，请精简文档"
+                ),
+            }
+        )
+    return allowed, issues
 
 
 def _snippet(text: str, position: int, length: int = 120) -> str:
@@ -160,7 +301,30 @@ def scan_skill_bundle(bundle_dir: str | Path) -> dict[str, Any]:
         if filename == SKILL_MD_NAME:
             front_matter = _front_matter(text)
 
-    # 3) 额外可执行内容：不在约定内的可执行文件/脚本目录
+    # 3) references/ 资源目录（Agent Skills 规范的可选文档资源）：fail-closed
+    #    遍历（目录/文件级链接、后缀白名单、大小上限都由 audit_reference_files
+    #    统一判定），允许的文件按一等文本参与全部规则扫描。
+    references_scanned: list[str] = []
+    allowed_references, reference_issues = audit_reference_files(bundle)
+    findings.extend(reference_issues)
+    for reference_path, relative_posix, _size in allowed_references:
+        text = reference_path.read_text(encoding="utf-8", errors="replace")
+        files_scanned.append(relative_posix)
+        references_scanned.append(relative_posix)
+        texts[relative_posix] = text
+        for rule_id, severity, pattern in _RULES:
+            for match in pattern.finditer(text):
+                findings.append(
+                    {
+                        "id": rule_id,
+                        "severity": severity,
+                        "file": relative_posix,
+                        "line": _line_of(text, match.start()),
+                        "snippet": _snippet(text, match.start()),
+                    }
+                )
+
+    # 4) 额外可执行内容：不在约定内的可执行文件/脚本目录
     executable = False
     for child in sorted(bundle.rglob("*")):
         relative = child.relative_to(bundle)
@@ -169,6 +333,11 @@ def scan_skill_bundle(bundle_dir: str | Path) -> dict[str, Any]:
                 executable = True
             continue
         if relative.as_posix() in BUNDLE_FILES:
+            continue
+        # references/ 下允许的文档类资源是一等扫描对象，不算「约定外」
+        if relative.as_posix().startswith(REFERENCE_DIRNAME + "/") and (
+            child.suffix.lower() in _REFERENCE_SUFFIXES
+        ):
             continue
         if child.suffix.lower() in _EXEC_SUFFIXES:
             executable = True
@@ -222,6 +391,66 @@ def scan_skill_bundle(bundle_dir: str | Path) -> dict[str, Any]:
         "executable": executable,
         "findings": findings,
         "files_scanned": files_scanned,
+        "references_scanned": references_scanned,
         "front_matter": front_matter,
         "slug": str(manifest.get("slug") or ""),
+    }
+
+
+#: SARIF level 映射（GitHub Code Scanning 兼容）。
+_SARIF_LEVELS = {"critical": "error", "high": "error", "medium": "warning", "low": "note"}
+
+
+def build_sarif(report: dict[str, Any]) -> dict[str, Any]:
+    """把扫描报告转成 SARIF v2.1.0（可直接上传 GitHub Code Scanning）。"""
+    findings = report.get("findings") or []
+    rules: dict[str, dict[str, str]] = {}
+    results: list[dict[str, Any]] = []
+    for item in findings:
+        rule_id = str(item.get("id") or "UNKNOWN")
+        severity = str(item.get("severity") or "low")
+        if rule_id not in rules:
+            rules[rule_id] = {"level": _SARIF_LEVELS.get(severity, "note")}
+        results.append(
+            {
+                "ruleId": rule_id,
+                "level": _SARIF_LEVELS.get(severity, "note"),
+                "message": {
+                    "text": f"{rule_id}（{severity}）：{item.get('snippet', '')}".strip()
+                },
+                "locations": [
+                    {
+                        "physicalLocation": {
+                            "artifactLocation": {
+                                # SARIF 2.1.0 要求 uri 符合 RFC 3986：非 ASCII
+                                # 文件名（如中文）必须百分号编码。
+                                "uri": urllib.parse.quote(
+                                    str(item.get("file") or "SKILL.md")
+                                )
+                            },
+                            "region": {"startLine": int(item.get("line") or 1)},
+                        }
+                    }
+                ],
+            }
+        )
+    driver_rules = [
+        {"id": rule_id, "shortDescription": {"text": f"默认严重度：{meta['level']}"}}
+        for rule_id, meta in sorted(rules.items())
+    ]
+    return {
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "name": "data-agent-skill-scan",
+                        "version": "1.0",
+                        "rules": driver_rules,
+                    }
+                },
+                "results": results,
+            }
+        ],
     }
