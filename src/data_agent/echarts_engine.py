@@ -576,6 +576,14 @@ def _echarts_bar(
     Y 轴范围按**各类目堆叠总和**计算并强制含 0。此前只支持分组柱，模型按
     "堆叠"写标题时图上却是并排柱——标题与图形不一致，用户会以为数据错了。
     """
+    # 轴方向容错：模型偶尔把类目列写到 y、数值列写到 x（"各省订单量"却给成
+    # x=订单量、y=省份）。ECharts 的 category 轴会拿到数字、value 轴会拿到
+    # 字符串，结果是一张空图（实测：天猫 TOP10 省份柱状图一根柱子都没有）。
+    # 类目轴放文本列、数值轴放数值列是硬约束，颠倒时直接交换。
+    if y and x in df.columns and y in df.columns:
+        if pd.api.types.is_numeric_dtype(df[x]) and not pd.api.types.is_numeric_dtype(df[y]):
+            x, y = y, x
+
     x_label = _build_axis_label(x)
     y_label = _build_axis_label(y) if y else "计数"
     agg_suffix = {

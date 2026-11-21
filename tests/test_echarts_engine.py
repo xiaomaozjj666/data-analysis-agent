@@ -1879,3 +1879,22 @@ def test_echarts_faceted_density_has_no_detail_layer():
         aggregation="none", title="分面", bins=30,
     )
     assert not [item for item in option["series"] if "抽样原始点" in str(item.get("name"))]
+
+
+def test_echarts_bar_swaps_category_and_value_axes_when_reversed():
+    """模型把类目列写到 y、数值列写到 x 时必须自动交换，否则图是空白。"""
+    from data_agent.echarts_engine import _build_echarts_option
+
+    frame = pd.DataFrame({
+        "province group": ["上海", "广东省", "江苏省"],
+        "orders": [3353, 2463, 2126],
+    })
+    option = _build_echarts_option(
+        frame, chart_type="bar", x="orders", y="province group", color=None,
+        z=None, size=None, values=None, path_columns=None, dimensions=None,
+        aggregation="none", title="天猫订单量 TOP10 省份", bins=10,
+    )
+    assert option["xAxis"][0]["type"] == "category"
+    assert option["xAxis"][0]["data"] == ["上海", "广东省", "江苏省"]
+    assert option["yAxis"][0]["type"] == "value"
+    assert option["series"][0]["data"] == [3353, 2463, 2126]
