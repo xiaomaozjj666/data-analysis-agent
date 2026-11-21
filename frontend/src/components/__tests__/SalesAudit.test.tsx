@@ -171,8 +171,11 @@ describe("SalesAudit", () => {
 
   it("确认后才出现下载证据包按钮，并 POST bundle 接口保存 ZIP", async () => {
     apiMock.mockResolvedValueOnce(VERIFIED).mockResolvedValueOnce(CONFIRMED);
+    // 用字符串 body 构造 Response：Node 22 + jsdom 下把 jsdom 的 Blob 交给
+    // undici Response 会抛 "object.stream is not a function"，字符串 body
+    // 在本地与 CI 都可用，response.blob() 仍返回同样的内容。
     const fetchMock = vi.fn().mockResolvedValue(
-      new Response(new Blob(["zip-bytes"], { type: "application/zip" }), {
+      new Response("zip-bytes", {
         status: 200,
         headers: { "content-type": "application/zip" },
       }),
