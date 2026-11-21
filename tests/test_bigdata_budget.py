@@ -124,3 +124,37 @@ def test_thumbnails_json_is_sampled_not_full(big_workspace):
     _sample_plotly_figure_for_thumb(figure)
     assert len(figure["data"][0]["x"]) <= _THUMB_MAX_POINTS
     assert len(figure["data"][0]["y"]) == len(figure["data"][0]["x"])
+
+
+def test_audit_recalculates_200k_rows_within_budget(tmp_path):
+    """20 万行核验复算：结果准确，且不出现逐行全表扫描式的灾难性回归。
+
+    核验路径此前只有手动基准（scripts/bench_bigdata.py），没有 CI 断言。
+    本机实测 200k 行约 7 秒；60 秒是数量级护栏，不是性能指标。
+    """
+    import csv
+
+    from data_agent.sales_audit import audit_sales_brief
+
+    rows = 200_000
+    source = tmp_path / "audit_200k.csv"
+    with source.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["order_id", "sales", "quantity", "region"])
+        for index in range(rows):
+            writer.writerow([f"o{index}", "1.01", "1", "华东" if index % 2 else "华南"])
+
+    draft = "订单数：200000 笔\n销售额合计：202000.00 元\n销量合计：200000 件"
+    started = time.perf_counter()
+    result = audit_sales_brief(source, draft)
+    elapsed = time.perf_counter() - started
+
+    assert result["source"]["rows_used"] == rows
+    assert result["metrics"] == {
+        "销售额合计": "202000.00",
+        "销量合计": "200000",
+        "订单数": "200000",
+        "客单价": "1.01",
+    }
+    assert result["summary"] == {"verified": 3, "conflict": 0, "unsupported": 0}
+    assert elapsed < 60.0, f"20 万行核验耗时 {elapsed:.1f}s（护栏 60s）"
