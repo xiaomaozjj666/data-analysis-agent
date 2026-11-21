@@ -31,3 +31,9 @@ frontend/dist/
 # 测试临时目录与并发覆盖率文件
 .pytest-*/
 .coverage.*
+
+# 路演材料：本机生成的截图、三维页与 PPT，不进入公开仓库
+docs/pitch-assets/
+docs/wuxi-pitch.html
+docs/wuxi-3d-lab.html
+docs/wuxi-pitch-deck.pptx
