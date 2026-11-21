@@ -167,6 +167,7 @@ interface LedgerChainRecord {
   brief_sha256?: string;
   signature?: string;
   signature_key_id?: string;
+  summary?: { verified?: number; conflict?: number; unsupported?: number };
 }
 
 interface LedgerChainResponse {
@@ -619,6 +620,11 @@ export default function SalesAudit({
   const [recoveryNote, setRecoveryNote] = useState("");
   const [copiedHash, setCopiedHash] = useState<string | null>(null);
   const [copyHint, setCopyHint] = useState("");
+  const [existingLedger, setExistingLedger] = useState<LedgerChainResponse | null>(null);
+  const [existingSignature, setExistingSignature] = useState<
+    { valid: boolean; signed: number; entries: number } | null
+  >(null);
+  const [ledgerLoading, setLedgerLoading] = useState(false);
   const draftInput = useRef<HTMLTextAreaElement>(null);
   const draftRef = useRef(draft);
   const recoveryRef = useRef<HTMLHeadingElement>(null);
@@ -1085,6 +1091,25 @@ export default function SalesAudit({
     }
   }
 
+  async function loadExistingLedger() {
+    setLedgerLoading(true);
+    setError("");
+    try {
+      const [ledgerRes, sigRes] = await Promise.all([
+        api<LedgerChainResponse>(`/api/sessions/${sessionId}/sales-audit/ledger?limit=8`),
+        api<{ valid: boolean; signed: number; entries: number }>(
+          `/api/sessions/${sessionId}/sales-audit/signature-check`,
+        ),
+      ]);
+      setExistingLedger(ledgerRes);
+      setExistingSignature(sigRes);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "读取已有账本失败。");
+    } finally {
+      setLedgerLoading(false);
+    }
+  }
+
   const activeMetricNames = schemaSpecs.length
     ? schemaSpecs.map((spec) => spec.name)
     : ["销售额合计", "销量合计", "订单数", "客单价"];
@@ -1177,6 +1202,45 @@ export default function SalesAudit({
         <p className="sales-audit-notice">请用「替换数据」上传含 order_id、sales、quantity 三列的 UTF-8 CSV。</p>
       ) : (
         <>
+          <div className="sales-audit-existing-bar">
+            <button type="button" onClick={() => void loadExistingLedger()} disabled={ledgerLoading}>
+              {ledgerLoading ? "正在读取账本…" : "查看已有核验记录（账本/签名）"}
+            </button>
+            {existingLedger && (
+              <span>
+                账本 {existingLedger.entries.length} 条 · 整链{" "}
+                {existingLedger.verification.valid ? "有效" : "异常"}
+                {existingSignature
+                  ? ` · 签名 ${existingSignature.signed}/${existingSignature.entries}`
+                  : ""}
+              </span>
+            )}
+          </div>
+          {existingLedger && existingLedger.entries.length > 0 && (
+            <div className="sales-audit-existing" role="status">
+              <p className="sales-audit-existing-title">
+                本会话已有核验记录（直接读账本文件，不需要重新复算）
+              </p>
+              <ul>
+                {existingLedger.entries
+                  .slice(-4)
+                  .reverse()
+                  .map((entry) => (
+                    <li key={`${entry.seq}-${entry.hash}`}>
+                      <b>#{entry.seq}</b>
+                      {entry.kind === "confirm" ? "服务端确认" : "独立复算"}
+                      <time>{new Date(entry.ts).toLocaleString()}</time>
+                      <code>{entry.hash.slice(0, 12)}…</code>
+                      {entry.summary?.verified !== undefined && (
+                        <span>
+                          已核验 {entry.summary.verified} · 冲突 {entry.summary.conflict ?? 0}
+                        </span>
+                      )}
+                    </li>
+                  ))}
+              </ul>
+            </div>
+          )}
           <details
             className="sales-audit-schema"
             onToggle={(event) => {
