@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import enum
 import json
+import logging
 import re
 import time
 import urllib.parse
@@ -20,6 +21,8 @@ from fastapi import HTTPException
 from langchain_core.messages import AIMessage, HumanMessage
 
 from data_agent.serialization import to_jsonable
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from data_agent.agent import AnalysisResult
@@ -251,6 +254,13 @@ def _elapsed_seconds(record: SessionRecord) -> float | None:
 
 def _session_payload(session_id: str, record: SessionRecord) -> dict[str, Any]:
     workspace = record.workspace
+    # 先把磁盘上未注册的产物补登记：任何写盘方（手工放文件、外部脚本、
+    # 旧进程）落盘的文件都不该在产物页显示为 0。restore_artifacts 对已
+    # 注册路径幂等，这里每次构建 payload 时同步一次，代价是一次目录扫描。
+    try:
+        workspace.sync_artifacts_from_disk()
+    except OSError:
+        logger.exception("Artifact disk sync failed for %s", session_id)
     profile = workspace.profile(sample_rows=8)
     preview = to_jsonable(workspace.dataframe.head(100))
 
@@ -312,6 +322,8 @@ def _session_payload(session_id: str, record: SessionRecord) -> dict[str, Any]:
         # plan_only 模式产出的待审批计划，前端据此渲染审批面板；
         # 为 None 表示当前没有待审批计划。
         "pending_plan": record.pending_plan,
+        # 待采纳的候选数据集：前端据此渲染「设为主数据」横幅。
+        "candidate_datasets": workspace.candidate_datasets,
         **({"demo": demo} if demo else {}),
         **({"policy": {
             "principal_id": policy["principal_id"],

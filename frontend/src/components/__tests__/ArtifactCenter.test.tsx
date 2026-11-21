@@ -148,4 +148,40 @@ describe("ArtifactCenter", () => {
     const items = onBatchDownload.mock.calls[0][0] as Artifact[];
     expect(items.map((i) => i.name)).toEqual(["柱状图_1.html", "散点图_1.html"]);
   });
+
+  it("shows candidate dataset banner and wires adopt/discard", () => {
+    const onAdopt = vi.fn();
+    const onDiscard = vi.fn();
+    render(
+      <ArtifactCenter
+        artifacts={makeArtifacts()}
+        onDownload={vi.fn()}
+        onPreview={vi.fn()}
+        candidateDatasets={[{ name: "joined_data.csv", rows: 200, note: "left join" }]}
+        onAdoptDataset={onAdopt}
+        onDiscardDataset={onDiscard}
+      />,
+    );
+
+    expect(screen.getByText(/候选数据集待采纳/)).toBeTruthy();
+    expect(screen.getByText(/joined_data.csv（200 行）/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "设为主数据" }));
+    expect(onAdopt).toHaveBeenCalledWith("joined_data.csv");
+    fireEvent.click(screen.getByRole("button", { name: "忽略" }));
+    expect(onDiscard).toHaveBeenCalledWith("joined_data.csv");
+  });
+
+  it("offers rescan action in the empty state", () => {
+    const onRescan = vi.fn();
+    render(
+      <ArtifactCenter
+        artifacts={[]}
+        onDownload={vi.fn()}
+        onPreview={vi.fn()}
+        onRescan={onRescan}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "扫描产物目录" }));
+    expect(onRescan).toHaveBeenCalledTimes(1);
+  });
 });

@@ -59,6 +59,8 @@ from .stat import (
 from .title import _chart_filename_stem, _humanize_chart_title
 from .validate import (
     _checked_columns,
+    _ensure_echarts_series_has_data,
+    _ensure_plotly_fig_has_data,
     _looks_like_datetime_series,
     _looks_like_id_column,
     _name_looks_like_id,
@@ -85,6 +87,8 @@ __all__ = [
     "_box_stats",
     "_chart_filename_stem",
     "_checked_columns",
+    "_ensure_echarts_series_has_data",
+    "_ensure_plotly_fig_has_data",
     "_humanize_chart_title",
     "_infer_chart_type",
     "_localize_boolean_categories",

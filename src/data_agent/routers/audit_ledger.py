@@ -162,6 +162,11 @@ def confirm_brief(session_id: str, payload: ConfirmRequest) -> dict[str, Any]:
         )
     except LedgerError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    # 确认回执并入会话级核验状态：重开会话后仍能看到"已发布 + 回执"。
+    # 写失败不影响确认本身（账本才是权威记录）。
+    from data_agent.audit_state import attach_receipt
+
+    attach_receipt(workspace.root, dict(entry), brief)
     return {
         "confirmed": True,
         "audit_id": result["audit_id"],

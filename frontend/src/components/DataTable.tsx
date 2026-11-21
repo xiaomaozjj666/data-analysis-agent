@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Search } from "lucide-react";
+import { Search, Table2 } from "lucide-react";
+import EmptyState from "./EmptyState";
 
 type Row = Record<string, unknown>;
 type ColType = "number" | "date" | "text";
@@ -203,7 +204,16 @@ const DataTable = React.memo(function DataTable({ rows }: DataTableProps) {
     return s;
   };
 
-  if (!rows?.length) return <div className="empty-row">没有可预览的数据</div>;
+  if (!rows?.length) {
+    return (
+      <EmptyState
+        compact
+        icon={Table2}
+        title="没有可预览的数据"
+        hint="会话还没有上传数据，或当前主体被行级权限过滤后没有可见行。"
+      />
+    );
+  }
 
   const hasCustomWidths = Object.keys(colWidths).length > 0;
 

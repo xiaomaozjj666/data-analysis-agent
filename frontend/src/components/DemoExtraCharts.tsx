@@ -74,7 +74,15 @@ export function MultiLine({ chart }: { chart: DemoChart }) {
   const [solo, setSolo] = useState<string | null>(null);
   const [hoverSeries, setHoverSeries] = useState<string | null>(null);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
-  if (!labels.length || !series.length) return null;
+  // 空数据显式空态：静默 return null 会让"图少了一张"无从排查。
+  if (!labels.length || !series.length) {
+    return (
+      <figure className="demo-chart demo-multiline">
+        <Caption chart={chart} />
+        <p className="demo-chart-empty">没有可绘制的序列或标签数据。</p>
+      </figure>
+    );
+  }
   const width = 340;
   const height = 150;
   const pad = 16;

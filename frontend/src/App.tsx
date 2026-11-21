@@ -554,6 +554,69 @@ function App() {
   // downloadArtifact / batchDownload / exportSession 已提取至 useDownloads；
   // importSession / deleteSession / renameSession 已提取至 useSessionMutations。
 
+  // ---- 候选数据集显式采纳（修复"分析工具静默改主数据"） ----
+  // 采纳/忽略/重扫后都重新拉取会话，让主数据预览、行数与候选横幅同步刷新。
+  const [adoptBusy, setAdoptBusy] = useState(false);
+  const [rescanBusy, setRescanBusy] = useState(false);
+  const refreshCurrentSession = useCallback(async () => {
+    if (!session?.id) return;
+    const latest = await api<Session>(`/api/sessions/${session.id}`);
+    setSession(latest);
+  }, [session?.id]);
+
+  const adoptCandidateDataset = useCallback(
+    async (name: string) => {
+      if (!session?.id) return;
+      setAdoptBusy(true);
+      try {
+        await api(`/api/sessions/${session.id}/datasets/adopt`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+        });
+        await refreshCurrentSession();
+      } catch (err) {
+        setError(`采纳候选数据集失败：${(err as Error).message}`);
+      } finally {
+        setAdoptBusy(false);
+      }
+    },
+    [session?.id, refreshCurrentSession],
+  );
+
+  const discardCandidateDataset = useCallback(
+    async (name: string) => {
+      if (!session?.id) return;
+      setAdoptBusy(true);
+      try {
+        await api(`/api/sessions/${session.id}/datasets/adopt`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, discard: true }),
+        });
+        await refreshCurrentSession();
+      } catch (err) {
+        setError(`忽略候选数据集失败：${(err as Error).message}`);
+      } finally {
+        setAdoptBusy(false);
+      }
+    },
+    [session?.id, refreshCurrentSession],
+  );
+
+  const rescanArtifacts = useCallback(async () => {
+    if (!session?.id) return;
+    setRescanBusy(true);
+    try {
+      await api(`/api/sessions/${session.id}/artifacts/rescan`, { method: "POST" });
+      await refreshCurrentSession();
+    } catch (err) {
+      setError(`扫描产物目录失败：${(err as Error).message}`);
+    } finally {
+      setRescanBusy(false);
+    }
+  }, [session?.id, refreshCurrentSession]);
+
   // editChart 及"打开预览时初始化编辑表单"的 useEffect 已提取至 useArtifactPreview。
   // 连接测试 testConnection / 保存设置 saveSettings 已随设置面板迁至 SettingsPanel。
 
@@ -1602,6 +1665,12 @@ function App() {
                   onDownload={downloadArtifact}
                   onPreview={openArtifactPreview}
                   onBatchDownload={batchDownload}
+                  candidateDatasets={session.candidate_datasets}
+                  onAdoptDataset={(name) => void adoptCandidateDataset(name)}
+                  onDiscardDataset={(name) => void discardCandidateDataset(name)}
+                  adoptBusy={adoptBusy}
+                  onRescan={() => void rescanArtifacts()}
+                  rescanBusy={rescanBusy}
                 />
               </section>
             )}

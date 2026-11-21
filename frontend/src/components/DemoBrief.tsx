@@ -35,7 +35,19 @@ function formatValue(value: number, unit?: string): string {
 function LineChart({ chart }: { chart: DemoChart }) {
   const points = chart.points ?? [];
   const [hover, setHover] = useState<number | null>(null);
-  if (points.length < 2) return null;
+  // 空数据显式空态：静默 return null 会让"图少了一张"无从排查。
+  if (points.length < 2) {
+    return (
+      <figure className="demo-chart demo-line">
+        <figcaption>
+          <span className="demo-chart-kicker">{CHART_TYPES[chart.type] ?? chart.type}</span>
+          <strong>{chart.title}</strong>
+          {chart.subtitle && <small>{chart.subtitle}</small>}
+        </figcaption>
+        <p className="demo-chart-empty">数据点不足（少于 2 个），无法绘制趋势线。</p>
+      </figure>
+    );
+  }
   const width = 340;
   const height = 132;
   const pad = 12;
@@ -177,7 +189,20 @@ function Scatter({ chart }: { chart: DemoChart }) {
   const points = chart.samples ?? [];
   const outliers = chart.outliers ?? [];
   const all = [...points, ...outliers];
-  if (!all.length) return null;
+  // 空数据不再静默消失（此前 return null 让"图少了一张"无从排查）：
+  // 显式渲染空态，说明这张图为什么没有点。
+  if (!all.length) {
+    return (
+      <figure className="demo-chart demo-scatter">
+        <figcaption>
+          <span className="demo-chart-kicker">{CHART_TYPES[chart.type] ?? chart.type}</span>
+          <strong>{chart.title}</strong>
+          {chart.subtitle && <small>{chart.subtitle}</small>}
+        </figcaption>
+        <p className="demo-chart-empty">没有可绘制的样本点（samples 与 outliers 均为空）。</p>
+      </figure>
+    );
+  }
   const width = 340;
   const height = 150;
   const pad = 14;
@@ -250,7 +275,18 @@ function Scatter({ chart }: { chart: DemoChart }) {
 
 function Heatmap({ chart }: { chart: DemoChart }) {
   const values = chart.values ?? [];
-  if (!values.length) return null;
+  if (!values.length) {
+    return (
+      <figure className="demo-chart demo-heatmap">
+        <figcaption>
+          <span className="demo-chart-kicker">{CHART_TYPES[chart.type] ?? chart.type}</span>
+          <strong>{chart.title}</strong>
+          {chart.subtitle && <small>{chart.subtitle}</small>}
+        </figcaption>
+        <p className="demo-chart-empty">没有热力数据（values 为空）。</p>
+      </figure>
+    );
+  }
   return (
     <figure className="demo-chart demo-heatmap">
       <figcaption>

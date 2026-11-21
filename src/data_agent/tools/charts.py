@@ -28,6 +28,8 @@ from ._charts import (  # noqa: F401
     _box_stats,
     _chart_filename_stem,
     _checked_columns,
+    _ensure_echarts_series_has_data,
+    _ensure_plotly_fig_has_data,
     _humanize_chart_title,
     _infer_chart_type,
     _localize_boolean_categories,

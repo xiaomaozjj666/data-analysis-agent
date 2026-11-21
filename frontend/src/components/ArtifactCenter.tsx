@@ -2,11 +2,12 @@ import React, { useMemo, useState } from "react";
 import { Download, ExternalLink, FileSpreadsheet } from "lucide-react";
 import { pickChartIcon } from "../constants";
 import { formatBytes } from "../utils/format";
+import type { Artifact, CandidateDataset } from "../types";
 import AuthImage from "./AuthImage";
 import EChartThumb from "./EChartThumb";
+import EmptyState from "./EmptyState";
 import PlotlyThumb from "./PlotlyThumb";
 import SpotlightCard from "./rb/SpotlightCard";
-import type { Artifact } from "../types";
 
 interface ArtifactCenterProps {
   artifacts?: Artifact[] | null;
@@ -14,6 +15,14 @@ interface ArtifactCenterProps {
   onPreview: (item: Artifact) => void;
   // 批量下载回调：选中多张图表后一次性触发下载
   onBatchDownload?: (items: Artifact[]) => void;
+  // 候选数据集（join 等派生、未采纳）：展示"设为主数据"横幅
+  candidateDatasets?: CandidateDataset[];
+  onAdoptDataset?: (name: string) => void;
+  onDiscardDataset?: (name: string) => void;
+  adoptBusy?: boolean;
+  // 产物为空时提供"重新扫描"出口（修复手工/外部落盘文件不显示）
+  onRescan?: () => void;
+  rescanBusy?: boolean;
 }
 
 const ArtifactCenter = React.memo(function ArtifactCenter({
@@ -21,6 +30,12 @@ const ArtifactCenter = React.memo(function ArtifactCenter({
   onDownload,
   onPreview,
   onBatchDownload,
+  candidateDatasets,
+  onAdoptDataset,
+  onDiscardDataset,
+  adoptBusy,
+  onRescan,
+  rescanBusy,
 }: ArtifactCenterProps) {
   const artifacts = artifactsProp || [];
   const charts = useMemo(
@@ -64,12 +79,56 @@ const ArtifactCenter = React.memo(function ArtifactCenter({
     return result;
   }, [charts, effectiveFilter, sortBy]);
 
-  if (!artifacts.length) return <div className="empty-row">分析完成后，最终图表和数据文件会出现在这里。</div>;
+  if (!artifacts.length) {
+    return (
+      <EmptyState
+        icon={FileSpreadsheet}
+        title="还没有产物"
+        hint="分析完成后，最终图表和数据文件会出现在这里。如果产物文件是在会话外生成的（手工放置或脚本写入），可以重新扫描目录。"
+        actionLabel={rescanBusy ? "扫描中…" : "扫描产物目录"}
+        onAction={onRescan}
+        actionDisabled={rescanBusy || !onRescan}
+      />
+    );
+  }
 
   const hasBatchDownload = !!onBatchDownload;
+  const candidates = candidateDatasets ?? [];
 
   return (
     <div className="artifact-center">
+      {candidates.length > 0 && (
+        <div className="candidate-dataset-banner" role="status">
+          <div className="empty-state-body">
+            <strong>
+              有 {candidates.length} 个候选数据集待采纳
+            </strong>
+            <small>
+              {candidates
+                .map((item) => `${item.name}（${item.rows.toLocaleString()} 行）`)
+                .join("、")}
+              ——采纳后会替换当前主数据并重置行数基线；忽略则仅清除提示。
+            </small>
+          </div>
+          <div className="candidate-dataset-banner-actions">
+            {candidates.map((item) => (
+              <React.Fragment key={item.name}>
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={adoptBusy}
+                  onClick={() => onAdoptDataset?.(item.name)}
+                >
+                  设为主数据
+                </button>
+                <button type="button" disabled={adoptBusy} onClick={() => onDiscardDataset?.(item.name)}>
+                  忽略
+                </button>
+              </React.Fragment>
+            ))}
+          </div>
+        </div>
+      )}
       {charts.length > 0 && (
         <section className="artifact-section">
           <div className="artifact-section-label">
@@ -254,15 +313,17 @@ const ArtifactCenter = React.memo(function ArtifactCenter({
             })}
             </div>
           ) : (
-            <div className="empty-row">
-              当前筛选条件下暂无图表。本批产物仅包含{" "}
-              {enginesPresent.echarts && enginesPresent.plotly
-                ? "ECharts 与 Plotly"
-                : enginesPresent.echarts
-                  ? "ECharts"
-                  : "Plotly"}{" "}
-              图表。
-            </div>
+            <EmptyState
+              compact
+              title="当前筛选条件下暂无图表"
+              hint={`本批产物仅包含 ${
+                enginesPresent.echarts && enginesPresent.plotly
+                  ? "ECharts 与 Plotly"
+                  : enginesPresent.echarts
+                    ? "ECharts"
+                    : "Plotly"
+              } 图表。`}
+            />
           )}
         </section>
       )}

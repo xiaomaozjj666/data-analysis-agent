@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import SalesAudit from "../SalesAudit";
 import { ApiError } from "../../utils/api";
 
@@ -79,6 +79,13 @@ afterEach(() => {
   apiMock.mockReset();
 });
 
+// 挂载即拉取"上次核验结果"（sales-audit/last）。默认把它 stub 成失败
+//（本会话没有核验记录），且用 mockRejectedValueOnce 排在队列最前，
+// 避免恢复 effect 消耗掉测试为 runAudit/confirm 排队的 once-mock。
+beforeEach(() => {
+  apiMock.mockRejectedValueOnce(new Error("本会话还没有核验记录。"));
+});
+
 function fillDraft(value = "订单数：1 笔") {
   fireEvent.change(screen.getByLabelText("简报草稿"), { target: { value } });
 }
@@ -100,7 +107,9 @@ describe("SalesAudit", () => {
       "/api/sessions/s1/sales-audit",
       expect.objectContaining({ method: "POST" }),
     );
-    const body = JSON.parse(apiMock.mock.calls[0][1].body as string) as Record<string, unknown>;
+    // mock.calls[0] 是挂载时的"恢复上次核验"（beforeEach 已 stub 为失败），
+    // 核验请求是第 2 次。
+    const body = JSON.parse(apiMock.mock.calls[1][1].body as string) as Record<string, unknown>;
     expect(body).toEqual({ draft: "订单数：1 笔", confirm_full_table: false });
   });
 
@@ -136,8 +145,8 @@ describe("SalesAudit", () => {
       await screen.findByRole("button", { name: "确认按全表复算" }),
     );
 
-    await waitFor(() => expect(apiMock).toHaveBeenCalledTimes(2));
-    const body = JSON.parse(apiMock.mock.calls[1][1].body as string) as Record<string, unknown>;
+    await waitFor(() => expect(apiMock).toHaveBeenCalledTimes(3));
+    const body = JSON.parse(apiMock.mock.calls[2][1].body as string) as Record<string, unknown>;
     expect(body.confirm_full_table).toBe(true);
   });
 
@@ -155,7 +164,7 @@ describe("SalesAudit", () => {
         expect.objectContaining({ method: "POST" }),
       ),
     );
-    const body = JSON.parse(apiMock.mock.calls[1][1].body as string) as Record<string, unknown>;
+    const body = JSON.parse(apiMock.mock.calls[2][1].body as string) as Record<string, unknown>;
     expect(body).toEqual({
       draft: "订单数：1 笔",
       audit_id: AUDIT_ID,
@@ -259,8 +268,8 @@ describe("SalesAudit", () => {
     expect(screen.getByText(/deepseek-chat/)).toHaveTextContent("1.2 秒");
     expect(screen.getByText(/deepseek-chat/)).toHaveTextContent("已脱敏（3 格）");
     expect(screen.getByText(/deepseek-chat/)).toHaveTextContent("丢弃 1 行");
-    // 只填草稿，不自动发起核验请求
-    expect(apiMock).toHaveBeenCalledTimes(1);
+    // 只填草稿，不自动发起核验请求（另一次是挂载时的恢复探测）
+    expect(apiMock).toHaveBeenCalledTimes(2);
     expect(screen.queryByText("已核验 1")).not.toBeInTheDocument();
   });
 
@@ -279,8 +288,8 @@ describe("SalesAudit", () => {
     fireEvent.click(screen.getByRole("button", { name: /复算并核验/ }));
 
     await screen.findByText("已核验 1");
-    expect(apiMock).toHaveBeenCalledTimes(2);
-    const body = JSON.parse(apiMock.mock.calls[1][1].body as string) as Record<string, unknown>;
+    expect(apiMock).toHaveBeenCalledTimes(3);
+    const body = JSON.parse(apiMock.mock.calls[2][1].body as string) as Record<string, unknown>;
     expect(body.draft_trace_sha256).toBe(QUICK.trace_sha256);
     expect(
       screen.getByText(`已绑定起草轨迹 ${QUICK.trace_sha256.slice(0, 12)}…`),
@@ -304,7 +313,7 @@ describe("SalesAudit", () => {
     fireEvent.click(screen.getByRole("button", { name: /复算并核验/ }));
 
     await screen.findByText("已核验 1");
-    const body = JSON.parse(apiMock.mock.calls[1][1].body as string) as Record<string, unknown>;
+    const body = JSON.parse(apiMock.mock.calls[2][1].body as string) as Record<string, unknown>;
     expect(body).not.toHaveProperty("draft_trace_sha256");
   });
 
@@ -457,6 +466,28 @@ describe("SalesAudit", () => {
       expect(document.activeElement).toBe(receipt.closest("section")),
     );
     expect(screen.getByLabelText("简报草稿")).not.toBeDisabled();
+  });
+
+  it("挂载时恢复上次核验结果并提示草稿差异", async () => {
+    // 先清掉 beforeEach 排队的 once-reject，让挂载恢复拿到持久化结果
+    apiMock.mockReset();
+    apiMock.mockImplementation((url: string) => {
+      if (url.endsWith("/sales-audit/last")) {
+        return Promise.resolve({
+          saved_at: 1763610360,
+          draft: "订单数：1 笔（上次核验）",
+          result: VERIFIED,
+        });
+      }
+      return Promise.reject(new Error(`unexpected ${url}`));
+    });
+    render(<SalesAudit sessionId="s1" filename="sales.csv" initialDemo={false} />);
+
+    // 结果区直接出现，不需要用户重新复算
+    expect(await screen.findByText("已核验 1")).toBeInTheDocument();
+    expect(screen.getByText(/已恢复上次核验结果/)).toBeInTheDocument();
+    // 上次核验的草稿放回工作台（当前为空时）
+    expect(await screen.findByLabelText("简报草稿")).toHaveValue("订单数：1 笔（上次核验）");
   });
 
   it("快速起草失败后可填入赛前录制输出", async () => {

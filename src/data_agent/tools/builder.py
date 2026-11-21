@@ -111,6 +111,7 @@ from .charts import (
     _apply_outlier_scale_controls,
     _chart_filename_stem,
     _checked_columns,
+    _ensure_plotly_fig_has_data,
     _humanize_chart_title,
     _infer_chart_type,
     _localize_boolean_categories,
@@ -1099,6 +1100,9 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
             # 密度图收尾：清掉边缘直方图的网格/刻度，并为档位色标留出右边距
             # （必须在上面通用布局样式之后调用，否则会被覆盖）。
             finalize_density_layout(fig, density_view)
+        # 空图兜底：所有序列都没有数据点时直接报错让模型重试，不产出
+        # "能打开但一片空白"的 HTML（轴写反/聚合列全空时曾静默出空白图）。
+        _ensure_plotly_fig_has_data(fig, chart_type)
         html_path = workspace.artifacts_dir / f"{stem}.html"
         shared_plotly = workspace.ensure_plotly_bundle()
         relative_script = (
@@ -1374,8 +1378,11 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         left_on and right_on are the join keys; omit right_on when both sides use the
         same key names. how selects inner / left / right / outer.
 
-        The merged result replaces the active dataset, and its row count becomes the
-        new baseline for the cleaning guards.
+        The merged result is saved as a candidate dataset (joined_data.csv) and does
+        NOT replace the active dataset. To analyze the merged table, call
+        adopt_dataset('joined_data.csv') explicitly — or let the user click
+        「设为主数据」in the UI. This keeps silent row-count changes out of the
+        main data: the user always sees what happened before anything is adopted.
 
         Guards (always enforced regardless of parameters):
           - Join keys must exist on both sides; the error lists the available columns.
@@ -1406,23 +1413,85 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         left_keys, right_keys = normalize_keys(left_on, right_on)
         validate_keys(left_frame, right_frame, left_keys, right_keys)
         merged, diagnostics = merge_datasets(left_frame, right_frame, left_keys, right_keys, how)
-        # 护栏全部通过后才接管数据集：被拒绝的合并不留下任何状态变更。
-        workspace.adopt_dataset(merged.reset_index(drop=True), reset_source_baseline=True)
+        merged = merged.reset_index(drop=True)
+        # 显式传 frame：主数据未接管，缺省会把活动数据集（旧主数据）写成候选。
         output = workspace.save_dataframe(
-            "joined_data.csv", description=f"跨源合并结果（{source_path.name}）"
+            "joined_data.csv", dataframe=merged, description=f"跨源合并候选数据集（{source_path.name}，未采纳）"
+        )
+        # 候选登记：产物中心可见、可一键采纳；主数据保持不变。
+        workspace.register_candidate_dataset(
+            "joined_data.csv",
+            rows=len(merged),
+            note=f"由 {source_path.name} 以 {how} 合并得到",
+        )
+        warnings: list[str] = list(diagnostics.get("warnings", [])) if isinstance(
+            diagnostics, dict
+        ) else []
+        if len(merged) < len(left_frame) / 2:
+            warnings.append(
+                f"合并结果（{len(merged)} 行）比主数据（{len(left_frame)} 行）少了一半以上："
+                "多为 inner join 键不匹配所致。采纳前请先确认这是预期行为。"
+            )
+        diagnostics_clean = (
+            {key: value for key, value in diagnostics.items() if key != "warnings"}
+            if isinstance(diagnostics, dict)
+            else {}
         )
         return json_text(
             {
                 "status": "ok",
+                "adopted": False,
                 "source": source_path.name,
                 "how": how,
                 "left_on": left_keys,
                 "right_on": right_keys,
-                **diagnostics,
+                "candidate": {"name": "joined_data.csv", "rows": len(merged)},
+                "active_rows": len(workspace.dataframe),
+                **diagnostics_clean,
+                "warnings": warnings,
                 "output": output,
                 "note": (
-                    "合并结果已成为新的活动数据集，行数基线同步重置，"
-                    "后续 clean_data 的安全下限以合并结果为准。"
+                    "合并结果已保存为候选数据集 joined_data.csv，主数据未改变。"
+                    "若要基于合并结果继续分析，请调用 adopt_dataset 工具显式采纳，"
+                    "或由用户在产物中心点击「设为主数据」。"
+                ),
+            }
+        )
+
+    @tool
+    def adopt_dataset(name: str) -> str:
+        """Adopt a candidate dataset as the active dataset (explicit, user-visible).
+
+        Candidates are produced by join_datasets (and exports). Adoption REPLACES
+        the active dataset and resets the row-count baseline for cleaning guards,
+        so call it only after telling the user which table becomes active and how
+        the row count changes. Call with an empty name to list pending candidates.
+        """
+        candidates = workspace.candidate_datasets
+        if not (name or "").strip():
+            if not candidates:
+                return json_text({"status": "needs_input", "candidates": [], "message": "当前没有待采纳的候选数据集。"})
+            return json_text(
+                {
+                    "status": "needs_input",
+                    "candidates": candidates,
+                    "message": "请从 candidates 中选择要采纳的文件名，再次调用本工具。",
+                }
+            )
+        target = Path(name).name
+        if target not in {item["name"] for item in candidates}:
+            raise ValueError(
+                f"{target} 不在候选数据集中。可用候选：{[item['name'] for item in candidates] or '（无）'}。"
+                "若该文件已在产物中，也可让用户在产物中心手动采纳。"
+            )
+        result = workspace.adopt_candidate(target)
+        return json_text(
+            {
+                "status": "ok",
+                **result,
+                "note": (
+                    f"已采纳 {result['name']} 为活动数据集：{result['before_rows']} 行 → "
+                    f"{result['after_rows']} 行，行数基线已重置。请把这件事明确告知用户。"
                 ),
             }
         )
@@ -1564,6 +1633,7 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         clean_data,
         transform_data,
         join_datasets,
+        adopt_dataset,
         web_search,
         query_database,
         compute_registered_metrics,

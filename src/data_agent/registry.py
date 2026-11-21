@@ -267,6 +267,8 @@ class SessionRegistry:
                 }
                 for item in record.workspace.artifacts
             ],
+            # 候选数据集登记：重启后"待采纳"横幅不丢，采纳状态跨进程一致。
+            "candidates": record.workspace.candidate_datasets,
             "created_at": record.created_at,
             "updated_at": time.time(),
             # plan_only 模式产出的待审批计划，恢复时回填到 record.pending_plan，
@@ -344,6 +346,7 @@ class SessionRegistry:
         except (OSError, ValueError):
             logger.exception("Workspace checkpoint restore failed for %s", session_id)
         workspace.restore_artifacts(payload.get("artifacts"))
+        workspace.restore_candidates(payload.get("candidates"))
         record = SessionRecord(workspace)
         record.chat = [
             item

@@ -29,6 +29,7 @@ from data_agent.chart_sampling import (  # noqa: F401
     _sample_echarts_option_for_thumb,
     _sample_plotly_figure_for_thumb,
 )
+from data_agent._registry_payloads import _artifact_payload
 from data_agent.registry import ChartEditRequest, _artifact_file
 from data_agent.tools import _PLOTLY_DARK_MODE_SCRIPT
 from data_agent.tools.builder import _render_plotly_html
@@ -55,6 +56,29 @@ from ._artifacts import (  # noqa: F401
 )
 
 router = APIRouter()
+
+
+@router.post("/api/sessions/{session_id}/artifacts/rescan")
+def rescan_artifacts(session_id: str) -> dict[str, Any]:
+    """重新扫描产物目录并把未注册的文件补登记。
+
+    修复"文件已落盘但产物页为 0"：手工放置的文件、外部脚本生成的文件、
+    旧进程写出的文件，扫一遍即全部进注册表并随 session payload 返回。
+    """
+    from data_agent import api
+
+    record = api.registry.get(session_id)
+    try:
+        added = record.workspace.sync_artifacts_from_disk()
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="扫描产物目录失败。") from exc
+    if added:
+        api.registry.persist(session_id, record)
+    return {
+        "added": added,
+        "total": record.workspace.count_artifacts(),
+        "artifacts": _artifact_payload(session_id, record.workspace.artifacts),
+    }
 
 #: 支持 ``marker.color`` 的 Plotly 轨迹类型——图表编辑的"改配色"只对它们生效。
 #: heatmap / histogram2d / histogram2dcontour / contour / image / splom 等按

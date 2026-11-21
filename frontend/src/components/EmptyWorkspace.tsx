@@ -240,30 +240,6 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
                   blurb: "37 行里，缺数、负数、1 亿级异常值都齐了。",
                   audit: false,
                 },
-                {
-                  kind: "growth",
-                  title: "多维增长月报",
-                  blurb: "12 个月、3 个渠道、4 个品类，能拆出 10 张图。",
-                  audit: false,
-                },
-                {
-                  kind: "finance",
-                  title: "公司财报分析",
-                  blurb: "12 个月利润表、现金流和预算，拆开看钱去哪了。",
-                  audit: false,
-                },
-                {
-                  kind: "grades",
-                  title: "年级成绩分析",
-                  blurb: "3,000 名学生、60 个班，姓名和学号脱敏。",
-                  audit: false,
-                },
-                {
-                  kind: "bigdata",
-                  title: "20 万行密度视图",
-                  blurb: "20 万行聚成格子看，不卡。",
-                  audit: false,
-                },
               ].map((demo) => (
                 <button
                   key={demo.kind}
@@ -276,6 +252,49 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
                   <small>{demo.blurb}</small>
                 </button>
               ))}
+              {/* 次级演示：默认折叠。全量目录曾把首屏选择变成 7 选 1 的
+                  决策负担（收敛前实测首屏 F 加上扫描时间显著变长），
+                  这里保 3 个主推，其余收进二级目录，入口保留不删数据。 */}
+              <details className="empty-demo-more">
+                <summary>更多示例（增长 / 财报 / 成绩 / 20 万行）</summary>
+                {[
+                  {
+                    kind: "growth",
+                    title: "多维增长月报",
+                    blurb: "12 个月、3 个渠道、4 个品类，能拆出 10 张图。",
+                    audit: false,
+                  },
+                  {
+                    kind: "finance",
+                    title: "公司财报分析",
+                    blurb: "12 个月利润表、现金流和预算，拆开看钱去哪了。",
+                    audit: false,
+                  },
+                  {
+                    kind: "grades",
+                    title: "年级成绩分析",
+                    blurb: "3,000 名学生、60 个班，姓名和学号脱敏。",
+                    audit: false,
+                  },
+                  {
+                    kind: "bigdata",
+                    title: "20 万行密度视图",
+                    blurb: "20 万行聚成格子看，不卡。",
+                    audit: false,
+                  },
+                ].map((demo) => (
+                  <button
+                    key={demo.kind}
+                    type="button"
+                    className="empty-demo-item"
+                    disabled={uploading}
+                    onClick={() => handleLoadSample(demo.kind, demo.audit)}
+                  >
+                    <strong>{demo.title}</strong>
+                    <small>{demo.blurb}</small>
+                  </button>
+                ))}
+              </details>
             </div>
           </details>
         </div>

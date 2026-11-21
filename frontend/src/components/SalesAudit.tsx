@@ -641,6 +641,53 @@ export default function SalesAudit({
     if (sessionLost) recoveryRef.current?.focus({ preventScroll: true });
   }, [sessionLost]);
 
+  // 恢复上次核验：打开核验页即拉取服务端保存的最近一次结果，
+  // 重开/刷新不再需要重新复算。404（本会话还没有核验记录）视为正常。
+  // 演示会话先走路演视图（有自己的展示数据），退出路演进入工作台时
+  // showcase 翻转为 false，此时才恢复——若只在挂载时拉取，演示会话
+  // 永远不会恢复（实测 2026-11-21：路演退出后横幅缺失）。
+  const [restoredAudit, setRestoredAudit] = useState<{
+    savedAt: number;
+    draft: string;
+    confirmed: boolean;
+  } | null>(null);
+  useEffect(() => {
+    if (showcase) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const payload = await api<{
+          saved_at: number;
+          draft: string;
+          result: AuditResult;
+          receipt?: ConfirmReceipt | null;
+          confirmed_brief?: string | null;
+        }>(`/api/sessions/${sessionId}/sales-audit/last`);
+        if (cancelled) return;
+        setAudit(payload.result);
+        if (payload.receipt) setReceipt(payload.receipt);
+        if (payload.confirmed_brief) setServerBrief(payload.confirmed_brief);
+        // 草稿恢复：当前工作台为空时，把上次核验的草稿放回去；
+        // 用户已开始输入则不动，避免覆盖正在编辑的内容。
+        if (payload.draft && !draftRef.current) {
+          draftRef.current = payload.draft;
+          setDraft(payload.draft);
+          setDemoDraft(false);
+        }
+        setRestoredAudit({
+          savedAt: payload.saved_at,
+          draft: payload.draft,
+          confirmed: Boolean(payload.receipt),
+        });
+      } catch {
+        /* 没有历史核验记录：保持空白 */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, showcase]);
+
   function updateDraft(value: string, isDemo = false) {
     const normalized = value.replace(/\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]/g, "\n");
     draftRef.current = normalized;
@@ -1216,6 +1263,19 @@ export default function SalesAudit({
               </span>
             )}
           </div>
+          {restoredAudit && (
+            <div className="sales-audit-existing" role="status">
+              <p className="sales-audit-existing-title">
+                已恢复上次核验结果（{new Date(restoredAudit.savedAt * 1000).toLocaleString()}）
+                {restoredAudit.confirmed ? " · 已确认发布" : ""}
+              </p>
+              <small>
+                {draft !== restoredAudit.draft
+                  ? "当前草稿与上次核验的内容不一致，重新核验后会覆盖本结果。"
+                  : "草稿未变，可直接沿用本结果确认发布。"}
+              </small>
+            </div>
+          )}
           {existingLedger && existingLedger.entries.length > 0 && (
             <div className="sales-audit-existing" role="status">
               <p className="sales-audit-existing-title">

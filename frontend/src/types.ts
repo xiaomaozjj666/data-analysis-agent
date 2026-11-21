@@ -127,8 +127,17 @@ export interface Session {
   chat?: ChatMessage[];
   // 计划审批：plan_only=true 时后端在 plan_analysis 后结束流，并写入待审阅计划
   pending_plan?: PlanStep[] | null;
+  // 候选数据集：join 等工具产出、尚未采纳为活动数据集的派生表
+  candidate_datasets?: CandidateDataset[];
   demo?: DemoPayload;
   [key: string]: unknown;
+}
+
+export interface CandidateDataset {
+  name: string;
+  rows: number;
+  note?: string;
+  created_at?: string;
 }
 
 // 历史会话列表中的轻量条目（/api/sessions 返回）

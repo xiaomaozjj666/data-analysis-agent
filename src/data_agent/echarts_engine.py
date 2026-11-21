@@ -3545,6 +3545,12 @@ def _render_echarts(
         stacked=stacked,
     )
 
+    # 空图兜底：所有 series 都没有数据时直接报错让模型重试，不产出
+    # "能打开但一片空白"的 HTML（轴写反/聚合列全空时曾静默出空白图）。
+    from data_agent.tools._charts.validate import _ensure_echarts_series_has_data
+
+    _ensure_echarts_series_has_data(option, chart_type)
+
     # 自动白话解读（密度图走密度编码说明，见 _density_interpretation）
     interpretation = _auto_interpret(
         df,

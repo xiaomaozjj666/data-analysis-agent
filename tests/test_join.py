@@ -246,8 +246,16 @@ def test_join_tool_requires_left_on(workspace):
         _tools(workspace)["join_datasets"].invoke({"right_source": "region.csv"})
 
 
-def test_join_tool_replaces_active_dataset_and_resets_baseline(workspace):
+def test_join_tool_saves_candidate_without_touching_active_dataset(workspace):
+    """改判（原断言为"join 直接接管主数据"）：join 只产候选、不静默接管。
+
+    原行为成立的原因：当时认为"合并是分析意图的一部分"，自动接管省一步。
+    改判原因：实测发生过 inner join 键不匹配把 28,010 行主数据静默换成
+    200 行，页面/报告与数据从此对不上。现契约：主数据不动，合并结果
+    落候选，必须显式采纳（adopt_dataset 工具或 UI「设为主数据」）。
+    """
     before_rows = len(workspace.dataframe)
+    before_columns = list(workspace.dataframe.columns)
     mapping = pd.DataFrame({"region": ["East", "West"], "manager": ["张三", "李四"]})
     _add_upload(workspace, "region.csv", mapping)
     payload = json.loads(
@@ -256,10 +264,64 @@ def test_join_tool_replaces_active_dataset_and_resets_baseline(workspace):
         )
     )
     assert payload["status"] == "ok"
-    assert "manager" in workspace.dataframe.columns
+    assert payload["adopted"] is False
+    # 主数据保持原样：列与行数都不变
+    assert list(workspace.dataframe.columns) == before_columns
     assert len(workspace.dataframe) == before_rows
-    # 基线重置为合并结果行数，后续清洗才有正确参照
-    assert workspace.source_row_count == len(workspace.dataframe)
+    # 候选已登记，主数据基线未重置
+    assert payload["candidate"]["name"] == "joined_data.csv"
+    assert {item["name"] for item in workspace.candidate_datasets} == {"joined_data.csv"}
+    assert workspace.source_row_count == before_rows
+
+
+def test_join_shrink_emits_warning_and_adopt_restores_flow(tmp_path):
+    """收缩型 join（键不匹配丢一半以上行）要给警示；采纳后基线才重置。
+
+    主数据 10 行只有 1 行能匹配右表：inner join 后剩 1 行（< 一半），
+    必须带警示；采纳后主数据换成 1 行、基线重置，clean_data 不再被旧
+    基线的 20% 下限挡住。
+    """
+    data = pd.DataFrame(
+        {
+            "region": ["East"] + [f"R{i}" for i in range(9)],
+            "sales": [float(index) for index in range(10)],
+        }
+    )
+    source = tmp_path / "main.csv"
+    data.to_csv(source, index=False)
+    ws = DataWorkspace(tmp_path / "runs", session_id="shrink-test")
+    ws.load(source, copy_into_workspace=True)
+    ws.save_upload("region.csv", pd.DataFrame({"region": ["East"], "manager": ["张三"]}).to_csv(index=False).encode("utf-8"))
+    payload = json.loads(
+        _tools(ws)["join_datasets"].invoke(
+            {"right_source": "region.csv", "left_on": ["region"], "how": "inner"}
+        )
+    )
+    assert payload["status"] == "ok"
+    assert any("少了一半以上" in warning for warning in payload["warnings"])
+    # 采纳：主数据换成合并结果，基线重置为合并结果行数
+    adopt_payload = json.loads(
+        _tools(ws)["adopt_dataset"].invoke({"name": "joined_data.csv"})
+    )
+    assert adopt_payload["status"] == "ok"
+    assert "manager" in ws.dataframe.columns
+    assert ws.source_row_count == len(ws.dataframe)
+    assert ws.candidate_datasets == []
+
+
+def test_adopt_dataset_lists_candidates_when_called_without_name(workspace):
+    _add_upload(workspace, "region.csv", pd.DataFrame({"region": ["East"], "manager": ["A"]}))
+    _tools(workspace)["join_datasets"].invoke(
+        {"right_source": "region.csv", "left_on": ["region"], "how": "inner"}
+    )
+    payload = json.loads(_tools(workspace)["adopt_dataset"].invoke({"name": ""}))
+    assert payload["status"] == "needs_input"
+    assert [item["name"] for item in payload["candidates"]] == ["joined_data.csv"]
+
+
+def test_adopt_dataset_rejects_unknown_name(workspace):
+    with pytest.raises(ValueError, match="不在候选数据集中"):
+        _tools(workspace)["adopt_dataset"].invoke({"name": "not_a_candidate.csv"})
 
 
 def test_join_tool_registers_dataset_artifact(workspace):
@@ -294,10 +356,11 @@ def test_join_tool_rejects_source_outside_workspace(workspace, tmp_path):
 
 
 def test_clean_data_accepts_deduplication_after_a_shrinking_join(tmp_path):
-    """收缩型合并后基线必须跟着降，否则连去重都会被 20% 安全下限挡住。
+    """收缩型合并 + 显式采纳后，基线必须跟着降，否则连去重都会被挡住。
 
     这是一个真实的使用障碍：主数据 10 行、合并后只剩 1 行时，若基线仍锚定在
-    10 行，安全下限为 2 行，clean_data 会拒绝任何操作，合并结果等于无法继续加工。
+    10 行，安全下限为 2 行，clean_data 会拒绝任何操作。改判：基线重置从
+    "join 自动触发"移到"adopt_dataset 显式采纳"时触发，合并本身不再改主数据。
     """
     ws = DataWorkspace(tmp_path / "runs", session_id="shrink")
     source = tmp_path / "orders.csv"
@@ -315,6 +378,11 @@ def test_clean_data_accepts_deduplication_after_a_shrinking_join(tmp_path):
         )
     )
     assert payload["result_rows"] == 1
+    # join 只产候选：基线不动
+    assert ws.source_row_count == 10
+    # 显式采纳后才接管并重置基线
+    adopted = json.loads(tools["adopt_dataset"].invoke({"name": "joined_data.csv"}))
+    assert adopted["status"] == "ok"
     assert ws.source_row_count == 1
     # 若基线未重置，此处会因 max(1, (10+4)//5)=2 行的下限而拒绝
     result = json.loads(tools["clean_data"].invoke({"drop_duplicates": True}))
@@ -322,7 +390,10 @@ def test_clean_data_accepts_deduplication_after_a_shrinking_join(tmp_path):
 
 
 def test_snapshot_restore_rolls_back_the_row_baseline(workspace):
-    """合并步骤回滚后，行数基线必须一起回到合并前的规模。"""
+    """显式采纳后的行数基线，回滚时必须一起回到采纳前的规模。
+
+    改判：join 不再改变基线（只产候选），回滚语义改在采纳路径上验证。
+    """
     snapshot = workspace.snapshot_state()
     baseline_before = snapshot.source_row_count
     mapping = pd.DataFrame({"region": ["East"], "manager": ["张三"]})
@@ -330,6 +401,9 @@ def test_snapshot_restore_rolls_back_the_row_baseline(workspace):
     _tools(workspace)["join_datasets"].invoke(
         {"right_source": "east.csv", "left_on": ["region"], "how": "inner"}
     )
+    # join 不改变基线
+    assert workspace.source_row_count == baseline_before
+    _tools(workspace)["adopt_dataset"].invoke({"name": "joined_data.csv"})
     assert workspace.source_row_count != baseline_before
     workspace.restore_state(snapshot)
     assert workspace.source_row_count == baseline_before

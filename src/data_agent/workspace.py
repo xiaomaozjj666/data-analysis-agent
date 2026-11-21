@@ -24,6 +24,7 @@ import re
 import shutil
 import threading
 from collections import OrderedDict
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -138,6 +139,10 @@ class DataWorkspace:
         self._source_row_count = 0
         self.source_path: Path | None = None
         self._artifacts: list[Artifact] = []
+        # 候选数据集：分析工具（join/SQL 等）产出的派生表先落盘为候选，
+        # 不直接接管主数据；用户（或模型显式调用 adopt 工具）确认后才采纳。
+        # 结构：{文件名: {"rows": int, "note": str, "created_at": iso}}
+        self._candidate_datasets: dict[str, dict[str, Any]] = {}
         self.load_warnings: list[str] = []
         # Profile 缓存：避免 finalize 等节点重复计算 profile（对大 DataFrame
         # 的 duplicated().sum() 和 nunique() 开销显著）。数据变更时自动失效。
@@ -424,7 +429,6 @@ class DataWorkspace:
         self, dataframe: pd.DataFrame, *, reset_source_baseline: bool = False
     ) -> None:
         """把一张新表设为活动数据集。
-
         Args:
             dataframe: 新的活动数据集。
             reset_source_baseline: 是否同时重置 ``source_row_count`` 基线。
@@ -438,6 +442,88 @@ class DataWorkspace:
         self.dataframe = dataframe
         if reset_source_baseline:
             self._source_row_count = len(dataframe)
+
+    # ------------------------------------------------------------------
+    # 候选数据集（派生表显式采纳）
+    # ------------------------------------------------------------------
+
+    @property
+    def candidate_datasets(self) -> list[dict[str, Any]]:
+        """当前待采纳的候选数据集列表（按登记顺序）。"""
+        return [
+            {"name": name, **info} for name, info in self._candidate_datasets.items()
+        ]
+
+    def register_candidate_dataset(self, name: str, rows: int, note: str = "") -> None:
+        """登记一个候选数据集（不改变活动数据集）。"""
+        self._candidate_datasets[name] = {
+            "rows": int(rows),
+            "note": note,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+        }
+
+    def clear_candidate_dataset(self, name: str) -> None:
+        self._candidate_datasets.pop(name, None)
+
+    def restore_candidates(self, candidates: Any) -> None:
+        """从 session.json 恢复候选数据集登记（服务重启后仍可见）。
+
+        兼容两种落盘形态：list[dict]（含 name 键）与 dict[name, info]。
+        """
+        if isinstance(candidates, dict):
+            candidates = [
+                {"name": name, **(info if isinstance(info, dict) else {})}
+                for name, info in candidates.items()
+            ]
+        if not isinstance(candidates, list):
+            return
+        for item in candidates:
+            if isinstance(item, dict) and isinstance(item.get("name"), str):
+                name = item["name"]
+                self._candidate_datasets[name] = {
+                    "rows": int(item.get("rows", 0)),
+                    "note": str(item.get("note", "")),
+                    "created_at": str(item.get("created_at", "")),
+                }
+
+    def adopt_candidate(self, name: str) -> dict[str, Any]:
+        """把候选数据集（或产物中的任意数据文件）采纳为活动数据集。
+
+        Returns:
+            {"name": ..., "before_rows": ..., "after_rows": ...}。
+
+        Raises:
+            FileNotFoundError: 候选文件不在产物目录中。
+            ValueError: 文件解析失败。
+        """
+        path = self.artifacts_dir / Path(name).name
+        if not path.is_file():
+            raise FileNotFoundError(f"候选数据集不存在：{name}")
+        before_rows = len(self.dataframe)
+        frame = self.read_source(path)
+        self.adopt_dataset(frame.reset_index(drop=True), reset_source_baseline=True)
+        self.clear_candidate_dataset(path.name)
+        # 采纳后立即落 checkpoint，避免"界面显示已采纳、重启又回滚"。
+        self.save_checkpoint()
+        return {
+            "name": path.name,
+            "before_rows": before_rows,
+            "after_rows": len(frame),
+        }
+
+    def sync_artifacts_from_disk(self) -> int:
+        """把产物目录里未被注册的文件补登记进内存注册表。
+
+        修复"文件已落盘但产物页为 0"：任何写盘方（手工放文件、外部脚本、
+        旧版本进程）都不该依赖服务端内存是否记得它。restore_artifacts 对
+        已注册路径是幂等的（register_artifact 按路径去重），因此反复调用安全。
+
+        Returns:
+            本次新登记的文件数。
+        """
+        before = len(self._artifacts)
+        self.restore_artifacts()
+        return len(self._artifacts) - before
 
     @staticmethod
     def _sniff_encoding(path: Path) -> str:

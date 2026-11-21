@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pandas as pd
 
@@ -30,6 +32,62 @@ def _checked_columns(df: pd.DataFrame, columns: list[str] | None) -> list[str]:
     if missing:
         raise ValueError(f"列不存在：{missing}。可用列：{list(df.columns)}")
     return result
+
+
+def _ensure_plotly_fig_has_data(fig: Any, chart_type: str) -> None:
+    """渲染前兜底：figure 里没有任何数据点时拒绝产出空白图表。
+
+    触发场景（实测均出现过）：聚合列全为 NULL、轴写反后聚合键全空、
+    过滤/抽样把数据清空。此前这些情况会静默生成"能打开但一片空白"的
+    HTML 产物，用户以为功能坏了。报错文案面向 ReAct 模型：说明空在哪、
+    给出可执行的修正方向，让模型下一轮自行纠正。
+    """
+    for trace in getattr(fig, "data", ()) or ():
+        # SPLOM（scatter_matrix）与平行坐标图的数据不在 x/y 上，而在
+        # dimensions[].values 里——只查 x/y 会把有数据的 splom 误判为空图。
+        dimensions = getattr(trace, "dimensions", None)
+        if dimensions:
+            for dimension in dimensions:
+                dim_values = (
+                    dimension.get("values")
+                    if isinstance(dimension, dict)
+                    else getattr(dimension, "values", None)
+                )
+                if dim_values is not None and len(dim_values) > 0:
+                    return
+        for attr in ("x", "y", "z", "values", "locations"):
+            values = getattr(trace, attr, None)
+            if values is None:
+                continue
+            try:
+                if len(values) > 0:
+                    return
+            except TypeError:
+                return  # 标量属性（如 pie 的 labels 可能是序列以外形态）
+    raise ValueError(
+        f"图表数据为空（{chart_type}）：所有序列都没有数据点，继续渲染只会得到一张空白图。"
+        "常见原因：指定的列全为空值、聚合后没有有效行、或 x/y 轴写反。"
+        "请先用 inspect_data 确认列的非空行数，再换有效列或调整聚合/过滤参数重试。"
+    )
+
+
+def _ensure_echarts_series_has_data(option: dict[str, Any], chart_type: str) -> None:
+    """ECharts 渲染前兜底：所有 series 的数据都为空时拒绝产出空白图表。"""
+    for series in option.get("series") or ():
+        if not isinstance(series, dict):
+            return
+        data = series.get("data")
+        if data is None:
+            return  # 系列数据可由 dataset/visualMap 等机制提供，不能一概判空
+        if isinstance(data, (list, tuple)) and len(data) > 0:
+            return
+        if not isinstance(data, (list, tuple)):
+            return
+    raise ValueError(
+        f"图表数据为空（{chart_type}）：所有 series 都没有数据，继续渲染只会得到一张空白图。"
+        "常见原因：指定的列全为空值、聚合后没有有效行、或 x/y 轴写反。"
+        "请先用 inspect_data 确认列的非空行数，再换有效列或调整聚合/过滤参数重试。"
+    )
 
 
 def _numeric_columns(df: pd.DataFrame, columns: list[str] | None = None) -> list[str]:

@@ -365,7 +365,75 @@ def sales_audit(session_id: str, payload: SalesAuditRequest) -> dict[str, Any]:
         }
     except LedgerError as exc:
         result["ledger_error"] = str(exc)
+    # 核验结果随会话持久化：重开会话/刷新页面后前端可恢复"上次核验"，
+    # 不必重新复算。写失败不影响本次核验结果，只附加说明。
+    from data_agent.audit_state import save_last_audit
+
+    try:
+        save_last_audit(workspace.root, result, payload.draft)
+    except OSError:
+        result["state_error"] = "核验结果本地持久化失败，本次结果仅在当前页面有效。"
     return result
+
+
+@router.get("/api/sessions/{session_id}/sales-audit/last")
+def get_last_audit(session_id: str) -> dict[str, Any]:
+    """返回最近一次核验的完整结果（含草稿正文与确认回执）。
+
+    前端打开核验页时调用：有记录即恢复上次核验视图并提示"若草稿有改动
+    请重新核验"；没有记录返回 404，前端维持空白核验工作台。
+    """
+    from data_agent import api
+    from data_agent.audit_state import load_last_audit
+
+    workspace = api.registry.get(session_id).workspace
+    payload = load_last_audit(workspace.root)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="本会话还没有核验记录。")
+    return payload
+
+
+class DatasetAdoptRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    # discard=True 时只清除候选登记，不改变活动数据集（用户点"忽略"）。
+    discard: bool = False
+
+
+@router.post("/api/sessions/{session_id}/datasets/adopt")
+def adopt_candidate_dataset(session_id: str, payload: DatasetAdoptRequest) -> dict[str, Any]:
+    """把候选数据集采纳为活动数据集（或仅忽略候选）。
+
+    与 join 工具共享同一实现：采纳会替换主数据并重置行数基线，落 checkpoint；
+    discard 只清登记。成功后持久化会话并返回新的候选列表，前端据此刷新横幅。
+    """
+    from data_agent import api
+
+    record = api.registry.get(session_id)
+    name = Path(payload.name).name
+    known = {item["name"] for item in record.workspace.candidate_datasets}
+    if payload.discard:
+        if name not in known:
+            raise HTTPException(status_code=404, detail="候选数据集不存在或已被处理。")
+        record.workspace.clear_candidate_dataset(name)
+        api.registry.persist(session_id, record)
+        return {"status": "discarded", "name": name, "candidate_datasets": record.workspace.candidate_datasets}
+    if name not in known:
+        raise HTTPException(
+            status_code=404,
+            detail="候选数据集不存在或已被处理，请刷新会话后重试。",
+        )
+    try:
+        result = record.workspace.adopt_candidate(name)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    api.registry.persist(session_id, record)
+    return {
+        "status": "adopted",
+        **result,
+        "candidate_datasets": record.workspace.candidate_datasets,
+    }
 
 
 @router.delete("/api/sessions/{session_id}", status_code=204)
