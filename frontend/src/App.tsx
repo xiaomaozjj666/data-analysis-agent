@@ -435,6 +435,11 @@ function App() {
       setStepProgress(null);
       restoreCompletedAnalysis(latest, { setResult, setPlan, setCompleted });
       restoreFollowUps(latest, setFollowUps);
+      // 历史列表可能不返回 demo 元数据（只给轻量摘要），此时以完整会话里的
+      // demo 为准。只有销售核验示例才进入路演；regional_policy 等演示仍走分析页。
+      const demo = item.demo ?? latest.demo;
+      const openAuditDemo = demo?.open_audit === true && demo?.kind === "sales_audit";
+      auditDemoSession.current = openAuditDemo ? item.id : null;
       if (!running) {
         startedAtRef.current =
           (latest as Session & { analysis_started_at?: number | null })
@@ -443,7 +448,8 @@ function App() {
       }
       // 恢复上次查看的 Tab：有 preview 数据时恢复 lastActiveTab（如数据/产物），
       // 无数据时回退 analysis，避免切到空白的数据 Tab。
-      setActiveTab(latest.preview?.length ? lastActiveTab : "analysis");
+      if (openAuditDemo) setActiveTab("audit");
+      else setActiveTab(latest.preview?.length ? lastActiveTab : "analysis");
       fetchHistory();
     } catch (err) {
       const error = err as Error & { status?: number };

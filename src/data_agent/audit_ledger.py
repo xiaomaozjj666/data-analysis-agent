@@ -69,12 +69,19 @@ def _entry_hash(entry: dict[str, Any]) -> str:
     return hashlib.sha256(_canonical(body)).hexdigest()
 
 
-def read_entries(path: Path) -> list[dict[str, Any]]:
-    """逐行读取账本；空文件返回空列表。行解析失败也算账本损坏。"""
+def read_entries(path: Path, *, missing_ok: bool = True) -> list[dict[str, Any]]:
+    """逐行读取账本；空文件返回空列表。行解析失败也算账本损坏。
+
+    ``missing_ok=True``（默认）时文件不存在返回空列表，供首写与“会话还没有账本”
+    的 UI 路径使用。离线校验必须传 ``missing_ok=False``：否则不存在的账本会被
+    当成“0 条、校验通过”（2026-11-21 审查：空路径判绿的根因）。
+    """
     try:
         raw = Path(path).read_text(encoding="utf-8")
     except FileNotFoundError:
-        return []
+        if missing_ok:
+            return []
+        raise
     except OSError as exc:
         raise LedgerError(f"无法读取账本：{exc}") from exc
     entries = []
@@ -157,7 +164,16 @@ def append_entry(
             raise LedgerError(f"签名密钥不可用（{exc}）") from exc
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
+            # 读侧按行解析时容忍末行没有换行；但写侧若直接追加，会把新记录
+            # 拼到上一行末尾，把整个账本写成非法 JSON。追加前先补一个换行。
+            needs_newline = False
+            if path.is_file() and path.stat().st_size:
+                with path.open("rb") as probe:
+                    probe.seek(-1, os.SEEK_END)
+                    needs_newline = probe.read(1) != b"\n"
             with path.open("a", encoding="utf-8", newline="\n") as handle:
+                if needs_newline:
+                    handle.write("\n")
                 handle.write(json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n")
         except OSError as exc:
             raise LedgerError(f"无法写入账本：{exc}") from exc

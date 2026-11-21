@@ -419,6 +419,27 @@ const TRUST_STEPS = [
   { key: "bundle", label: "打包", detail: "把明细、账本和公钥装进一个包，拿走也能验。" },
 ];
 
+function principalFromScope(
+  scope: DemoInsights["scope"],
+  principals: { id: string }[],
+): string | null {
+  const id = scope?.principal_id;
+  return id && principals.some((principal) => principal.id === id) ? id : null;
+}
+
+// 访问策略有两种：行级过滤（RLS）与字段脱敏（PII）。年级演示只有 PII，
+// 旧逻辑只看 rls_column 会把「谁能看」错误置灰；这里按实际启用的能力写文案。
+function policyDetail(scope: DemoInsights["scope"]): string {
+  const rls = Boolean(scope?.rls_column);
+  const pii = (scope?.pii_columns?.length ?? 0) > 0;
+  if (rls && pii) {
+    return "先看你是谁：按行级过滤（RLS）只给你该看的行，敏感字段再按字段脱敏（PII）显示。";
+  }
+  if (rls) return "先看你是谁：按行级过滤（RLS）只给你该看的行。";
+  if (pii) return "先看你是谁：敏感字段按字段脱敏（PII）显示，其余行正常可见。";
+  return TRUST_STEPS[1].detail;
+}
+
 export default function DemoBrief({
   insights,
   rows = [],
@@ -432,8 +453,10 @@ export default function DemoBrief({
 }) {
   const [liveInsights, setLiveInsights] = useState(insights);
   const [liveRows, setLiveRows] = useState(rows);
-  const [activePrincipal, setActivePrincipal] = useState(
-    principals[0]?.id ?? "",
+  // 若后端在 scope.principal_id 里声明了当前主体，初始就选中它；
+  // principals[0] 只是兜底，避免标题/KPI 与高亮的主体按钮不一致。
+  const [activePrincipal, setActivePrincipal] = useState(() =>
+    principalFromScope(insights.scope, principals) ?? principals[0]?.id ?? "",
   );
   const [switching, setSwitching] = useState(false);
   useEffect(() => {
@@ -452,9 +475,10 @@ export default function DemoBrief({
       return rows;
     });
     setActivePrincipal((previous) =>
-      principals.some((principal) => principal.id === previous)
+      principalFromScope(insights.scope, principals) ??
+      (principals.some((principal) => principal.id === previous)
         ? previous
-        : principals[0]?.id ?? "",
+        : principals[0]?.id ?? ""),
     );
   }, [insights, rows, principals]);
   const data = liveInsights;
@@ -467,7 +491,9 @@ export default function DemoBrief({
     unit?: string;
     dimension?: string;
   } | null>(null);
-  const policyOn = Boolean(data.scope?.rls_column);
+  const policyOn = Boolean(
+    data.scope?.rls_column || (data.scope?.pii_columns?.length ?? 0) > 0,
+  );
   const hasOutliers = data.charts.some(
     (chart) => (chart.excluded ?? 0) > 0 && Boolean(chart.raw_items),
   );
@@ -489,7 +515,9 @@ export default function DemoBrief({
         ))}
       </div>
       <p className="demo-trust-detail" role="status">
-        {TRUST_STEPS[activeStep].detail}
+        {TRUST_STEPS[activeStep].key === "policy"
+          ? policyDetail(data.scope)
+          : TRUST_STEPS[activeStep].detail}
         {!stepEnabled(TRUST_STEPS[activeStep].key) && "（该演示未启用访问策略）"}
       </p>
       {principals.length > 1 && (

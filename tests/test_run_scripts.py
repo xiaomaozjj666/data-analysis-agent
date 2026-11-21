@@ -86,6 +86,42 @@ def test_run_ps1_network_failures_get_actionable_hint() -> None:
     assert "npm config set" not in text
 
 
+def test_run_ps1_frontend_port_scans_range() -> None:
+    """前端不再硬编码 5173 单端口，而是在 5173-5182 间找可用端口。"""
+    text = _script()
+    assert re.search(r"\$DefaultWebPort = 5173", text)
+    assert re.search(r"\$WebPortAttempts = 10", text)
+    assert "$DefaultWebPort + $Attempt" in text
+    # 实际启动时把尝试的端口传给 vite，并保持 strictPort 以暴露端口竞态。
+    assert '"--port", "$TryPort", "--strictPort"' in text
+
+
+def test_run_ps1_frontend_health_checks_project_marker() -> None:
+    """健康探测不能只看状态码：必须命中 Vite 客户端与本项目首页特征。
+
+    首页特征只用 ASCII（``id="root"`` / ``/src/main.tsx``）：Windows PowerShell
+    5.1 的 Invoke-WebRequest 对无 charset 的 HTML 按 ISO-8859-1 解码，中文标题
+    会匹配失败（2026-11-21 实测）。
+    """
+    text = _script()
+    assert "/@vite/client" in text
+    assert "createHotContext" in text
+    assert 'id="root"' in text
+    assert "/src/main" in text
+    assert "if (Test-FrontendHealth $TryUrl)" in text
+    assert "Test-FrontendHealth $WebUrl" in text
+
+
+def test_run_ps1_uses_actual_frontend_url() -> None:
+    """日志、最终健康确认与打开的浏览器都使用实际选中的前端地址。"""
+    text = _script()
+    assert "$WebUrl = $TryUrl" in text
+    assert 'Write-Host "[Data Analysis] Frontend ready: $WebUrl"' in text
+    assert "Start-Process $WebUrl" in text
+    # 前端必须连到实际后端端口，而不是假定 8000。
+    assert "$Env:VITE_API_URL = $ApiUrl" in text
+
+
 def test_run_bat_delegates_to_run_ps1() -> None:
     bat = (ROOT / "run.bat").read_text(encoding="utf-8")
     assert '-File "%~dp0run.ps1"' in bat

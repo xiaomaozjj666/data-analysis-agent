@@ -14,7 +14,8 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
-import { api, ApiError } from "../utils/api";
+import { api, ApiError, describeApiError, requestHeaders } from "../utils/api";
+import { API_URL } from "../constants";
 import { splitReportAppendix } from "../utils/reportAppendix";
 import SalesAuditDemo from "./SalesAuditDemo";
 import "./SalesAudit.css";
@@ -193,7 +194,11 @@ interface SalesAuditProps {
 }
 
 function download(name: string, content: string, type: string) {
-  const url = URL.createObjectURL(new Blob([content], { type }));
+  downloadBlob(name, new Blob([content], { type }));
+}
+
+function downloadBlob(name: string, blob: Blob) {
+  const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
   link.download = name;
@@ -583,6 +588,8 @@ export default function SalesAudit({
   const [serverBrief, setServerBrief] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [bundleBusy, setBundleBusy] = useState(false);
+  const [bundleError, setBundleError] = useState("");
   const [quickBusy, setQuickBusy] = useState(false);
   const [quickDraft, setQuickDraft] = useState<QuickDraftResult | null>(null);
   const [quickFailed, setQuickFailed] = useState(false);
@@ -639,6 +646,7 @@ export default function SalesAudit({
     setQuickDraft(null);
     setDraftTrace(null);
     setError("");
+    setBundleError("");
   }
 
   function locateDraftLine(line: number) {
@@ -1043,6 +1051,40 @@ export default function SalesAudit({
     }, null, 2), "application/json");
   }
 
+  // 零信任证据包：由后端重新复算并打包原始 CSV、草稿、口径、账本与 manifest。
+  // api() 会按 content-type 解析 JSON/文本，二进制 ZIP 必须直接用 fetch，
+  // 鉴权头复用 requestHeaders（X-App-Token 注入逻辑与 api() 一致）。
+  async function downloadEvidenceBundle() {
+    if (!audit) return;
+    setBundleBusy(true);
+    setBundleError("");
+    try {
+      const response = await fetch(`${API_URL}/api/sessions/${sessionId}/sales-audit/bundle`, {
+        method: "POST",
+        headers: requestHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({
+          draft,
+          confirm_full_table: Boolean(audit.confirmed_full_table),
+          draft_trace_sha256: draftTrace,
+        }),
+      });
+      if (!response.ok) {
+        const contentType = response.headers.get("content-type") || "";
+        const payload = contentType.includes("application/json")
+          ? await response.json()
+          : await response.text();
+        throw new Error(describeApiError(payload, response.status));
+      }
+      downloadBlob(`evidence-${sessionId}.zip`, await response.blob());
+    } catch (err) {
+      setBundleError(
+        err instanceof Error ? err.message : "证据包下载失败，请重试。",
+      );
+    } finally {
+      setBundleBusy(false);
+    }
+  }
+
   const activeMetricNames = schemaSpecs.length
     ? schemaSpecs.map((spec) => spec.name)
     : ["销售额合计", "销量合计", "订单数", "客单价"];
@@ -1100,6 +1142,9 @@ export default function SalesAudit({
           onConfirm={() => void confirmBrief()}
           onQuickDraft={() => void runQuickDraft()}
           onDownloadEvidence={downloadAudit}
+          onDownloadEvidenceBundle={() => void downloadEvidenceBundle()}
+          bundleBusy={bundleBusy}
+          bundleError={bundleError}
           onDownloadBrief={downloadBrief}
           onDraftChange={(value) => updateDraft(value, demoDraft)}
           onEdit={() => {
@@ -1379,7 +1424,18 @@ export default function SalesAudit({
                     <button type="button" onClick={downloadAudit}>
                       <Download size={16} />下载核验明细 (.json)
                     </button>
+                    {confirmed && (
+                      <button
+                        type="button"
+                        onClick={() => void downloadEvidenceBundle()}
+                        disabled={bundleBusy}
+                      >
+                        {bundleBusy ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}
+                        {bundleBusy ? "正在打包…" : "下载证据包 (.zip)"}
+                      </button>
+                    )}
                   </div>
+                  {bundleError && <p className="sales-audit-error" role="alert">{bundleError}</p>}
                 </>
               )}
             </section>

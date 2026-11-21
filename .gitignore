@@ -10,6 +10,8 @@ coverage.xml
 .env*
 !.env.example
 runs/
+# 现场证据包（scripts/prepare_demo_evidence.py 生成）：含原始数据与账本，只留本机。
+evidence/
 .playwright-cli/
 .pw-browsers/
 _test_screenshots/

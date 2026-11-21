@@ -7,8 +7,12 @@
 1. manifest 中每个文件的 SHA-256 与实际字节一致；
 2. 按 schema.json 的声明式口径，从 source.csv 从头复算所有指标；
 3. 用复算结果、草稿、源文件哈希与口径指纹重现 audit_id，必须与 report.json 一致；
-4. 校验 ledger.jsonl 的 prev/hash 链；
-5. 核对简报、口径、来源血缘的哈希是否出现在账本记录中。
+4. 校验 ledger.jsonl 的 prev/hash 链，且账本不能为空；
+5. 每条账本记录都必须带 Ed25519 签名，并用包内 public_key.pem 逐条验证；
+6. 账本中必须有与复算 audit_id 匹配的 confirm 记录（确认门），
+   简报、口径、访问策略、来源血缘、起草轨迹的指纹都必须出现在账本中；
+7. 包内 schema.json / lineage.json / policy.json / draft_trace.json 的指纹
+   必须与 report.json 及账本记录一致（防止替换证据文件）。
 
 退出码：0 = 全部通过；1 = 任一校验失败；2 = 参数或文件读取错误。
 """
@@ -89,6 +93,45 @@ def parse_schema(payload: dict) -> list[dict]:
 
 def schema_fingerprint(metrics: list[dict]) -> str:
     return sha256(canonical(metrics))
+
+
+# 内置销售口径：与 src/data_agent/routers/audit_bundle.py 的 _BUILTIN_SCHEMA 一致。
+# 内置口径不写口径指纹，若不复算这份标准，替换 schema.json 的 unit/aliases
+# 这类展示元数据就不会被账本抓到。改内置口径时必须同步修改这里。
+_BUILTIN_SCHEMA = {
+    "metrics": [
+        {
+            "name": "销售额合计",
+            "column": "sales",
+            "aggregation": "sum",
+            "unit": "元",
+            "decimals": 2,
+        },
+        {
+            "name": "销量合计",
+            "column": "quantity",
+            "aggregation": "sum",
+            "unit": "件",
+            "decimals": 0,
+            "data_type": "integer",
+        },
+        {
+            "name": "订单数",
+            "column": "order_id",
+            "aggregation": "count_distinct",
+            "unit": "笔",
+        },
+        {
+            "name": "客单价",
+            "aggregation": "ratio",
+            "numerator": "销售额合计",
+            "denominator": "订单数",
+            "unit": "元",
+            "decimals": 2,
+        },
+    ]
+}
+BUILTIN_FINGERPRINT = schema_fingerprint(parse_schema(_BUILTIN_SCHEMA))
 
 
 def scaled(cell: str) -> int:
@@ -401,7 +444,11 @@ def verify_ledger(raw: bytes) -> tuple[bool, list[str], list[dict]]:
     entries = []
     errors = []
     previous = GENESIS
-    for number, line in enumerate(raw.decode("utf-8").split("\n"), 1):
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return False, ["账本不是 UTF-8 文本。"], []
+    for number, line in enumerate(text.split("\n"), 1):
         if not line.strip():
             continue
         try:
@@ -457,8 +504,10 @@ def main(argv: list[str] | None = None) -> int:
     policy = None
     if "policy.json" in files:
         try:
-            policy = json.loads(files["policy.json"])
-        except json.JSONDecodeError as exc:
+            policy = json.loads(files["policy.json"].decode("utf-8"))
+            if not isinstance(policy, dict):
+                raise ValueError("访问策略必须是 JSON 对象。")
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
             print(f"[失败] 访问策略无法解析：{exc}", file=sys.stderr)
             return 2
     rls_column = None
@@ -467,10 +516,28 @@ def main(argv: list[str] | None = None) -> int:
         rls_column = str(policy["rls"].get("column") or "")
         claim = str(policy["rls"].get("claim") or "")
         rls_value = str((policy.get("claims") or {}).get(claim) or "")
+
+    try:
+        metric_specs = parse_schema(schema_payload)
+    except ValueError as exc:
+        print(f"[失败] 核验口径无法解析：{exc}", file=sys.stderr)
+        return 1
+    schema_sha = schema_fingerprint(metric_specs)
+    report_schema_sha = report.get("schema_fingerprint")
+    if report_schema_sha is not None:
+        if schema_sha != report_schema_sha:
+            problems.append(
+                "schema.json 复算出的口径指纹与 report.json 不一致（口径文件被替换）。"
+            )
+    elif schema_sha != BUILTIN_FINGERPRINT:
+        problems.append(
+            "report 声明为内置口径，但 schema.json 与内置口径不一致（口径文件被替换）。"
+        )
+
     try:
         metrics = read_metrics(
             files["source.csv"],
-            parse_schema(schema_payload),
+            metric_specs,
             rls_column=rls_column or None,
             rls_value=rls_value,
         )
@@ -487,43 +554,135 @@ def main(argv: list[str] | None = None) -> int:
     if replay_id != report.get("audit_id") or replay_id != manifest.get("audit_id"):
         problems.append(f"audit_id 无法重现：{replay_id} != {report.get('audit_id')}")
 
-    ledger_ok, ledger_errors, entries = verify_ledger(files.get("ledger.jsonl", b""))
-    if files.get("ledger.jsonl"):
+    ledger_raw = files.get("ledger.jsonl")
+    entries: list[dict] = []
+    ledger_ok = False
+    if ledger_raw is None:
+        problems.append("证据包缺少 ledger.jsonl：无法证明任何一次审计与确认。")
+    else:
+        ledger_ok, ledger_errors, entries = verify_ledger(ledger_raw)
         problems.extend(ledger_errors)
-    signature_ok = True
-    if entries and any(entry.get("signature") for entry in entries):
-        # I1：包里条目带签名但没有 public_key.pem 时，此前静默跳过验签——
-        # 删掉公钥文件即可绕过签名校验。现在必须显式声明“未验签”。
-        if "public_key.pem" not in files:
+        if not entries:
+            problems.append("账本为空：无法证明任何一次审计与确认。")
+
+    signed = sum(1 for entry in entries if entry.get("signature"))
+    signature_ok = False
+    if entries:
+        unsigned = len(entries) - signed
+        if unsigned:
             problems.append(
-                "账本包含 Ed25519 签名，但证据包缺少 public_key.pem：签名未校验。"
+                f"账本有 {unsigned} 条记录缺少 Ed25519 签名（签名可能被剥离）。"
             )
-            signature_ok = False
-        else:
-            try:
-                signature_errors = verify_entries_signatures(entries, files["public_key.pem"])
-            except ValueError as exc:
-                problems.append(f"公钥无法解析：{exc}")
-                signature_ok = False
+        if signed:
+            if "public_key.pem" not in files:
+                problems.append(
+                    "账本包含 Ed25519 签名，但证据包缺少 public_key.pem：无法验签。"
+                )
             else:
-                problems.extend(signature_errors)
-                signature_ok = not signature_errors
-        if entries:
-            if not any(entry.get("audit_id") == replay_id for entry in entries):
-                problems.append("账本中没有该 audit_id 的记录。")
-            brief = report.get("corrected_brief")
-            if brief and not any(
-                entry.get("brief_sha256") == sha256(brief.encode("utf-8"))
+                try:
+                    signature_errors = verify_entries_signatures(
+                        entries, files["public_key.pem"]
+                    )
+                except ValueError as exc:
+                    problems.append(f"公钥无法解析：{exc}")
+                else:
+                    problems.extend(signature_errors)
+                    signature_ok = not unsigned and not signature_errors
+
+        # 确认门锚定：必须有一条与本次复算 audit_id 匹配的 confirm 记录。
+        # 这三项检查此前缩进在“账本里有签名”分支内，导致删光签名或清空账本
+        # 反而跳过全部锚定检查并判通过（2026-11-21 审查 blocking）。
+        if not any(
+            entry.get("kind") == "confirm" and entry.get("audit_id") == replay_id
+            for entry in entries
+        ):
+            problems.append(
+                "账本中没有与本次复算 audit_id 匹配的 confirm 记录（确认门未通过）。"
+            )
+        brief = report.get("corrected_brief")
+        if brief and not any(
+            entry.get("brief_sha256") == sha256(brief.encode("utf-8"))
+            for entry in entries
+        ):
+            problems.append("核验版简报的哈希不在账本中。")
+        if report_schema_sha:
+            if not any(
+                entry.get("schema_fingerprint") == report_schema_sha
                 for entry in entries
             ):
-                problems.append("核验版简报的哈希不在账本中。")
-            schema_sha = report.get("schema_fingerprint")
-            if schema_sha and not any(entry.get("schema_fingerprint") == schema_sha for entry in entries):
                 problems.append("口径指纹不在账本中。")
+        elif any(
+            entry.get("audit_id") == replay_id and entry.get("schema_fingerprint")
+            for entry in entries
+        ):
+            problems.append("账本记录了口径指纹，但 report 声明为内置口径（证据不一致）。")
+        policy_sha = report.get("policy_fingerprint")
+        if policy_sha and not any(
+            entry.get("policy_sha256") == policy_sha for entry in entries
+        ):
+            problems.append("访问策略指纹不在账本中。")
+
+    if policy is not None:
+        if not report.get("policy_fingerprint"):
+            problems.append("证据包含访问策略，但 report.json 没有记录策略指纹。")
+        elif sha256(canonical(policy)) != report["policy_fingerprint"]:
+            problems.append(
+                "policy.json 复算出的策略指纹与 report.json 不一致（策略文件被替换）。"
+            )
+    elif report.get("policy_fingerprint"):
+        problems.append("report.json 记录了访问策略指纹，但证据包缺少 policy.json。")
+
     if "lineage.json" in files:
-        # 账本记录的是规范化血缘的指纹；这里只做存在性提示，不重复实现规范化。
-        if not any(entry.get("lineage_sha256") for entry in entries):
-            problems.append("证据包含来源血缘，但账本没有 lineage_sha256 记录。")
+        try:
+            lineage_payload = json.loads(files["lineage.json"].decode("utf-8"))
+            if not isinstance(lineage_payload, dict):
+                raise ValueError("来源血缘必须是 JSON 对象。")
+            lineage_sha = sha256(canonical(lineage_payload))
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+            problems.append(f"lineage.json 无法解析：{exc}")
+        else:
+            if not any(
+                entry.get("lineage_sha256") == lineage_sha for entry in entries
+            ):
+                problems.append("来源血缘的指纹不在账本中（血缘文件被替换）。")
+    elif any(entry.get("lineage_sha256") for entry in entries):
+        problems.append("账本记录了来源血缘，但证据包缺少 lineage.json。")
+
+    trace_sha = report.get("draft_trace_sha256")
+    trace_raw = files.get("draft_trace.json")
+    if trace_sha:
+        if trace_raw is None:
+            problems.append("report 绑定了起草轨迹，但证据包缺少 draft_trace.json。")
+        else:
+            if sha256(trace_raw) != trace_sha:
+                problems.append(
+                    "draft_trace.json 的 SHA-256 与 report.json 不一致（轨迹被替换）。"
+                )
+            if not any(
+                entry.get("draft_trace_sha256") == trace_sha
+                and entry.get("audit_id") == replay_id
+                for entry in entries
+            ):
+                problems.append("起草轨迹哈希不在与该 audit_id 匹配的账本记录中。")
+            try:
+                trace = json.loads(trace_raw.decode("utf-8"))
+                if not isinstance(trace, dict):
+                    raise ValueError("起草轨迹必须是 JSON 对象。")
+            except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+                problems.append(f"draft_trace.json 无法解析：{exc}")
+            else:
+                accepted = {sha256(files["draft.txt"])}
+                accepted.update(
+                    entry.get("draft_sha256")
+                    for entry in entries
+                    if entry.get("audit_id") == replay_id
+                )
+                if trace.get("parsed_draft_sha256") not in accepted:
+                    problems.append(
+                        "起草轨迹记录的草稿哈希与 draft.txt 及账本记录都不一致。"
+                    )
+    elif trace_raw is not None:
+        problems.append("证据包含起草轨迹，但 report.json 没有绑定其哈希。")
 
     if problems:
         print(f"[失败] 独立复算发现 {len(problems)} 个问题：")
@@ -535,8 +694,15 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  source      {source_sha[:16]}…")
     print(f"  metrics     {json.dumps(metrics, ensure_ascii=False)}")
     print(f"  ledger      {len(entries)} 条，整链 {'有效' if ledger_ok else '无效'}")
-    if "public_key.pem" in files:
-        print(f"  signature   {len(entries)} 条，Ed25519 {'有效' if signature_ok else '无效'}")
+    print(f"  confirm     {sum(1 for entry in entries if entry.get('kind') == 'confirm')} 条")
+    print(
+        f"  signature   {signed}/{len(entries)} 条，"
+        f"Ed25519 {'有效' if signature_ok else '无效'}"
+    )
+    if report_schema_sha:
+        print(f"  schema      {report_schema_sha[:16]}…")
+    else:
+        print("  schema      内置口径（账本无口径指纹，指标仍由本脚本复算）")
     print("  该结果由仅依赖 Python 标准库的脚本从头计算，未 import 项目代码。")
     return 0
 

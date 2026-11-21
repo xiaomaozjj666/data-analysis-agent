@@ -90,7 +90,13 @@ export interface DemoInsights {
   kpis: { label: string; value: string; note?: string; unit?: string }[];
   charts: DemoChart[];
   findings: string[];
-  scope?: { rows: number; visible: number; rls_column?: string | null };
+  scope?: {
+    rows: number;
+    visible: number;
+    rls_column?: string | null;
+    pii_columns?: string[] | null;
+    principal_id?: string | null;
+  };
 }
 
 export interface DemoPayload {
@@ -137,6 +143,9 @@ export interface HistorySessionItem {
   has_result?: boolean;
   artifact_count?: number;
   created_at?: number;
+  // /api/sessions 列表可能省略 demo；即使返回也可能只是部分字段。
+  // 打开会话时以 GET /api/sessions/{id} 返回的完整 demo 元数据为准。
+  demo?: Partial<DemoPayload>;
   [key: string]: unknown;
 }
 

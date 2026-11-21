@@ -158,26 +158,49 @@ def _parse_amount(cell: str, row_number: int) -> int:
     return cents
 
 
-def _read_sales(source: Path, *, max_rows: int | None = None) -> _ReadResult:
-    """单次读取字节快照：哈希、解码和解析都基于同一份内容。"""
+def _read_sales(
+    source: Path,
+    *,
+    max_rows: int | None = None,
+    pii_columns: tuple[str, ...] = (),
+    rls_column: str | None = None,
+    rls_value: str | None = None,
+) -> _ReadResult:
+    """单次读取字节快照：哈希、解码和解析都基于同一份内容。
+
+    ``pii_columns`` 只影响证据预览（原值不进入响应）；``rls_*`` 在聚合之前
+    按主体过滤行，与 audit_schema.read_metrics 同语义：被过滤的行不计指标、
+    不进预览，但仍计入 evidence.rows（物理行数）与 max_rows 上限。
+    """
     raw = source.read_bytes()
     digest = hashlib.sha256(raw).hexdigest()
     text, encoding = _decode(raw)
 
+    pii = set(pii_columns)
     orders: set[str] = set()
     normalized_orders: dict[str, set[str]] = defaultdict(set)
-    sales_cents = units = row_count = 0
+    sales_cents = units = row_count = visible_rows = filtered = 0
     preview: list[dict[str, Any]] = []
     summary_rows = 0
+
+    def masked(column: str, value: str) -> str:
+        return "[已脱敏]" if column in pii else value
+
     try:
         reader = csv.DictReader(io.StringIO(text, newline=""), strict=True)
         headers = reader.fieldnames or []
         columns = _resolve_columns(headers)
+        if rls_column and rls_column not in headers:
+            raise ValueError(f"CSV 缺少访问策略需要的列：{rls_column}")
         for row_number, row in enumerate(reader, start=1):
             if max_rows is not None and row_number > max_rows:
                 raise ValueError(f"CSV 超过 {max_rows} 行上限，请拆分或先用筛选视图收敛。")
             if None in row or any(value is None for value in row.values()):
                 raise ValueError(f"第 {row_number} 条记录的列数和表头不一致。")
+            row_count = row_number
+            if rls_column and (row.get(rls_column) or "").strip() != (rls_value or ""):
+                filtered += 1
+                continue
             order = row[columns["order_id"]]
             if not order.strip():
                 raise ValueError(f"第 {row_number} 条记录的 order_id 为空。")
@@ -186,22 +209,22 @@ def _read_sales(source: Path, *, max_rows: int | None = None) -> _ReadResult:
             if not _INTEGER.fullmatch(quantity):
                 raise ValueError(f"第 {row_number} 条记录的 quantity 必须是非负整数。")
             units += int(quantity)
+            visible_rows += 1
             orders.add(order)
             key = _normalize_blank(order).casefold()
             if key.isdigit():
                 # 001 与 1 视为近似重复（只告警，不改订单数口径）。
                 key = key.lstrip("0") or "0"
             normalized_orders[key].add(order)
-            row_count = row_number
             if _normalize_blank(order).strip().lower() in _SUMMARY_IDS:
                 summary_rows += 1
-            if row_count <= _PREVIEW_ROWS:
+            if len(preview) < _PREVIEW_ROWS:
                 preview.append(
                     {
-                        "record": row_count,
-                        "order_id": order,
-                        "sales": row[columns["sales"]].strip(),
-                        "quantity": quantity,
+                        "record": row_number,
+                        "order_id": masked(columns["order_id"], order),
+                        "sales": masked(columns["sales"], row[columns["sales"]].strip()),
+                        "quantity": masked(columns["quantity"], quantity),
                     }
                 )
     except (csv.Error, UnicodeError) as exc:
@@ -253,6 +276,8 @@ def _read_sales(source: Path, *, max_rows: int | None = None) -> _ReadResult:
             "filename": source.name,
             "sha256": digest,
             "rows": row_count,
+            "rows_used": visible_rows,
+            "rows_filtered": filtered,
             "encoding": encoding.lower(),
             "preview": preview,
             "order_ids": order_count,
@@ -459,7 +484,13 @@ def _audit_claims(
             continue
         if number is None or unit is None:
             continue
-        expected = metrics[metric]
+        expected = metrics.get(metric)
+        if expected is None:
+            # RLS 后可能没有任何可见行，客单价等派生指标不存在；宁可
+            # unsupported，也不能 KeyError 变成 500。
+            claim.update(status="unsupported", reason="当前可见数据没有可复算的该指标。")
+            claim.pop("recalculated", None)
+            continue
         if metric in integer_metrics:
             agrees = int(number) == int(expected)
         else:
@@ -554,9 +585,15 @@ def audit_sales_brief(
         integer_metrics = frozenset(spec.name for spec in metric_specs if spec.is_integer)
         schema_fingerprint = audit_schema.schema_fingerprint(list(metric_specs))
     else:
-        if pii_columns or rls_column:
-            raise ValueError("使用访问策略前需要先登记核验口径。")
-        read = _read_sales(source, max_rows=max_rows)
+        # 未登记声明式口径时回退内置销售口径；访问策略（PII/RLS）同样生效，
+        # 不能因为「有策略、没 schema」就拒绝核验。
+        read = _read_sales(
+            source,
+            max_rows=max_rows,
+            pii_columns=pii_columns,
+            rls_column=rls_column,
+            rls_value=rls_value,
+        )
         metrics = read.metrics
     claims, needs_scope_confirmation = _audit_claims(
         draft,
@@ -577,7 +614,12 @@ def audit_sales_brief(
         lines = [
             "# 经营简报（核验版）",
             "",
-            f"全表统计，共 {read.evidence['rows']} 条订单明细。",
+            (
+                f"按主体过滤后统计，共 {read.evidence['rows_used']} 条订单明细"
+                f"（原始 {read.evidence['rows']} 行）。"
+                if rls_column
+                else f"全表统计，共 {read.evidence['rows']} 条订单明细。"
+            ),
             "",
             *(f"- {claim['metric']}：{claim['recalculated']}" for claim in publishable),
             "",
@@ -588,6 +630,13 @@ def audit_sales_brief(
         ]
         if summary["unsupported"]:
             lines.append(f"- 暂缓发布 {summary['unsupported']} 行，草稿原文见核验明细。")
+        lines += [
+            "",
+            # AIGC 标识（评分表「安全与合规」项）：说明草稿可能由 AI 生成、
+            # 指标由核验器复算、发布前仍需人工确认。
+            "> AIGC 标识：本简报的草稿可由 AI 辅助起草；以上指标由本机核验器"
+            "按原始 CSV 复算，发布前需人工确认。",
+        ]
         brief = "\n".join(lines) + "\n"
     return {
         "schema_version": SCHEMA_VERSION,

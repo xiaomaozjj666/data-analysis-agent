@@ -88,13 +88,16 @@ flowchart LR
 
 ## 演示数据目录
 
-首页「载入演示数据」内置四份可讲故事的数据：
+首页「打开示例」菜单内置七份可讲故事的数据（旁边的「体验简报核验」按钮直接载入其中的销售样例并切到核验视图）：
 
 | kind | 演示点 |
 | --- | --- |
 | `sales_audit` | 草稿把销量当订单数，462 → 20 的差额复算、确认、验签 |
 | `regional_policy` | 区域 RLS + 手机号脱敏 + 预置口径/血缘 |
 | `quality_injection` | 缺失、负数、极端值、混合日期，备注含提示注入 |
+| `growth` | 12 个月 × 3 渠道 × 4 品类，覆盖趋势、构成、漏斗、树图等 10 种图形 |
+| `grades` | 3,000 名学生 × 60 个班 × 3 次考试，分布、班级对比、学科相关 |
+| `finance` | 12 个月利润表、现金流与预算，利润拆解、成本结构、季度净利率 |
 | `bigdata` | 服务端生成 20 万行，演示密度视图与大数据路径 |
 
 加载后自动生成预分析：识别日期/数值/分类列，按语义选折线、条形、散点、直方图、占比环或密度网格，打开即有 KPI 与结论。
@@ -118,11 +121,13 @@ flowchart LR
 - 一个 LLM API Key（Web 默认 DeepSeek；CLI / MCP 兼容 OpenAI）
 
 ### 一键启动（Windows）
-双击 `run.bat`。首次运行会自动创建虚拟环境、安装后端依赖并 `npm install`，随后分别启动：
+双击 `run.bat`。首次运行会自动创建虚拟环境、安装后端依赖并 `npm install`，随后分别启动（脚本会打印实际地址并自动打开浏览器）：
 
-- 前端：http://127.0.0.1:5173
-- 后端 API：http://127.0.0.1:8000
-- API 文档：http://127.0.0.1:8000/docs
+- 前端：默认 http://127.0.0.1:5173；5173 被占用时自动在 5173–5182 间选可用端口
+- 后端 API：默认 http://127.0.0.1:8000；8000 被占用时自动在 8000–8009 间选可用端口
+- API 文档：`<实际后端地址>/docs`
+
+**现场启动第 0 步（访问令牌）**：如果本机 `.env` 里设置了 `APP_ACCESS_TOKEN`（`run.ps1` 会把它注入后端进程；本机当前为 64 位随机串），新打开的浏览器会先停在「进入数据工作台」令牌页。演示前在该浏览器输入一次令牌（值就是 `.env` 里的 `APP_ACCESS_TOKEN`），它会保存在该浏览器的 localStorage；或临时清空 `.env` 里的 `APP_ACCESS_TOKEN` 并重启 `run.bat`（只监听 127.0.0.1 时可不设）。[参赛演示说明](docs/wuxi-trusted-ai-challenge.md) 的 90 秒脚本假设浏览器已通过令牌页并停在首页。
 
 ### 手动启动
 
@@ -212,9 +217,28 @@ $confirm.receipt   # seq / ts / hash / prev / brief_sha256
 Invoke-RestMethod "$base/api/sessions/$sid/sales-audit/ledger"
 ```
 
-把确认接口返回的 `brief` 存成 `经营简报-核验版.md` 后，可离线校验账本与导出文件：
+确认成功后即可导出零信任证据包。页面按钮：路演视图证据轨底部的「下载证据包 (.zip)」，或草稿工作台「核验结果」的下载操作区（与「下载核验明细 (.json)」并列；确认后才出现）。不依赖 UI 时：
 
 ```powershell
+# 生成 evidence-<会话>.zip（按实际端口替换 $base；$sid / $draft 见上）
+Invoke-RestMethod "$base/api/sessions/$sid/sales-audit/bundle" -Method Post `
+  -ContentType "application/json; charset=utf-8" `
+  -Body ([Text.Encoding]::UTF8.GetBytes((@{ draft = $draft; confirm_full_table = $false; draft_trace_sha256 = $null } | ConvertTo-Json))) `
+  -OutFile "evidence-$sid.zip"
+
+# 只用标准库从头复算并重现 audit_id，同时校验 manifest 与账本链
+.\.venv\Scripts\python.exe scripts\independent_replay.py "evidence-$sid.zip"
+# 退出码 0 = 全部通过；包内任一文件或账本被改动即退出码 1
+```
+
+证据包内含原始 CSV、草稿、口径快照（未登记时为内置销售四项）、来源血缘、账本、核验报告与 manifest；现场可把 ZIP 交给评委，让他们用自己的 Python 验证，而不必信任本服务。`scripts/prepare_demo_evidence.py` 可一键完成「演示会话 → 复算 → 确认 → 证据包 → 独立复算」，不调用模型、不依赖外网，可重复执行。
+
+把确认接口返回的 `brief` 存成 `经营简报-核验版.md` 后，可离线校验账本与导出文件。**必须按原始字节保存**：直接使用页面「下载简报 (.md)」，或按下例写入；PowerShell 的 `Set-Content` / `Out-File` 会加 UTF-8 BOM 或把换行转成 CRLF，脚本按原始字节哈希，会误报「简报被篡改」：
+
+```powershell
+# 字节精确保存（等价于页面下载）
+[IO.File]::WriteAllBytes("$PWD\经营简报-核验版.md", [Text.Encoding]::UTF8.GetBytes($confirm.brief))
+
 .\.venv\Scripts\python.exe scripts\verify_audit_ledger.py "runs\$sid\audit_ledger.jsonl" `
   --brief .\经营简报-核验版.md --source "runs\$sid\input\<上传文件名>.csv"
 # 退出码 0 = 通过；改动简报任意 1 个字节后再跑，退出码 1
@@ -229,8 +253,9 @@ Invoke-RestMethod "$base/api/sessions/$sid/sales-audit/quick-draft" -Method Post
 返回值里的 `trace_sha256` 可作为 `draft_trace_sha256` 传给复算或确认接口；离线时用
 `--trace "runs\$sid\draft_traces\<sha256>.json"` 一并校验「模型原话 → 草稿 → 复算」是否对应。
 
-演示页的「确认更正并生成简报」会调用上面的 confirm 接口：成功后在结果区展示
-回执（序号、时间、hash 前 16 位），下载的也是服务端返回的权威简报；若草稿或
+路演页的「签章并出具简报」（草稿工作台里为「确认并生成简报」/「生成简报」）会调用
+上面的 confirm 接口：成功后在「确认记录」区展示回执（序号 #N、时间、hash 前 16
+位）与「服务端按原始 CSV 重算后写入」提示，下载的也是服务端返回的权威简报；若草稿或
 数据在核验后被改动，服务端返回 409，页面会要求重新复算。账本逐条带 Ed25519 签名（私钥与数据同目录，仍无外部时间戳），能发现内容被改动，
 不能证明「谁在何时确认」之外的强不可否认性。完整路演步骤见
 [参赛演示说明](docs/wuxi-trusted-ai-challenge.md)。
@@ -314,11 +339,11 @@ C2,East,30.00,2026-12-31
 C3,East,40.00,2027-01-05
 ```
 
-验收命令（仓库根目录；本机实测 27 passed）：
+验收命令（仓库根目录；本机实测 29 passed）：
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_audit_schema.py -q
-# 27 passed
+# 29 passed
 ```
 
 把上面的 JSON 存为 `$env:TEMP\audit-schema-demo\audit_schema.json`、数据存为
@@ -343,11 +368,11 @@ $demo = Join-Path $env:TEMP "audit-schema-demo"
 指纹是否命中账本记录，口径被改动时退出码 1。空值、类型或负数策略失败时，接口
 返回带「第 N 条记录的列名」的 422 诊断。
 
-当前接口回显范围：`GET/PUT` 响应只返回 `name` / `column` / `aggregation` /
-`unit` / `decimals` / `aliases`；`data_type`、`null_policy`、`rounding`、
-`sign_policy`、`filters`、`time_window`、`numerator`、`denominator` 会写入
-`audit_schema.json` 并参与复算，但不随响应返回。需要编辑完整策略时，请以工作区
-里的 `audit_schema.json` 为准。
+当前接口返回完整策略字段：`GET/PUT` 响应除 `name` / `column` / `aggregation` /
+`unit` / `decimals` / `aliases` 外，还会回显 `data_type`、`null_policy`、
+`rounding`、`sign_policy`、`filters`、`time_window`、`numerator`、`denominator`。
+前端「核验口径」面板编辑和保存的就是同一份完整 JSON；这些字段会一起写入
+`audit_schema.json` 并参与复算。
 
 ## 配置
 
@@ -391,7 +416,7 @@ AWS_SECRET_ACCESS_KEY=<your-secret-access-key>
 - **本进程是一个信任域。** 单一 `APP_ACCESS_TOKEN` 能列出并打开 `runs/` 下全部会话。团队共用一台机器时必须设令牌，也不要把不同客户的数据放进同一个服务。
 - **默认先审阅计划。** `⌘/Ctrl+Enter` 与主按钮「生成计划」只出步骤；确认后再批准执行。「跳过审阅」才会直接跑。
 - **指标要登记才会按同一口径算。** 工作台「业务口径」或 `DATA_AGENT_METRICS_PATH` 写入 `metrics.json`，表达式必须使用真实列名（如 `sales - returns`）。分析时会调用 `compute_registered_metrics`，报告里的「核验附录」默认收起。
-- **经营简报可以独立复算，并由服务端确认。** 工作台「简报核验」读取原始订单 CSV（UTF-8 / GB18030），核对销售额、销量、订单数和客单价，提供核验版简报及证据下载；范围限定指标（如「华东区订单数」）不会被当成全表口径放行。核验返回 `audit_id`，`/confirm` 由服务端按原始 CSV 重算后才写账本并返回回执，账本可用 `scripts/verify_audit_ledger.py` 离线校验（改简报 1 个字节即退出码 1）。页面上的「确认更正并生成简报」会直接调用该接口，成功后展示回执序号与 hash，并下载服务端返回的权威简报。见 [参赛演示说明](docs/wuxi-trusted-ai-challenge.md)。
+- **经营简报可以独立复算，并由服务端确认。** 工作台「简报核验」读取原始订单 CSV（UTF-8 / GB18030），核对销售额、销量、订单数和客单价，提供核验版简报及证据下载；范围限定指标（如「华东区订单数」）不会被当成全表口径放行。核验返回 `audit_id`，`/confirm` 由服务端按原始 CSV 重算后才写账本并返回回执，账本可用 `scripts/verify_audit_ledger.py` 离线校验（改简报 1 个字节即退出码 1）。页面上的「签章并出具简报」（草稿工作台为「确认并生成简报」/「生成简报」）会直接调用该接口，成功后展示「确认记录」回执序号与 hash，并下载服务端返回的权威简报。见 [参赛演示说明](docs/wuxi-trusted-ai-challenge.md)。
 - **SQLite 大表不会整表进内存。** 超过 10 万行只载入前 10 万行；全量请用 `query_database` 聚合后再 `adopt`。CSV 也可用该工具，表名为 `data`。
 - **换新数据重跑：** 报告上的「按配方重跑」读取 `analysis_recipe.json`，按上次工具参数执行，不重新规划。
 - **给业务的文件：** 导出菜单可下载 Word / PPT；「分析溯源 (.json)」给出报告对应的数据集、工具调用与产物哈希链及复核结果。
@@ -453,6 +478,11 @@ cd frontend && npm run build                # 前端生产构建
 后端测试覆盖 `src/data_agent` 全部核心路径（节点、工具、路由、注册表、存储、
 CLI、部署），含异常分支与降级路径；CI 中以 `DATA_AGENT_SKIP_KALEIDO=1` 跳过
 偶发挂起的无头 PNG 渲染（503/500 降级分支仍被覆盖）。
+
+Windows 本机跑全量时建议加 `--ignore=tests/test_tools.py`：该文件含依赖外网/模型的用例，
+Windows 上不 fail-fast 会挂起。`pyproject.toml` 的 `addopts` 已含 `-q`，命令行再加一个
+`-q` 会变成 `-qq` 并抑制「N passed」汇总行；现场核对可用
+`-o addopts="--disable-warnings" -q` 保留汇总。
 ## 深入文档
 
 - [docs/engineering-notes.md](docs/engineering-notes.md) — 工程笔记：已验证的工程事实与踩坑记录（大数据图表可读性方案、可访问性校准方法、性能与体积预算、沙箱/隐私/指标模块设计要点、平台差异实证）。

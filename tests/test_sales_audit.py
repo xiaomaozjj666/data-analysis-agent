@@ -22,6 +22,17 @@ def test_evidence_digest_and_markdown_claims(sales_csv):
     assert result["source"]["sha256"] == hashlib.sha256(sales_csv.read_bytes()).hexdigest()
 
 
+def test_corrected_brief_carries_aigc_disclosure(sales_csv):
+    """评分表「安全与合规」要求 AIGC 标识：简报必须说明 AI 起草与人工确认边界。"""
+    result = audit_sales_brief(sales_csv, "销售额合计：10.00 元")
+    brief = result["corrected_brief"]
+    assert brief is not None
+    assert "AIGC 标识" in brief
+    assert "核验器" in brief
+    assert "人工确认" in brief
+    assert hashlib.sha256(brief.encode("utf-8")).hexdigest()
+
+
 def test_duplicate_metrics_and_code_examples_do_not_become_publishable(sales_csv):
     result = audit_sales_brief(
         sales_csv, "订单数：1 笔\n订单数：2 笔\n~~~md\n销量合计：9 件\n~~~\n销售额合计：10 万元"
@@ -239,3 +250,81 @@ def test_intent_only_lines_are_context_not_metrics(sales_csv):
     assert "统计范围" in claim["reason"]
     assert result["needs_scope_confirmation"] is False
     assert result["corrected_brief"] is None
+
+
+def test_builtin_rules_work_with_pii_only_policy(tmp_path):
+    """仅 PII 策略（无声明式 schema）也应走内置销售口径，只脱敏预览。"""
+    path = tmp_path / "sales.csv"
+    path.write_text(
+        "order_id,sales,quantity\n13800000000,1.00,1\n13900000000,2.00,1\n",
+        encoding="utf-8",
+    )
+    result = audit_sales_brief(
+        path,
+        "订单数：2 笔\n销售额合计：3.00 元",
+        pii_columns=("order_id",),
+    )
+    assert result["summary"] == {"verified": 2, "conflict": 0, "unsupported": 0}
+    assert result["source"]["rows_used"] == 2
+    assert result["source"]["rows_filtered"] == 0
+    assert [row["order_id"] for row in result["source"]["preview"]] == ["[已脱敏]", "[已脱敏]"]
+    # 指标本身仍按原值复算，脱敏只影响证据预览。
+    assert result["metrics"]["订单数"] == "2"
+
+
+def test_builtin_rules_filter_rows_with_rls_policy(tmp_path):
+    path = tmp_path / "sales.csv"
+    path.write_text(
+        "order_id,sales,quantity,region\n"
+        "A,10.00,1,East\n"
+        "B,5.00,1,West\n"
+        "C,2.00,1,East\n",
+        encoding="utf-8",
+    )
+    result = audit_sales_brief(
+        path,
+        "订单数：2 笔\n销售额合计：12.00 元",
+        rls_column="region",
+        rls_value="East",
+    )
+    assert result["summary"] == {"verified": 2, "conflict": 0, "unsupported": 0}
+    assert result["source"]["rows"] == 3
+    assert result["source"]["rows_used"] == 2
+    assert result["source"]["rows_filtered"] == 1
+    assert [row["order_id"] for row in result["source"]["preview"]] == ["A", "C"]
+    assert "按主体过滤后统计" in result["corrected_brief"]
+
+
+def test_builtin_rules_reject_non_sales_csv_with_clear_error(tmp_path):
+    """成绩表不是销售表：保留清晰的「缺少列」错误而不是 500。"""
+    path = tmp_path / "grades.csv"
+    path.write_text(
+        "student_id,exam,语文\nS1,月考,90\nS2,月考,80\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="order_id"):
+        audit_sales_brief(
+            path,
+            "参考人数：2 人",
+            rls_column="student_id",
+            rls_value="S1",
+        )
+
+
+def test_rls_hiding_all_rows_keeps_derived_metrics_unsupported(tmp_path):
+    """RLS 过滤到 0 行时，客单价等派生指标应 unsupported，不能 KeyError 500。"""
+    path = tmp_path / "sales.csv"
+    path.write_text(
+        "order_id,sales,quantity,region\nA,10.00,1,East\nB,5.00,1,East\n",
+        encoding="utf-8",
+    )
+    result = audit_sales_brief(
+        path,
+        "客单价：0.00 元\n订单数：0 笔",
+        rls_column="region",
+        rls_value="Nowhere",
+    )
+    assert result["source"]["rows_used"] == 0
+    assert result["source"]["rows_filtered"] == 2
+    statuses = {claim["metric"]: claim["status"] for claim in result["claims"]}
+    assert statuses == {"客单价": "unsupported", "订单数": "verified"}

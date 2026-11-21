@@ -1,8 +1,42 @@
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 import type { DemoChart } from "../types";
 import "./DemoExtraCharts.css";
 
-const SERIES = ["var(--series-1)", "var(--series-2)", "var(--series-3)", "var(--series-4)"];
+const SERIES = [
+  "var(--series-1)",
+  "var(--series-2)",
+  "var(--series-3)",
+  "var(--series-4)",
+  "var(--series-5)",
+  "var(--series-6)",
+];
+
+// 超过 6 条序列时颜色开始循环，用虚线区分同一颜色的不同序列。
+// 第 7–9 条使用第一组虚线，第 10–12 条用第二组，依次类推。
+const SERIES_DASHES = ["4 3", "2 2", "7 3 2 3"];
+
+export interface SeriesStyle {
+  color: string;
+  dash?: string;
+}
+
+// 统一的多序列样式入口：图例、折线、面积、堆叠、气泡等都用它取色，
+// 避免某处仍按 index % 4 取色导致图例与实际的线颜色对不上。
+export function seriesStyle(index: number): SeriesStyle {
+  const safeIndex = Number.isFinite(index) ? Math.max(0, Math.trunc(index)) : 0;
+  const color = SERIES[safeIndex % SERIES.length];
+  const cycle = Math.floor(safeIndex / SERIES.length);
+  if (cycle === 0) return { color };
+  return { color, dash: SERIES_DASHES[(cycle - 1) % SERIES_DASHES.length] };
+}
+
+// 图例色块：纯色代表实线，重复渐变代表循环后叠加的虚线。
+function swatchStyle(style: SeriesStyle): CSSProperties {
+  if (!style.dash) return { background: style.color };
+  return {
+    background: `repeating-linear-gradient(90deg, ${style.color} 0 3px, transparent 3px 5px)`,
+  };
+}
 
 function fmt(value: number, unit?: string): string {
   const text = Math.abs(value) >= 1000
@@ -26,7 +60,7 @@ function Legend({ series }: { series: { name: string }[] }) {
     <ul className="demo-legend">
       {series.map((item, index) => (
         <li key={item.name}>
-          <i style={{ background: SERIES[index % SERIES.length] }} />
+          <i style={swatchStyle(seriesStyle(index))} />
           {item.name}
         </li>
       ))}
@@ -71,6 +105,7 @@ export function MultiLine({ chart }: { chart: DemoChart }) {
         onPointerLeave={() => setHoverIndex(null)}
       >
         {series.map((item, index) => {
+          const style = seriesStyle(index);
           const points = (item.points ?? [])
             .map((value, pointIndex) => `${x(pointIndex).toFixed(1)},${y(value).toFixed(1)}`)
             .join(" ");
@@ -80,13 +115,13 @@ export function MultiLine({ chart }: { chart: DemoChart }) {
               {chart.type === "area" && (
                 <polygon
                   className="demo-area-fill"
-                  style={{ fill: SERIES[index % SERIES.length] }}
+                  style={{ fill: style.color }}
                   points={`${x(0)},${height - pad} ${points} ${x(labels.length - 1)},${height - pad}`}
                 />
               )}
               <polyline
                 className="demo-series-line"
-                style={{ stroke: SERIES[index % SERIES.length], strokeDasharray: item.dash ? "4 3" : undefined }}
+                style={{ stroke: style.color, strokeDasharray: style.dash ?? (item.dash ? "4 3" : undefined) }}
                 points={points}
               />
             </g>
@@ -109,7 +144,7 @@ export function MultiLine({ chart }: { chart: DemoChart }) {
                   cx={x(hoverIndex)}
                   cy={y(value)}
                   r={2.4}
-                  style={{ fill: SERIES[index % SERIES.length] }}
+                  style={{ fill: seriesStyle(index).color }}
                 />
               );
             })}
@@ -140,7 +175,7 @@ export function MultiLine({ chart }: { chart: DemoChart }) {
             onMouseLeave={() => setHoverSeries(null)}
             onClick={() => setSolo((current) => (current === item.name ? null : item.name))}
           >
-            <i style={{ background: SERIES[index % SERIES.length] }} />
+            <i style={swatchStyle(seriesStyle(index))} />
             {item.name}
           </button>
         ))}
@@ -152,7 +187,11 @@ export function MultiLine({ chart }: { chart: DemoChart }) {
 export function Stacked({ chart }: { chart: DemoChart }) {
   const labels = chart.labels ?? [];
   const series = chart.series ?? [];
-  const [hoverSeries, setHoverSeries] = useState<string | null>(null);
+  // locked 与 hover 分开：点击锁定后移开鼠标仍保持选中，与 MultiLine 的
+  // solo 行为一致；aria-pressed 只反映 locked。
+  const [hovered, setHovered] = useState<string | null>(null);
+  const [locked, setLocked] = useState<string | null>(null);
+  const focused = locked ?? hovered;
   const width = 340;
   const height = 150;
   const pad = 14;
@@ -180,10 +219,10 @@ export function Stacked({ chart }: { chart: DemoChart }) {
                     y={y}
                     width={barWidth}
                     height={Math.max(0, barHeight)}
-                    fill={SERIES[index % SERIES.length]}
-                    opacity={hoverSeries && hoverSeries !== item.name ? 0.22 : 1}
-                    onPointerEnter={() => setHoverSeries(item.name)}
-                    onPointerLeave={() => setHoverSeries(null)}
+                    fill={seriesStyle(index).color}
+                    opacity={focused !== null && focused !== item.name ? 0.22 : 1}
+                    onPointerEnter={() => setHovered(item.name)}
+                    onPointerLeave={() => setHovered(null)}
                   >
                     <title>{`${label} · ${item.name} ${fmt(value, chart.unit)}`}</title>
                   </rect>
@@ -202,12 +241,12 @@ export function Stacked({ chart }: { chart: DemoChart }) {
           <button
             key={item.name}
             type="button"
-            aria-pressed={hoverSeries === item.name}
-            onMouseEnter={() => setHoverSeries(item.name)}
-            onMouseLeave={() => setHoverSeries(null)}
-            onClick={() => setHoverSeries((current) => (current === item.name ? null : item.name))}
+            aria-pressed={locked === item.name}
+            onMouseEnter={() => setHovered(item.name)}
+            onMouseLeave={() => setHovered(null)}
+            onClick={() => setLocked((current) => (current === item.name ? null : item.name))}
           >
-            <i style={{ background: SERIES[index % SERIES.length] }} />
+            <i style={swatchStyle(seriesStyle(index))} />
             {item.name}
           </button>
         ))}
@@ -232,7 +271,7 @@ export function Treemap({ chart }: { chart: DemoChart }) {
           cursor += w;
           return (
             <g key={item.label}>
-              <rect x={x} y={0} width={Math.max(1, w - 2)} height={height} fill={SERIES[index % SERIES.length]} opacity={0.9 - index * 0.08}>
+              <rect x={x} y={0} width={Math.max(1, w - 2)} height={height} fill={seriesStyle(index).color} opacity={0.9 - index * 0.08}>
                 <title>{`${item.label} · ${fmt(item.value, chart.unit)}`}</title>
               </rect>
               {w > 64 && (
@@ -306,16 +345,20 @@ export function Radar({ chart }: { chart: DemoChart }) {
           const [x, y] = point(index, 100);
           return <text key={indicator} x={x} y={y} className="demo-radar-label" textAnchor="middle">{indicator}</text>;
         })}
-        {series.map((item, seriesIndex) => (
-          <polygon
-            key={item.name}
-            points={(item.values ?? []).map((value, index) => point(index, value).join(",")).join(" ")}
-            fill={SERIES[seriesIndex % SERIES.length]}
-            fillOpacity={0.08}
-            stroke={SERIES[seriesIndex % SERIES.length]}
-            strokeWidth={1.5}
-          />
-        ))}
+        {series.map((item, seriesIndex) => {
+          const style = seriesStyle(seriesIndex);
+          return (
+            <polygon
+              key={item.name}
+              points={(item.values ?? []).map((value, index) => point(index, value).join(",")).join(" ")}
+              fill={style.color}
+              fillOpacity={0.08}
+              stroke={style.color}
+              strokeWidth={1.5}
+              strokeDasharray={style.dash}
+            />
+          );
+        })}
       </svg>
       <Legend series={series} />
     </figure>
@@ -424,9 +467,10 @@ export function Bubble({ chart }: { chart: DemoChart }) {
           const x = pad + ((Number(item.x ?? 0) - xMin) / (xMax - xMin || 1)) * (width - pad * 2);
           const y = height - pad - ((Number(item.y ?? 0) - yMin) / (yMax - yMin || 1)) * (height - pad * 2);
           const r = 6 + Math.sqrt(Number(item.size ?? 1) / sizeMax) * 18;
+          const style = seriesStyle(index);
           return (
             <g key={item.label}>
-              <circle cx={x} cy={y} r={r} fill={SERIES[index % SERIES.length]} opacity={0.35} stroke={SERIES[index % SERIES.length]} />
+              <circle cx={x} cy={y} r={r} fill={style.color} opacity={0.35} stroke={style.color} strokeDasharray={style.dash} />
               <text x={x} y={y + 3} textAnchor="middle" className="demo-bubble-label">{item.label}</text>
               <title>{`${item.label} · 订单 ${fmt(Number(item.x ?? 0))} · 收入 ${fmt(Number(item.y ?? 0), chart.unit)}`}</title>
             </g>

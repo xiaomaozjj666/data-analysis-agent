@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from fastapi.testclient import TestClient
 from test_api import _isolate_runtime
 
@@ -49,7 +51,13 @@ def test_regional_demo_ships_policy_and_schema(tmp_path, monkeypatch):
     kinds = [chart["type"] for chart in insights["charts"]]
     assert kinds[:3] == ["line", "bar", "histogram"]
     assert [kpi["label"] for kpi in insights["kpis"]][:2] == ["全部订单", "华东可见"]
-    assert insights["scope"] == {"rows": 20, "visible": 8, "rls_column": "region"}
+    assert insights["scope"] == {
+        "rows": 20,
+        "visible": 8,
+        "rls_column": "region",
+        "principal_id": "u_east",
+        "pii_columns": ["phone"],
+    }
     assert insights["charts"][1]["title"] == "渠道对比"
 
     payload = created.json()
@@ -255,6 +263,20 @@ def test_grades_demo_has_scale_and_masks_pii(tmp_path, monkeypatch):
     reloaded = client.get(f"/api/sessions/{payload['id']}").json()
     assert reloaded["demo"]["insights"]["kpis"][0]["value"] == "3000"
 
+    schema = client.get(f"/api/sessions/{payload['id']}/audit-schema").json()
+    assert schema["status"] == "approved"
+    assert [item["name"] for item in schema["metrics"]] == [
+        "参考人数",
+        "语文均分",
+        "数学均分",
+    ]
+    audit = client.post(
+        f"/api/sessions/{payload['id']}/sales-audit",
+        json={"draft": "参考人数：3000 人"},
+    )
+    assert audit.status_code == 200, audit.text
+    assert audit.json()["summary"] == {"verified": 1, "conflict": 0, "unsupported": 0}
+
 
 def test_finance_demo_products(tmp_path, monkeypatch):
     _isolate_runtime(tmp_path, monkeypatch)
@@ -274,3 +296,87 @@ def test_finance_demo_products(tmp_path, monkeypatch):
     }
     assert len(payload["artifacts"]) == 7
     assert payload["demo"]["insights"]["kpis"][0]["label"] == "收入"
+
+
+def test_failed_demo_initialization_does_not_register_session(tmp_path, monkeypatch):
+    """预分析/产物生成失败时必须清理工作区，不能留下孤儿会话。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    import data_agent.demo_artifacts as demo_artifacts
+
+    def boom(*args, **kwargs):
+        raise TypeError("预分析产物生成失败")
+
+    monkeypatch.setattr(demo_artifacts, "write_demo_chart_artifacts", boom)
+    response = client.post("/api/sessions/sample?kind=finance")
+    assert response.status_code == 500
+    runs = tmp_path / "runs"
+    assert not [path for path in runs.iterdir() if path.is_dir()]
+    assert api.registry.list_recent() == []
+
+
+def test_demo_manifest_persists_artifact_descriptions(tmp_path, monkeypatch):
+    """新建演示会话的 session.json 必须带非空 artifacts 与 description，重启可恢复。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    created = client.post("/api/sessions/sample?kind=regional_policy")
+    assert created.status_code == 201
+    session_id = created.json()["id"]
+    manifest = json.loads(
+        (tmp_path / "runs" / session_id / "session.json").read_text(encoding="utf-8")
+    )
+    assert manifest["artifacts"]
+    assert all(item["name"] and item["description"] for item in manifest["artifacts"])
+
+    from data_agent.registry import SessionRegistry
+    from data_agent.storage import LocalSessionStorage
+
+    fresh = SessionRegistry(
+        tmp_path / "runs", 100, 24, storage=LocalSessionStorage()
+    )
+    record = fresh.get(session_id)
+    assert record.workspace.artifacts
+    descriptions = [item["description"] for item in record.workspace.artifacts]
+    assert all(descriptions)
+    assert any(value.startswith("预分析 · ") for value in descriptions)
+
+
+def test_switch_rejects_non_demo_and_unknown_demos(tmp_path, monkeypatch):
+    """主体切换只能作用于带 principals 的演示，不能把区域策略写进其它会话。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    finance = client.post("/api/sessions/sample?kind=finance").json()
+    response = client.post(
+        f"/api/sessions/{finance['id']}/audit-policy/switch",
+        json={"principal_id": "admin"},
+    )
+    assert response.status_code == 404
+    workspace = api.registry.get(finance["id"]).workspace
+    assert not (workspace.root / "audit_policy.json").is_file()
+
+    uploaded = client.post(
+        "/api/sessions",
+        files={"file": ("sales.csv", b"order_id,sales,quantity\nA,1,1\n", "text/csv")},
+    ).json()
+    assert (
+        client.post(
+            f"/api/sessions/{uploaded['id']}/audit-policy/switch",
+            json={"principal_id": "admin"},
+        ).status_code
+        == 404
+    )
+
+
+def test_delete_audit_policy_removes_only_policy_file(tmp_path, monkeypatch):
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    session = client.post("/api/sessions/sample?kind=regional_policy").json()
+    workspace = api.registry.get(session["id"]).workspace
+    assert (workspace.root / "audit_policy.json").is_file()
+    assert client.delete(f"/api/sessions/{session['id']}/audit-policy").status_code == 204
+    assert not (workspace.root / "audit_policy.json").is_file()
+    assert client.get(f"/api/sessions/{session['id']}/audit-policy").json()["policy"] is None
+    # 只删访问策略，不动核验口径。
+    assert (workspace.root / "audit_schema.json").is_file()
+    # 幂等：重复删除仍返回 204。
+    assert client.delete(f"/api/sessions/{session['id']}/audit-policy").status_code == 204

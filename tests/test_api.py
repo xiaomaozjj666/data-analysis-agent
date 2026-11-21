@@ -3833,3 +3833,44 @@ def test_session_export_streams_via_temp_file(tmp_path, monkeypatch):
     assert "attachment" in response.headers["content-disposition"]
     assert session["id"] in response.headers["content-disposition"]
     assert not list(download_dir.glob("data-agent-download-*.zip"))
+
+
+def test_zip_response_cleans_temp_file_when_send_fails(tmp_path, monkeypatch):
+    """send 中途抛异常时也不能把临时 ZIP 留在磁盘（BackgroundTask 不会执行）。"""
+    import tempfile as tempfile_module
+
+    from data_agent._downloads import zip_file_response
+
+    download_dir = tmp_path / "downloads"
+    download_dir.mkdir()
+    monkeypatch.setattr(tempfile_module, "tempdir", str(download_dir))
+    response = zip_file_response(
+        "demo.zip", lambda bundle: bundle.writestr("hello.txt", "hello")
+    )
+    assert list(download_dir.glob("data-agent-download-*.zip"))
+
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "GET",
+        "path": "/download",
+        "raw_path": b"/download",
+        "query_string": b"",
+        "root_path": "",
+        "scheme": "http",
+        "headers": [],
+        "server": ("testserver", 80),
+        "client": ("testclient", 50000),
+        "asgi": {"version": "3.0", "spec_version": "2.4"},
+    }
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        if message["type"] == "http.response.body" and message.get("body"):
+            raise OSError("client disconnected")
+
+    with pytest.raises(OSError, match="client disconnected"):
+        asyncio.run(response(scope, receive, send))
+    assert not list(download_dir.glob("data-agent-download-*.zip"))

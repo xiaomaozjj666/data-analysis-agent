@@ -1,4 +1,4 @@
-"""把五份演示会话写入 runs/，让新环境打开就有历史记录。
+"""把七份演示会话写入 runs/，让新环境打开就有历史记录。
 
 用法：
     python scripts/seed_demo_sessions.py
@@ -28,7 +28,7 @@ DEMOS = (
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="写入五份演示会话。")
+    parser = argparse.ArgumentParser(description="写入七份演示会话。")
     parser.add_argument("--runs-dir", type=Path, default=REPO / "runs")
     args = parser.parse_args(argv)
     runs_dir = args.runs_dir.expanduser().resolve()

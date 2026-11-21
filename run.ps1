@@ -1,4 +1,8 @@
-﻿$ErrorActionPreference = "Stop"
+﻿param(
+    # 供自动化/排障使用：启动后不打开浏览器（run.bat 不传此参数，行为不变）。
+    [switch]$NoBrowser
+)
+$ErrorActionPreference = "Stop"
 $ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Python = Join-Path $ProjectDir ".venv\Scripts\python.exe"
 $FrontendDir = Join-Path $ProjectDir "frontend"
@@ -6,6 +10,8 @@ $Vite = Join-Path $FrontendDir "node_modules\vite\bin\vite.js"
 $RunsDir = Join-Path $ProjectDir "runs"
 $DefaultApiPort = 8000
 $DefaultWebPort = 5173
+# 前端与 API 一样在 5173-5182 间找可用端口，默认仍是 5173。
+$WebPortAttempts = 10
 # 与 pyproject.toml 的 requires-python = ">=3.11,<3.14" 对齐，按新到旧依次尝试。
 $SupportedPythons = @("3.13", "3.12", "3.11")
 # vite 8.3.8 要求 ^20.19.0 || >=22.12.0，frontend/package.json 声明 >=22，取交集 22.12。
@@ -47,6 +53,28 @@ function Test-PortBindable([int]$Port) {
         $ErrorActionPreference = "SilentlyContinue"
         & $Python -c "import socket,sys; s=socket.socket(); s.bind(('127.0.0.1',$Port)); s.close()" 2>$null
         return $LASTEXITCODE -eq 0
+    } catch {
+        return $false
+    }
+}
+
+function Test-FrontendHealth([string]$Url) {
+    # 端口上任何服务都可能返回 200，不能只看状态码。这里要求同时满足：
+    # 1) Vite 开发客户端的特征脚本 /@vite/client 可读；
+    # 2) 首页包含 React 挂载点与项目入口 /src/main.tsx。
+    # 只用 ASCII 特征：run.bat 走 Windows PowerShell 5.1，它的 Invoke-WebRequest
+    # 会把没有 charset 的 HTML 按 ISO-8859-1 解码，中文标题必然匹配失败
+    # （2026-11-21 实测：vite 401ms 就绪，却被误判为启动失败）。
+    try {
+        $ErrorActionPreference = "SilentlyContinue"
+        $Client = Invoke-WebRequest -UseBasicParsing "$Url/@vite/client" -TimeoutSec 2
+        if ($Client.StatusCode -ne 200 -or $Client.Content -notmatch "createHotContext") {
+            return $false
+        }
+        $Page = Invoke-WebRequest -UseBasicParsing "$Url/" -TimeoutSec 2
+        return ($Page.StatusCode -eq 200 -and
+            $Page.Content -match 'id="root"' -and
+            $Page.Content -match '/src/main\.tsx')
     } catch {
         return $false
     }
@@ -108,14 +136,6 @@ function Write-NetworkHint([string]$What) {
     Write-Host '     .\.venv\Scripts\python.exe -m pip install -e ".[dev]" -i https://mirrors.aliyun.com/pypi/simple/' -ForegroundColor Yellow
     Write-Host "     cd frontend; npm install --registry=https://registry.npmmirror.com" -ForegroundColor Yellow
     Write-Host "  3. 比赛或演示现场请提前在有网时启动一次；依赖装好后再启动不需要联网。" -ForegroundColor Yellow
-}
-
-function Find-UsablePort([int]$Start, [int]$Max = 10) {
-    for ($i = 0; $i -lt $Max; $i++) {
-        $port = $Start + $i
-        if (Test-PortBindable $port) { return $port }
-    }
-    return 0
 }
 
 function Stop-StaleApiProcess([int]$Port) {
@@ -215,9 +235,13 @@ try {
     $ApiReady = $false
 
     # 1. 先检查默认端口是否已有健康的 API（复用）
+    # 只看 200 会把别的服务当成我们的 API；健康响应必须带本项目特征。
     try {
         $health = Invoke-WebRequest -UseBasicParsing "$ApiUrl/api/health" -TimeoutSec 2
-        if ($health.StatusCode -eq 200) { $ApiReady = $true }
+        if ($health.StatusCode -eq 200 -and
+            $health.Content -match '"architecture"\s*:\s*"plan-and-execute-react"') {
+            $ApiReady = $true
+        }
     } catch {}
 
     # 2. 没有健康 API 则尝试启动，最多尝试 10 个端口
@@ -250,7 +274,11 @@ try {
                 Start-Sleep -Milliseconds 500
                 try {
                     $health = Invoke-WebRequest -UseBasicParsing "$TryUrl/api/health" -TimeoutSec 2
-                    if ($health.StatusCode -eq 200) { $Started = $true; break }
+                    if ($health.StatusCode -eq 200 -and
+                        $health.Content -match '"architecture"\s*:\s*"plan-and-execute-react"') {
+                        $Started = $true
+                        break
+                    }
                 } catch {}
             }
 
@@ -285,22 +313,73 @@ try {
     # ---- 前端启动 ----
     # 设置 VITE_API_URL 让前端连接到实际 API 端口（vite 在启动时读取环境变量）
     $Env:VITE_API_URL = $ApiUrl
-    $WebUrl = "http://127.0.0.1:$DefaultWebPort"
+    $FrontendStderr = Join-Path $RunsDir "frontend.stderr.log"
+    $WebPort = 0
+    $WebUrl = ""
+    $WebReady = $false
 
-    $WebHealthy = $false
-    try {
-        $web = Invoke-WebRequest -UseBasicParsing $WebUrl -TimeoutSec 2
-        $WebHealthy = $web.StatusCode -eq 200
-    } catch {}
+    # 1. 先看 5173-5182 间是否已有本项目的健康前端（复用，不重复启动）
+    for ($Attempt = 0; $Attempt -lt $WebPortAttempts; $Attempt++) {
+        $TryPort = $DefaultWebPort + $Attempt
+        $TryUrl = "http://127.0.0.1:$TryPort"
+        if (Test-FrontendHealth $TryUrl) {
+            $WebPort = $TryPort
+            $WebUrl = $TryUrl
+            $WebReady = $true
+            Write-Host "[Data Analysis] Reusing frontend on port $TryPort..." -ForegroundColor Yellow
+            break
+        }
+    }
 
-    if (-not $WebHealthy) {
-        Write-Host "[Data Analysis] Starting frontend on port $DefaultWebPort..." -ForegroundColor Cyan
-        Start-Process -FilePath $Node `
-            -ArgumentList @($Vite, "--host", "127.0.0.1", "--port", "$DefaultWebPort", "--strictPort") `
-            -WorkingDirectory $FrontendDir `
-            -WindowStyle Hidden `
-            -RedirectStandardOutput (Join-Path $RunsDir "frontend.stdout.log") `
-            -RedirectStandardError (Join-Path $RunsDir "frontend.stderr.log") | Out-Null
+    # 2. 没有可复用的前端则启动，最多尝试 10 个端口
+    if (-not $WebReady) {
+        for ($Attempt = 0; $Attempt -lt $WebPortAttempts; $Attempt++) {
+            $TryPort = $DefaultWebPort + $Attempt
+            $TryUrl = "http://127.0.0.1:$TryPort"
+
+            if (-not (Test-PortBindable $TryPort)) {
+                Write-Host "[Data Analysis] Frontend port $TryPort is unavailable, trying next..." -ForegroundColor Yellow
+                continue
+            }
+
+            Write-Host "[Data Analysis] Starting frontend on port $TryPort..." -ForegroundColor Cyan
+            Start-Process -FilePath $Node `
+                -ArgumentList @($Vite, "--host", "127.0.0.1", "--port", "$TryPort", "--strictPort") `
+                -WorkingDirectory $FrontendDir `
+                -WindowStyle Hidden `
+                -RedirectStandardOutput (Join-Path $RunsDir "frontend.stdout.log") `
+                -RedirectStandardError $FrontendStderr | Out-Null
+
+            # 等待 vite 真正就绪：项目特征校验通过才算健康（最多约 20 秒）。
+            $Started = $false
+            for ($Wait = 0; $Wait -lt 40; $Wait++) {
+                Start-Sleep -Milliseconds 500
+                if (Test-FrontendHealth $TryUrl) { $Started = $true; break }
+            }
+
+            if ($Started) {
+                $WebPort = $TryPort
+                $WebUrl = $TryUrl
+                $WebReady = $true
+                break
+            }
+
+            # 启动失败：端口被抢则换下一个，其他错误打印日志后退出。
+            $StderrContent = ""
+            if (Test-Path -LiteralPath $FrontendStderr) {
+                $StderrContent = Get-Content -LiteralPath $FrontendStderr -Raw -ErrorAction SilentlyContinue
+            }
+            if ($StderrContent -match "EADDRINUSE|already in use|strictPort") {
+                Write-Host "[Data Analysis] Frontend port $TryPort was taken during startup, trying next..." -ForegroundColor Yellow
+                continue
+            }
+            Get-Content -LiteralPath $FrontendStderr -Tail 30 -ErrorAction SilentlyContinue
+            throw "Frontend failed to start on port $TryPort (see log above)"
+        }
+    }
+
+    if (-not $WebReady) {
+        throw "Failed to start frontend on any port in range $DefaultWebPort-$($DefaultWebPort + $WebPortAttempts - 1)"
     }
 
     $Ready = $false
@@ -308,8 +387,7 @@ try {
         Start-Sleep -Seconds 1
         try {
             $api = Invoke-WebRequest -UseBasicParsing "$ApiUrl/api/health" -TimeoutSec 2
-            $web = Invoke-WebRequest -UseBasicParsing $WebUrl -TimeoutSec 2
-            if ($api.StatusCode -eq 200 -and $web.StatusCode -eq 200) {
+            if ($api.StatusCode -eq 200 -and (Test-FrontendHealth $WebUrl)) {
                 $Ready = $true
                 break
             }
@@ -324,7 +402,12 @@ try {
 
     Write-Host "[Data Analysis] API ready: $ApiUrl" -ForegroundColor Green
     Write-Host "[Data Analysis] Frontend ready: $WebUrl" -ForegroundColor Green
-    Start-Process $WebUrl
+    if (-not $NoBrowser) {
+        if ($Env:APP_ACCESS_TOKEN) {
+            Write-Host "[Data Analysis] 若浏览器停在「进入数据工作台」令牌页：令牌是 .env 里的 APP_ACCESS_TOKEN（不会打印到日志）。" -ForegroundColor Yellow
+        }
+        Start-Process $WebUrl
+    }
 } catch {
     Write-Host "`n[Data Analysis] 启动失败：$($_.Exception.Message)" -ForegroundColor Red
     Write-Host "[Data Analysis] 服务日志在 runs\api.stderr.log 与 runs\frontend.stderr.log。" -ForegroundColor Red

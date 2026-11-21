@@ -83,31 +83,64 @@ def test_rls_filters_rows_and_masks_pii(tmp_path, monkeypatch):
     assert entry["policy_sha256"]
 
 
-def test_policy_requires_declarative_schema(tmp_path, monkeypatch):
+def test_policy_works_with_builtin_sales_rules_without_schema(tmp_path, monkeypatch):
+    """有策略、没声明式口径时回退内置销售口径，不能再一律 422。"""
     _isolate_runtime(tmp_path, monkeypatch)
     client = TestClient(api.app)
+    content = (
+        "order_id,sales,quantity,region" + NL
+        + "A,10.00,1,East" + NL
+        + "B,5.00,1,West" + NL
+        + "C,2.00,1,East" + NL
+    ).encode()
     session_id = client.post(
-        "/api/sessions",
-        files={
-            "file": (
-                "sales.csv",
-                b"order_id,sales,quantity" + NL.encode() + b"A,1,1" + NL.encode(),
-                "text/csv",
-            )
-        },
+        "/api/sessions", files={"file": ("sales.csv", content, "text/csv")}
     ).json()["id"]
-    client.put(f"/api/sessions/{session_id}/audit-policy", json=POLICY)
+    assert client.put(f"/api/sessions/{session_id}/audit-policy", json=POLICY).status_code == 200
     response = client.post(
-        f"/api/sessions/{session_id}/sales-audit", json={"draft": "订单数：1 笔"}
+        f"/api/sessions/{session_id}/sales-audit",
+        json={"draft": "订单数：2 笔" + NL + "销售额合计：12.00 元"},
+    )
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["summary"] == {"verified": 2, "conflict": 0, "unsupported": 0}
+    assert result["source"]["rows_filtered"] == 1
+    assert [row["order_id"] for row in result["source"]["preview"]] == ["A", "C"]
+
+
+def test_policy_on_non_sales_csv_returns_clear_422(tmp_path, monkeypatch):
+    """成绩表不是销售表：应给「缺少列」的 422，而不是 500。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    content = (
+        "student_id,exam,语文" + NL + "S1,月考,90" + NL + "S2,月考,80" + NL
+    ).encode()
+    session_id = client.post(
+        "/api/sessions", files={"file": ("grades.csv", content, "text/csv")}
+    ).json()["id"]
+    policy = {"principal_id": "u", "claims": {}, "pii_columns": ["student_id"], "rls": None}
+    assert client.put(f"/api/sessions/{session_id}/audit-policy", json=policy).status_code == 200
+    response = client.post(
+        f"/api/sessions/{session_id}/sales-audit", json={"draft": "参考人数：2 人"}
     )
     assert response.status_code == 422
-    assert "登记核验口径" in response.json()["detail"]
+    assert "order_id" in response.json()["detail"]
 
 
 def test_bundle_replays_with_policy(tmp_path, monkeypatch):
     client, session_id = _session(tmp_path, monkeypatch)
     client.put(f"/api/sessions/{session_id}/audit-policy", json=POLICY)
     draft = "记录数：1 条" + NL + "收入合计：100.00 元"
+    audit = client.post(
+        f"/api/sessions/{session_id}/sales-audit", json={"draft": draft}
+    )
+    assert audit.status_code == 200, audit.text
+    # 证据包离线复算要求账本里有与 audit_id 匹配的确认记录（确认门）。
+    confirm = client.post(
+        f"/api/sessions/{session_id}/sales-audit/confirm",
+        json={"draft": draft, "audit_id": audit.json()["audit_id"]},
+    )
+    assert confirm.status_code == 200, confirm.text
     response = client.post(f"/api/sessions/{session_id}/sales-audit/bundle", json={"draft": draft})
     assert response.status_code == 200
     bundle = tmp_path / "policy.zip"

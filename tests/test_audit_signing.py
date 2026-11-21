@@ -52,8 +52,13 @@ def test_bundle_replay_verifies_signature(tmp_path, monkeypatch):
         "/api/sessions",
         files={"file": ("sales.csv", b"order_id,sales,quantity\nA,10,1\n", "text/csv")},
     ).json()["id"]
-    draft = "订单数：1 笔" + chr(10) + "销售额：10.00 元"
-    client.post(f"/api/sessions/{session_id}/sales-audit", json={"draft": draft})
+    draft = "订单数：1 笔"
+    audit = client.post(f"/api/sessions/{session_id}/sales-audit", json={"draft": draft}).json()
+    confirmed = client.post(
+        f"/api/sessions/{session_id}/sales-audit/confirm",
+        json={"draft": draft, "audit_id": audit["audit_id"]},
+    )
+    assert confirmed.status_code == 200, confirmed.text
     response = client.post(
         f"/api/sessions/{session_id}/sales-audit/bundle",
         json={"draft": draft},

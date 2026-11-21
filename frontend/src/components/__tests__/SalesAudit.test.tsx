@@ -169,6 +169,57 @@ describe("SalesAudit", () => {
     expect(screen.getByRole("button", { name: /下载简报 \(\.md\)/ })).toBeInTheDocument();
   });
 
+  it("确认后才出现下载证据包按钮，并 POST bundle 接口保存 ZIP", async () => {
+    apiMock.mockResolvedValueOnce(VERIFIED).mockResolvedValueOnce(CONFIRMED);
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(new Blob(["zip-bytes"], { type: "application/zip" }), {
+        status: 200,
+        headers: { "content-type": "application/zip" },
+      }),
+    );
+    const createObjectURL = vi.fn(() => "blob:evidence");
+    const revokeObjectURL = vi.fn();
+    const originalCreate = URL.createObjectURL;
+    const originalRevoke = URL.revokeObjectURL;
+    vi.stubGlobal("fetch", fetchMock);
+    Object.defineProperty(URL, "createObjectURL", { configurable: true, writable: true, value: createObjectURL });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, writable: true, value: revokeObjectURL });
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+
+    try {
+      render(<SalesAudit sessionId="s1" filename="sales.csv" initialDemo={false} />);
+
+      fillDraft();
+      await runAudit();
+      expect(screen.queryByRole("button", { name: /下载证据包/ })).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: /^生成简报$/ }));
+      await screen.findByText("确认记录");
+
+      const bundleButton = screen.getByRole("button", { name: /下载证据包 \(\.zip\)/ });
+      fireEvent.click(bundleButton);
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(fetchMock.mock.calls[0][0]).toBe(
+        "http://127.0.0.1:8000/api/sessions/s1/sales-audit/bundle",
+      );
+      const init = fetchMock.mock.calls[0][1] as RequestInit;
+      expect(init.method).toBe("POST");
+      expect(JSON.parse(init.body as string)).toEqual({
+        draft: "订单数：1 笔",
+        confirm_full_table: false,
+        draft_trace_sha256: null,
+      });
+      await waitFor(() => expect(createObjectURL).toHaveBeenCalled());
+      expect(revokeObjectURL).toHaveBeenCalledWith("blob:evidence");
+    } finally {
+      clickSpy.mockRestore();
+      vi.unstubAllGlobals();
+      Object.defineProperty(URL, "createObjectURL", { configurable: true, writable: true, value: originalCreate });
+      Object.defineProperty(URL, "revokeObjectURL", { configurable: true, writable: true, value: originalRevoke });
+    }
+  });
+
   it("确认返回 409 时清空结果、提示重新核验并把焦点放回草稿框", async () => {
     apiMock
       .mockResolvedValueOnce(VERIFIED)

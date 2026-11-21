@@ -7,10 +7,11 @@
 
 校验内容：
 1. 账本每一行的 seq / prev / hash 是否首尾相接、可复算；
-2. 若给出 --brief，则要求它的 SHA-256 出现在某条 confirm 记录里；
-3. 若给出 --source，则要求它的 SHA-256 出现在某条 audit/confirm 记录里。
+2. 账本必须至少有一条记录（空账本不能证明任何一次确认）；
+3. 若给出 --brief，则要求它的 SHA-256 出现在某条 confirm 记录里；
+4. 若给出 --source，则要求它的 SHA-256 出现在某条 audit/confirm 记录里。
 
-退出码：0 = 通过；1 = 校验失败；2 = 参数或文件读取错误。
+退出码：0 = 通过；1 = 校验失败（含空账本）；2 = 参数或文件读取错误（含账本不存在）。
 """
 
 from __future__ import annotations
@@ -49,7 +50,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        entries = read_entries(args.ledger)
+        entries = read_entries(args.ledger, missing_ok=False)
     except FileNotFoundError:
         print(f"[失败] 账本不存在：{args.ledger}", file=sys.stderr)
         return 2
@@ -58,6 +59,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     verification = verify_entries(entries)
+    if not entries:
+        # 空账本不能自证任何一次确认：此前 valid=not errors 对空列表为 True，
+        # 0 字节文件/纯换行文件都会打印「[通过] 账本共 0 条记录」（2026-11-21 审查）。
+        verification["valid"] = False
+        verification["errors"].append("账本为空：无法证明任何一次核验或确认。")
     checks: dict[str, object] = {}
 
     if args.audit_id:
@@ -137,10 +143,16 @@ def main(argv: list[str] | None = None) -> int:
             "matched_seq": [entry["seq"] for entry in matched],
         }
         if not matched:
-            verification["valid"] = False
-            verification["errors"].append(
-                "核验口径与账本中的任何一条记录都不匹配（口径文件被改动过）。"
-            )
+            if any(entry.get("schema_fingerprint") for entry in entries):
+                verification["valid"] = False
+                verification["errors"].append(
+                    "核验口径与账本中的任何一条记录都不匹配（口径文件被改动过）。"
+                )
+            else:
+                # 内置销售口径在 audit_id 里没有指纹可绑（schema_fingerprint=null）。
+                # 这不是篡改，但必须明确告诉调用方「这份文件未被账本绑定」，
+                # 否则现场会把它误读成“账本被改”。独立复算脚本会单独复算内置口径。
+                checks["schema"]["note"] = "账本记录全部为内置口径（无口径指纹），该文件未被账本绑定。"
 
     if args.lineage:
         try:
@@ -245,6 +257,8 @@ def main(argv: list[str] | None = None) -> int:
                     f"  核验口径 {check['path']}：指纹 {check['fingerprint'][:16]}…，"
                     f"命中记录 {check['matched_seq'] or '无'}"
                 )
+                if check.get("note"):
+                    print(f"    {check['note']}")
             elif name == "trace":
                 print(
                     f"  起草轨迹 {check['path']}：SHA-256 {check['sha256'][:16]}…，"

@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 from pathlib import Path
 from typing import Annotated, Any
@@ -161,30 +162,33 @@ def create_sample_session(audit: bool = False, kind: str | None = None) -> dict[
                 from data_agent.audit_lineage import save_lineage
 
                 save_lineage(workspace.root, lineage)
+        # 预分析、图表产物与 demo.json 必须在注册会话之前完成：此前先
+        # registry.create 再算预分析，一旦预分析抛异常就留下孤儿会话，
+        # 且 session.json 的 artifacts 为空、demo.json 缺失导致重启后
+        # description 丢失。失败时统一走 cleanup，不注册任何会话。
+        insights = None
+        if kind:
+            from data_agent.demo_insights import insights_for
+
+            insights = insights_for(kind, sample_csv, DEMOS[kind].policy)
+            if insights:
+                from data_agent.demo_artifacts import write_demo_chart_artifacts
+
+                write_demo_chart_artifacts(workspace, insights)
+            from data_agent.audit_schema import _atomic_write_text
+
+            demo_payload = DEMOS[kind].public()
+            demo_payload["insights"] = insights
+            _atomic_write_text(
+                workspace.root / "demo.json",
+                json.dumps(demo_payload, ensure_ascii=False, indent=2),
+            )
     except Exception as exc:  # noqa: BLE001 —— 示例数据为常量，失败属配置问题
         workspace.cleanup()
         if isinstance(exc, ValueError):
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         raise HTTPException(status_code=500, detail="示例数据初始化失败。") from exc
     actual_id, record = api.registry.create(workspace)
-    insights = None
-    if kind:
-        from data_agent.demo_insights import insights_for
-
-        insights = insights_for(kind, sample_csv, DEMOS[kind].policy)
-        if insights:
-            from data_agent.demo_artifacts import write_demo_chart_artifacts
-
-            write_demo_chart_artifacts(workspace, insights)
-    if kind:
-        from data_agent.audit_schema import _atomic_write_text
-
-        demo_payload = DEMOS[kind].public()
-        demo_payload["insights"] = insights
-        _atomic_write_text(
-            workspace.root / "demo.json",
-            __import__("json").dumps(demo_payload, ensure_ascii=False, indent=2),
-        )
     payload = _session_payload(actual_id, record)
     return payload
 

@@ -102,7 +102,6 @@ def export_bundle(session_id: str, payload: BundleRequest) -> Response:
     except OSError as exc:
         raise HTTPException(status_code=422, detail="无法读取原始 CSV，请重新上传数据。") from exc
 
-    source_bytes = source.read_bytes()
     schema_bytes = _read_optional(workspace.root / "audit_schema.json")
     if schema_bytes is None:
         # 内置销售口径也要能以声明式形式复现；独立脚本据此从头复算。
@@ -132,8 +131,9 @@ def export_bundle(session_id: str, payload: BundleRequest) -> Response:
         "draft_trace_sha256": payload.draft_trace_sha256,
         "source": {"filename": source.name, "sha256": audit["source"]["sha256"]},
     }
+    # source.csv 不读进内存：打包时用 ZipFile.write 直接流式复制文件，
+    # 否则接近上传上限（200MB）的会话会让整份 CSV 常驻内存。
     files: dict[str, bytes] = {
-        "source.csv": source_bytes,
         "draft.txt": payload.draft.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8"),
         "schema.json": schema_bytes,
         "report.json": (json.dumps(report, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
@@ -147,10 +147,12 @@ def export_bundle(session_id: str, payload: BundleRequest) -> Response:
         files["public_key.pem"] = public_key_bytes
     if trace_bytes is not None:
         files["draft_trace.json"] = trace_bytes
+    manifest_files = {name: _sha256(raw) for name, raw in files.items()}
+    manifest_files["source.csv"] = audit["source"]["sha256"]
     manifest = {
         "bundle_version": 1,
         "audit_id": audit["audit_id"],
-        "files": {name: _sha256(raw) for name, raw in files.items()},
+        "files": manifest_files,
     }
     files["manifest.json"] = (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode(
         "utf-8"
@@ -159,6 +161,7 @@ def export_bundle(session_id: str, payload: BundleRequest) -> Response:
     from data_agent._downloads import zip_file_response
 
     def write_archive(archive) -> None:  # type: ignore[no-untyped-def]
+        archive.write(source, arcname="source.csv")
         for name, raw in files.items():
             archive.writestr(name, raw)
 

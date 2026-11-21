@@ -232,7 +232,7 @@ function EmptyWorkspace({ uploading, uploadProgress, onUpload, onFileDrop, onCan
                   kind: "regional_policy",
                   title: "区域权限与 PII",
                   blurb: "华东同事只看到 8 行，手机号还是脱敏的。",
-                  audit: true,
+                  audit: false,
                 },
                 {
                   kind: "quality_injection",

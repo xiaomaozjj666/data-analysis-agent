@@ -138,4 +138,80 @@ describe("App 渲染冒烟", () => {
     // "整壳能挂载"，不是"挂载快"；真挂起仍会被拦住。
     90000,
   );
+
+  it(
+    "从历史打开 seed 的销售核验会话时进入简报核验且草稿非空",
+    async () => {
+      const historyItem = {
+        id: "seed-audit",
+        filename: "sample_sales_audit.csv",
+        title: "经营简报核验",
+        analysis_status: "idle",
+        created_at: Math.floor(Date.now() / 1000),
+      };
+      apiMock.mockImplementation((url: string) => {
+        if (url.startsWith("/api/auth")) {
+          return Promise.resolve({ required: false, authenticated: true });
+        }
+        if (url.startsWith("/api/settings")) {
+          return Promise.resolve({
+            provider: "deepseek",
+            model: "deepseek-chat",
+            configured: false,
+            thinking_enabled: false,
+            reasoning_effort: "medium",
+            max_iterations: 24,
+            max_plan_steps: 8,
+            max_tool_calls_per_step: 6,
+            langsmith_tracing: true,
+            langsmith_status: "missing_key",
+            storage_status: "ok",
+            max_upload_bytes: 52_428_800,
+          });
+        }
+        if (url === "/api/sessions?limit=30") {
+          return Promise.resolve({ sessions: [historyItem] });
+        }
+        if (url === "/api/sessions/seed-audit") {
+          return Promise.resolve({
+            ...historyItem,
+            preview: [{ order_id: "1", sales: "1", quantity: "1" }],
+            profile: { rows: 21, columns: 8 },
+            artifacts: [],
+            // 历史列表接口通常不带 demo，这里模拟完整会话里的 demo 元数据。
+            demo: {
+              kind: "sales_audit",
+              title: "经营简报核验",
+              blurb: "草稿把销量当成订单数。",
+              highlight: "复算与证据包",
+              open_audit: true,
+            },
+          });
+        }
+        return Promise.resolve({});
+      });
+
+      const { default: App } = await import("../../App");
+      render(<App />);
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      fireEvent.click(await screen.findByRole("button", { name: /历史会话/ }));
+      fireEvent.click(
+        await screen.findByRole("button", { name: /^经营简报核验/ }),
+      );
+
+      expect(
+        await screen.findByRole("tab", { name: "简报核验", selected: true }),
+      ).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "草稿工作台" }));
+      const draft = screen.getByRole<HTMLTextAreaElement>("textbox", {
+        name: "简报草稿",
+      });
+      expect(draft.value).toContain("订单数：462 笔");
+    },
+    90000,
+  );
 });

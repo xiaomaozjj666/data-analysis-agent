@@ -189,3 +189,21 @@ def test_qualified_metric_names_are_never_verified_or_conflicted():
     # 正常句式不受影响：系动词/冒号跟随都能核验（fact 无单位时不要带单位）
     ok = verify_report("订单数为462；订单数：462。", facts)
     assert {claim["verdict"] for claim in ok["claims"]} == {"verified"}
+
+
+def test_alias_standalone_keeps_searching_after_qualified_match():
+    """第一次出现带限定词（华东区订单数）不能否定后文的独立写法。"""
+    from data_agent.verification import _alias_standalone
+
+    assert _alias_standalone("华东区订单数为462，订单数 462 笔", "订单数") is True
+    assert _alias_standalone("华东区订单数为462，另一处订单数环比", "订单数") is False
+
+
+def test_second_unqualified_occurrence_is_verified():
+    facts = extract_facts(
+        [{"type": "tool_result", "name": "groupby", "detail": {"means": {"订单数": 462}}}]
+    )
+    result = verify_report("华东区订单数为462，订单数 462 笔", facts)
+    verdicts = [claim["verdict"] for claim in result["claims"]]
+    assert verdicts == ["unsupported", "verified"]
+    assert result["claims"][1]["evidence"][0]["field"] == "mean:订单数"

@@ -79,4 +79,118 @@ describe("DemoBrief", () => {
     const area = document.querySelector(".demo-line-area");
     expect(area?.getAttribute("d")).toMatch(/L \d+\.\d,\d+\.\d L \d+\.\d,\d+\.\d/);
   });
+
+  it("只有 PII 脱敏时「谁能看」步骤仍然可用，并写明字段脱敏", () => {
+    const { container } = render(
+      <DemoBrief
+        insights={{
+          ...insights,
+          scope: {
+            rows: 3000,
+            visible: 3000,
+            pii_columns: ["姓名", "学号"],
+            principal_id: "teacher",
+          },
+        }}
+      />,
+    );
+    const policy = screen.getByRole("button", { name: /谁能看/ });
+    expect(policy).not.toHaveClass("is-off");
+    fireEvent.click(policy);
+    expect(container.querySelector(".demo-trust-detail")).toHaveTextContent(
+      "字段脱敏（PII）",
+    );
+    expect(container.querySelector(".demo-trust-detail")).not.toHaveTextContent(
+      "该演示未启用访问策略",
+    );
+  });
+
+  it("scope.principal_id 命中 principals 时初始选中该主体", () => {
+    render(
+      <DemoBrief
+        insights={{
+          ...insights,
+          scope: {
+            rows: 3000,
+            visible: 3000,
+            rls_column: "region",
+            principal_id: "u_east",
+          },
+        }}
+        principals={[
+          { id: "admin", label: "管理员 · 20 行", policy: {} },
+          { id: "u_east", label: "华东主体 · 8 行", policy: {} },
+        ]}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "华东主体 · 8 行" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "管理员 · 20 行" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+  });
+
+  it("6 条序列使用 6 种颜色，第 7 条起循环颜色并叠加虚线", () => {
+    const series = Array.from({ length: 8 }, (_, index) => ({
+      name: `渠道${index + 1}`,
+      points: [index + 1, index + 2],
+    }));
+    const { container } = render(
+      <DemoBrief
+        insights={{
+          ...insights,
+          charts: [
+            {
+              type: "multiline",
+              title: "八渠道趋势",
+              labels: ["1 月", "2 月"],
+              series,
+            },
+          ],
+        }}
+      />,
+    );
+    const lines = Array.from(container.querySelectorAll(".demo-series-line"));
+    expect(lines).toHaveLength(8);
+    const styleOf = (index: number) => lines[index].getAttribute("style") ?? "";
+    const strokeOf = (index: number) =>
+      styleOf(index).match(/stroke:\s*([^;]+)/)?.[1]?.trim();
+    const colors = lines.slice(0, 6).map((_, index) => strokeOf(index));
+    expect(new Set(colors).size).toBe(6);
+    expect(styleOf(0)).not.toContain("stroke-dasharray");
+    expect(styleOf(6)).toContain("stroke-dasharray");
+    expect(strokeOf(6)).toBe(strokeOf(0));
+  });
+
+  it("堆叠图点击锁定后移开鼠标仍保持 aria-pressed", () => {
+    render(
+      <DemoBrief
+        insights={{
+          ...insights,
+          charts: [
+            {
+              type: "stacked",
+              title: "月度堆叠",
+              labels: ["1 月", "2 月"],
+              series: [
+                { name: "线上", values: [1, 2] },
+                { name: "线下", values: [2, 1] },
+              ],
+            },
+          ],
+        }}
+      />,
+    );
+    const online = screen.getByRole("button", { name: "线上" });
+    expect(online).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(online);
+    expect(online).toHaveAttribute("aria-pressed", "true");
+    fireEvent.mouseLeave(online);
+    expect(online).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(online);
+    expect(online).toHaveAttribute("aria-pressed", "false");
+  });
 });

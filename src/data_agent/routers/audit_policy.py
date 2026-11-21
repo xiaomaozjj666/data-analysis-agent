@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from data_agent.audit_policy import (
@@ -14,6 +17,21 @@ from data_agent.audit_policy import (
 )
 
 router = APIRouter()
+
+
+def _demo_kind(root: Path) -> str | None:
+    """读取会话的演示类型；非演示会话返回 None，损坏文件返回 422。"""
+    path = root / "demo.json"
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=422, detail=f"无法读取演示元数据：{exc}") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="演示元数据格式无效。")
+    kind = str(payload.get("kind") or "").strip()
+    return kind or None
 
 
 class PolicyPayload(BaseModel):
@@ -53,6 +71,17 @@ class SwitchRequest(BaseModel):
     principal_id: str = Field(min_length=1, max_length=120)
 
 
+@router.delete("/api/sessions/{session_id}/audit-policy", status_code=204)
+def delete_audit_policy(session_id: str) -> Response:
+    """清除本会话的访问策略（只删本模块管理的 audit_policy.json）。"""
+    from data_agent import api
+    from data_agent.audit_policy import POLICY_FILENAME
+
+    workspace = api.registry.get(session_id).workspace
+    (workspace.root / POLICY_FILENAME).unlink(missing_ok=True)
+    return Response(status_code=204)
+
+
 @router.post("/api/sessions/{session_id}/audit-policy/switch")
 def switch_demo_principal(session_id: str, payload: SwitchRequest) -> dict[str, Any]:
     """切换演示主体：保存策略、重算预分析，并返回策略过滤后的预览。"""
@@ -62,7 +91,14 @@ def switch_demo_principal(session_id: str, payload: SwitchRequest) -> dict[str, 
     from data_agent.demo_insights import insights_for
 
     workspace = api.registry.get(session_id).workspace
-    demo = DEMOS["regional_policy"]
+    # 主体与演示类型必须来自本会话的 demo.json，不能把区域策略硬编码后
+    # 写进财报/成绩等其它演示会话。
+    kind = _demo_kind(workspace.root)
+    if kind is None:
+        raise HTTPException(status_code=404, detail="该会话不是演示数据，无法切换主体。")
+    demo = DEMOS.get(kind)
+    if demo is None:
+        raise HTTPException(status_code=404, detail="未知的演示类型。")
     selected = next(
         (item for item in demo.principals if item["id"] == payload.principal_id), None
     )
@@ -83,7 +119,7 @@ def switch_demo_principal(session_id: str, payload: SwitchRequest) -> dict[str, 
     session_payload = _session_payload(session_id, record)
     return {
         "policy": policy,
-        "insights": insights_for("regional_policy", csv_text, policy),
+        "insights": insights_for(kind, csv_text, policy),
         "preview": session_payload["preview"],
         "profile": session_payload["profile"],
         "active": selected["id"],

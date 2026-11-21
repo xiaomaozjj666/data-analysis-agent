@@ -5,7 +5,11 @@
 拼完整包，峰值内存约等于「源数据 + 压缩包」两份。改为：
 1. 以 ``mkstemp`` 在系统临时目录创建文件（同目录 rename 语义无关，仅读一次）；
 2. ``zipfile`` 逐文件写入磁盘（压缩流式进行，不额外占内存）；
-3. ``FileResponse`` 以块读取发送，响应结束后由 ``BackgroundTask`` 删除临时文件。
+3. ``FileResponse`` 以块读取发送，响应结束后删除临时文件。
+
+清理放在响应 ``__call__`` 的 ``finally`` 里：BackgroundTask 在 Starlette
+1.10 中只在正常发送结束后执行，客户端断开或 send 抛异常时不会运行，
+临时文件会残留。``finally`` 覆盖发送异常与客户端断开两条路径。
 
 失败路径（打包中途异常）也会立即删除临时文件，不把半截 ZIP 留在磁盘。
 """
@@ -18,10 +22,20 @@ import zipfile
 from collections.abc import Callable
 from pathlib import Path
 
-from fastapi.responses import FileResponse
-from starlette.background import BackgroundTask
+from starlette.responses import FileResponse
+from starlette.types import Receive, Scope, Send
 
 __all__ = ["zip_file_response"]
+
+
+class _CleanupFileResponse(FileResponse):
+    """发送完成或发送异常后都删除底层临时文件的 FileResponse。"""
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            Path(self.path).unlink(missing_ok=True)
 
 
 def zip_file_response(
@@ -40,9 +54,8 @@ def zip_file_response(
     except BaseException:
         path.unlink(missing_ok=True)
         raise
-    return FileResponse(
+    return _CleanupFileResponse(
         path,
         media_type=media_type,
         filename=filename,
-        background=BackgroundTask(path.unlink, missing_ok=True),
     )

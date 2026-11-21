@@ -21,7 +21,7 @@ import math
 import re
 from collections import Counter, defaultdict
 from datetime import date
-from statistics import median
+from statistics import median, pstdev
 from typing import Any
 
 _ISO_DATE = re.compile(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}")
@@ -374,17 +374,48 @@ def _sales(rows: list[dict[str, str]]) -> dict[str, Any]:
     }
 
 
-def _regional(rows: list[dict[str, str]]) -> dict[str, Any]:
-    east = [row for row in rows if row.get("region") == "华东"]
-    revenue = sum(_number(row.get("revenue", "")) or 0.0 for row in east)
+def _regional(
+    rows: list[dict[str, str]],
+    visible: list[dict[str, str]] | None = None,
+    policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """区域演示的结论随主体切换重算：headline/KPI 都基于可见行。
+
+    ``visible`` 是 RLS 过滤后的行（管理员无 RLS 时等于全部行）；不能再用固定
+    的华东 8 行，否则切换主体后 KPI 与预览会各说各话。
+    """
+    scoped = rows if visible is None else visible
+    active = policy or {}
+    pii = tuple(str(column) for column in active.get("pii_columns") or ())
+    revenue = sum(_number(row.get("revenue", "")) or 0.0 for row in scoped)
+    filtered = len(rows) - len(scoped)
+    if active.get("rls"):
+        headline = f"华东的同事打开，只能看到自己的 {len(scoped)} 行"
+        subline = f"另外 {filtered} 行不在权限里，手机号也只露出脱敏后的样子。"
+        visible_kpi = _kpi("华东可见", str(len(scoped)), "RLS 过滤后", "行")
+        revenue_kpi = _kpi("华东销售额", _money(revenue), "按主体过滤后", "元")
+    else:
+        headline = f"管理员能看到全部 {len(rows)} 行"
+        subline = (
+            f"没有行级过滤，全部 {len(rows)} 行都参与统计；手机号仍然只以脱敏形式出现。"
+            if pii
+            else f"没有行级过滤，全部 {len(rows)} 行都参与统计。"
+        )
+        visible_kpi = _kpi("全部可见", str(len(scoped)), "无行级过滤", "行")
+        revenue_kpi = _kpi("全部销售额", _money(revenue), "全部可见行", "元")
     return {
-        "headline": "华东的同事打开，只能看到自己的 8 行",
-        "subline": "另外 12 行不在权限里，手机号也只露出脱敏后的样子。",
+        "headline": headline,
+        "subline": subline,
         "kpis": [
             _kpi("全部订单", str(len(rows)), "原始 CSV 行数"),
-            _kpi("华东可见", str(len(east)), "RLS 过滤后", "行"),
-            _kpi("华东销售额", _money(revenue), "按主体过滤后", "元"),
-            _kpi("脱敏列", "1", "phone → 已脱敏", "列"),
+            visible_kpi,
+            revenue_kpi,
+            _kpi(
+                "脱敏列",
+                str(len(pii)),
+                ("、".join(pii) + " → 已脱敏") if pii else "无",
+                "列",
+            ),
         ],
         "findings": [
             "行级权限发生在聚合之前：被过滤的行不会进入指标，也不会出现在证据预览。",
@@ -686,11 +717,18 @@ def _grades(rows: list[dict[str, str]]) -> dict[str, Any]:
         exam_subject.append({"name": subject, "points": points})
 
     subject_average = []
+    subject_spread: list[tuple[str, float]] = []
     for subject in subjects:
         values = [value for row in rows if (value := score(row, subject)) is not None]
         subject_average.append(
             {"label": subject, "value": round(sum(values) / len(values), 1) if values else 0.0}
         )
+        # 总体标准差（pstdev）跨三次考试合并计算，避免学期差异被考试维度掩盖。
+        if len(values) >= 2:
+            subject_spread.append((subject, pstdev(values)))
+    widest_subject, widest_spread = (
+        max(subject_spread, key=lambda item: item[1]) if subject_spread else ("", 0.0)
+    )
 
     attendance_points = []
     for row in rows:
@@ -777,6 +815,16 @@ def _grades(rows: list[dict[str, str]]) -> dict[str, Any]:
         if low_attendance and high_attendance
         else 0.0
     )
+    if abs(gap) < 0.1:
+        gap_text = "这些记录的学科均分与全勤记录几乎无差异（差值 < 0.1 分）。"
+    else:
+        direction = "低" if gap > 0 else "高"
+        gap_text = f"这些记录的学科均分比全勤记录{direction}约 {abs(gap):.1f} 分。"
+    spread_text = (
+        f"{widest_subject}的标准差最大（{widest_spread:.2f} 分），班级之间和班内分化都更明显。"
+        if widest_subject
+        else "各科标准差接近，班级之间和班内分化程度相近。"
+    )
 
     charts = [
         {"type": "histogram", "title": "总分分布", "subtitle": "按学生平均总分分箱", "unit": "人", "items": _histogram([value / len(subjects) for value in totals], 10)},
@@ -800,8 +848,8 @@ def _grades(rows: list[dict[str, str]]) -> dict[str, Any]:
         ],
         "charts": charts,
         "findings": [
-            f"出勤低于 90% 的记录有 {absent} 条；这些记录的学科均分比全勤记录低约 {gap:.1f} 分。",
-            "数学的标准差最大，班级之间和班内分化都更明显。",
+            f"出勤低于 90% 的记录有 {absent} 条；{gap_text}",
+            spread_text,
         ],
     }
 
@@ -933,7 +981,7 @@ def _finance(rows: list[dict[str, str]]) -> dict[str, Any]:
         ],
         "charts": charts,
         "findings": [
-            f"最新月现金 {_money(float(latest['cash']))}，较年初 {cash[0] / cash[-1] - 1:+.0%}。",
+            f"最新月现金 {_money(float(latest['cash']))}，较年初 {cash[-1] / cash[0] - 1:+.0%}。",
             "成本占收入的比例在 Q3 达到高点，Q4 回落；净利率随季节波动。",
         ],
     }
@@ -982,14 +1030,21 @@ def insights_for(
             value = (policy.get("claims") or {}).get(claim)
             if value is not None:
                 visible = [row for row in rows if row.get(rls_column) == str(value)]
-        insight = builder(rows)
+        insight = (
+            builder(rows, visible=visible, policy=policy)
+            if builder is _regional
+            else builder(rows)
+        )
         insight["kind"] = kind
         curated = insight.pop("charts", None)
         insight["charts"] = curated or _auto_charts(visible)
+        active = policy or {}
         insight["scope"] = {
             "rows": len(rows),
             "visible": len(visible),
             "rls_column": rls_column,
+            "principal_id": active.get("principal_id"),
+            "pii_columns": list(active.get("pii_columns") or ()),
         }
         return insight
     except (KeyError, ValueError, ZeroDivisionError):

@@ -158,6 +158,58 @@ def test_ledger_survives_reopen(tmp_path):
     _append(tmp_path)
     assert len(read_entries(tmp_path / "audit_ledger.jsonl")) == 1
     assert read_entries(tmp_path / "missing.jsonl") == []
+    with pytest.raises(FileNotFoundError):
+        read_entries(tmp_path / "missing.jsonl", missing_ok=False)
+
+
+def test_offline_script_rejects_missing_or_empty_ledger(tmp_path):
+    """0 字节 / 不存在的账本不能判通过（2026-11-21 审查 high）。"""
+    missing = tmp_path / "no_such_ledger.jsonl"
+    assert verify_audit_ledger.main([str(missing)]) == 2
+
+    empty = tmp_path / "empty.jsonl"
+    empty.write_bytes(b"")
+    assert verify_audit_ledger.main([str(empty)]) == 1
+
+    blank = tmp_path / "blank.jsonl"
+    blank.write_text("\n\n", encoding="utf-8")
+    assert verify_audit_ledger.main([str(blank)]) == 1
+
+
+def test_verify_script_explains_builtin_schema_instead_of_failing(tmp_path):
+    """内置口径账本没有 schema_fingerprint：--schema 应提示“未被绑定”，而非判篡改。"""
+    _append(tmp_path, schema_fingerprint=None)
+    schema = tmp_path / "audit_schema.json"
+    schema.write_text(
+        json.dumps(
+            {
+                "metrics": [
+                    {"name": "销售额合计", "column": "sales", "aggregation": "sum"}
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    assert verify_audit_ledger.main(
+        [str(tmp_path / "audit_ledger.jsonl"), "--schema", str(schema)]
+    ) == 0
+
+
+def test_append_repairs_missing_trailing_newline(tmp_path):
+    """末行换行被删后，下一次追加必须补换行，不能把两条记录拼坏。"""
+    _append(tmp_path)
+    path = tmp_path / "audit_ledger.jsonl"
+    raw = path.read_bytes()
+    assert raw.endswith(b"\n")
+    path.write_bytes(raw[:-1])
+    assert verify_ledger(path)["valid"] is True
+
+    second = _append(tmp_path)
+    assert second["seq"] == 2
+    entries = read_entries(path)
+    assert [entry["seq"] for entry in entries] == [1, 2]
+    assert verify_entries(entries)["valid"] is True
 
 
 # --- 起草轨迹绑定：模型原话 → 草稿 → 复算 → 确认 ---

@@ -167,6 +167,8 @@ def _alias_standalone(context: str, alias: str) -> bool:
     - 前后邻是数字/拉丁字符 → 是数值或单位本身（订单数462、p_value 路径），不限定。
     """
     text = context.lower()
+    if not alias:
+        return False
     start = 0
     while True:
         idx = text.find(alias, start)
@@ -174,14 +176,19 @@ def _alias_standalone(context: str, alias: str) -> bool:
             return False
         before = text[idx - 1] if idx > 0 else ""
         after = text[idx + len(alias) : idx + len(alias) + 2]
+        rejected = False
         if before and _CJK_RE.match(before) and before not in _STRUCTURAL_PREFIX:
-            return False
-        if after and after[0] in "（(":
+            rejected = True
+        elif after and after[0] in "（(":
             # 括号限定（订单数（华东区））是另一个口径，不能剥掉后当独立指标。
-            return False
-        if after and _CJK_RE.match(after) and not after.startswith(_LINKING_SUFFIX):
-            return False
-        return True
+            rejected = True
+        elif after and _CJK_RE.match(after) and not after.startswith(_LINKING_SUFFIX):
+            rejected = True
+        if not rejected:
+            return True
+        # 第一次出现被限定（华东区订单数）不代表后文没有独立写法
+        # （……，订单数 462 笔）；继续找下一次出现。
+        start = idx + len(alias)
 
 
 def _numeric_claims(text: str, facts: list[dict[str, Any]]) -> list[dict[str, Any]]:

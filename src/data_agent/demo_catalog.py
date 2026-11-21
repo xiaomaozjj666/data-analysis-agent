@@ -207,6 +207,33 @@ DEMOS: dict[str, Demo] = {
         blurb="3,000 名学生、60 个班、3 次考试，姓名与学号脱敏。",
         highlight="分布、班级对比、学科相关、出勤与成绩",
         generated=True,
+        # 成绩表没有 order_id/sales/quantity，声明式口径让它也能走核验链路，
+        # 而不是只有访问策略、没有可核验指标。
+        schema={
+            "status": "approved",
+            "metrics": [
+                {
+                    "name": "参考人数",
+                    "column": "student_id",
+                    "aggregation": "count_distinct",
+                    "unit": "人",
+                },
+                {
+                    "name": "语文均分",
+                    "column": "语文",
+                    "aggregation": "mean",
+                    "unit": "分",
+                    "decimals": 1,
+                },
+                {
+                    "name": "数学均分",
+                    "column": "数学",
+                    "aggregation": "mean",
+                    "unit": "分",
+                    "decimals": 1,
+                },
+            ],
+        },
         policy={
             "principal_id": "grade_director",
             "claims": {},

@@ -40,6 +40,9 @@ interface SalesAuditDemoProps {
   onQuickDraft?: () => void;
   onUseRecorded?: () => void;
   onDownloadEvidence: () => void;
+  onDownloadEvidenceBundle?: () => void;
+  bundleBusy?: boolean;
+  bundleError?: string;
   onDownloadBrief: () => void;
   onDraftChange?: (value: string) => void;
   onEdit: () => void;
@@ -156,7 +159,7 @@ function VerifyExport({ brief, expected }: { brief: string; expected: string }) 
 
 export default function SalesAuditDemo({
   draft, isExample, audit, busy, confirming, confirmed, quickBusy, quickDraft, quickFailed, recordedNote, canRun, error, evidence, brief, details,
-  receipt, briefText, onRun, onConfirm, onQuickDraft, onUseRecorded, onDownloadEvidence, onDownloadBrief, onDraftChange, onEdit, onReset,
+  receipt, briefText, onRun, onConfirm, onQuickDraft, onUseRecorded, onDownloadEvidence, onDownloadEvidenceBundle, bundleBusy, bundleError, onDownloadBrief, onDraftChange, onEdit, onReset,
 }: SalesAuditDemoProps) {
   const stage = useRef<HTMLElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
@@ -510,7 +513,14 @@ export default function SalesAuditDemo({
             )}
             <div className="sales-audit-actions">
               <button type="button" onClick={onDownloadEvidence}><Download size={15} />下载核验明细 (.json)</button>
+              {confirmed && onDownloadEvidenceBundle && (
+                <button type="button" onClick={onDownloadEvidenceBundle} disabled={bundleBusy}>
+                  {bundleBusy ? <LoaderCircle size={15} className="spin" /> : <Download size={15} />}
+                  {bundleBusy ? "正在打包…" : "下载证据包 (.zip)"}
+                </button>
+              )}
             </div>
+            {bundleError && <p className="sales-showcase-error" role="alert">{bundleError}</p>}
           </div>
         )}
       </div>
