@@ -264,6 +264,13 @@ class DataAnalysisAgent:
             ],
             name="data_analysis_react_executor",
         )
+        # 会话级 token 用量累计器：经 _invoke_config 注入每一次 LLM 调用
+        # （plan/replan/execute/finalize/chat 全覆盖）。
+        # 【2026-11-22 原位改判】初版注释称修复前「总用量只剩零头/漏计」——
+        # 评审实测更正：WorkflowState 未声明 usage/reasoning 通道，修复前
+        # run()/stream() 的 usage 恒为 None、reasoning 恒为空（完全不展示），
+        # 漏计缺陷被通道丢弃缺陷掩蔽，两者是叠加关系而非「低估」。
+        self.usage_acc = UsageAccumulator()
         # 结构化输出用 bind_tools（tool_choice=auto）：见 _ToolSchemaRunnable 的说明，
         # with_structured_output 会强制 tool_choice，thinking 模式直接 400。
         self.planner = _ToolSchemaRunnable(self.model, AnalysisPlan, logger=logger)
@@ -292,7 +299,11 @@ class DataAnalysisAgent:
                 ToolTraceCallback），会与 cancel_callback 一起注入。
             **extra: 其他 RunnableConfig 字段。
         """
-        callbacks: list[BaseCallbackHandler] = [self.cancel_callback, *extra_callbacks]
+        callbacks: list[BaseCallbackHandler] = [
+            self.cancel_callback,
+            self.usage_acc,
+            *extra_callbacks,
+        ]
         return {"callbacks": callbacks, **extra}
 
     def _enter_node(self, node: str, title: str) -> None:
@@ -365,6 +376,9 @@ class DataAnalysisAgent:
             ValueError: query 为空时。
             AnalysisCancelled: 外部请求取消时。
         """
+        # 同一实例复跑第二次分析时清零累计器，避免上次用量串进新
+        # AnalysisResult.usage 与溯源链 usage 条目（2026-11 评审 P2-2）。
+        self.usage_acc.reset()
         self._run_started_at = time.monotonic()
         result = self.graph.invoke(
             self._input_state(query, history, resume_from=resume_from),
@@ -412,6 +426,9 @@ class DataAnalysisAgent:
             "configurable": {"thread_id": uuid4().hex},
             "recursion_limit": self.settings.max_plan_steps * 3 + 10,
         }
+        # 复跑清零同 run()（评审 P2-2）；stream 路径的 finalize payload 经
+        # complete 事件把会话级用量推给前端。
+        self.usage_acc.reset()
         self._run_started_at = time.monotonic()
         for update in self.graph.stream(
             self._input_state(query, history, resume_from=resume_from), config=config
@@ -466,11 +483,11 @@ class DataAnalysisAgent:
         artifact_before = len(self.workspace._artifacts)
         tool_tracer = ToolTraceCallback(self.event_callback)
         chat_streamer = ReportStreamCallback(self.event_callback, event_type="chat_chunk")
-        # 思考过程 + 用量：与 finalize 节点一致的回调注入，让追问也具备
-        # reasoning_content 流式展示和 token 用量统计。
+        # 思考过程：reasoning_content 流式展示。用量由会话级共享累计器统一
+        # 计入（本方法的 _last_usage 取「本次追问」的增量而非会话累计）。
         reasoning_buffer: list[str] = []
         reasoning_streamer = ReasoningStreamCallback(self.event_callback, buffer=reasoning_buffer)
-        usage_acc = UsageAccumulator()
+        usage_before = self.usage_acc.snapshot()
 
         result = self.react_agent.invoke(
             {"messages": messages},
@@ -478,7 +495,6 @@ class DataAnalysisAgent:
                 tool_tracer,
                 chat_streamer,
                 reasoning_streamer,
-                usage_acc,
                 recursion_limit=self.settings.max_iterations * 2 + 5,
             ),
         )
@@ -489,6 +505,9 @@ class DataAnalysisAgent:
         response_text = _message_text(final_ai) or "（未生成回复）"
         new_artifacts = list(self.workspace.artifacts)[artifact_before:]
         # 存储到实例属性，供 API 层在 chat_done 事件中读取
-        self._last_usage = usage_acc.snapshot()
+        usage_after = self.usage_acc.snapshot()
+        self._last_usage = {
+            key: max(0, usage_after[key] - usage_before[key]) for key in usage_after
+        }
         self._last_reasoning = "".join(reasoning_buffer)
         return response_text, new_artifacts

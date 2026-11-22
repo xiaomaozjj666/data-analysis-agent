@@ -78,6 +78,11 @@ class WorkflowState(TypedDict, total=False):
     trace: list[dict[str, str]]
     artifacts: list[dict[str, str]]
     replan_reason: str
+    #: 本次分析累计的 token 用量（finalize 节点写入；会话级累计器覆盖
+    #: plan/replan/execute/finalize 全部 LLM 调用）。未声明时会被 langgraph
+    #: 状态通道静默丢弃——reasoning 曾因此一直为空（2026-11 审计发现）。
+    usage: dict[str, int]
+    reasoning: str
 
 
 @dataclass(slots=True)

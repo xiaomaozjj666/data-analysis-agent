@@ -268,3 +268,9 @@ class UsageAccumulator(BaseCallbackHandler):
             "completion_tokens": self.total_output,
             "total_tokens": self.total_total,
         }
+
+    def reset(self) -> None:
+        """清零累计值：同一 agent 实例复跑第二次分析时避免串账。"""
+        self.total_input = 0
+        self.total_output = 0
+        self.total_total = 0

@@ -16,6 +16,7 @@ import pandas as pd
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+from data_agent.callbacks import UsageAccumulator
 from data_agent.config import AgentSettings
 from data_agent.models import AnalysisCancelled, AnalysisPlan, PlanStep, ReplanDecision
 from data_agent.nodes.execute import execute_step
@@ -90,6 +91,9 @@ class FakeAgent:
         self.replanner = replanner or _MockRunnable()
         self.react_agent = react_agent or _MockRunnable()
         self.model = model or _MockRunnable()
+        # 会话级用量累计器（与 DataAnalysisAgent.__init__ 同名字段；节点测试
+        # 里没有真实 LLM 调用，累计值保持 0，finalize 只读它的 snapshot）。
+        self.usage_acc = UsageAccumulator()
         self.entered_nodes: list[tuple[str, str]] = []
 
     def analysis_budget_left(self) -> float:
@@ -723,7 +727,9 @@ def test_finalize_fallback_when_model_fails(tmp_path):
     # Fallback message should mention the failure and include step summaries.
     assert "模型汇总失败" in result["response"]
     assert "检查数据" in result["response"]
-    assert result["usage"] is None  # usage_acc set to None on exception.
+    # 会话级累计器在 LLM 失败时仍透出已累计部分（不再置 None）；
+    # FakeAgent 无真实 LLM 调用，累计值为 0。
+    assert result["usage"] == {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
 
 def test_finalize_returns_workspace_artifacts_not_state_artifacts(tmp_path):
@@ -973,4 +979,5 @@ def test_finalize_fallback_without_evidence(tmp_path):
     result = finalize(agent, state)
 
     assert "没有可汇总的步骤结果" in result["response"]
-    assert result["usage"] is None
+    # 会话级累计器在失败时也透出（此处无真实调用，为 0 值）。
+    assert result["usage"] == {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}

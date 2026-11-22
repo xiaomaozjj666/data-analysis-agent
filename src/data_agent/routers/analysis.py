@@ -90,6 +90,7 @@ def _record_provenance(
             provider=getattr(settings, "provider", ""),
             model=getattr(settings, "model", ""),
             code_version=__version__,
+            usage=result.usage,
         )
     except Exception:
         logger.exception("Failed to record provenance for session %s", record.session_id)
@@ -406,6 +407,9 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
                 # 仅规划模式：不进入 finalize，提取计划并切换到待审批态。
                 # 前端收到 plan_ready 事件后展示审批面板，用户确认后用
                 # resume_from 注入 pending_plan 发起执行请求。
+                # 已知边界：plan 阶段的 token 用量随本请求的 agent 丢弃
+                # （resume 会新建 agent、累计器从零开始），溯源链 usage 条目
+                # 因此不含规划阶段——修复前整条链都没有 usage，属已知取舍。
                 if plan_payload is None:
                     raise RuntimeError("规划阶段未返回计划。")
                 record.pending_plan = plan_payload.get("plan", [])

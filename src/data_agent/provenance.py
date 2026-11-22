@@ -87,6 +87,7 @@ def record_analysis(
     provider: str = "",
     model: str = "",
     code_version: str = "",
+    usage: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """写入最近一次分析的溯源链，返回摘要。
 
@@ -98,11 +99,12 @@ def record_analysis(
     entries: list[dict[str, Any]] = []
     previous = ""
 
-    def add(entry_type: str, name: str, data: dict[str, Any]) -> None:
+    def add(entry_type: str, name: str, data: dict[str, Any]) -> dict[str, Any]:
         nonlocal previous
         entry = _make_entry(len(entries), previous, entry_type, name, data)
         entries.append(entry)
         previous = entry["hash"]
+        return entry
 
     created_at = datetime.now(UTC).isoformat(timespec="seconds")
     add(
@@ -214,11 +216,24 @@ def record_analysis(
                     )
         add("artifact", name, data)
 
-    add(
+    report_entry = add(
         "report",
         "analysis-report",
         {"sha256": sha256_text(response), "chars": len(response)},
     )
+
+    # token 用量入链：成本可审计是溯源的一部分（2026-11 成本可见性审计）。
+    # 没有用量（旧路径/纯本地 replay）时不写条目，保持既有链长度不变。
+    if usage:
+        add(
+            "usage",
+            "llm-tokens",
+            {
+                "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+                "completion_tokens": int(usage.get("completion_tokens") or 0),
+                "total_tokens": int(usage.get("total_tokens") or 0),
+            },
+        )
 
     payload = "".join(_canonical(entry) + "\n" for entry in entries)
     target = base / PROVENANCE_FILE
@@ -236,7 +251,9 @@ def record_analysis(
         "code_version": code_version,
         "tool_calls": tool_calls,
         "artifacts": sum(1 for entry in entries if entry["type"] == "artifact"),
-        "report_sha256": entries[-1]["data"]["sha256"],
+        # 用 report 条目本身取 sha256：usage 等尾随条目加入后 entries[-1]
+        # 不再是报告条目（2026-11 usage 入链实测 KeyError）。
+        "report_sha256": report_entry["data"]["sha256"],
     }
     summary_target = base / SUMMARY_FILE
     summary_tmp = summary_target.with_suffix(summary_target.suffix + ".tmp")

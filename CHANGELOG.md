@@ -11,6 +11,14 @@
 
 ### 新增
 
+- **token 用量遥测全链覆盖并入溯源链**：会话级累计器经 `_invoke_config`
+  注入每一次 LLM 调用（plan/replan/execute/finalize/chat 全覆盖）——修复前
+  `WorkflowState` 未声明 `usage`/`reasoning` 通道，run()/stream() 的用量
+  **恒为 None**、思考过程恒为空（前端 chip 从未渲染过），且规划与执行步骤
+  的用量全部漏计。现在 `AnalysisResult.usage` 为会话级累计并随报告透出，
+  溯源链新增 `usage` 条目（`verify()` 兼容旧链）；`run()`/`stream()` 入口
+  重置累计器避免复跑串账；`chat_done` 事件改为本次追问增量。前端 chip
+  标题语义对齐（报告头部=整次分析累计，追问气泡=单次追问）。
 - **技能包扫描 SARIF 输出与 references/ 资源目录**：`skill scan --sarif`
   输出 SARIF v2.1.0（GitHub Code Scanning 兼容，critical/high→error、
   medium→warning、low→note，逐条带文件行号）；技能包支持 Agent Skills

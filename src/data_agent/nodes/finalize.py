@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any
 from data_agent.callbacks import (
     ReasoningStreamCallback,
     ReportStreamCallback,
-    UsageAccumulator,
 )
 from data_agent.facts import extract_facts, facts_prompt_block, render_facts_markdown
 from data_agent.nodes._utils import _message_text
@@ -62,21 +61,24 @@ def finalize(agent: DataAnalysisAgent, state: WorkflowState) -> dict[str, Any]:
         # 推送到前端，用户看着报告逐字写出，而不是等 30-60 秒看完整报告。
         # ReasoningStreamCallback 把 DeepSeek reasoning_content 以 thinking_chunk
         # 事件实时推送，让用户看到 Agent 的思考过程。
-        # UsageAccumulator 累计 finalize 节点的 token 用量。
+        # UsageAccumulator 累计 finalize 节点的 token 用量——现已升级为
+        # agent.usage_acc 会话级累计（plan/replan/execute/finalize 全覆盖）。
+        # 【2026-11-22 原位改判】初版注释称「finalize-only 快照把大头漏掉」
+        # ——评审实测更正：WorkflowState 未声明 usage/reasoning 通道，修复前
+        # run()/stream() 的 usage 恒为 None、reasoning 恒为空（完全不展示），
+        # 漏计被通道丢弃掩蔽，两者是叠加关系。
         reasoning_buffer: list[str] = []
         report_streamer = ReportStreamCallback(agent.event_callback)
         reasoning_streamer = ReasoningStreamCallback(agent.event_callback, buffer=reasoning_buffer)
-        usage_acc = UsageAccumulator()
         final_message = agent.model.invoke(
             prompt,
-            config=agent._invoke_config(report_streamer, reasoning_streamer, usage_acc),
+            config=agent._invoke_config(report_streamer, reasoning_streamer),
         )
         response = _message_text(final_message)
     except Exception:
         logger.exception("Finalize LLM summarize failed, falling back to evidence summary")
         response = ""
         reasoning_buffer = []
-        usage_acc = None
     if not response:
         # LLM 汇总失败时，把各步骤的标题与摘要作为兜底返回，避免用户看到空白。
         if evidence:
@@ -111,6 +113,8 @@ def finalize(agent: DataAnalysisAgent, state: WorkflowState) -> dict[str, Any]:
         "plan": state.get("plan", []),
         "completed_steps": state.get("completed_steps", []),
         "trace": state.get("trace", []),
-        "usage": usage_acc.snapshot() if usage_acc else None,
+        # 会话级累计用量（plan/replan/execute/finalize 全覆盖；LLM 调用失败时
+        # 也返回已累计的部分，None 永远不再出现）
+        "usage": agent.usage_acc.snapshot(),
         "reasoning": "".join(reasoning_buffer),
     }

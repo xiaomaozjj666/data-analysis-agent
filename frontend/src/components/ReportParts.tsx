@@ -60,13 +60,13 @@ interface UsageChipProps {
   usage?: TokenUsage | null;
 }
 
-// Token 用量 chip：在报告头部和追问气泡末尾展示本次回答的 token 用量。
+// Token 用量 chip：报告头部展示整次分析的累计用量，追问气泡展示单次追问用量。
 // 主流 Agent（ChatGPT/Claude）都展示这个指标，让用户感知模型消耗。
 const UsageChip = React.memo(function UsageChip({ usage }: UsageChipProps) {
   if (!usage || (!usage.prompt_tokens && !usage.completion_tokens && !usage.total_tokens)) return null;
   const total = usage.total_tokens || ((usage.prompt_tokens || 0) + (usage.completion_tokens || 0));
   return (
-    <span className="usage-chip" title="本次 LLM 调用的 token 用量">
+    <span className="usage-chip" title="Token 用量（输入 / 输出 / 总计）">
       <Clock size={11} />
       {usage.prompt_tokens > 0 && <>
         <span>输入 <strong>{formatTokens(usage.prompt_tokens)}</strong></span>
