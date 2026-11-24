@@ -339,6 +339,44 @@ def test_notify_rejects_private_ip_literal():
     assert error is not None and "webhook 被拒绝" in error
 
 
+def test_notify_allows_fake_ip_dns_for_public_host(monkeypatch):
+    """Clash/TUN 的 fake-IP 会把公网域名解析到 198.18.0.0/15，不能当内网拒绝。"""
+    calls: list[object] = []
+
+    class _Resp:
+        status = 204
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(
+        automation.socket, "getaddrinfo", lambda host, port: [(2, 1, 6, "", ("198.18.1.39", port))]
+    )
+    monkeypatch.setattr(automation, "_post_request", lambda request: calls.append(request) or _Resp())
+
+    assert automation._notify("https://hooks.example.test/alert", {"alerts": []}) is None
+    assert len(calls) == 1
+
+
+def test_fake_ip_literal_is_still_rejected():
+    """只有域名解析结果放行 fake-IP；直接写该段 IP 仍然拒绝。"""
+    error = automation._notify("http://198.18.1.39/hook", {"alerts": []})
+    assert error is not None and "webhook 被拒绝" in error
+
+
+def test_pinned_resolution_allows_fake_ip(monkeypatch):
+    """钉扎环节同样放行 fake-IP 段，连接仍直连解析出的地址。"""
+    monkeypatch.setattr(
+        automation.socket, "getaddrinfo", lambda host, port: [(2, 1, 6, "", ("198.18.1.39", port))]
+    )
+    assert automation._validated_sockaddrs("https://hooks.example.test/x") == [
+        (2, ("198.18.1.39", 443))
+    ]
+
+
 # ---------------------------------------------------------------------------
 # 评审修复回归：dry-run 副作用、坏状态、异常口径、并发与 webhook 重定向
 # ---------------------------------------------------------------------------

@@ -90,6 +90,15 @@ _PRIVATE_FLAGS = (
     "is_reserved",
     "is_unspecified",
 )
+#: fake-IP DNS 段（RFC 2544 基准测试网段，Clash/Mihomo 的 TUN 模式默认使用）。
+#: 它不可公网路由：域名解析到该段说明本机 DNS 被代理接管，实际连接由系统
+#: 代理转发；若按内网拒绝，这类机器上所有 webhook 都会在发送前失败（2026-11
+#: 实测）。因此只对**域名解析结果**放行，IP 字面量仍一律拦截。
+_FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
+
+
+def _is_fake_ip(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return address.version == 4 and address in _FAKE_IP_NETWORK
 
 
 @dataclass(frozen=True)
@@ -159,7 +168,7 @@ def _unsafe_host_reason(host: str, *, resolve: bool = True) -> str | None:
             address = ipaddress.ip_address(info[4][0])
         except ValueError:
             continue
-        if _unsafe_address(address):
+        if _unsafe_address(address) and not _is_fake_ip(address):
             return "域名解析到内网/环回/保留地址"
     return None
 
@@ -198,7 +207,7 @@ def _validated_sockaddrs(url: str) -> list[tuple[int, tuple[str, int]]]:
     safe: list[tuple[int, tuple[str, int]]] = []
     for family, _type, _proto, _canon, sockaddr in infos:
         address = ipaddress.ip_address(sockaddr[0])
-        if _unsafe_address(address):
+        if _unsafe_address(address) and not _is_fake_ip(address):
             raise urllib.error.HTTPError(
                 url, 403, "redirect blocked: 域名解析到内网/环回/保留地址", {}, None
             )
