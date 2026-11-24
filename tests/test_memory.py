@@ -61,6 +61,15 @@ def test_delete_memory(tmp_path):
     assert list_memories(tmp_path) == []
 
 
+def test_malformed_entries_are_ignored(tmp_path):
+    """memories.json 允许人工编辑：非对象条目不能让整条链路崩溃。"""
+    (tmp_path / "memories.json").write_text('["手写脏数据", {"text": "有效条目"}]', encoding="utf-8")
+    entries = list_memories(tmp_path)
+    assert [entry["text"] for entry in entries] == ["有效条目"]
+    assert "有效条目" in render_memory_context(tmp_path)
+    assert add_memory(tmp_path, "新增条目")["text"] == "新增条目"
+
+
 def test_render_memory_context_empty_when_no_entries(tmp_path):
     assert render_memory_context(tmp_path) == ""
 

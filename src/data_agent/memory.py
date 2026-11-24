@@ -53,7 +53,11 @@ def _load(path: Path) -> list[dict[str, Any]]:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
-    return payload if isinstance(payload, list) else []
+    if not isinstance(payload, list):
+        return []
+    # 文件允许人工编辑：非对象条目直接忽略，避免一条手写脏数据让
+    # 列表/去重/规划注入整条链路抛 AttributeError。
+    return [entry for entry in payload if isinstance(entry, dict)]
 
 
 def _save(path: Path, entries: list[dict[str, Any]]) -> None:
