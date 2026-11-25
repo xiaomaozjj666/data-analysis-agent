@@ -27,6 +27,21 @@ DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 #: 支持的模型提供商集合。
 SUPPORTED_PROVIDERS = {"deepseek", "openai"}
 
+#: .env.example 里的占位 Key 片段：照抄这些值时在模型侧只会得到 401，提前拦下来。
+_PLACEHOLDER_KEY_MARKERS = (
+    "your-deepseek-api-key",
+    "your-openai-api-key",
+    "your-api-key",
+    "sk-xxx",
+    "changeme",
+    "<your-key>",
+)
+
+
+def _is_placeholder_key(key: str) -> bool:
+    lowered = key.strip().lower()
+    return any(marker in lowered for marker in _PLACEHOLDER_KEY_MARKERS)
+
 #: httpx/OpenAI SDK 会读取的"不走代理"环境变量名（大小写两种写法都常见）。
 _NO_PROXY_ENV_KEYS = ("NO_PROXY", "no_proxy")
 
@@ -204,6 +219,12 @@ class AgentSettings:
             raise ValueError(
                 "未配置 API Key。请在页面侧栏填写，或复制 .env.example 为 .env 后设置 "
                 f"{key_name}。使用本地 Ollama 时可填写任意非空值。"
+            )
+        if _is_placeholder_key(self.api_key):
+            key_name = "DEEPSEEK_API_KEY" if self.provider == "deepseek" else "OPENAI_API_KEY"
+            raise ValueError(
+                f"{key_name} 仍是 .env.example 里的占位值，请换成真实 Key；"
+                "否则请求会在模型侧以 401 失败。"
             )
         if not self.model:
             raise ValueError("模型名称不能为空。")

@@ -7,6 +7,27 @@
 项目自 2026-07 起以 trunk 方式开发（`main` 即最新可用版），本文件从 v1.0.0
 起维护；更早的历史按月份归档在版本条目里。
 
+## [2026-11-25]
+
+### 新增
+
+- **`data-agent clean`：清理 runs/ 旧会话目录**。默认只清理 CLI / MCP 产生的
+  `cli_*` / `mcp_*`（超过 7 天未修改、始终保留最新 20 个），支持 `--dry-run`
+  预览、`--include-web` 纳入 `api_*`；`--days 0` 必须显式加 `--all`。设置
+  `DATA_AGENT_CLI_RETENTION_DAYS` 后，每次 `analyze` 也会自动清理（保留最新 10 个）。
+- **`data-agent --version`**：报 bug 时可自证版本。
+
+### 修复
+
+- **CLI 失败不再甩 traceback**：`analyze` 的未预期异常（网络/上游模型/工具链）
+  归为一行可读错误并以退出码 1 结束；用法/配置错误仍为 2，取消为 130。
+- **报告与进度分流**：Markdown 报告走 stdout，加载/清理/产物提示与错误走 stderr，
+  `data-agent analyze x.csv > report.md` 重定向出来的只有报告。
+- **`.env.example` 占位 Key 提前拦截**：照抄 `your-deepseek-api-key` 等占位值
+  会直接提示换成真实 Key，而不是等到模型侧 401。
+- **移动端样式冲突**：删除 ≤680px 被 ≤1024px 抽屉规则覆盖的死代码侧栏样式；
+  固定底部追问输入框不再遮住最后 1–2 条消息。
+
 ## [2026-11-21]
 
 ### 新增
