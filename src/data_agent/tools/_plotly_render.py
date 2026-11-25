@@ -13,6 +13,7 @@ import pandas as pd
 
 from data_agent.density import build_density_view, should_use_density
 
+from ._charts.constants import _AGGREGATION_LABELS  # noqa: F401  (重新导出)
 from .charts import VIOLIN_SAMPLE_ROWS, _severe_axis_compression
 
 #: Plotly 大数据 WebGL 阈值：超过该行数的散点/折线切换为 scattergl
@@ -558,16 +559,6 @@ _PLOTLY_DARK_MODE_SCRIPT = (
 """
     + _PLOTLY_GL_REFRESH_SCRIPT
 )
-
-
-_AGGREGATION_LABELS = {
-    "sum": "合计",
-    "mean": "平均值",
-    "median": "中位数",
-    "count": "计数",
-    "min": "最小值",
-    "max": "最大值",
-}
 
 
 def _collect_trace_values(fig: Any, axis: str) -> list[float]:

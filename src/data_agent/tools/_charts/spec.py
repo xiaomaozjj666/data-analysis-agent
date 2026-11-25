@@ -17,9 +17,8 @@ from typing import Any
 import pandas as pd
 
 from .._helpers import _human_column_label
-from .._plotly_render import _AGGREGATION_LABELS
 from .aggregate import _aggregate_for_chart, _localize_boolean_categories
-from .constants import _BOOLEAN_VALUE_LABELS
+from .constants import _AGGREGATION_LABELS, _BOOLEAN_VALUE_LABELS
 from .infer import _infer_chart_type
 from .validate import _checked_columns, _validate_chart_semantics
 

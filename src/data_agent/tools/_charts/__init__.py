@@ -13,6 +13,12 @@
 - ``title``: 标题清理与文件名生成。
 - ``interpret``: Plotly 分支白话解读。
 - ``stat``: 大数据统计图服务端聚合（直方图分箱、箱线图五数概括）。
+
+``create_visualization`` 的编排实现另拆在三个模块，由 ``_tools_charts`` 直接
+导入（不经本 ``__init__`` 重新导出，避免为纯辅助函数的导入方引入 plotly 依赖）：
+- ``spec``: 请求解析与数据准备（列校验、自动选图/配色、top_n、聚合、轴标签）；
+- ``render``: Plotly figure 构建、尺度控制、底版布局与 trace 样式；
+- ``deliver``: 白话解读、嵌入降采样、HTML/JSON 写入与响应组装。
 """
 
 from __future__ import annotations
