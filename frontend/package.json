@@ -11,6 +11,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
     "perf:check": "node scripts/perf/check-bundle.mjs"
   },
@@ -35,6 +36,7 @@
     "@types/react-dom": "19.3.0",
     "@types/react-syntax-highlighter": "15.5.13",
     "@vitejs/plugin-react": "6.3.0",
+    "@vitest/coverage-v8": "5.1.1",
     "jsdom": "31.0.1",
     "typescript": "7.0.2",
     "vite": "8.3.8",

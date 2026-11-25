@@ -147,7 +147,7 @@ jobs:
             --min-accuracy 1.0
 
   frontend:
-    name: Frontend (typecheck + test + build)
+    name: Frontend (typecheck + test:coverage + build)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -174,8 +174,15 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Test
-        run: npm test
+      - name: Test with coverage gate
+        # 用 test:coverage 取代原来的 npm test：同一个 vitest run，只多生成
+        # 覆盖率报告并执行阈值校验，所以不需要再单独跑一次 test（那会把
+        # 测试时长翻倍且不增加任何信号）。
+        # 阈值定义在 frontend/vitest.config.js（lines 52 / statements 50 /
+        # functions 46 / branches 44，按 2026-11-26 实测值向下留 ~1.5 个点）。
+        # 后端有 --cov-fail-under=97；此前前端只保证"测试不红"，212 个用例
+        # 被整块删掉也不报警，这一步补上同样的门禁。
+        run: npm run test:coverage
 
       - name: Build
         run: npm run build
