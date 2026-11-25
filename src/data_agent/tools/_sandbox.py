@@ -260,11 +260,12 @@ def build_run_python_code(workspace: DataWorkspace) -> BaseTool:
         pre-imported; assign the final output to a variable named `result`
         (DataFrame / Series / scalar / dict) and keep it small — DataFrame results are
         truncated to 50 rows. print() output is captured. Only pandas / numpy / math /
-        statistics / datetime / re / json / collections / itertools / functools may be
-        imported; file and network access, underscore attributes and dynamic execution
-        are blocked; execution times out after 15 seconds and is killed in a child
-        process. Changes to `df` never affect the active dataset — use clean_data /
-        transform_data for real changes.
+        statistics / datetime / re / json / collections / itertools / functools, plus
+        scipy / scikit-learn / statsmodels when installed (pip install
+        "data-analysis-agent[stats]"), may be imported; file and network access,
+        underscore attributes and dynamic execution are blocked; execution times out
+        after 15 seconds and is killed in a child process. Changes to `df` never affect
+        the active dataset — use clean_data / transform_data for real changes.
         """
         _validate_code(code)
         payload = _execute_in_subprocess(code, workspace.dataframe.copy())

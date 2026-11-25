@@ -65,7 +65,7 @@ flowchart LR
 ## 功能特性
 
 - **计划-执行式分析流程**：每次分析先生成 2–6 个结构化步骤，每个步骤由 ReAct 执行器调用受控工具完成；重规划器根据真实工具结果删除无用步骤、补充后续分析，证据充分时提前结束，达到步骤上限时强制汇总，避免无限循环。
-- **受控数据工具集**（12 个内置工具）：数据检查、格式修复、安全清洗、非破坏性筛选视图、跨源合并、公开网页检索（`web_search`，固定出口、结果按不可信数据对待）、数据库查询、登记指标计算、统计分析、图表生成、数据导出、受限 Python 沙箱。
+- **受控数据工具集**（12 个内置工具）：数据检查、格式修复、安全清洗、非破坏性筛选视图、跨源合并、公开网页检索（`web_search`，固定出口、结果按不可信数据对待）、数据库查询、登记指标计算、统计分析、图表生成、数据导出、受限 Python 沙箱（可导入 scipy / scikit-learn / statsmodels，需安装 `[stats]` 可选依赖；文件与网络入口仍被拦截）。
 - **MCP 数据面服务**：把会话发现、数据集载入、结构探查与只读 SQL 以 MCP 标准开放给其他 Agent，护栏同源、传输 stdio（详见"快速开始"）。
   - 跨源合并带连接键校验与行数膨胀护栏：键不存在、键类型不一致导致一行都匹配不上、键不唯一导致行数被放大数倍，三种情况一律拒绝执行并说明原因；结果同时给出未匹配键数量与一对多放大警告，避免把扇出后的行数当作原始记录数。合并结果会成为新的活动数据集，行数基线同步重置。
   - 数据库查询面向三类数据源：上传的 **SQLite** 文件、环境变量 `DATA_AGENT_DATABASE_URL` 配置的 **PostgreSQL**（驱动按需安装：`pip install ".[postgres]"`），以及 `DATA_AGENT_EXTERNAL_DB_MODULE` / `DATA_AGENT_EXTERNAL_DB_KWARGS` 配置的 **通用 DB-API 数仓**（Snowflake、Databricks、BigQuery DB-API 等，模块走白名单，只读保证等级为 `role-required`——SQL 护栏 + 账号/角色权限，项目不谎称服务端已确认）。**只读**（SQLite 以 `mode=ro` 打开、Postgres 在服务端设置 `default_transaction_read_only`，写入在驱动/服务端即被拒绝），只接受 `SELECT` / `WITH` 语句；单条查询默认 30 秒墙钟预算（`DATA_AGENT_SQL_TIMEOUT_SECONDS`，1–120；SQLite 用 progress handler 中断、Postgres 用服务端 `statement_timeout`），结果上限 5000 行、500 列。空 `sql` 调用可一次拿到可用数据源、各源的只读保证等级（`readonly_guarantee`：driver / server-confirmed / role-required）与全库表结构；传 `adopt=true` 可把查询结果接管为活动数据集，后续统计与图表直接在其上工作。
@@ -129,6 +129,7 @@ flowchart LR
 - Python 3.11–3.13
 - Node.js 22.12 或更高版本（Vite 8 的最低要求）
 - 一个 LLM API Key（Web 默认 DeepSeek；CLI / MCP 兼容 OpenAI）
+- 可选：`pip install -e ".[stats]"` 安装统计建模依赖（scipy / scikit-learn / statsmodels）。受限 Python 沙箱只有在装了该 extra 后才能 `import scipy / sklearn / statsmodels`；未安装时沙箱返回 `pip install "data-analysis-agent[stats]"` 的可操作提示，而不是裸 `ModuleNotFoundError`。
 
 ### 一键启动（Windows）
 双击 `run.bat`。首次运行会自动创建虚拟环境、安装后端依赖并 `npm install`，随后分别启动（脚本会打印实际地址并自动打开浏览器）：
@@ -443,6 +444,7 @@ AWS_SECRET_ACCESS_KEY=<your-secret-access-key>
 - **指标要登记才会按同一口径算。** 工作台「业务口径」或 `DATA_AGENT_METRICS_PATH` 写入 `metrics.json`，表达式必须使用真实列名（如 `sales - returns`）。分析时会调用 `compute_registered_metrics`，报告里的「核验附录」默认收起。
 - **经营简报可以独立复算，并由服务端确认。** 工作台「简报核验」读取原始订单 CSV（UTF-8 / GB18030），核对销售额、销量、订单数和客单价，提供核验版简报及证据下载；范围限定指标（如「华东区订单数」）不会被当成全表口径放行。核验返回 `audit_id`，`/confirm` 由服务端按原始 CSV 重算后才写账本并返回回执，账本可用 `scripts/verify_audit_ledger.py` 离线校验（改简报 1 个字节即退出码 1）。页面上的「签章并出具简报」（草稿工作台为「确认并生成简报」/「生成简报」）会直接调用该接口，成功后展示「确认记录」回执序号与 hash，并下载服务端返回的权威简报。
 - **SQLite 大表不会整表进内存。** 超过 10 万行只载入前 10 万行；全量请用 `query_database` 聚合后再 `adopt`。CSV 也可用该工具，表名为 `data`。
+- **受限 Python 沙箱只做内存计算。** 可导入 pandas / numpy / 标准库，装了 `[stats]` extra 后还可导入 scipy / scikit-learn / statsmodels；白名单外的 `os` / `subprocess` / `socket` 一律拒绝，统计库的任意路径读写（`scipy.io`、`statsmodels.iolib`、`load_svmlight_file`…）、网络抓取（`sklearn.datasets.fetch_*`、`statsmodels.datasets.webuse`、`scipy.datasets`）与显式并行入口（`Parallel` / `delayed` / `joblib`）都在 AST 与子进程运行时两层拦截。导入 sklearn 后 joblib 默认后端固定为线程，`n_jobs>1` 不会另起子进程，15 秒超时与 2GB RSS 护栏对整次计算继续生效。
 - **换新数据重跑：** 报告上的「按配方重跑」读取 `analysis_recipe.json`，按上次工具参数执行，不重新规划。
 - **给业务的文件：** 导出菜单可下载 Word / PPT；「分析溯源 (.json)」给出报告对应的数据集、工具调用与产物哈希链及复核结果。
 - 样例行在发给模型前会脱敏手机号、邮箱、身份证号；不要依赖它代替完整的数据治理。

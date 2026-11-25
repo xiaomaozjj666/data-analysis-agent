@@ -7,6 +7,26 @@
 项目自 2026-07 起以 trunk 方式开发（`main` 即最新可用版），本文件从 v1.0.0
 起维护；更早的历史按月份归档在版本条目里。
 
+## [2026-11-26]
+
+### 新增
+
+- **受限 Python 沙箱支持 scipy / scikit-learn / statsmodels**：导入白名单新增三个
+  可选统计库（含子模块），新增 `[stats]` extra（`pip install ".[stats]"`；scipy 与
+  scikit-learn 原本就是核心依赖，statsmodels 随该 extra 安装）。未安装时 import 返回
+  `pip install "data-analysis-agent[stats]"` 的可操作提示，而不是裸
+  `ModuleNotFoundError`，并保留 `ImportError` 类型以便父进程翻译。
+
+### 安全
+
+- **白名单扩展没有放松 I/O 边界**：统计库的任意路径读写（`scipy.io`、
+  `statsmodels.iolib`、`load_svmlight_file`…）、网络抓取（`fetch_*`、`webuse`、
+  `get_rdataset`、`scipy.datasets`）与显式并行入口（`Parallel` / `delayed` /
+  `joblib`）在 AST 与子进程运行时两层拦截（别名还原后按模块前缀判断）；
+  星号导入一律拒绝（`from scipy import *` 会把 `io` 直接绑成变量）。导入
+  sklearn 后 joblib 默认后端固定为 threading，`n_jobs>1` 不再另起子进程，
+  15 秒超时与 2GB RSS 护栏继续覆盖整次计算。
+
 ## [2026-11-25]
 
 ### 新增

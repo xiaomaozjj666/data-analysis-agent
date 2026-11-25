@@ -61,6 +61,17 @@ dev = [
 postgres = ["psycopg[binary]>=3.3.9,<4"]
 # MCP 数据面服务：按需安装（pip install ".[mcp]"）。
 mcp = ["mcp>=2.3.0,<3"]
+# 统计建模可选依赖：受限 Python 沙箱可导入 scipy / scikit-learn / statsmodels
+# （pip install ".[stats]"）。scipy 与 scikit-learn 已是核心依赖（预定义统计
+# 工具在用），这里一并列入，让「沙箱统计能力」用一条命令装齐；statsmodels
+# 只在这里出现（核心运行时不装，未安装时沙箱返回可操作的安装提示）。
+# 版本范围覆盖 Python 3.11–3.13：scipy 1.17 / scikit-learn 1.9 支持 3.11+，
+# statsmodels 0.15 声明 >=3.10（classifiers 含 3.11 / 3.12 / 3.13）。
+stats = [
+  "scipy>=1.17.1,<2",
+  "scikit-learn>=1.9.1,<2",
+  "statsmodels>=0.15,<1",
+]
 deploy = ["langgraph-cli[inmem]>=0.4.43,<1"]
 
 [project.scripts]

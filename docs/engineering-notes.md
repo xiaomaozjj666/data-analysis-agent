@@ -216,6 +216,37 @@
 - **指标表达式是 AST 白名单**（四则/幂/模 + 列名，拒绝属性/调用/下标），
   不是 `eval`；放宽白名单前先想清楚它会被用户提交的 metrics.json 注入。
 
+## 沙箱统计库白名单（scipy / scikit-learn / statsmodels）
+
+沙箱原来只允许 pandas / numpy / math / statistics / datetime / re / json /
+collections / itertools / functools，超出 12 个受控工具的问题只能降级。2026-11
+把白名单扩到可选统计库，边界按"新增的是计算能力，不是 I/O 能力"设计：
+
+- **两层闸门都改，缺一不可**：父进程 `_validate_code` 做 AST 审查，子进程
+  `_safe_import` 是第二道（`run_user_code` 不经过 AST 审查，**别把静态检查当唯一防线**）。
+- **文件名/模块名拦截用"属性名 + 别名还原 + 模块前缀"三种口径**：
+  属性名层直接拒 `loadmat` / `savemat` / `mmread` / `wavfile` / `load_svmlight_file` /
+  `webuse` / `get_rdataset` / `fetch_*`（前缀规则）/ `Parallel` / `delayed` / `joblib` 等；
+  `import scipy as sp; sp.datasets.face()` 靠 `_collect_import_aliases` 把别名还原成
+  `scipy.datasets` 再按前缀拒绝；`scipy.io` / `scipy.datasets` / `statsmodels.iolib` /
+  `statsmodels.tools.web` 按模块路径整棵拦截。只按顶层白名单放行的话，
+  `import scipy.io as sio` 会直接绕过去（`import a.b as c` 的 `IMPORT_FROM` 不经过
+  受限 builtins 的 `getattr`）。
+- **星号导入一律拒绝**：`from scipy import *` 会把 `io` / `datasets` 直接绑成变量，
+  等于把上面所有入口审查清零。
+- **joblib 默认后端钉成 threading**：sklearn 的 `n_jobs>1` / `cross_val_score` /
+  `GridSearchCV` 默认走 loky 另起子进程——子进程内存不计入父进程盯着的那一个
+  RSS，超时收割也只看直接子进程。导入 sklearn / statsmodels 后立刻改写
+  `joblib.parallel.DEFAULT_BACKEND`（joblib 1.6 已不再读 `JOBLIB_MULTIPROCESSING`，
+  实测默认后端是 loky）。线程后端仍在同一进程，护栏继续生效。
+- **未安装要能行动**：只在"顶层模块整体缺失"（`exc.name` 无点且等于请求的顶层）
+  时把 `ModuleNotFoundError` 改写成 `pip install "data-analysis-agent[stats]"` 的
+  `ImportError`；已安装包内部子模块损坏时保留原异常，避免把"装坏了"误报成"没装"。
+  父进程 `_CHILD_EXCEPTIONS` 只映射 `ImportError`，所以子进程必须抛 ImportError 而不是
+  ModuleNotFoundError——`tools/_sandbox.py` 未改动也是这个原因。
+- **成本**：本机冷启动实测 `scipy.stats` 1.4s、`sklearn.linear_model` 2.5s（15s
+  超时内），`run_user_code` 不预导入这三个库——不写 import 的沙箱调用不为它们付费。
+
 ## 取消告警分支的测试为什么不能走 HTTP 断开（平台差异实证）
 
 `routers/analysis.py` 的取消分支（`_handle_stream_cancel`）曾经通过"客户端断开流"来测，
