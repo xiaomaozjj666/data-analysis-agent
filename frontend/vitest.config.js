@@ -32,15 +32,19 @@ export default defineConfig({
         "src/main.tsx",
       ],
       thresholds: {
-        // 2026-11-26 实测（243 tests / 28 files）：lines 53.41%、statements 51.43%、
-        // functions 47.57%、branches 45.59%。阈值统一向下留约 1.5 个点：
+        // 2026-11-26 实测（340 tests / 36 files）：lines 70.63%、statements 68.41%、
+        // functions 61.55%、branches 57.23%（多次全量运行波动 < 0.1 个点）。
+        // 阈值统一向下留约 1.5~2 个点：
         // 既容忍 CI 环境（node 22 / 并发调度）与本地的小幅波动，也保证
         // "删掉整块测试"或"新增组件完全不带测试"会被立刻拦下。
         // 提高阈值时按实测值向上调整，不要反过来靠排除文件凑数。
-        lines: 52,
-        statements: 50,
-        functions: 46,
-        branches: 44,
+        // 本轮新增覆盖：追问 SSE 全事件、图表预览（缓存/304/编辑/对比/PNG）、
+        // 会话导入删除重命名、分析 SSE 与失败恢复、访问门禁、错误边界、
+        // 命令面板交互、报告导出（Markdown/HTML/打印/Office/仪表盘/溯源）。
+        lines: 68.5,
+        statements: 66.5,
+        functions: 59.5,
+        branches: 55.5,
       },
     },
     // 2026-11-21 实测：本机同时跑两仓后端全量测试时，默认 fork 数（≈CPU 数）
