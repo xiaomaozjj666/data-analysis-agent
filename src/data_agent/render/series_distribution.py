@@ -380,8 +380,7 @@ def _heatmap_matrix(
     x_names = [str(c) for c in pivot.columns]
     y_names = [str(i) for i in pivot.index]
     raw = [
-        [_safe_value(pivot.iloc[i, j]) for j in range(len(x_names))]
-        for i in range(len(y_names))
+        [_safe_value(pivot.iloc[i, j]) for j in range(len(x_names))] for i in range(len(y_names))
     ]
     valid = [v for row in raw for v in row if v is not None]
     vmin = float(min(valid)) if valid else 0.0

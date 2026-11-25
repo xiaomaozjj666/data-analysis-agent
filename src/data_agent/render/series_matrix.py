@@ -127,18 +127,13 @@ def _splom_pair_cells(
     color: str | None,
 ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     """非对角格：dim_x × dim_y 两两散点，颜色分组与其他格联动。"""
-    xa = _splom_cell_axis(
-        name=x_label if bottom else None, show_label=bottom, is_category=False
-    )
+    xa = _splom_cell_axis(name=x_label if bottom else None, show_label=bottom, is_category=False)
     ya = _splom_cell_axis(
         name=y_label if leftmost else None, show_label=leftmost, is_category=False
     )
     pair_fmt = _scatter_tooltip_formatter(x_label, y_label, None)
     groups = (
-        [
-            (str(lv), work[work[color] == lv], _series_color(idx))
-            for idx, lv in enumerate(levels)
-        ]
+        [(str(lv), work[work[color] == lv], _series_color(idx)) for idx, lv in enumerate(levels)]
         if levels
         else [("样本", work, _ECHARTS_PALETTE[0])]
     )

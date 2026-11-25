@@ -364,7 +364,9 @@ def _density_single_axes(
     """单面板 jointplot 布局：返回 ``(grids, x_axes, y_axes)``。"""
     layout = _DENSITY_SINGLE_LAYOUT
     main_left = layout["left"]
-    main_width = 100.0 - layout["left"] - layout["right"] - layout["hist_width"] - layout["hist_gap"]
+    main_width = (
+        100.0 - layout["left"] - layout["right"] - layout["hist_width"] - layout["hist_gap"]
+    )
     main_top = layout["top"] + layout["hist"] + layout["hist_gap"]
     main_height = 100.0 - main_top - layout["bottom"]
     hist_left = main_left + main_width + layout["hist_gap"]
