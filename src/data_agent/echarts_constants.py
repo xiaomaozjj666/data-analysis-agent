@@ -9,7 +9,7 @@ import re
 import uuid
 from typing import Any
 
-from data_agent.tools.builder import _CHART_COLORS
+from data_agent.tools._plotly_render import _CHART_COLORS
 
 _ECHARTS_PALETTE = _CHART_COLORS
 
