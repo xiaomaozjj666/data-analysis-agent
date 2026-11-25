@@ -131,7 +131,7 @@ def build_tools(workspace: DataWorkspace) -> list[BaseTool]:
         workspace: 当前分析会话的数据工作区。
 
     Returns:
-        11 个 BaseTool 实例的列表。
+        全部 BaseTool 实例的列表（当前 13 个；按域由 `_tools_*.py` 的工厂提供）。
     """
     return [
         *build_check_tools(workspace),

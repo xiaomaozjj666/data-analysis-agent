@@ -134,11 +134,11 @@
 - 图表 iframe 主题联动用 postMessage 双向桥接（`useArtifactPreview` 的 `withThemeBridge`），避免 sandbox 跨域死代码。
 - 隐藏无图表的引擎筛选标签（`ArtifactCenter.tsx`）：仅渲染 `enginesPresent`，筛选后无图显示提示而非静默空白。
 
-## 新增受控工具需要同步的四处
+## 新增受控工具需要同步的五处
 
-加一个工具不是改 `builder.py` 一处就完事，漏掉任何一处都会出问题：
+加一个工具不是改一处就完事，漏掉任何一处都会出问题：
 
-1. `tools/builder.py` 的 `build_tools`：定义闭包工具 + 加进返回列表（列表顺序即模型看到的顺序）。
+1. 对应域的 `src/data_agent/tools/_tools_*.py`（`build_*_tools`）里定义工具，再到 `builder.py` 的 `build_tools` 组装列表里加入该工厂（列表顺序即模型看到的顺序）。
 2. `tests/test_agent.py::test_deepseek_provider_*`：对工具名做**精确集合断言**，必须同步加入新名字。
 3. `README.md` 工具数量与清单（"受控数据工具集（N 个内置工具）"）。
 4. `prompts.py` 的系统提示词：不写引导模型就不会用新工具（会退回去手写 `run_python_code`）。
