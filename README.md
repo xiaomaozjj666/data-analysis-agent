@@ -15,6 +15,14 @@
 
 后端采用 LangChain + LangGraph 的 Plan-and-Execute + ReAct 混合架构，前端为独立 React 应用，本地通过 HTTP/SSE 通信。可一键本地运行，也可部署到 LangSmith / Render / Docker。
 
+## 最快上手
+
+```powershell
+.\run.bat     # Windows 一键启动：首次自动建虚拟环境、装依赖，之后自动开浏览器
+```
+
+不想要界面：`data-agent analyze examples/sample_sales.csv --task "分析各区域销售趋势"`（需先在 `.env` 填 `DEEPSEEK_API_KEY`）。完整步骤、访问令牌与端口规则见 [快速开始](#快速开始)。
+
 <p align="center">
   <img src="docs/screenshots/overview-light.png" alt="数据分析工作台主界面（浅色主题）" width="88%" />
   <br />
@@ -129,7 +137,7 @@ flowchart LR
 - 后端 API：默认 http://127.0.0.1:8000；8000 被占用时自动在 8000–8009 间选可用端口
 - API 文档：`<实际后端地址>/docs`
 
-**现场启动第 0 步（访问令牌）**：如果本机 `.env` 里设置了 `APP_ACCESS_TOKEN`（`run.ps1` 会把它注入后端进程；本机当前为 64 位随机串），新打开的浏览器会先停在「进入数据工作台」令牌页。演示前在该浏览器输入一次令牌（值就是 `.env` 里的 `APP_ACCESS_TOKEN`），它会保存在该浏览器的 localStorage；或临时清空 `.env` 里的 `APP_ACCESS_TOKEN` 并重启 `run.bat`（只监听 127.0.0.1 时可不设）。90 秒脚本假设浏览器已通过令牌页并停在首页。
+**访问令牌（可选）**：如果在 `.env` 里设置了 `APP_ACCESS_TOKEN`，新打开的浏览器会先停在「进入数据工作台」令牌页。输入一次令牌（值就是 `.env` 里的 `APP_ACCESS_TOKEN`）后会保存在该浏览器的 localStorage；只监听 127.0.0.1 时可以留空不设。
 
 ### 手动启动
 
@@ -154,7 +162,23 @@ export DEEPSEEK_API_KEY=<your-key>        # Windows PowerShell: $env:DEEPSEEK_AP
 data-agent analyze examples/sample_sales.csv --task "分析各区域销售趋势"
 ```
 
-输出为 Markdown 格式分析报告，产物路径一并打印。
+输出为 Markdown 格式分析报告，产物路径一并打印。报告走 stdout、进度与错误走 stderr，可以直接 `data-agent analyze x.csv > report.md`。
+
+命令行失败时不会打印 traceback：用法/配置错误退出码 2，运行期错误（网络、上游模型）1，`Ctrl+C` 取消 130。加 `--debug` 可看完整堆栈。
+
+### 清理运行目录
+
+CLI / MCP 每次运行都会在 `runs/` 下新建 `cli_*` / `mcp_*` 目录，长期使用会堆积：
+
+```bash
+data-agent clean --dry-run                 # 预览：默认删除超过 7 天未修改的，保留最新 20 个
+data-agent clean --days 30 --keep 10       # 改阈值（删除前会确认）
+data-agent clean --include-web             # 连同 Web 会话 api_* 一起清理（建议先停后端）
+```
+
+`--days 0` 会清空全部候选目录（保留数由 `--keep` 决定），必须显式再加 `--all` 才执行；路径写错或指向文件会直接报错而不是静默成功。
+
+希望每次 `analyze` 自动清理时，在 `.env` 设置 `DATA_AGENT_CLI_RETENTION_DAYS=7`（始终保留最新 10 个）。
 
 ### MCP 数据面服务（供其他 Agent 调用）
 
