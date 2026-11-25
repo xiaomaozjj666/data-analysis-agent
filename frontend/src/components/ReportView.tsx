@@ -16,6 +16,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { API_URL, REMARK_PLUGINS } from "../constants";
+import { useErrorStore } from "../store/useErrorStore";
 import { describeApiError, requestHeaders } from "../utils/api";
 import { splitReportAppendix } from "../utils/reportAppendix";
 import { markdownComponents, ReasoningBlock, UsageChip } from "./ReportParts";
@@ -553,7 +554,7 @@ const ReportView = React.memo(function ReportView({
       URL.revokeObjectURL(url);
       setExportOpen(false);
     } catch (err) {
-      window.alert(`导出仪表盘失败：${err instanceof Error ? err.message : "未知错误"}`);
+      useErrorStore.getState().setError(`导出仪表盘失败：${err instanceof Error ? err.message : "未知错误"}`);
     } finally {
       setDashboardBusy(false);
     }
@@ -585,7 +586,7 @@ const ReportView = React.memo(function ReportView({
       URL.revokeObjectURL(url);
       setExportOpen(false);
     } catch (err) {
-      window.alert(`导出溯源失败：${err instanceof Error ? err.message : "未知错误"}`);
+      useErrorStore.getState().setError(`导出溯源失败：${err instanceof Error ? err.message : "未知错误"}`);
     } finally {
       setProvenanceBusy(false);
     }
@@ -616,7 +617,7 @@ const ReportView = React.memo(function ReportView({
       URL.revokeObjectURL(url);
       setExportOpen(false);
     } catch (err) {
-      window.alert(`导出失败：${err instanceof Error ? err.message : "未知错误"}`);
+      useErrorStore.getState().setError(`导出失败：${err instanceof Error ? err.message : "未知错误"}`);
     }
   }, [sessionId]);
 
@@ -627,7 +628,7 @@ const ReportView = React.memo(function ReportView({
     const win = window.open("", "_blank");
     if (!win) {
       // 弹窗被拦截：提示用户允许弹窗或改用 HTML 导出
-      window.alert("无法打开打印窗口，请允许浏览器弹窗后重试，或选择 HTML 导出。");
+      useErrorStore.getState().setError("无法打开打印窗口，请允许浏览器弹窗后重试，或选择 HTML 导出。");
       setExportOpen(false);
       return;
     }

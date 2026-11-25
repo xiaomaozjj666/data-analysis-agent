@@ -291,7 +291,7 @@ function App() {
       if (payload.plan) setPlan(payload.plan);
       if (payload.completed_steps) setCompleted(payload.completed_steps);
     } catch (err) {
-      window.alert(`按配方重跑失败：${err instanceof Error ? err.message : "未知错误"}`);
+      setError(`按配方重跑失败：${err instanceof Error ? err.message : "未知错误"}`);
     } finally {
       setReplayBusy(false);
     }
