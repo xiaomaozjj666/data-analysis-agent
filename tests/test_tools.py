@@ -1242,7 +1242,7 @@ def test_apply_plotly_nice_ticks_edge_cases():
 
     # 异常吞掉（250-252）：nice ticks 失败不影响图表
     fig2 = px.scatter(x=[1, 2], y=[3, 4])
-    with patch("data_agent.tools.builder._nice_ticks", side_effect=RuntimeError("boom")):
+    with patch("data_agent.tools._tools_charts._nice_ticks", side_effect=RuntimeError("boom")):
         _apply_plotly_nice_ticks(fig2, "scatter", "x", "y", {})  # 不应抛出
 
     # "极端值提示" trace 跳过 + 非数值跳过（259-260 / 269-270）

@@ -1,7 +1,10 @@
 """数据分析工具集公共入口。
 
 实现已按职责拆分到子模块：
-- ``builder``: ``build_tools`` 工厂与 Plotly 暗色模式脚本等渲染常量。
+- ``builder``: ``build_tools`` 工厂（按域组合各 ``build_*_tools``）与渲染常量重新导出。
+- ``_tools_check`` / ``_tools_clean`` / ``_tools_datasets`` / ``_tools_sources`` /
+  ``_tools_analysis`` / ``_tools_charts`` / ``_tools_export``: 按域拆分的工具定义，
+  各自暴露 ``build_*_tools(workspace)``。
 - ``charts``: 图表生成辅助（聚合、标注、尺度控制、标题清理、文件名）。
 - ``_cleaning``: 数据清洗辅助（列名规范化、缺失值、离群值）。
 - ``_helpers``: 通用纯函数（列名可读化、数值紧凑格式化）。
