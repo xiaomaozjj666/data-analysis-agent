@@ -14,7 +14,7 @@ $DefaultWebPort = 5173
 $WebPortAttempts = 10
 # 与 pyproject.toml 的 requires-python = ">=3.11,<3.14" 对齐，按新到旧依次尝试。
 $SupportedPythons = @("3.13", "3.12", "3.11")
-# vite 8.3.8 要求 ^20.19.0 || >=22.12.0，frontend/package.json 声明 >=22，取交集 22.12。
+# vite 8.3.8 要求 ^20.19.0 || >=22.12.0，frontend/package.json 也声明 >=22.12。
 $MinNodeMajor = 22
 $MinNodeMinor = 12
 # 以 -NonInteractive 运行（CI、计划任务）时失败直接退出，不等回车。

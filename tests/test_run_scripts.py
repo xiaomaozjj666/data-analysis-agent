@@ -49,13 +49,16 @@ def test_run_ps1_node_floor_covers_frontend_requirement() -> None:
     engines = json.loads((ROOT / "frontend" / "package.json").read_text(encoding="utf-8"))[
         "engines"
     ]["node"]
-    floor = re.fullmatch(r">=(\d+)", engines.strip())
+    # 允许 ">=22" 与 ">=22.12" 两种写法：Vite 8 的真实门槛是 22.12
+    floor = re.fullmatch(r">=(\d+)(?:\.(\d+))?", engines.strip())
     assert floor, engines
+    floor_major = int(floor[1])
+    floor_minor = int(floor[2] or 0)
     text = _script()
     major = int(re.search(r"\$MinNodeMajor = (\d+)", text)[1])
     minor = int(re.search(r"\$MinNodeMinor = (\d+)", text)[1])
     # 脚本门槛不低于 package.json，且满足 vite 8 的 >=22.12。
-    assert major >= int(floor[1])
+    assert (major, minor) >= (floor_major, floor_minor)
     assert (major, minor) >= (22, 12)
     assert "Test-NodeVersion $NodeVersion" in text
 

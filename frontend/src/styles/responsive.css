@@ -25,7 +25,8 @@
 
 @media (max-width: 680px) {
   .app-shell { display: block; }
-  .sidebar { position: relative; width: 100%; height: auto; padding: 12px 14px; border-right: 0; border-bottom: 1px solid var(--border-muted); }
+  /* 侧栏在 ≤1024 已改为抽屉（见文件后部），这里不再重复定义 width/position，
+     否则两套规则在同一断点内互相覆盖、后置者静默生效。 */
   .wordmark { height: 34px; padding-inline: 2px; }
   .new-analysis { position: absolute; top: 10px; right: 14px; width: auto; height: 34px; margin: 0; padding: 0 10px; }
   .sidebar-section { margin-top: 14px; }
@@ -182,6 +183,10 @@
     right: 0;
     bottom: 0;
     z-index: 50;
+  }
+  /* 固定输入框会盖住最后 1-2 条追问：给线程底部留出与输入框等高的空间 */
+  .conversation-thread {
+    padding-bottom: 88px;
   }
 
   /* plan-panel 取消 sticky 定位，避免在窄屏与表格抢空间 */
