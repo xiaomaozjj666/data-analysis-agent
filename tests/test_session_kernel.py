@@ -116,9 +116,78 @@ def test_registry_persists_and_restores_kernel(tmp_path):
     assert kernel["objective"] == "检查销售"
     assert kernel["plan_source"] == "model"
     assert kernel["completed_steps"] == [{"id": "inspect", "status": "ok"}]
-    assert kernel["current_node"] == "replan"
-    assert kernel["status"] == "running"
+    # 进程重启后 worker 已不存在：running 必须降级为 idle，current_node 清空，
+    # 否则前端会一直轮询一个永远不会推进的节点（计划与轨迹仍保留）。
+    assert kernel["current_node"] == ""
+    assert kernel["status"] == "idle"
     assert kernel["tool_trace"][0]["name"] == "inspect_data"
+
+
+def test_restore_downgrades_interrupted_analysis_and_tolerates_bad_manifest(tmp_path):
+    """会话文件被外部改坏时：能恢复就降级恢复，不能恢复就整体退回默认值。"""
+    registry, session_id = _registry_with_session(tmp_path)
+    manifest = registry.runs_dir / session_id / "session.json"
+
+    snapshot = json.loads(manifest.read_text(encoding="utf-8"))
+    snapshot["analysis_status"] = "running"
+    snapshot["analysis_started_at"] = 123.0
+    snapshot["kernel"] = {
+        "objective": "检查销售",
+        "plan": [{"id": "inspect", "title": "检查数据"}],
+        "completed_steps": [{"id": "inspect", "status": "ok"}],
+        "current_node": "execute_step",
+        "status": "running",
+        "tool_trace": [{"call_id": "c1", "name": "inspect_data", "status": "done"}],
+    }
+    manifest.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+
+    registry._items.pop(session_id, None)  # noqa: SLF001 - 模拟进程重启
+    restored = registry.get(session_id)
+    kernel = restored.kernel_payload()
+    assert restored.analysis_status == "idle"
+    assert kernel["status"] == "idle"
+    assert kernel["current_node"] == ""
+    # 中断前的上下文仍然可见
+    assert kernel["plan"][0]["id"] == "inspect"
+    assert kernel["tool_trace"][0]["call_id"] == "c1"
+    assert restored.analysis_started_at == 123.0
+
+    # 外部把 manifest 改成非对象 / 非法 JSON：按空快照恢复，而不是 500
+    for broken in ("[]", '"text"', "null", "{broken"):
+        manifest.write_text(broken, encoding="utf-8")
+        registry._items.pop(session_id, None)  # noqa: SLF001
+        record = registry.get(session_id)
+        assert record.analysis_status == "idle"
+        assert record.chat == []
+        assert record.pending_plan is None
+
+    # 字段类型错乱：坏字段单独降级，其余字段照常恢复
+    dirty = {
+        "created_at": "yesterday",
+        "chat": "not-a-list",
+        "analysis_status": "running",
+        "kernel": {"status": "running", "plan": "bad"},
+        "pending_plan": "bad",
+        "last_result": {
+            "response": "旧报告",
+            "trace": "bad",
+            "plan": "bad",
+            "completed_steps": None,
+            "dataset_profile": "bad",
+        },
+    }
+    manifest.write_text(json.dumps(dirty, ensure_ascii=False), encoding="utf-8")
+    registry._items.pop(session_id, None)  # noqa: SLF001
+    record = registry.get(session_id)
+    assert record.chat == []
+    assert record.pending_plan is None
+    assert record.last_result is not None
+    assert record.last_result.response == "旧报告"
+    assert record.last_result.trace == []
+    assert record.last_result.plan == []
+    assert record.last_result.completed_steps == []
+    assert isinstance(record.last_result.dataset_profile, dict)
+    assert record.kernel.status == "idle"
 
 
 # ---------------------------------------------------------------------------
@@ -258,3 +327,71 @@ def test_stream_plan_only_marks_kernel_awaiting_approval(tmp_path, monkeypatch):
     assert kernel["status"] == "awaiting_approval"
     assert kernel["plan_source"] == "fallback"
     assert kernel["plan"] == plan
+
+
+def test_refresh_during_analysis_returns_live_kernel(tmp_path, monkeypatch):
+    """分析进行中刷新页面（并发 GET）应看到内存里的实时内核，而不是旧快照。"""
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    uploaded = client.post(
+        "/api/sessions", files={"file": ("sales.csv", CSV, "text/csv")}
+    ).json()
+
+    started = threading.Event()
+    release = threading.Event()
+    plan = [{"id": "inspect", "title": "检查数据", "instruction": "x", "success_criteria": "y"}]
+
+    class BlockingAgent:
+        def __init__(self, workspace, settings, event_callback=None, **_kwargs):
+            self.workspace = workspace
+            self.event_callback = event_callback
+
+        def stream(self, query, history=None, resume_from=None, plan_only=False):
+            yield {
+                "node": "plan_analysis",
+                "data": {"objective": query, "plan": plan, "plan_source": "model"},
+            }
+            started.set()
+            assert release.wait(timeout=10), "测试未释放阻塞中的分析"
+            yield {
+                "node": "finalize",
+                "data": {
+                    "response": "完成",
+                    "artifacts": [],
+                    "plan": plan,
+                    "completed_steps": [],
+                    "dataset_profile": self.workspace.profile(),
+                },
+            }
+
+    monkeypatch.setattr(api, "DataAnalysisAgent", BlockingAgent)
+    errors: list[BaseException] = []
+
+    def consume() -> None:
+        try:
+            with client.stream(
+                "POST",
+                f"/api/sessions/{uploaded['id']}/analyze/stream",
+                json={"task": "检查销售"},
+            ) as response:
+                b"".join(response.iter_bytes())
+        except BaseException as exc:  # pragma: no cover - 失败时便于定位
+            errors.append(exc)
+
+    thread = threading.Thread(target=consume, daemon=True)
+    thread.start()
+    try:
+        assert started.wait(timeout=5)
+        live = client.get(f"/api/sessions/{uploaded['id']}").json()
+        assert live["analysis_status"] == "running"
+        assert live["kernel"]["status"] == "running"
+        assert live["kernel"]["plan"] == plan
+    finally:
+        release.set()
+        thread.join(timeout=10)
+
+    assert not errors
+    assert not thread.is_alive()
+    final = client.get(f"/api/sessions/{uploaded['id']}").json()
+    assert final["analysis_status"] == "completed"
+    assert final["kernel"]["status"] == "completed"

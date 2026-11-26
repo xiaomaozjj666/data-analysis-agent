@@ -59,15 +59,26 @@ class ApiError extends Error {
 
 async function api<T = unknown>(path: string, options: ApiOptions = {}): Promise<T> {
   const { timeoutMs = 30000, signal: providedSignal, ...fetchOptions } = options;
-  const controller = providedSignal ? null : new AbortController();
-  // 标记是否为内部超时触发的 abort，用于区分用户主动取消（providedSignal.aborted）
+  // 无论调用方是否传入取消信号，都保留内部超时：轮询请求带着用户信号调用时，
+  // 若服务端半开连接（进程被冻住/网络黑洞），没有超时就会永久 pending，
+  // 前端会一直停在"检查中"。外部中止通过 forwardAbort 转接到内部 controller，
+  // 靠 timedOut 标记区分"超时"与"用户主动取消"。
+  const controller = new AbortController();
   let timedOut = false;
-  const timeout = controller ? window.setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs) : null;
+  const timeout = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  const forwardAbort = () => controller.abort();
+  if (providedSignal) {
+    if (providedSignal.aborted) controller.abort();
+    else providedSignal.addEventListener("abort", forwardAbort, { once: true });
+  }
   try {
     const response = await fetch(`${API_URL}${path}`, {
       ...fetchOptions,
       headers: requestHeaders(fetchOptions.headers as HeadersInit | undefined),
-      signal: providedSignal || (controller?.signal),
+      signal: controller.signal,
     });
     const contentType = response.headers.get("content-type") || "";
     const payload: unknown = contentType.includes("application/json") ? await response.json() : await response.text();
@@ -83,14 +94,18 @@ async function api<T = unknown>(path: string, options: ApiOptions = {}): Promise
   } catch (err) {
     const error = err as Error;
     if (error.name === "AbortError") {
-      // 用户通过 providedSignal 主动取消（如停止轮询）：直接抛 AbortError，不替换消息
+      // 用户取消优先于超时：即使两者几乎同时发生，也保持 AbortError 语义，
+      // 让上层把它当成"主动停止"而不是网络故障。
       if (providedSignal?.aborted) throw error;
       // 内部超时取消：给通用超时提示，不硬编码部署平台名称
-      throw new Error("连接服务超时，请检查网络后重试。");
+      if (timedOut) throw new Error("连接服务超时，请检查网络后重试。");
+      throw error;
     }
     throw error;
   } finally {
-    if (timeout) window.clearTimeout(timeout);
+    window.clearTimeout(timeout);
+    // 必须移除监听，避免长生命周期 signal 上堆积回调（每次请求一个闭包）。
+    providedSignal?.removeEventListener("abort", forwardAbort);
   }
 }
 
@@ -106,15 +121,18 @@ interface UploadOptions {
 function uploadWithProgress<T = unknown>(path: string, form: FormData, options: UploadOptions = {}): Promise<T> {
   const { onProgress, signal } = options;
   return new Promise<T>((resolve, reject) => {
+    // 已取消的请求不需要（也不应该）创建 XHR：浏览器会立刻触发一次 abort，
+    // 白白占用连接池槽位。
+    if (signal?.aborted) {
+      reject(new DOMException("Aborted", "AbortError"));
+      return;
+    }
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${API_URL}${path}`);
     const headers = requestHeaders();
     for (const [key, value] of Object.entries(headers)) xhr.setRequestHeader(key, value);
     const onAbort = () => xhr.abort();
-    if (signal) {
-      if (signal.aborted) { reject(new DOMException("Aborted", "AbortError")); return; }
-      signal.addEventListener("abort", onAbort, { once: true });
-    }
+    if (signal) signal.addEventListener("abort", onAbort, { once: true });
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable && onProgress) {
         onProgress(Math.round((event.loaded / event.total) * 100));

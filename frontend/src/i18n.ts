@@ -5,7 +5,7 @@
 import { useCallback } from "react";
 import { useUIStore, type Locale } from "./store/useUIStore";
 
-const ZH = {
+export const ZH = {
   // ---- 外壳 / 顶栏 ----
   "shell.workspace": "分析工作区",
   "shell.untitled": "未命名分析",
@@ -145,7 +145,7 @@ const ZH = {
 
 export type MessageKey = keyof typeof ZH;
 
-const EN: Record<MessageKey, string> = {
+export const EN: Record<MessageKey, string> = {
   "shell.workspace": "Analysis workspace",
   "shell.untitled": "Untitled analysis",
   "shell.serviceOk": "Service online",

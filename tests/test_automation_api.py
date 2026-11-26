@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import threading
+from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -181,3 +183,62 @@ def test_concurrent_run_lock_is_reported(tmp_path, monkeypatch):
     finally:
         release.set()
         thread.join(timeout=5)
+
+
+def test_concurrent_runs_execute_once_and_persist_single_history(tmp_path, monkeypatch):
+    """两个并发的真实触发：一个执行、一个 409，历史只落一条（幂等）。"""
+    runs_dir = _isolate(tmp_path, monkeypatch)
+    automation.save_specs(runs_dir, [_write_task_files(tmp_path)])
+
+    started = threading.Event()
+    release = threading.Event()
+    calls: list[bool] = []
+    original = automation._run_with_workspace
+
+    def slow_run(*args, **kwargs):
+        calls.append(bool(kwargs.get("dry_run")))
+        started.set()
+        assert release.wait(timeout=10), "测试未释放被阻塞的任务"
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(automation, "_run_with_workspace", slow_run)
+    outcomes: dict[str, object] = {}
+
+    def trigger(name: str) -> None:
+        outcomes[name] = TestClient(api.app).post("/api/automation/tasks/daily-sales/run")
+
+    first = threading.Thread(target=trigger, args=("first",), daemon=True)
+    first.start()
+    try:
+        assert started.wait(timeout=5)
+        second = TestClient(api.app).post("/api/automation/tasks/daily-sales/run")
+        assert second.status_code == 409
+    finally:
+        release.set()
+        first.join(timeout=15)
+
+    assert not first.is_alive()
+    assert outcomes["first"].status_code == 200  # type: ignore[attr-defined]
+    assert calls == [False]
+    client = TestClient(api.app)
+    history = client.get("/api/automation/tasks/daily-sales/history").json()["history"]
+    assert len(history) == 1
+    assert history[0]["errors"] == {}
+    assert client.get("/api/automation/tasks").json()["tasks"][0]["last_status"] == "ok"
+
+
+def test_disabled_task_skipped_by_scheduler_but_manual_run_allowed(tmp_path, monkeypatch):
+    """停用任务不参与调度；面板上的"立即运行"是显式操作，仍执行一次。"""
+    runs_dir = _isolate(tmp_path, monkeypatch)
+    spec = replace(_write_task_files(tmp_path), enabled=False)
+    automation.save_specs(runs_dir, [spec])
+
+    results = automation.run_due(runs_dir, now=datetime.now().astimezone(), notify=False)
+    assert results == []
+
+    client = TestClient(api.app)
+    assert client.get("/api/automation/tasks/daily-sales/history").json()["history"] == []
+    manual = client.post("/api/automation/tasks/daily-sales/run")
+    assert manual.status_code == 200
+    assert manual.json().get("skipped") is None
+    assert len(client.get("/api/automation/tasks/daily-sales/history").json()["history"]) == 1

@@ -364,6 +364,10 @@ class SessionRegistry:
                 payload = json.loads(manifest.read_text(encoding="utf-8"))
             except (OSError, ValueError, TypeError):
                 payload = {}
+        # 外部改动可能把 session.json 写成数组 / 字符串 / null；后面所有读取
+        # 都假设是 dict，这里统一降级为空快照，避免整条恢复链路 500。
+        if not isinstance(payload, dict):
+            payload = {}
         try:
             workspace.restore_checkpoint()
         except (OSError, ValueError):
@@ -371,12 +375,17 @@ class SessionRegistry:
         workspace.restore_artifacts(payload.get("artifacts"))
         workspace.restore_candidates(payload.get("candidates"))
         record = SessionRecord(workspace)
+        chat_raw = payload.get("chat")
         record.chat = [
             item
-            for item in payload.get("chat", [])
+            for item in (chat_raw if isinstance(chat_raw, list) else [])
             if isinstance(item, dict) and item.get("role") in {"user", "assistant"}
         ][-40:]
-        record.created_at = float(payload.get("created_at", record.created_at))
+        # created_at 来自磁盘，可能是字符串或 null；坏值退回当前时间，
+        # 不能因为一条脏字段让整个会话不可恢复。
+        created_raw = payload.get("created_at")
+        if isinstance(created_raw, (int, float)):
+            record.created_at = float(created_raw)
         saved_status = str(payload.get("analysis_status", "idle"))
         # awaiting_approval 是 plan_only 模式产出的待审批态，恢复后仍需保持，
         # 让前端继续展示待审批计划供用户确认；其他非终态统一回退到 idle。
@@ -396,21 +405,34 @@ class SessionRegistry:
             float(completed_raw) if isinstance(completed_raw, (int, float)) else None
         )
         # 恢复待审批计划，让前端在服务重启后仍能展示并让用户确认执行。
-        record.pending_plan = payload.get("pending_plan")
+        pending_plan = payload.get("pending_plan")
+        record.pending_plan = pending_plan if isinstance(pending_plan, list) else None
         # 恢复用户自定义标题（空串视为未设置）。
         saved_title = payload.get("title")
         record.title = saved_title if isinstance(saved_title, str) and saved_title.strip() else None
         # 恢复分析内核快照（坏数据由 from_dict 降级为默认值）。
         record.kernel = SessionKernel.from_dict(payload.get("kernel"))
+        # 进程在分析途中退出时，manifest 里的 analysis_status 是 running /
+        # cancelling，但进程内 worker 已不存在，恢复后统一降级为 idle。
+        # 内核快照同样要降级，否则前端会一直显示"运行中"并轮询一个永远不会
+        # 推进的节点。计划、已完成步骤与工具轨迹保留，方便用户看到中断位置。
+        if saved_status not in {"completed", "cancelled", "failed", "awaiting_approval"}:
+            if record.kernel.status in {"running", "cancelling"}:
+                record.kernel.status = "idle"
+                record.kernel.current_node = ""
         saved_result = payload.get("last_result")
         if isinstance(saved_result, dict) and isinstance(saved_result.get("response"), str):
+            trace = saved_result.get("trace")
+            plan = saved_result.get("plan")
+            completed_steps = saved_result.get("completed_steps")
+            profile = saved_result.get("dataset_profile")
             record.last_result = AnalysisResult(
                 response=saved_result["response"],
-                trace=saved_result.get("trace", []),
+                trace=trace if isinstance(trace, list) else [],
                 artifacts=list(workspace.artifacts),
-                dataset_profile=saved_result.get("dataset_profile", workspace.profile()),
-                plan=saved_result.get("plan", []),
-                completed_steps=saved_result.get("completed_steps", []),
+                dataset_profile=profile if isinstance(profile, dict) else workspace.profile(),
+                plan=plan if isinstance(plan, list) else [],
+                completed_steps=completed_steps if isinstance(completed_steps, list) else [],
             )
         self._items[session_id] = record
         return record

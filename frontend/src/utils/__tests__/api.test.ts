@@ -180,6 +180,30 @@ describe("api", () => {
     await assertion;
   });
 
+  it("带用户信号时仍保留超时兜底，并在结束后移除监听", async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const removeSpy = vi.spyOn(controller.signal, "removeEventListener");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        (_url: string, init: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            init.signal?.addEventListener("abort", () =>
+              reject(new DOMException("Aborted", "AbortError")),
+            );
+          }),
+      ),
+    );
+    const assertion = expect(
+      api("/x", { signal: controller.signal, timeoutMs: 200 }),
+    ).rejects.toThrow("连接服务超时，请检查网络后重试。");
+    vi.advanceTimersByTime(200);
+    await assertion;
+    // 长生命周期 signal 上不能残留每次请求的 abort 回调
+    expect(removeSpy).toHaveBeenCalledWith("abort", expect.any(Function));
+  });
+
   it("网络错误原样向上抛", async () => {
     vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new TypeError("network down"))));
     await expect(api("/x")).rejects.toThrow("network down");
@@ -231,8 +255,8 @@ describe("uploadWithProgress", () => {
     await expect(
       uploadWithProgress("/upload", form(), { signal: controller.signal }),
     ).rejects.toMatchObject({ name: "AbortError" });
-    // 只创建了 XHR 实例，但没有真正发送
-    expect(latestXhr().sent).toBeNull();
+    // 已取消的请求直接拒绝，不创建 XHR
+    expect(FakeXHR.instances).toHaveLength(0);
   });
 
   it("上传途中取消会中断 XHR 并抛 AbortError", async () => {
