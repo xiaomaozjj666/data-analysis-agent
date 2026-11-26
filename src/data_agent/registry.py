@@ -39,6 +39,7 @@ from data_agent.agent import AnalysisResult
 from data_agent.config import AgentSettings
 from data_agent.credentials import get_saved_api_key, save_api_key
 from data_agent.serialization import to_jsonable
+from data_agent.session_kernel import SessionKernel
 from data_agent.storage import LocalSessionStorage, SessionStorage, build_session_storage
 from data_agent.workspace import SUPPORTED_EXTENSIONS, DataWorkspace
 
@@ -127,6 +128,9 @@ class SessionRecord:
         # 用户自定义会话标题（覆盖默认 filename 展示）。空串/None 视为
         # 未设置，前端回退到 filename。PATCH /api/sessions/{id} 写入。
         self.title: str | None = None
+        # 会话级分析内核快照：objective/plan/步骤/当前节点/工具时间线。
+        # worker 线程增量更新，读侧通过 kernel_payload() 加锁取快照。
+        self.kernel = SessionKernel()
 
     @property
     def analysis_status(self) -> str:
@@ -167,6 +171,23 @@ class SessionRecord:
         """Whether an analysis is currently active (running or being cancelled)."""
         with self._status_lock:
             return self._analysis_status in {"running", "cancelling"}
+
+    # --- 会话级分析内核（并发安全读写） -----------------------------------
+    def update_kernel(self, **changes: Any) -> None:
+        with self._status_lock:
+            self.kernel.update(**changes)
+
+    def kernel_payload(self) -> dict[str, Any]:
+        with self._status_lock:
+            return self.kernel.to_dict()
+
+    def append_kernel_tool(self, entry: dict[str, Any]) -> None:
+        with self._status_lock:
+            self.kernel.append_tool(entry)
+
+    def update_kernel_tool(self, call_id: str, **fields: Any) -> None:
+        with self._status_lock:
+            self.kernel.update_tool(call_id, **fields)
 
 
 class SessionRegistry:
@@ -276,6 +297,8 @@ class SessionRegistry:
             "pending_plan": record.pending_plan,
             # 用户自定义标题，恢复时回填到 record.title。
             "title": record.title,
+            # 会话级内核快照：计划/步骤/当前节点/工具时间线，恢复时回填。
+            "kernel": record.kernel_payload(),
         }
         target = self._manifest_path(record)
         temporary = target.with_suffix(".tmp")
@@ -377,6 +400,8 @@ class SessionRegistry:
         # 恢复用户自定义标题（空串视为未设置）。
         saved_title = payload.get("title")
         record.title = saved_title if isinstance(saved_title, str) and saved_title.strip() else None
+        # 恢复分析内核快照（坏数据由 from_dict 降级为默认值）。
+        record.kernel = SessionKernel.from_dict(payload.get("kernel"))
         saved_result = payload.get("last_result")
         if isinstance(saved_result, dict) and isinstance(saved_result.get("response"), str):
             record.last_result = AnalysisResult(

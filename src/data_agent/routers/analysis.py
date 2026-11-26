@@ -65,6 +65,32 @@ def _snapshot_metrics(root: Path) -> dict[str, Any] | None:
     }
 
 
+def _update_kernel_for_node(
+    record: Any, node: str, data: Any, task: str
+) -> None:
+    """按工作流节点增量更新会话内核（内存态，不触发磁盘 I/O）。
+
+    - plan_analysis：计划、计划来源、目标；
+    - replan / finalize：完成步骤（finalize 还兜底计划）；
+    - 所有节点：当前节点名，供前端显示"正在哪一步"。
+    """
+    changes: dict[str, Any] = {"current_node": node}
+    if isinstance(data, dict):
+        if node == "plan_analysis":
+            changes["objective"] = str(data.get("objective") or task)
+            changes["plan"] = list(data.get("plan") or [])
+            if data.get("plan_source"):
+                changes["plan_source"] = str(data["plan_source"])
+        if node in {"replan", "finalize"}:
+            completed = data.get("completed_steps")
+            if isinstance(completed, list):
+                changes["completed_steps"] = completed
+            plan = data.get("plan")
+            if node == "finalize" and isinstance(plan, list) and plan:
+                changes["plan"] = plan
+    record.update_kernel(**changes)
+
+
 def _record_provenance(
     record: SessionRecord,
     result: AnalysisResult,
@@ -286,6 +312,7 @@ def analyze(session_id: str, request: AnalyzeRequest) -> dict[str, Any]:
     record.set_running()
     record.current_task = request.task
     record.metrics_snapshot = _snapshot_metrics(record.workspace.root)
+    record.update_kernel(objective=request.task, status="running", current_node="run")
     try:
         agent = api.DataAnalysisAgent(record.workspace, settings, cancel_event=record.cancel_event)
         result = agent.run(request.task, history=history, resume_from=request.resume_from)
@@ -300,15 +327,24 @@ def analyze(session_id: str, request: AnalyzeRequest) -> dict[str, Any]:
         )
         record.last_result = result
         record.set_finished("completed")
+        record.update_kernel(
+            objective=request.task,
+            plan=list(result.plan or []),
+            completed_steps=list(result.completed_steps or []),
+            status="completed",
+            current_node="finalize",
+        )
         api.registry.persist(session_id, record)
         _record_provenance(record, result, settings, task=request.task)
     except AnalysisCancelled as exc:
         record.set_finished("cancelled")
+        record.update_kernel(status="cancelled")
         api.registry.persist(session_id, record)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("Analysis failed for session %s", session_id)
         record.set_finished("failed")
+        record.update_kernel(status="failed")
         api.registry.persist(session_id, record)
         raise HTTPException(
             status_code=502, detail=f"分析执行失败：{_error_payload(exc)['message']}"
@@ -339,6 +375,19 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
     record.set_running()
     record.current_task = request.task
     record.metrics_snapshot = _snapshot_metrics(record.workspace.root)
+
+    # 会话级内核：新分析从干净快照开始；断点续跑用注入的 plan/completed 播种，
+    # 让前端在首帧之前就能显示"正在恢复/已有计划"。
+    resume = request.resume_from or {}
+    record.update_kernel(
+        objective=str(resume.get("objective") or request.task),
+        plan=list(resume.get("plan") or []),
+        plan_source="resume" if resume.get("plan") else "",
+        completed_steps=list(resume.get("completed_steps") or []),
+        current_node="",
+        status="running",
+        tool_trace=[],
+    )
 
     # 并发槽与 run_lock 的释放必须**幂等**：worker 的 finally 与 SSE 生成器的
     # finally 都可能走到释放逻辑（客户端在 worker.start() 前后断开的时序不同），
@@ -374,6 +423,24 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
         # 事件。与 _emit_progress 并存，前者保持后向兼容（progress_callback
         # 签名不变），后者承载新的流式体验。同样需要 call_soon_threadsafe
         # 跨线程回到事件循环。
+        # 工具事件同时写入会话内核，切走再切回时时间线不丢。
+        if event_type == "tool_call" and isinstance(payload, dict):
+            record.append_kernel_tool(
+                {
+                    "call_id": str(payload.get("call_id") or ""),
+                    "name": str(payload.get("name") or payload.get("tool") or "unknown"),
+                    "status": "running",
+                    "input_preview": str(payload.get("input_preview") or "")[:200],
+                    "started_at": payload.get("started_at"),
+                }
+            )
+        elif event_type == "tool_result" and isinstance(payload, dict):
+            record.update_kernel_tool(
+                str(payload.get("call_id") or ""),
+                status="done",
+                output_preview=str(payload.get("output_preview") or "")[:300],
+                duration_ms=payload.get("duration_ms"),
+            )
         _safe_emit(loop, queue, (event_type, payload))
 
     def _run_analysis() -> None:
@@ -402,6 +469,7 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
                     final_payload = data
                 if node == "plan_analysis":
                     plan_payload = data
+                _update_kernel_for_node(record, node, data, request.task)
                 _safe_emit(loop, queue, (node, data))
             if request.plan_only:
                 # 仅规划模式：不进入 finalize，提取计划并切换到待审批态。
@@ -414,6 +482,7 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
                     raise RuntimeError("规划阶段未返回计划。")
                 record.pending_plan = plan_payload.get("plan", [])
                 record.set_awaiting_approval()
+                record.update_kernel(status="awaiting_approval", current_node="plan_analysis")
                 api.registry.persist(session_id, record)
                 _safe_emit(
                     loop,
@@ -450,6 +519,7 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
                 )
                 record.last_result = result
                 record.set_finished("completed")
+                record.update_kernel(status="completed", current_node="finalize")
                 try:
                     api.registry.persist(session_id, record)
                 except Exception:
@@ -458,6 +528,7 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
                 _safe_emit(loop, queue, ("complete", _result_payload(session_id, result)))
         except AnalysisCancelled:
             record.set_finished("cancelled")
+            record.update_kernel(status="cancelled")
             try:
                 api.registry.persist(session_id, record)
             except Exception:
@@ -466,6 +537,7 @@ async def analyze_stream(session_id: str, request: AnalyzeRequest) -> StreamingR
         except Exception as exc:
             logger.exception("Analysis worker failed for session %s", session_id)
             record.set_finished("failed")
+            record.update_kernel(status="failed")
             try:
                 api.registry.persist(session_id, record)
             except Exception:

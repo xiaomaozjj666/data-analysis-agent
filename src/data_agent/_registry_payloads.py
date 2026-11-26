@@ -322,6 +322,9 @@ def _session_payload(session_id: str, record: SessionRecord) -> dict[str, Any]:
         # plan_only 模式产出的待审批计划，前端据此渲染审批面板；
         # 为 None 表示当前没有待审批计划。
         "pending_plan": record.pending_plan,
+        # 会话级内核快照：计划/完成步骤/当前节点/工具时间线。
+        # 运行中的会话也能从这里拿到最新进度（内存态，无需轮询磁盘）。
+        "kernel": record.kernel_payload(),
         # 待采纳的候选数据集：前端据此渲染「设为主数据」横幅。
         "candidate_datasets": workspace.candidate_datasets,
         **({"demo": demo} if demo else {}),
