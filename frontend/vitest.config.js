@@ -32,19 +32,19 @@ export default defineConfig({
         "src/main.tsx",
       ],
       thresholds: {
-        // 2026-11-26 实测（375 tests / 40 files）：lines 74.28%、statements 71.78%、
-        // functions 65.86%、branches 59.89%（多次全量运行波动 < 0.1 个点）。
+        // 2026-11-26 实测（387 tests / 40 files）：lines 77.15%、statements 74.37%、
+        // functions 67.02%、branches 61.74%（多次全量运行波动 < 0.1 个点）。
         // 阈值统一向下留约 1.5~2 个点：
         // 既容忍 CI 环境（node 22 / 并发调度）与本地的小幅波动，也保证
         // "删掉整块测试"或"新增组件完全不带测试"会被立刻拦下。
         // 提高阈值时按实测值向上调整，不要反过来靠排除文件凑数。
         // 本轮新增覆盖：App 行为（上传/示例/会话切换/命令面板/错误恢复/
-        // 候选数据集/Tab 与侧栏/审批重跑/追问）、定时任务面板、i18n 与
-        // 会话级内核恢复。
-        lines: 72.5,
-        statements: 70,
-        functions: 64,
-        branches: 58,
+        // 候选数据集/Tab 与侧栏/审批重跑/追问/恢复轮询/重放/核验重载/
+        // 访问门禁/手势）、定时任务面板、i18n 与会话级内核恢复。
+        lines: 75.5,
+        statements: 72.5,
+        functions: 65,
+        branches: 59.5,
       },
     },
     // 2026-11-21 实测：本机同时跑两仓后端全量测试时，默认 fork 数（≈CPU 数）

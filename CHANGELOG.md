@@ -11,11 +11,26 @@
 
 ### 新增
 
+- **会话级持久分析内核**：`SessionKernel` 快照（目标/计划/完成步骤/当前节点/工具
+  时间线）随 `session.json` 原子落盘并进入 `GET /api/sessions/{id}`；流式分析按
+  节点与工具事件增量更新，切换或重启后仍能恢复计划面板与时间线。
+- **定时任务面板**：新增 `/api/automation/tasks`（列表/历史/启停/立即运行/试运行）
+  与前端 `SchedulePanel`，侧栏与命令面板均可进入；锁定返回 409、配置损坏红线
+  422，试运行不落历史。
+- **中英文界面**：零依赖 i18n，zh-CN 默认（文案与既有界面逐字一致）、en-US 增量，
+  localStorage 记忆，设置面板与命令面板可随时切换。
 - **受限 Python 沙箱支持 scipy / scikit-learn / statsmodels**：导入白名单新增三个
   可选统计库（含子模块），新增 `[stats]` extra（`pip install ".[stats]"`；scipy 与
   scikit-learn 原本就是核心依赖，statsmodels 随该 extra 安装）。未安装时 import 返回
   `pip install "data-analysis-agent[stats]"` 的可操作提示，而不是裸
   `ModuleNotFoundError`，并保留 `ImportError` 类型以便父进程翻译。
+
+### 质量
+
+- **前端覆盖率门禁抬高**：新增 App 行为测试（上传/示例/会话切换/命令面板/错误
+  恢复/候选数据集/审批重跑/追问/恢复轮询/重放/核验重载/访问门禁/手势），App.tsx
+  行覆盖 35% → 91%；全量实测 lines 77.1% / statements 74.3% / functions 66.9% /
+  branches 61.7%，阈值同步提高到 75.5 / 72.5 / 65 / 59.5。
 
 ### 安全
 
