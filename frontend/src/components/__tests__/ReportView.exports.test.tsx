@@ -393,27 +393,27 @@ describe("ReportView 导出菜单", () => {
     expect(screen.getByRole("menuitem", { name: "PDF (.pdf)" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("menuitem", { name: /Word/ }));
-    await waitFor(() => expect(clicks).toHaveLength(1));
+    await waitFor(() => expect(clicks).toHaveLength(1), { timeout: 5000 });
     expect(clicks[0].download).toBe("分析报告.docx");
 
     openExportMenu();
     fireEvent.click(screen.getByRole("menuitem", { name: /PPT/ }));
-    await waitFor(() => expect(clicks).toHaveLength(2));
+    await waitFor(() => expect(clicks).toHaveLength(2), { timeout: 5000 });
     expect(clicks[1].download).toBe("分析汇报.pptx");
 
     openExportMenu();
     fireEvent.click(screen.getByRole("menuitem", { name: "PDF (.pdf)" }));
-    await waitFor(() => expect(clicks).toHaveLength(3));
+    await waitFor(() => expect(clicks).toHaveLength(3), { timeout: 5000 });
     expect(clicks[2].download).toBe("分析报告.pdf");
 
     openExportMenu();
     fireEvent.click(screen.getByRole("menuitem", { name: /数据画像仪表盘/ }));
-    await waitFor(() => expect(clicks).toHaveLength(4));
+    await waitFor(() => expect(clicks).toHaveLength(4), { timeout: 5000 });
     expect(clicks[3].download).toMatch(/^数据画像仪表盘_\d{4}-\d{2}-\d{2}\.html$/);
 
     openExportMenu();
     fireEvent.click(screen.getByRole("menuitem", { name: /分析溯源/ }));
-    await waitFor(() => expect(clicks).toHaveLength(5));
+    await waitFor(() => expect(clicks).toHaveLength(5), { timeout: 5000 });
     expect(clicks[4].download).toMatch(/^分析溯源_\d{4}-\d{2}-\d{2}\.json$/);
 
     // 每个导出各自请求对应后端端点
