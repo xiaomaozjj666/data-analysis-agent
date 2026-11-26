@@ -461,3 +461,32 @@ def test_schema_approval_flow(tmp_path, monkeypatch):
         json={"draft": "收入合计：250.00 元"},
     ).json()
     assert audit["schema_status"] == "approved"
+
+
+def test_schema_history_endpoint_handles_blank_and_broken_lines(tmp_path, monkeypatch):
+    """历史文件里的空行、坏 JSON 与非法口径不能被当成 500，也不能中断其余记录。"""
+    from data_agent.audit_schema import HISTORY_FILENAME
+
+    _isolate_runtime(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    upload = client.post(
+        "/api/sessions", files={"file": ("customers.csv", CSV.encode(), "text/csv")}
+    )
+    session_id = upload.json()["id"]
+
+    empty = client.get(f"/api/sessions/{session_id}/audit-schema/history").json()
+    assert empty == {"entries": [], "consistent": True}
+
+    workspace = api.registry.get(session_id).workspace
+    (workspace.root / HISTORY_FILENAME).write_text(
+        "\n"
+        + json.dumps(SPECS, ensure_ascii=False)
+        + "\nnot-json\n"
+        + json.dumps({"metrics": [{"name": ""}]}, ensure_ascii=False)
+        + "\n",
+        encoding="utf-8",
+    )
+    history = client.get(f"/api/sessions/{session_id}/audit-schema/history").json()
+    assert len(history["entries"]) == 2
+    assert history["consistent"] is False
+    assert history["entries"][0]["fingerprint_valid"] is False

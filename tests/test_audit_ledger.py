@@ -494,6 +494,68 @@ def test_lock_key_is_stable_before_and_after_file_exists(tmp_path):
     assert _lock_key(path) == before
 
 
+def test_confirm_rejects_broken_schema_with_403(tmp_path, monkeypatch):
+    """确认时读取到损坏的口径文件返回 403，而不是把服务端错误当 500 抛出。"""
+    client, session_id = _session_with_sales(tmp_path, monkeypatch)
+    draft = "订单数：2 笔"
+    audit = client.post(f"/api/sessions/{session_id}/sales-audit", json={"draft": draft})
+    assert audit.status_code == 200
+
+    import data_agent.audit_schema as schema_mod
+
+    monkeypatch.setattr(
+        schema_mod,
+        "load_schema",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("broken schema")),
+    )
+    response = client.post(
+        f"/api/sessions/{session_id}/sales-audit/confirm",
+        json={"draft": draft, "audit_id": audit.json()["audit_id"]},
+    )
+    assert response.status_code == 403
+    assert "broken schema" in response.json()["detail"]
+
+
+def test_signature_check_and_tamper_demo_error_paths(tmp_path, monkeypatch):
+    client, session_id = _session_with_sales(tmp_path, monkeypatch)
+    draft = "订单数：2 笔"
+    audit = client.post(f"/api/sessions/{session_id}/sales-audit", json={"draft": draft})
+    assert audit.status_code == 200
+    base = f"/api/sessions/{session_id}/sales-audit"
+
+    import data_agent.routers.audit_ledger as ledger_router
+    from data_agent.audit_ledger import read_entries as real_read_entries
+
+    def raise_ledger_error(*args, **kwargs):
+        raise LedgerError("broken ledger")
+
+    monkeypatch.setattr(ledger_router, "read_entries", raise_ledger_error)
+    assert client.get(f"{base}/signature-check").status_code == 503
+    assert client.get(f"{base}/signature-tamper-demo").status_code == 503
+
+    monkeypatch.setattr(ledger_router, "read_entries", real_read_entries)
+    import data_agent.audit_signing as signing
+
+    monkeypatch.setattr(
+        signing,
+        "verify_entries_signatures",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("bad key")),
+    )
+    assert client.get(f"{base}/signature-check").status_code == 422
+
+    monkeypatch.setattr(ledger_router, "read_entries", lambda *args, **kwargs: [{"seq": 1}])
+    no_signature = client.get(f"{base}/signature-tamper-demo")
+    assert no_signature.status_code == 422
+    assert "没有可篡改" in no_signature.json()["detail"]
+
+    monkeypatch.setattr(
+        ledger_router,
+        "read_entries",
+        lambda *args, **kwargs: [{"seq": 1, "signature": "abc"}],
+    )
+    assert client.get(f"{base}/signature-tamper-demo").status_code == 422
+
+
 def test_concurrent_first_appends_keep_the_chain_valid(tmp_path):
     """多个线程同时向空账本首写，不能出现重复 seq 或断链。"""
     from concurrent.futures import ThreadPoolExecutor

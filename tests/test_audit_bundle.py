@@ -302,3 +302,37 @@ def test_replaced_draft_trace_is_rejected(tmp_path, monkeypatch):
     )
     assert result.returncode == 1
     assert "轨迹被替换" in result.stdout or "草稿哈希" in result.stdout
+
+
+def test_bundle_tolerates_unreadable_optional_files_and_audit_oserror(
+    tmp_path, monkeypatch
+):
+    """可选文件读失败要退回内置口径；原始 CSV 读失败要返回可读 422。"""
+    client, session_id = _session(tmp_path, monkeypatch)
+
+    real_read_bytes = Path.read_bytes
+
+    def flaky_read_bytes(self):
+        if self.name == "audit_schema.json":
+            raise OSError("denied")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", flaky_read_bytes)
+    response = client.post(
+        f"/api/sessions/{session_id}/sales-audit/bundle", json={"draft": DRAFT}
+    )
+    assert response.status_code == 200
+    assert response.content
+
+    import data_agent.sales_audit as sales_audit
+
+    monkeypatch.setattr(
+        sales_audit,
+        "audit_sales_brief",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk")),
+    )
+    response = client.post(
+        f"/api/sessions/{session_id}/sales-audit/bundle", json={"draft": DRAFT}
+    )
+    assert response.status_code == 422
+    assert "原始 CSV" in response.json()["detail"]

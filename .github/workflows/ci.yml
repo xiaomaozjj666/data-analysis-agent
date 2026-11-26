@@ -103,17 +103,16 @@ jobs:
         #
         # 覆盖率门禁：本项目此前"本地保持 100%"靠自觉，没有任何自动拦截，
         # 结果是 postgres_source / mcp_server 等模块悄悄掉到 34% / 84% 也没人发现。
-        # 阈值取本地（无 Postgres）实测值 97.54% 向下留 0.14 个点：CI 有真实
-        # Postgres，覆盖率实际更高（上一轮 98.10% 且本轮继续上升）；留余量是为了
-        # 容忍"某个外部服务偶发跳过"这类环境抖动，同时仍能拦住"整块测试被删/
-        # 模块失去覆盖"的回退。
+        # 阈值取本地（无 Postgres）实测值 98.24%（276/15637 未覆盖）向下留 0.44 个点：
+        # CI 有真实 Postgres，覆盖率实际更高；留余量是为了容忍"某个外部服务偶发
+        # 跳过"这类环境抖动，同时仍能拦住"整块测试被删/模块失去覆盖"的回退。
         env:
           DATA_AGENT_SKIP_KALEIDO: "1"
           DATA_AGENT_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/analytics
         run: |
           python -m pytest -n 4 \
             --cov=data_agent --cov-report=term-missing --cov-report=xml \
-            --cov-fail-under=97.4
+            --cov-fail-under=97.8
 
   eval:
     name: Agent eval (offline deterministic gate)

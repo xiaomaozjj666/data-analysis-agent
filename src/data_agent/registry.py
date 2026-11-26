@@ -485,6 +485,19 @@ class SessionRegistry:
             self._sync_storage(session_id, record.workspace.root)
         return record
 
+    def busy_workspace_paths(self) -> set[Path]:
+        """返回正在分析 / 取消中的会话工作区，供 runs/ 清理策略避免误删。
+
+        只在内存态里判断：进程重启后残留的 ``running`` 会在恢复时降级为
+        ``idle``，不会被误认为"正在使用"，从而允许用户后续清理。
+        """
+        with self._lock:
+            return {
+                self.runs_dir / session_id
+                for session_id, record in self._items.items()
+                if record.analysis_status in {"running", "cancelling"}
+            }
+
     def list_recent(self, limit: int = 30) -> list[dict[str, Any]]:
         """Return metadata of recent sessions for the history sidebar.
 

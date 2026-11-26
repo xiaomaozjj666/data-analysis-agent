@@ -24,6 +24,13 @@
   scikit-learn 原本就是核心依赖，statsmodels 随该 extra 安装）。未安装时 import 返回
   `pip install "data-analysis-agent[stats]"` 的可操作提示，而不是裸
   `ModuleNotFoundError`，并保留 `ImportError` 类型以便父进程翻译。
+- **更安全的 runs/ 保留策略**：`data-agent clean` 默认改为软删除——目录移入
+  `runs/_trash/<UTC 时间戳>/` 并写 `MANIFEST.json`（原始路径、大小、恢复说明），
+  默认保留 7 天可随时移回，`--permanent` 才不可恢复；新增 `--max-runs`（只按数量
+  保留）与 `--trash-days`，CLI 自动清理同样走回收站并受
+  `DATA_AGENT_CLI_RETENTION_DAYS` / `DATA_AGENT_CLI_RETENTION_MAX_RUNS` 控制。
+  注册表中 `running` / `cancelling` 的会话目录始终跳过，`_bundles` / `_trash` /
+  记忆与日志文件永不参与清理；每个动作与汇总都有 `data_agent.retention` 日志。
 
 ### 质量
 
@@ -41,6 +48,12 @@
   中途失败、`render.primitives` 空数组/全 NaN/零宽度、`mcp_server` 超限拒绝与
   未配置数据源、`chart_sampling` 退化输入、API 预热与静态目录回退；本地无
   Postgres 实测 97.00% → 97.54%，门禁 97 → 97.4（CI 含真实 Postgres 更高）。
+- **后端覆盖率第二轮补齐与门禁抬高**：新增 Postgres 驱动层假连接单测（只读确认、
+  内省、超时/只读/驱动错误翻译）、保留策略回收站与清理失败路径、配置项校验、
+  会话评论/核验前置条件/候选采纳错误分支、审计路由（确认 403、验签与篡改演示
+  错误、历史文件坏行、演示主体切换元数据）以及指标表达式边界；本地无 Postgres
+  实测 97.47% → 98.24%（276/15637 未覆盖），`--cov-fail-under` 同步由 97.4
+  提高到 97.8，避免新增代码立刻踩线。
 
 ### 修复
 

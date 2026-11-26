@@ -3202,3 +3202,204 @@ def test_correlation_p_values_match_scipy_and_constant_guard(tmp_path):
     assert result["result"]["a"]["b"] == pytest.approx(
         float(frame[["a", "b"]].corr().loc["a", "b"]), abs=1e-6
     )
+
+
+# ---------------------------------------------------------------------------
+# config.py：占位 Key 与限流/工具调用上限校验
+# ---------------------------------------------------------------------------
+
+
+def test_config_rejects_placeholder_api_key():
+    settings = AgentSettings(api_key="sk-xxx", provider="deepseek")
+    with pytest.raises(ValueError, match="占位值"):
+        settings.validate_for_model()
+
+
+def test_config_rejects_tool_call_bounds():
+    for value in (0, 51):
+        settings = AgentSettings(api_key="test", max_tool_calls_per_step=value)
+        with pytest.raises(ValueError, match="AGENT_MAX_TOOL_CALLS_PER_STEP"):
+            settings.validate_for_model()
+
+
+def test_config_rejects_non_positive_read_and_health_limits():
+    with pytest.raises(ValueError, match="READ_RATE_LIMIT"):
+        AgentSettings(api_key="test", read_rate_limit_per_minute=0).validate_for_model()
+    with pytest.raises(ValueError, match="HEALTH_RATE_LIMIT"):
+        AgentSettings(api_key="test", health_rate_limit_per_minute=0).validate_for_model()
+
+
+# ---------------------------------------------------------------------------
+# routers/sessions.py：演示数据上限、评论校验、核验前置条件与候选采纳错误
+# ---------------------------------------------------------------------------
+
+
+def _upload_session(tmp_path, monkeypatch, content: bytes = b"a,b\n1,2\n"):
+    from fastapi.testclient import TestClient
+
+    from data_agent import api
+
+    _isolate_api_env(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    upload = client.post("/api/sessions", files={"file": ("data.csv", content, "text/csv")})
+    assert upload.status_code == 201
+    return client, upload.json()["id"]
+
+
+def test_sample_session_rejects_oversized_demo(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from data_agent import api
+
+    _isolate_api_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(api.bootstrap_settings, "max_cells", 1)
+    response = TestClient(api.app).post("/api/sessions/sample?kind=sales_audit")
+    assert response.status_code == 422
+    assert "演示数据规模超过限制" in response.json()["detail"]
+
+
+def test_session_id_from_path_only_matches_session_routes():
+    from starlette.requests import Request
+
+    from data_agent.routers.sessions import session_id_from_path
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/api/v1/sessions/abc/comments",
+        "headers": [],
+        "query_string": b"",
+        "scheme": "http",
+        "server": ("testserver", 80),
+    }
+    assert session_id_from_path(Request(scope)) == "abc"
+    assert session_id_from_path(Request({**scope, "path": "/api/health"})) == ""
+
+
+def test_comment_with_whitespace_only_is_rejected(tmp_path, monkeypatch):
+    client, session_id = _upload_session(tmp_path, monkeypatch)
+    response = client.post(f"/api/sessions/{session_id}/comments", json={"text": "   "})
+    assert response.status_code == 422
+    assert "不能为空" in response.json()["detail"]
+
+
+def test_sales_audit_requires_uploaded_csv(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from data_agent import api
+
+    client, session_id = _upload_session(tmp_path, monkeypatch)
+    fake = SimpleNamespace(
+        workspace=SimpleNamespace(source_path=Path("data.xlsx"), input_dir=tmp_path)
+    )
+    monkeypatch.setattr(api.registry, "get", lambda _sid: fake)
+    response = client.post(f"/api/sessions/{session_id}/sales-audit", json={"draft": "草稿"})
+    assert response.status_code == 422
+    assert "原始 CSV" in response.json()["detail"]
+
+
+def test_sales_audit_rejects_blank_draft(tmp_path, monkeypatch):
+    content = b"order_id,sales,quantity\n001,0.10,1\n1,5.00,1\n"
+    client, session_id = _upload_session(tmp_path, monkeypatch, content)
+    response = client.post(f"/api/sessions/{session_id}/sales-audit", json={"draft": "   "})
+    assert response.status_code == 422
+    assert "请输入" in response.json()["detail"]
+
+
+def test_sales_audit_state_write_failure_is_reported(tmp_path, monkeypatch):
+    content = b"order_id,sales,quantity\n001,0.10,1\n1,5.00,1\n"
+    client, session_id = _upload_session(tmp_path, monkeypatch, content)
+
+    import data_agent.audit_state as audit_state
+
+    monkeypatch.setattr(
+        audit_state,
+        "save_last_audit",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    response = client.post(
+        f"/api/sessions/{session_id}/sales-audit", json={"draft": "订单数：2 笔"}
+    )
+    assert response.status_code == 200
+    assert "state_error" in response.json()
+
+
+def test_adopt_candidate_dataset_error_paths(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from data_agent import api
+
+    client, session_id = _upload_session(tmp_path, monkeypatch)
+    url = f"/api/sessions/{session_id}/datasets/adopt"
+
+    empty = SimpleNamespace(workspace=SimpleNamespace(candidate_datasets=[]))
+    monkeypatch.setattr(api.registry, "get", lambda _sid: empty)
+    assert client.post(url, json={"name": "x.csv", "discard": True}).status_code == 404
+
+    missing = SimpleNamespace(
+        workspace=SimpleNamespace(
+            candidate_datasets=[{"name": "x.csv"}],
+            adopt_candidate=lambda name: (_ for _ in ()).throw(FileNotFoundError("gone")),
+        )
+    )
+    monkeypatch.setattr(api.registry, "get", lambda _sid: missing)
+    response = client.post(url, json={"name": "x.csv"})
+    assert response.status_code == 404
+    assert "gone" in response.json()["detail"]
+
+    invalid = SimpleNamespace(
+        workspace=SimpleNamespace(
+            candidate_datasets=[{"name": "x.csv"}],
+            adopt_candidate=lambda name: (_ for _ in ()).throw(ValueError("bad dataset")),
+        )
+    )
+    monkeypatch.setattr(api.registry, "get", lambda _sid: invalid)
+    response = client.post(url, json={"name": "x.csv"})
+    assert response.status_code == 422
+    assert "bad dataset" in response.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# tools/_stats.py：两组检验参数校验与分组涨跌幅
+# ---------------------------------------------------------------------------
+
+
+def test_two_group_series_validation_branches():
+    from data_agent.tools._stats import _two_group_series
+
+    frame = pd.DataFrame(
+        {"group": ["a", "a", "b", "b"], "value": [1.0, 2.0, 3.0, 4.0], "label": ["x"] * 4}
+    )
+    with pytest.raises(ValueError, match="数值列"):
+        _two_group_series(frame, "label", "group", None)
+    with pytest.raises(ValueError, match="恰好给出两个"):
+        _two_group_series(frame, "value", "group", ["a", "b", "c"])
+    with pytest.raises(ValueError, match="不存在"):
+        _two_group_series(frame, "value", "group", ["a", "z"])
+
+    left, right, left_name, right_name = _two_group_series(frame, "value", "group", ["b", "a"])
+    assert (left_name, right_name) == ("b", "a")
+    assert list(left) == [3.0, 4.0] and list(right) == [1.0, 2.0]
+
+    three = pd.DataFrame({"group": ["a", "b", "c"], "value": [1.0, 2.0, 3.0]})
+    with pytest.raises(ValueError, match="恰好两组"):
+        _two_group_series(three, "value", "group", None)
+    small = pd.DataFrame({"group": ["a", "b"], "value": [1.0, 2.0]})
+    with pytest.raises(ValueError, match="至少需要 2"):
+        _two_group_series(small, "value", "group", None)
+
+
+def test_statistical_analysis_validation_and_grouped_pct_change():
+    from data_agent.tools._stats import run_statistical_analysis
+
+    frame = pd.DataFrame({"g": ["a", "a", "b", "b"], "v": [1.0, 2.0, 3.0, 4.0]})
+    with pytest.raises(ValueError, match="恰好两个"):
+        run_statistical_analysis(frame, "ttest_paired", columns=["v"])
+    with pytest.raises(ValueError, match="window"):
+        run_statistical_analysis(frame, "rolling", columns=["v"], window=1)
+    with pytest.raises(ValueError, match="periods"):
+        run_statistical_analysis(frame, "pct_change", columns=["v"], periods=0)
+
+    result = run_statistical_analysis(frame, "pct_change", columns=["v"], group_by="g")
+    assert result["group_by"] == "g"
+    assert len(result["result"]) == len(frame)

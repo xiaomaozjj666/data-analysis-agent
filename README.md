@@ -7,7 +7,7 @@
   <img src="https://img.shields.io/badge/FastAPI-API-009688" alt="FastAPI" />
   <img src="https://img.shields.io/badge/LangGraph-agent-4D6BFE" alt="LangGraph" />
   <img src="https://img.shields.io/badge/Docker-ready-2496ED" alt="Docker" />
-  <img src="https://img.shields.io/badge/tests-1681%2B%20backend%20%C2%B7%20193%2B%20frontend-brightgreen" alt="后端 1681+ 项、前端 193+ 项自动化测试" />
+  <img src="https://img.shields.io/badge/tests-2078%2B%20backend%20%C2%B7%20498%2B%20frontend-brightgreen" alt="后端 2078+ 项、前端 498+ 项自动化测试" />
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License" />
 </p>
 
@@ -167,19 +167,39 @@ data-agent analyze examples/sample_sales.csv --task "分析各区域销售趋势
 
 命令行失败时不会打印 traceback：用法/配置错误退出码 2，运行期错误（网络、上游模型）1，`Ctrl+C` 取消 130。加 `--debug` 可看完整堆栈。
 
-### 清理运行目录
+### 清理运行目录（安全保留策略）
 
-CLI / MCP 每次运行都会在 `runs/` 下新建 `cli_*` / `mcp_*` 目录，长期使用会堆积：
+CLI / MCP 每次运行都会在 `runs/` 下新建 `cli_*` / `mcp_*` 目录，长期使用会堆积。
+默认**不会自动删除任何目录**，只有显式命令或环境变量才会触发清理，且遵循：
+
+- **只动会话目录**：仅匹配 `cli_*` / `mcp_*`（`api_*` 需 `--include-web`），
+  不会碰 `_bundles`、`_trash`、自动化任务、记忆与日志文件。
+- **默认软删除**：目录移动到 `runs/_trash/<时间戳>/` 并写 `MANIFEST.json`
+  （原始路径、大小、恢复说明），默认保留 7 天可随时移回；`--permanent` 才直接删除。
+- **正在使用的会话始终跳过**：注册表里 `running` / `cancelling` 的会话目录不会被清理。
+- **按天数或数量**：`--days`（超过 N 天未修改）与 `--max-runs`（最多保留 N 个）
+  可单独或组合使用。
 
 ```bash
-data-agent clean --dry-run                 # 预览：默认删除超过 7 天未修改的，保留最新 20 个
-data-agent clean --days 30 --keep 10       # 改阈值（删除前会确认）
-data-agent clean --include-web             # 连同 Web 会话 api_* 一起清理（建议先停后端）
+data-agent clean --dry-run                       # 预览：默认 7 天 + 保留最新 20 个
+data-agent clean --days 30 --keep 10             # 按时间清理 cli/mcp（移入回收站）
+data-agent clean --max-runs 100 --keep 10        # 只按数量保留：最多 100 个
+data-agent clean --include-web --max-runs 100    # 连同 Web 会话一起（建议先停后端）
+data-agent clean --permanent                     # 明确选择不可恢复的永久删除
+data-agent clean --trash-days 14                 # 回收站保留 14 天后才永久删除
 ```
 
-`--days 0` 会清空全部候选目录（保留数由 `--keep` 决定），必须显式再加 `--all` 才执行；路径写错或指向文件会直接报错而不是静默成功。
+恢复方式：把 `runs/_trash/<时间戳>/` 下的目录移回 `runs/` 即可。超过
+`--trash-days` 的批次会在下一次 clean / 自动清理时永久删除（日志会记录批次与释放空间）。
 
-希望每次 `analyze` 自动清理时，在 `.env` 设置 `DATA_AGENT_CLI_RETENTION_DAYS=7`（始终保留最新 10 个）。
+希望每次 `analyze` 自动清理时，在 `.env` 设置（两者可组合，均未设置则不启用）：
+
+```bash
+DATA_AGENT_CLI_RETENTION_DAYS=7          # 超过 7 天未修改
+DATA_AGENT_CLI_RETENTION_MAX_RUNS=200    # 或最多保留 200 个
+```
+
+自动清理同样走回收站并保护正在使用的会话，日志位于 `data_agent.retention` logger。
 
 ### MCP 数据面服务（供其他 Agent 调用）
 
@@ -490,7 +510,7 @@ tests/               pytest 测试
 - **访问令牌**：监听非环回地址（如 Docker / Render 的 `0.0.0.0`）时必须至少设置 `APP_ACCESS_TOKEN` 或 `APP_VIEWER_TOKEN`（后者只读，写请求 403）；本地 `127.0.0.1` 开发可留空。审计日志用 `DATA_AGENT_AUDIT_LOG` 指向 JSONL 文件。
 - **LangSmith**：`langgraph.json` 导出 `data_analysis_agent` 图，可直接创建 LangSmith Deployment；数据集通过 `dataset_id` 或受控 `dataset_path` 提供。
 - **Render**：根目录 `render.yaml` 提供 Blueprint 一键部署（Free 档可直接同步成功）。首次创建 Blueprint 需在 Render 控制台批准首次同步——状态为 `Created` 时 `autoSync` 不生效，批准后推送才会自动同步；文件内注释含 Starter 及以上档位启用持久磁盘的完整配置。Free 实例休眠后容器存储会清空，长期保存数据请启用 S3/R2 后端。
-- **CI**：`.github/workflows/ci.yml` 在 push / PR 时自动执行 ruff、pytest（含 240s 单测超时保护与 `--cov-fail-under=97.4` 覆盖率门禁）与前端类型检查、测试及生产构建。
+- **CI**：`.github/workflows/ci.yml` 在 push / PR 时自动执行 ruff、pytest（含 240s 单测超时保护与 `--cov-fail-under=97.8` 覆盖率门禁）与前端类型检查、测试及生产构建。
 
 ## 质量检查
 

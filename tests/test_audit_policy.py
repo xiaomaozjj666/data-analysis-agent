@@ -223,8 +223,33 @@ def test_policy_strings_rejects_non_list():
     import pytest
 
     from data_agent.audit_policy import _strings
-
     with pytest.raises(ValueError, match="字符串数组"):
         _strings("not-a-list", "pii_columns")
     assert _strings(None, "pii_columns") == ()
     assert _strings([" a ", ""], "pii_columns") == ("a",)
+
+
+def test_switch_demo_principal_reports_metadata_errors(tmp_path, monkeypatch):
+    """演示元数据损坏/格式无效/类型未知/缺少 CSV 都要给出明确状态码。"""
+    client, session_id = _session(tmp_path, monkeypatch)
+    workspace = api.registry.get(session_id).workspace
+    url = f"/api/sessions/{session_id}/audit-policy/switch"
+
+    (workspace.root / "demo.json").write_text("{not json", encoding="utf-8")
+    assert client.post(url, json={"principal_id": "u_east"}).status_code == 422
+
+    (workspace.root / "demo.json").write_text("[]", encoding="utf-8")
+    assert client.post(url, json={"principal_id": "u_east"}).status_code == 422
+
+    import data_agent.routers.audit_policy as policy_router
+
+    monkeypatch.setattr(policy_router, "_demo_kind", lambda root: "unknown")
+    response = client.post(url, json={"principal_id": "u_east"})
+    assert response.status_code == 404
+    assert "未知的演示类型" in response.json()["detail"]
+
+    monkeypatch.setattr(policy_router, "_demo_kind", lambda root: "regional_policy")
+    workspace.source_path = None
+    response = client.post(url, json={"principal_id": "u_east"})
+    assert response.status_code == 422
+    assert "原始 CSV" in response.json()["detail"]

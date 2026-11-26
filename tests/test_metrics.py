@@ -339,3 +339,31 @@ def test_metrics_int_column_sum_stays_exact():
     )
     entry = compute_metrics_on_frame(frame, definitions)[0]
     assert entry["status"] == "ok" and entry["sum"] == 12.0
+
+
+def test_metric_expression_edge_cases():
+    """空表达式、非法名称、缺失列、一元运算与常量都要有明确行为。"""
+    from data_agent.metrics import evaluate_metric_expression
+
+    frame = pd.DataFrame({"sales": [1.0, 2.0], "qty": [2, 2]})
+    with pytest.raises(ValueError, match="缺少 expression"):
+        evaluate_metric_expression(frame, "  ")
+    with pytest.raises(ValueError, match="非法名称"):
+        evaluate_metric_expression(frame, "__import__ + 1")
+    with pytest.raises(ValueError, match="不存在的列"):
+        evaluate_metric_expression(frame, "missing + 1")
+
+    assert evaluate_metric_expression(frame, "-sales").tolist() == [-1.0, -2.0]
+    assert evaluate_metric_expression(frame, "+qty").tolist() == [2, 2]
+    # 常量表达式广播到与行数对齐的 Series
+    assert evaluate_metric_expression(frame, "1").tolist() == [1, 1]
+
+
+def test_compute_metrics_records_missing_column_as_error():
+    frame = pd.DataFrame({"a": [1.0]})
+    definitions = parse_metric_definitions(
+        {"metrics": [{"name": "x", "description": "d", "expression": "nope"}]}
+    )
+    entry = compute_metrics_on_frame(frame, definitions)[0]
+    assert entry["status"] == "error"
+    assert "不存在的列" in entry["error"]

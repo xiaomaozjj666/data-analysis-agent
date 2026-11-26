@@ -13,6 +13,7 @@ import json
 import os
 from uuid import uuid4
 
+import pandas as pd
 import pytest
 
 from data_agent import postgres_source
@@ -274,3 +275,188 @@ def test_query_database_reports_available_sources_on_discovery(monkeypatch, tmp_
     payload = json.loads(tools["query_database"].invoke({"sql": "", "source": "postgres"}))
     assert payload["source_kind"] == "postgres"
     assert payload["status"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# 无服务端时的驱动层单测：用假连接覆盖拼装/内省/错误翻译分支。
+# 这些用例不依赖真实 Postgres，本地与 CI 都会执行。
+# ---------------------------------------------------------------------------
+
+
+class _QueryCanceled(Exception):
+    pass
+
+
+class _ReadOnlySqlTransaction(Exception):
+    pass
+
+
+class _PgError(Exception):
+    pass
+
+
+class _FakeCursor:
+    def __init__(self, rows: list[tuple] | None = None, description: list[tuple] | None = None):
+        self._rows = list(rows or [])
+        self.description = description or []
+
+    def fetchall(self):
+        return list(self._rows)
+
+    def fetchmany(self, size: int):
+        batch = self._rows[:size]
+        self._rows = self._rows[size:]
+        return batch
+
+    def fetchone(self):
+        return self._rows.pop(0) if self._rows else None
+
+
+class _FakeConnection:
+    """按脚本返回结果的假连接：结果项是异常时在该次 execute 抛错。"""
+
+    def __init__(self, results: list[object]):
+        self._results = list(results)
+        self.executed: list[tuple[str, object]] = []
+        self.autocommit = False
+        self.closed = False
+
+    def execute(self, sql: str, params=None):
+        self.executed.append((sql, params))
+        item = self._results.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    def close(self):
+        self.closed = True
+
+
+def _fake_psycopg(connection=None):
+    from types import SimpleNamespace
+
+    errors = SimpleNamespace(
+        QueryCanceled=_QueryCanceled,
+        ReadOnlySqlTransaction=_ReadOnlySqlTransaction,
+        Error=_PgError,
+    )
+    return SimpleNamespace(
+        errors=errors,
+        Error=_PgError,
+        connect=lambda dsn: connection,
+    )
+
+
+def test_connect_readonly_sets_autocommit_and_confirms(monkeypatch):
+    connection = _FakeConnection(
+        [_FakeCursor(), _FakeCursor(), _FakeCursor([("on",)]), _FakeCursor()]
+    )
+    monkeypatch.setattr(postgres_source, "psycopg", _fake_psycopg(connection))
+    assert postgres_source.connect_readonly("postgresql://x", budget_ms=1234) is connection
+    assert connection.autocommit is True
+    statements = [sql for sql, _params in connection.executed]
+    assert any("statement_timeout = 1234" in sql for sql in statements)
+    assert any("default_transaction_read_only = on" in sql for sql in statements)
+    assert statements[-1] == "SET search_path = public"
+    assert connection.closed is False
+
+
+def test_connect_readonly_aborts_when_readonly_not_confirmed(monkeypatch):
+    connection = _FakeConnection([_FakeCursor(), _FakeCursor(), _FakeCursor([("off",)])])
+    monkeypatch.setattr(postgres_source, "psycopg", _fake_psycopg(connection))
+    with pytest.raises(ValueError, match="只读"):
+        postgres_source.connect_readonly("postgresql://x")
+    assert connection.closed is True
+
+
+def test_connect_readonly_requires_driver(monkeypatch):
+    monkeypatch.setattr(postgres_source, "psycopg", None)
+    with pytest.raises(ValueError, match="psycopg"):
+        postgres_source.connect_readonly("postgresql://x")
+
+
+def test_list_tables_and_describe_table_with_fake_connection(monkeypatch):
+    connection = _FakeConnection(
+        [
+            _FakeCursor([("orders",)]),
+            _FakeCursor([("orders",)]),
+            _FakeCursor([("amount", "real", "NO"), ("note", None, "YES")]),
+        ]
+    )
+    monkeypatch.setattr(postgres_source, "psycopg", _fake_psycopg(connection))
+    assert postgres_source.list_tables(connection) == ["orders"]
+    columns = postgres_source.describe_table(connection, "orders")
+    assert columns == [
+        {"name": "amount", "type": "real", "not_null": True},
+        {"name": "note", "type": "", "not_null": False},
+    ]
+    unknown = _FakeConnection([_FakeCursor([("orders",)])])
+    with pytest.raises(ValueError, match="不存在"):
+        postgres_source.describe_table(unknown, "missing")
+
+
+def test_count_rows_returns_minus_one_on_timeout(monkeypatch):
+    connection = _FakeConnection([_FakeCursor(), _FakeCursor([(7,)])])
+    monkeypatch.setattr(postgres_source, "psycopg", _fake_psycopg(connection))
+    assert postgres_source.count_rows(connection, "orders") == 7
+
+    timed_out = _FakeConnection([_FakeCursor(), _QueryCanceled()])
+    monkeypatch.setattr(postgres_source, "psycopg", _fake_psycopg(timed_out))
+    assert postgres_source.count_rows(timed_out, "orders") == -1
+
+
+def test_schema_summary_collects_tables_counts_and_columns(monkeypatch):
+    connection = _FakeConnection(
+        [
+            _FakeCursor([("orders",)]),
+            _FakeCursor(),
+            _FakeCursor([(5,)]),
+            _FakeCursor(),
+            _FakeCursor([("orders",)]),
+            _FakeCursor([("id", "integer", "NO")]),
+        ]
+    )
+    monkeypatch.setattr(postgres_source, "psycopg", _fake_psycopg(connection))
+    summary = postgres_source.schema_summary(connection)
+    assert summary == {
+        "table_count": 1,
+        "tables": [
+            {
+                "table": "orders",
+                "row_count": 5,
+                "columns": [{"name": "id", "type": "integer", "not_null": True}],
+            }
+        ],
+    }
+
+
+def test_run_select_translates_driver_errors(monkeypatch):
+    cursor = _FakeCursor([(1,)], description=[("ok",)])
+    connection = _FakeConnection([_FakeCursor(), cursor])
+    monkeypatch.setattr(postgres_source, "psycopg", _fake_psycopg(connection))
+    result = postgres_source.run_select(connection, "SELECT 1 AS ok", limit=5)
+    assert result["columns"] == ["ok"]
+    assert result["rows"] == [[1]]
+    assert result["truncated"] is False
+
+    cases = [
+        (_QueryCanceled(), "预算已被数据库取消"),
+        (_ReadOnlySqlTransaction(), "只读事务"),
+        (_PgError("syntax error"), "SQL 执行失败"),
+    ]
+    for error, expected in cases:
+        failing = _FakeConnection([_FakeCursor(), error])
+        monkeypatch.setattr(postgres_source, "psycopg", _fake_psycopg(failing))
+        with pytest.raises(ValueError, match=expected):
+            postgres_source.run_select(failing, "SELECT 1", limit=5)
+
+
+def test_read_schema_frame_validates_table_and_reads_dataframe(monkeypatch):
+    connection = _FakeConnection([_FakeCursor([("orders",)])])
+    monkeypatch.setattr(postgres_source, "psycopg", _fake_psycopg(connection))
+    frame = pd.DataFrame({"id": [1]})
+    monkeypatch.setattr(postgres_source.pd, "read_sql_query", lambda sql, conn: frame)
+    assert postgres_source.read_schema_frame(connection, "orders").equals(frame)
+    unknown = _FakeConnection([_FakeCursor([("orders",)])])
+    with pytest.raises(ValueError, match="不存在"):
+        postgres_source.read_schema_frame(unknown, "missing")
