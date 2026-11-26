@@ -78,6 +78,7 @@ from data_agent.routers import audit_ledger as audit_ledger_router
 from data_agent.routers import audit_lineage as audit_lineage_router
 from data_agent.routers import audit_policy as audit_policy_router
 from data_agent.routers import audit_schema as audit_schema_router
+from data_agent.routers import automation as automation_router
 from data_agent.routers import settings as settings_router
 
 # 图表预览辅助需经 api._inline_echarts_bundle 访问（test_echarts_engine 直接调用）。
@@ -141,6 +142,7 @@ app.include_router(audit_lineage_router.router)
 app.include_router(audit_bundle_router.router)
 app.include_router(audit_policy_router.router)
 app.include_router(settings_router.router)
+app.include_router(automation_router.router)
 
 
 # ---------------------------------------------------------------------------
