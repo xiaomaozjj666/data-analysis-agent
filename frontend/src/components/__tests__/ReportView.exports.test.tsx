@@ -381,9 +381,14 @@ describe("ReportView 导出菜单", () => {
 
   it("有会话时提供 Office / 仪表盘 / 溯源导出，成功下载并复位状态", async () => {
     const { blobs, clicks } = stubObjectUrl();
-    const fetchMock = vi.fn(
-      async (_url: string) => new Response(new Blob(["binary"]), { status: 200 }),
-    );
+    // 用最小的 Response 形状而不是真实 Response + Blob 构造：
+    // Node 22 的 undici Response 与 jsdom Blob 在 CI 上跨实现不兼容，
+    // 会让 response.blob() 抛错、导出静默失败（本地 Node 24 不复现）。
+    const fetchMock = vi.fn(async (_url: string) => ({
+      ok: true,
+      status: 200,
+      blob: async () => new Blob(["binary"]),
+    }));
     vi.stubGlobal("fetch", fetchMock);
     render(<ReportView result={makeResult()} sessionId="s-export" />);
 
