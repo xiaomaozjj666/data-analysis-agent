@@ -271,11 +271,14 @@ def clean(
             hint="确认要这样做时再加 --all；只想预览可先 --dry-run。",
         )
     prefixes = ALL_PREFIXES if include_web else DEFAULT_PREFIXES
+    # --max-runs 是硬上限：默认 --keep 20 不能让它变成"至少留 20 个"。
+    # max_runs=0 按帮助语义退化为只看 --keep。
+    effective_keep = min(keep, max_runs) if max_runs else keep
     busy = _active_workspace_paths()
     preview = prune_runs(
         runs_dir,
         max_age_days=days,
-        keep_latest=keep,
+        keep_latest=effective_keep,
         max_runs=max_runs,
         prefixes=prefixes,
         dry_run=True,
@@ -287,12 +290,15 @@ def clean(
             console.print(f"[dim]另有 {len(preview.skipped_active)} 个正在使用的目录已跳过。[/dim]")
         return
     action = "永久删除" if permanent else "移入回收站"
-    rule = f"超过 {days:g} 天未修改" if days > 0 else "按保留数量"
-    if max_runs is not None:
-        rule += f"，最多保留 {max_runs} 个"
+    if max_runs:
+        rule = f"按最近修改最多保留 {max_runs} 个"
+        if days > 0:
+            rule += f"（超过 {days:g} 天未修改的优先）"
+    else:
+        rule = f"超过 {days:g} 天未修改" if days > 0 else "按保留数量"
     console.print(
         f"将{action} {len(preview.removed)} 个目录，共 {format_bytes(preview.freed_bytes)}"
-        f"（{rule}；另外保留最新 {keep} 个）："
+        f"（{rule}；另外保留最新 {effective_keep} 个）："
     )
     for item in preview.removed[:15]:
         console.print(f"  • {escape(item.path.name)}  {format_bytes(item.size_bytes)}")
@@ -313,7 +319,7 @@ def clean(
     result = prune_runs(
         runs_dir,
         max_age_days=days,
-        keep_latest=keep,
+        keep_latest=effective_keep,
         max_runs=max_runs,
         prefixes=prefixes,
         use_trash=not permanent,
@@ -326,12 +332,14 @@ def clean(
         )
     else:
         console.print(
-            f"[green]已移动 {len(result.removed)} 个目录到回收站，腾出 {format_bytes(result.freed_bytes)}。[/green]"
+            f"[green]已移动 {len(result.removed)} 个目录到回收站，"
+            f"活跃目录减少 {format_bytes(result.freed_bytes)}。[/green]"
         )
         if result.trash_dir:
             console.print(
                 f"[dim]恢复方式：把 {escape(str(result.trash_dir))} 下的目录移回 "
-                f"{escape(str(runs_dir))}；{trash_days:g} 天后自动永久删除。[/dim]"
+                f"{escape(str(runs_dir))}；{trash_days:g} 天后自动永久删除"
+                "（届时才真正释放磁盘空间）。[/dim]"
             )
         purged = purge_trash(runs_dir, older_than_days=trash_days)
         if purged.removed:

@@ -475,6 +475,50 @@ def test_clean_max_runs_without_age_limit(tmp_path):
     assert "已移动 2 个目录到回收站" in result.output
 
 
+def test_clean_max_runs_wins_over_default_keep(tmp_path):
+    """--max-runs 是硬上限：默认 --keep 20 不能把上限变成"至少保留 20 个"。"""
+    now = time.time()
+    runs = tmp_path / "runs"
+    for i in range(5):
+        _make(runs, f"cli_{i:012x}", i + 1, now)
+    result = CliRunner().invoke(
+        cli_module.app,
+        ["clean", "--runs-dir", str(runs), "--days", "30", "--max-runs", "3", "--yes"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "另外保留最新 3 个" in result.output
+    assert "已移动 2 个目录到回收站" in result.output
+    remaining = [p.name for p in runs.iterdir() if p.name.startswith("cli_")]
+    assert len(remaining) == 3
+
+
+def test_clean_max_runs_zero_falls_back_to_keep(tmp_path):
+    """--max-runs 0 按帮助语义只看 --keep，而不是删空。"""
+    now = time.time()
+    runs = tmp_path / "runs"
+    for i in range(4):
+        _make(runs, f"cli_{i:012x}", i + 1, now)
+    result = CliRunner().invoke(
+        cli_module.app,
+        [
+            "clean",
+            "--runs-dir",
+            str(runs),
+            "--days",
+            "30",
+            "--keep",
+            "2",
+            "--max-runs",
+            "0",
+            "--yes",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "已移动 2 个目录到回收站" in result.output
+    remaining = [p.name for p in runs.iterdir() if p.name.startswith("cli_")]
+    assert len(remaining) == 2
+
+
 def test_auto_prune_by_count_only(tmp_path, monkeypatch):
     now = time.time()
     runs = tmp_path / "runs"
