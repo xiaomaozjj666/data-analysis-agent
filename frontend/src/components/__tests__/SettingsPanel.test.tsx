@@ -31,6 +31,7 @@ vi.mock("../../utils/api", async () => {
 });
 
 import SettingsPanel from "../SettingsPanel";
+import { useUIStore } from "../../store/useUIStore";
 
 beforeEach(() => {
   HTMLDialogElement.prototype.showModal = vi.fn(function (this: HTMLDialogElement) {
@@ -41,6 +42,7 @@ beforeEach(() => {
   });
   apiMock.mockReset();
   store.state.setKeyOpen.mockReset();
+  useUIStore.setState({ locale: "zh-CN" });
 });
 
 afterEach(() => {
@@ -77,5 +79,13 @@ describe("SettingsPanel", () => {
     render(<SettingsPanel />);
     fireEvent.click(screen.getByRole("button", { name: "收起设置" }));
     expect(store.state.setKeyOpen).toHaveBeenCalledWith(false);
+  });
+
+  it("语言选择立即切换界面语言并记忆", () => {
+    render(<SettingsPanel />);
+    fireEvent.change(screen.getByLabelText("界面语言"), { target: { value: "en-US" } });
+    expect(useUIStore.getState().locale).toBe("en-US");
+    expect(window.localStorage.getItem("data-desk-locale")).toBe("en-US");
+    expect(screen.getByRole("heading", { name: "Model settings" })).toBeInTheDocument();
   });
 });

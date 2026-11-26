@@ -129,7 +129,50 @@ export interface Session {
   pending_plan?: PlanStep[] | null;
   // 候选数据集：join 等工具产出、尚未采纳为活动数据集的派生表
   candidate_datasets?: CandidateDataset[];
+  // 会话级分析内核快照：计划/步骤/当前节点/工具时间线，用于切换会话后恢复面板
+  kernel?: SessionKernel;
   demo?: DemoPayload;
+  [key: string]: unknown;
+}
+
+// 会话级分析内核快照（后端 session_kernel.SessionKernel）
+export interface SessionKernel {
+  objective: string;
+  plan: PlanStep[];
+  plan_source: string;
+  completed_steps: CompletedStep[];
+  current_node: string;
+  status: string;
+  tool_trace: ToolTraceItem[];
+  updated_at?: number | null;
+}
+
+// 定时任务（/api/automation/tasks 概览条目）
+export interface AutomationTask {
+  id: string;
+  name: string;
+  enabled: boolean;
+  schedule: { interval_minutes?: number; daily_at?: string };
+  due: boolean;
+  next_due_at: string | null;
+  last_run_at: string | null;
+  last_status: string | null;
+  last_alerts: number;
+  last_alert_headline: string | null;
+  last_error: string | null;
+  last_webhook_status?: string | null;
+  next_retry_at?: string | null;
+  state_corrupt: boolean;
+}
+
+export interface AutomationOverview {
+  generated_at: string;
+  summary: { total: number; enabled: number; due: number; alerts: number; errors: number };
+  tasks: AutomationTask[];
+}
+
+// 定时任务运行历史行（history.jsonl 的一条记录）
+export interface AutomationHistoryRow {
   [key: string]: unknown;
 }
 

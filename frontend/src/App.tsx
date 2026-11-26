@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  CalendarClock,
   ChevronRight,
   Command,
   FilePlus2,
@@ -18,6 +19,7 @@ import React, {
   Suspense,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -33,6 +35,7 @@ import HistoryPanel from "./components/HistoryPanel";
 import PlanPanel from "./components/PlanPanel";
 import PreviewModal from "./components/PreviewModal";
 import SalesAudit, { SALES_BRIEF_TASK } from "./components/SalesAudit";
+import SchedulePanel from "./components/SchedulePanel";
 import SettingsPanel from "./components/SettingsPanel";
 import TaskBox from "./components/TaskBox";
 import WorkspaceTabs from "./components/WorkspaceTabs";
@@ -45,8 +48,8 @@ import GradientText from "./components/rb/GradientText";
 import Reveal from "./components/rb/Reveal";
 import {
   ACTIVE_ANALYSIS_STATES,
-  COMMAND_ACTIONS,
   MAX_UPLOAD_BYTES_CLIENT,
+  createCommandActions,
 } from "./constants";
 import useAnalysisRunner from "./hooks/useAnalysisRunner";
 import useArtifactPreview from "./hooks/useArtifactPreview";
@@ -60,6 +63,7 @@ import useShortcuts from "./hooks/useShortcuts";
 import useTabPersistence from "./hooks/useTabPersistence";
 import useTheme from "./hooks/useTheme";
 import useTimer from "./hooks/useTimer";
+import { useI18n, type MessageKey } from "./i18n";
 import { useAnalysisStore, useAppStore, useSessionStore } from "./store/useAppStore";
 import type {
   AnalysisResult,
@@ -75,6 +79,7 @@ import { wait } from "./utils/format";
 import {
   restoreCompletedAnalysis,
   restoreFollowUps,
+  restoreKernel,
 } from "./utils/sessionRestore";
 // 代码分割/懒加载（#16）：重型组件延迟加载，减小首次 bundle 体积。
 // - CommandPalette / HelpPanel：弹层，仅在用户触发（Cmd+K / ?）时显示
@@ -142,6 +147,7 @@ function App() {
     running,
     setTask,
     setPlan,
+    setPlanSource,
     setCompleted,
     setResult,
     setRunning,
@@ -218,9 +224,12 @@ function App() {
     commandOpen,
     commandQuery,
     helpOpen,
+    schedulesOpen,
     setCommandOpen,
     setCommandQuery,
     setHelpOpen,
+    setSchedulesOpen,
+    setLocale,
   } = useAppStore();
 
   const traceStatus = settings?.langsmith_status
@@ -242,6 +251,9 @@ function App() {
 
   // 主题（light/dark）：useTheme 内部读取 localStorage，无则跟随系统。
   const { theme, toggle: toggleTheme, setTheme } = useTheme();
+  // i18n：默认中文（与改造前逐字一致），语言随 UI store + localStorage 记忆。
+  const { t, locale } = useI18n();
+  const commandActions = useMemo(() => createCommandActions(t), [t]);
 
   // === 分析 / 追问 / 产物预览逻辑提取至独立 hook ===
   // useAnalysisRunner：startAnalysis / stopAnalysis 及 startedAtRef /
@@ -434,6 +446,12 @@ function App() {
       setPendingObjective("");
       setStepProgress(null);
       restoreCompletedAnalysis(latest, { setResult, setPlan, setCompleted });
+      // 内核快照：补回运行中/中断分析的步骤与工具时间线（last_result 不覆盖）。
+      restoreKernel(
+        latest,
+        { setPlan, setCompleted, setPlanSource, setCurrentNodeTitle, setToolTrace },
+        (node) => t(`node.${node}` as MessageKey),
+      );
       restoreFollowUps(latest, setFollowUps);
       // 历史列表可能不返回 demo 元数据（只给轻量摘要），此时以完整会话里的
       // demo 为准。只有销售核验示例才进入路演；regional_policy 等演示仍走分析页。
@@ -454,11 +472,9 @@ function App() {
     } catch (err) {
       const error = err as Error & { status?: number };
       if (error instanceof ApiError && error.status === 404) {
-        handleSessionLost(
-          "该历史会话已被服务端清理，请选择其他会话或重新上传数据。",
-        );
+        handleSessionLost(t("shell.sessionLost"));
       } else {
-        setError(`无法打开历史会话：${error.message}`);
+        setError(t("shell.openSessionFailed", { message: error.message }));
       }
     } finally {
       setSwitchingSessionId(null);
@@ -492,6 +508,13 @@ function App() {
         case "open-settings":
           setKeyOpen(true);
           break;
+        case "open-schedules":
+          setSchedulesOpen(true);
+          break;
+        case "toggle-language":
+          // 在中文与英文之间切换；locale 由 UI store 记忆到 localStorage。
+          setLocale(locale === "zh-CN" ? "en-US" : "zh-CN");
+          break;
         case "tab-analysis":
           setActiveTab("analysis");
           break;
@@ -513,7 +536,7 @@ function App() {
       setCommandOpen(false);
       setCommandQuery("");
     },
-    [toggleTheme],
+    [toggleTheme, locale, setSchedulesOpen, setLocale],
   );
 
   // 消息编辑重发：截断 index 之后的所有 followUps，把新文本作为新追问重发。
@@ -576,7 +599,7 @@ function App() {
         });
         await refreshCurrentSession();
       } catch (err) {
-        setError(`采纳候选数据集失败：${(err as Error).message}`);
+        setError(t("shell.adoptFailed", { message: (err as Error).message }));
       } finally {
         setAdoptBusy(false);
       }
@@ -596,7 +619,7 @@ function App() {
         });
         await refreshCurrentSession();
       } catch (err) {
-        setError(`忽略候选数据集失败：${(err as Error).message}`);
+        setError(t("shell.discardFailed", { message: (err as Error).message }));
       } finally {
         setAdoptBusy(false);
       }
@@ -611,7 +634,7 @@ function App() {
       await api(`/api/sessions/${session.id}/artifacts/rescan`, { method: "POST" });
       await refreshCurrentSession();
     } catch (err) {
-      setError(`扫描产物目录失败：${(err as Error).message}`);
+      setError(t("shell.rescanFailed", { message: (err as Error).message }));
     } finally {
       setRescanBusy(false);
     }
@@ -1032,7 +1055,7 @@ function App() {
   if (!authReady) {
     return (
       <main className="auth-gate">
-        <div className="auth-loading">正在连接数据工作台…</div>
+        <div className="auth-loading">{t("shell.connectingWorkspace")}</div>
       </main>
     );
   }
@@ -1059,7 +1082,7 @@ function App() {
           document.getElementById("main-content")?.focus();
         }}
       >
-        跳到主内容
+        {t("shell.skipToMain")}
       </a>
       <aside
         id="app-sidebar"
@@ -1089,12 +1112,12 @@ function App() {
             disabled={uploading}
           >
             <FilePlus2 size={17} />
-            新建分析
+            {t("cmd.newAnalysis")}
           </button>
         </ClickSpark>
 
         <div className="sidebar-section">
-          <span className="sidebar-label">当前数据</span>
+          <span className="sidebar-label">{t("nav.currentData")}</span>
           {/* ReactBits GlareHover：悬停流光扫过数据卡片/上传入口。
               borderColor 透明避免与按钮自身边框叠加；.sidebar-glare 撑满宽度并
               放开 overflow，防止按钮 hover 的 translateX/阴影被裁切 */}
@@ -1113,7 +1136,7 @@ function App() {
                 <span>
                   <strong>{session.filename}</strong>
                   <small>
-                    {rows.toLocaleString()} 行 · {columns} 列
+                    {rows.toLocaleString()} {t("shell.rowUnit")} · {columns} {t("shell.columnUnit")}
                   </small>
                 </span>
                 <RefreshCw size={13} />
@@ -1138,9 +1161,9 @@ function App() {
                 )}
                 {uploading
                   ? uploadProgress != null
-                    ? `上传中 ${uploadProgress}%`
-                    : "正在读取"
-                  : "选择数据文件"}
+                    ? t("nav.uploading", { progress: uploadProgress })
+                    : t("nav.reading")
+                  : t("nav.choosingFile")}
               </button>
             </GlareHover>
           )}
@@ -1188,6 +1211,20 @@ function App() {
 
         {/* 分析引擎区块：同一容器内的状态列表，与工作台细线分组保持一致 */}
         <div className="sidebar-status-group">
+        <button
+          type="button"
+          className="model-line schedule-entry"
+          onClick={() => setSchedulesOpen(true)}
+        >
+          <span>
+            <CalendarClock size={15} aria-hidden="true" />
+            <span>
+              <strong>{t("nav.schedules")}</strong>
+              <small>{t("nav.schedulesHint")}</small>
+            </span>
+          </span>
+          <ChevronRight size={15} aria-hidden="true" />
+        </button>
         <SettingsPanel />
 
         <div className="sidebar-foot" title={settings?.langsmith_project || undefined}>
@@ -1202,10 +1239,10 @@ function App() {
             <i
               className={settings?.storage_status === "ok" ? "online" : ""}
             />
-            对象存储
+            {t("nav.objectStorage")}
           </span>
           <small>
-            {settings?.storage_status === "ok" ? "持久化正常" : "本地存储"}
+            {settings?.storage_status === "ok" ? t("nav.storageOk") : t("nav.storageLocal")}
           </small>
         </div>
         </div>
@@ -1234,21 +1271,21 @@ function App() {
             type="button"
             className="sidebar-toggle"
             onClick={() => setSidebarOpen((open) => !open)}
-            aria-label={sidebarOpen ? "关闭侧边栏" : "打开侧边栏"}
+            aria-label={sidebarOpen ? t("shell.closeSidebar") : t("shell.openSidebar")}
             aria-expanded={sidebarOpen}
             aria-controls="app-sidebar"
           >
             <Menu size={18} aria-hidden="true" />
           </button>
           <div className="breadcrumb">
-            <span>分析工作区</span>
+            <span>{t("shell.workspace")}</span>
             <ChevronRight size={13} />
-            <strong>{session?.filename || "未命名分析"}</strong>
+            <strong>{session?.filename || t("shell.untitled")}</strong>
           </div>
           <div className="topbar-actions">
             <div className="api-status">
               <i className={settings ? "online" : ""} />
-              {settings ? "服务正常" : "连接中"}
+              {settings ? t("shell.serviceOk") : t("shell.serviceConnecting")}
             </div>
             {/* 命令面板入口：点击等价于 Cmd+K，给不熟悉快捷键的用户一个可见入口。
                 与主题按钮统一用 GlareHover 悬停流光，顶栏三个图标按钮交互一致 */}
@@ -1259,8 +1296,8 @@ function App() {
               <button
                 type="button"
                 className="icon-button topbar-action"
-                title="命令面板 (⌘K)"
-                aria-label="打开命令面板"
+                title={t("shell.commandPaletteTitle")}
+                aria-label={t("shell.commandPaletteAria")}
                 onClick={() => setCommandOpen(true)}
               >
                 <Command size={16} />
@@ -1274,8 +1311,8 @@ function App() {
               <button
                 type="button"
                 className="icon-button topbar-action"
-                title="键盘快捷键 (?)"
-                aria-label="查看键盘快捷键"
+                title={t("shell.shortcutsTitle")}
+                aria-label={t("shell.shortcutsAria")}
                 onClick={() => setHelpOpen(true)}
               >
                 <Keyboard size={16} />
@@ -1292,8 +1329,8 @@ function App() {
               <button
                 type="button"
                 className="icon-button topbar-action theme-toggle"
-                title={theme === "dark" ? "切换到亮色 (T)" : "切换到暗色 (T)"}
-                aria-label="切换主题"
+                title={theme === "dark" ? t("shell.themeToLight") : t("shell.themeToDark")}
+                aria-label={t("shell.toggleTheme")}
                 onClick={toggleTheme}
               >
                 {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
@@ -1319,7 +1356,7 @@ function App() {
                 onClick={() => setErrorExpanded((v) => !v)}
                 aria-expanded={errorExpanded}
               >
-                {errorExpanded ? "收起" : "查看详情"}
+                {errorExpanded ? t("shell.collapse") : t("shell.showDetail")}
               </button>
             )}
             {retryOffer && !running && retryOffer.canResume && (
@@ -1327,10 +1364,10 @@ function App() {
                 type="button"
                 className="resume-button"
                 onClick={resumeAnalysis}
-                title={`从已完成的 ${retryOffer.completed?.length || 0} 个步骤继续，跳过已完成部分`}
+                title={t("shell.retryResumeHint", { count: retryOffer.completed?.length || 0 })}
               >
                 <Play size={13} fill="currentColor" />
-                继续分析
+                {t("shell.resumeAnalysis")}
               </button>
             )}
             {retryOffer && !running && (
@@ -1343,16 +1380,16 @@ function App() {
               >
                 <RefreshCw size={13} className={retryChecking ? "spin" : ""} />
                 {retryChecking
-                  ? "检查中…"
+                  ? t("shell.checking")
                   : retryOffer.reason === "ready"
-                    ? "重新运行"
-                    : "检查状态"}
+                    ? t("shell.rerun")
+                    : t("shell.checkStatus")}
               </button>
             )}
             <button
               type="button"
-              title="关闭"
-              aria-label="关闭错误提示"
+              title={t("shell.closeError")}
+              aria-label={t("shell.closeError")}
               className="error-close"
               onClick={() => setError("")}
             >
@@ -1369,18 +1406,18 @@ function App() {
             <RefreshCw size={13} />
             <span>
               {retryOffer.canResume
-                ? `上次分析完成了 ${retryOffer.completed?.length || 0} 个步骤后中断，可以继续或重新运行`
-                : "上次分析未完成，可以重新运行"}
+                ? t("shell.retryResumed", { count: retryOffer.completed?.length || 0 })
+                : t("shell.retryPlain")}
             </span>
             {retryOffer.canResume && (
               <button
                 type="button"
                 className="resume-button"
                 onClick={resumeAnalysis}
-                title="从已完成的步骤继续，跳过已完成部分"
+                title={t("shell.retryResumeHint", { count: retryOffer.completed?.length || 0 })}
               >
                 <Play size={13} fill="currentColor" />
-                继续分析
+                {t("shell.resumeAnalysis")}
               </button>
             )}
             <button
@@ -1392,15 +1429,15 @@ function App() {
             >
               <RefreshCw size={13} className={retryChecking ? "spin" : ""} />
               {retryChecking
-                ? "检查中…"
+                ? t("shell.checking")
                 : retryOffer.reason === "ready"
-                  ? "重新运行"
-                  : "检查状态"}
+                  ? t("shell.rerun")
+                  : t("shell.checkStatus")}
             </button>
             <button
               type="button"
-              title="放弃恢复"
-              aria-label="放弃恢复"
+              title={t("shell.dismissRecovery")}
+              aria-label={t("shell.dismissRecovery")}
               className="error-close"
               onClick={() => setRetryOffer(null)}
             >
@@ -1421,7 +1458,7 @@ function App() {
           <>
             <section className="dataset-header">
               <div>
-                <span className="section-kicker">当前数据集</span>
+                <span className="section-kicker">{t("shell.currentDataset")}</span>
                 <h1>{session.filename}</h1>
                 {profile?.load_warnings && profile.load_warnings.length > 0 && (
                   <p className="dataset-warning">
@@ -1436,7 +1473,7 @@ function App() {
                 onClick={() => fileInput.current?.click()}
               >
                 <RefreshCw size={14} />
-                替换数据
+                {t("shell.replaceData")}
               </button>
             </section>
 
@@ -1447,40 +1484,40 @@ function App() {
                 type="button"
                 className="metric metric-clickable"
                 onClick={() => setActiveTab("data")}
-                title="查看数据预览"
+                title={t("shell.viewData")}
               >
-                <span>记录</span>
+                <span>{t("shell.rows")}</span>
                 <strong>
                   <CountUp end={rows} duration={1100} />
-                  <small>行</small>
+                  <small>{t("shell.rowUnit")}</small>
                 </strong>
               </button>
               <button
                 type="button"
                 className="metric metric-clickable"
                 onClick={() => setActiveTab("data")}
-                title="查看数据预览"
+                title={t("shell.viewData")}
               >
-                <span>字段</span>
+                <span>{t("shell.columns")}</span>
                 <strong>
                   <CountUp end={columns} duration={900} />
-                  <small>列</small>
+                  <small>{t("shell.columnUnit")}</small>
                 </strong>
               </button>
-              <Metric label="缺失率" value={missingRate} unit="%" />
+              <Metric label={t("shell.missingRate")} value={missingRate} unit="%" />
               <button
                 type="button"
                 className="metric metric-clickable"
                 onClick={() => setActiveTab("artifacts")}
-                title="查看分析产物"
+                title={t("shell.viewArtifacts")}
               >
-                <span>分析产物</span>
+                <span>{t("shell.artifacts")}</span>
                 <strong>
                   <CountUp
                     end={session.artifacts?.length || 0}
                     duration={900}
                   />
-                  <small>项</small>
+                  <small>{t("shell.artifactUnit")}</small>
                 </strong>
               </button>
             </section>
@@ -1504,7 +1541,7 @@ function App() {
               />
               <MetricsEditor sessionId={session.id} />
               {!settings?.configured && (
-                <p className="composer-note">请先在左侧配置 DeepSeek API Key。</p>
+                <p className="composer-note">{t("shell.apiKeyNote")}</p>
               )}
             </>}
 
@@ -1610,7 +1647,9 @@ function App() {
                       : (session?.elapsed_seconds ?? null)
                   }
                   toolTrace={
-                    session?.id === runningSessionIdRef.current ? toolTrace : []
+                    session?.id === runningSessionIdRef.current
+                      ? toolTrace
+                      : session?.kernel?.tool_trace ?? []
                   }
                   awaitingApproval={awaitingApproval}
                   pendingObjective={pendingObjective}
@@ -1633,10 +1672,10 @@ function App() {
               >
                 <div className="section-title">
                   <div>
-                    <span className="section-kicker">数据预览</span>
-                    <h2>原始记录</h2>
+                    <span className="section-kicker">{t("shell.dataPreview")}</span>
+                    <h2>{t("shell.rawRecords")}</h2>
                   </div>
-                  <small>前 100 行</small>
+                  <small>{t("shell.first100")}</small>
                 </div>
                 <Suspense fallback={<LazyFallback />}>
                   <DataTable rows={session.preview} />
@@ -1655,10 +1694,10 @@ function App() {
               >
                 <div className="section-title artifact-title">
                   <div>
-                    <span className="section-kicker">结果中心</span>
-                    <h2>值得保留的结论</h2>
+                    <span className="section-kicker">{t("shell.resultsCenter")}</span>
+                    <h2>{t("shell.keepConclusions")}</h2>
                   </div>
-                  <small>中间文件已自动收起</small>
+                  <small>{t("shell.intermediateHidden")}</small>
                 </div>
                 <ArtifactCenter
                   artifacts={session.artifacts}
@@ -1703,7 +1742,7 @@ function App() {
           <CommandPalette
             query={commandQuery}
             onQueryChange={setCommandQuery}
-            actions={COMMAND_ACTIONS}
+            actions={commandActions}
             sessions={history}
             onAction={runCommandAction}
             onSelectSession={(item) => {
@@ -1718,6 +1757,9 @@ function App() {
             theme={theme}
           />
         </Suspense>
+      )}
+      {schedulesOpen && (
+        <SchedulePanel onClose={() => setSchedulesOpen(false)} />
       )}
       {helpOpen && (
         <Suspense fallback={<LazyFallback />}>

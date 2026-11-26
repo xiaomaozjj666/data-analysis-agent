@@ -1,4 +1,5 @@
 import { BarChart3, FileSpreadsheet, MessageSquare, ShieldCheck, Table2 } from "lucide-react";
+import { useI18n } from "../i18n";
 import type { WorkspaceTab } from "../types";
 
 interface WorkspaceTabsProps {
@@ -9,15 +10,16 @@ interface WorkspaceTabsProps {
 
 // 保留 ARIA tablist、roving tabindex 和左右箭头循环切换。
 export default function WorkspaceTabs({ activeTab, artifactCount, onSelectTab }: WorkspaceTabsProps) {
+  const { t } = useI18n();
   const tabs: { id: WorkspaceTab; label: string; icon: typeof BarChart3; focusNext: WorkspaceTab; focusPrev: WorkspaceTab }[] = [
-    { id: "analysis", label: "分析", icon: BarChart3, focusNext: "data", focusPrev: "comments" },
-    { id: "data", label: "数据", icon: Table2, focusNext: "artifacts", focusPrev: "analysis" },
-    { id: "artifacts", label: "产物", icon: FileSpreadsheet, focusNext: "audit", focusPrev: "data" },
-    { id: "audit", label: "简报核验", icon: ShieldCheck, focusNext: "comments", focusPrev: "artifacts" },
-    { id: "comments", label: "评论", icon: MessageSquare, focusNext: "analysis", focusPrev: "audit" },
+    { id: "analysis", label: t("tabs.analysis"), icon: BarChart3, focusNext: "data", focusPrev: "comments" },
+    { id: "data", label: t("tabs.data"), icon: Table2, focusNext: "artifacts", focusPrev: "analysis" },
+    { id: "artifacts", label: t("tabs.artifacts"), icon: FileSpreadsheet, focusNext: "audit", focusPrev: "data" },
+    { id: "audit", label: t("tabs.audit"), icon: ShieldCheck, focusNext: "comments", focusPrev: "artifacts" },
+    { id: "comments", label: t("tabs.comments"), icon: MessageSquare, focusNext: "analysis", focusPrev: "audit" },
   ];
   return (
-    <nav className="tabs" role="tablist" aria-label="工作区视图">
+    <nav className="tabs" role="tablist" aria-label={t("tabs.label")}>
       {tabs.map(({ id, label, icon: Icon, focusNext, focusPrev }) => (
         <button type="button"
           key={id}

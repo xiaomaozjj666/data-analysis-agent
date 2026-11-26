@@ -1,7 +1,14 @@
 // 会话状态恢复纯函数：从完整 session payload 恢复分析结果 / 追问历史。
 // 提取自 App.tsx（selectSession 与 retryAnalysis 共用），只做状态变换、
 // 不持有任何 hook —— setter 由调用方注入，便于单测与复用。
-import type { AnalysisResult, CompletedStep, FollowUpMessage, PlanStep, Session } from "../types";
+import type {
+  AnalysisResult,
+  CompletedStep,
+  FollowUpMessage,
+  PlanStep,
+  Session,
+  ToolTraceItem,
+} from "../types";
 
 // setter 最小接口：只要求实际用到的成员（store setter 兼容值/函数两种
 // 调用形式，满足这里的窄化签名）。
@@ -44,6 +51,37 @@ export function restoreCompletedAnalysis(latest: Session, setters: SessionRestor
   });
   setPlan([]);
   setCompleted([]);
+  return true;
+}
+
+// 从会话级内核快照恢复计划面板与工具时间线。
+// last_result 只覆盖"已完成"的会话；运行中/中断/待审批的会话只有 kernel 里
+// 有最新进度。调用方在 restoreCompletedAnalysis 之后调用本函数，内核里有
+// 数据的字段才覆盖（空数组不抹掉已有结果）。
+export interface KernelRestoreSetters {
+  setPlan: (value: PlanStep[]) => void;
+  setCompleted: (value: CompletedStep[]) => void;
+  setPlanSource: (value: string) => void;
+  setCurrentNodeTitle: (value: string) => void;
+  setToolTrace: (value: ToolTraceItem[]) => void;
+}
+
+export function restoreKernel(
+  latest: Session,
+  setters: KernelRestoreSetters,
+  translateNode?: (node: string) => string,
+): boolean {
+  const kernel = latest?.kernel;
+  if (!kernel) return false;
+  if (kernel.plan?.length) setters.setPlan(kernel.plan);
+  if (kernel.completed_steps?.length) setters.setCompleted(kernel.completed_steps);
+  if (kernel.plan_source) setters.setPlanSource(kernel.plan_source);
+  if (kernel.tool_trace?.length) setters.setToolTrace(kernel.tool_trace);
+  if (kernel.current_node) {
+    setters.setCurrentNodeTitle(
+      translateNode ? translateNode(kernel.current_node) : kernel.current_node,
+    );
+  }
   return true;
 }
 

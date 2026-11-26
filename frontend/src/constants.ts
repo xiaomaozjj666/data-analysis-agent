@@ -3,12 +3,14 @@ import {
   Activity,
   BarChart3,
   Boxes,
+  CalendarClock,
   FileChartColumn,
   FileCheck2,
   FilePlus2,
   FileSpreadsheet,
   Grid3x3,
   Keyboard,
+  Languages,
   LineChart,
   MessageSquare,
   Moon,
@@ -24,6 +26,7 @@ import type {
   PresetEntry,
   ShortcutGroup,
 } from "./types";
+import type { Translate } from "./i18n";
 
 const API_URL = (
   import.meta.env.VITE_API_URL ||
@@ -57,17 +60,22 @@ const HELP_SHORTCUTS: ShortcutGroup[] = [
 ];
 
 // 命令面板可执行的动作。每个动作的 run 接收 App 上下文所需的回调。
-// 这里只声明静态元数据，动态回调通过 props 注入。
-const COMMAND_ACTIONS: CommandAction[] = [
-  { id: "new-analysis", icon: FilePlus2, title: "新建分析", subtitle: "上传新的数据集", section: "操作" },
-  { id: "toggle-theme", icon: Moon, title: "切换主题", subtitle: "亮色 ↔ 暗色", section: "操作" },
-  { id: "open-settings", icon: Settings2, title: "打开模型设置", subtitle: "API Key、推理强度", section: "操作" },
-  { id: "tab-analysis", icon: BarChart3, title: "切换到分析视图", subtitle: "报告与对话", section: "导航" },
-  { id: "tab-data", icon: Table2, title: "切换到数据视图", subtitle: "原始记录预览", section: "导航" },
-  { id: "tab-artifacts", icon: FileSpreadsheet, title: "切换到产物视图", subtitle: "图表与导出文件", section: "导航" },
-  { id: "tab-comments", icon: MessageSquare, title: "切换到评论视图", subtitle: "会话协作与复核意见", section: "导航" },
-  { id: "show-help", icon: Keyboard, title: "查看键盘快捷键", subtitle: "全部快捷键列表", section: "帮助" },
-];
+// 这里只声明静态元数据，动态回调通过 props 注入。标题经 t() 翻译，
+// 默认中文与改造前逐字一致；条目顺序保持不变（命令面板分组依赖它）。
+function createCommandActions(t: Translate): CommandAction[] {
+  return [
+    { id: "new-analysis", icon: FilePlus2, title: t("cmd.newAnalysis"), subtitle: t("cmd.newAnalysisSub"), section: "操作" },
+    { id: "toggle-theme", icon: Moon, title: t("cmd.toggleTheme"), subtitle: t("cmd.toggleThemeSub"), section: "操作" },
+    { id: "open-schedules", icon: CalendarClock, title: t("cmd.openSchedules"), subtitle: t("cmd.openSchedulesSub"), section: "操作" },
+    { id: "toggle-language", icon: Languages, title: t("cmd.toggleLanguage"), subtitle: t("cmd.toggleLanguageSub"), section: "操作" },
+    { id: "open-settings", icon: Settings2, title: t("cmd.openSettings"), subtitle: t("cmd.openSettingsSub"), section: "操作" },
+    { id: "tab-analysis", icon: BarChart3, title: t("cmd.tabAnalysis"), subtitle: t("cmd.tabAnalysisSub"), section: "导航" },
+    { id: "tab-data", icon: Table2, title: t("cmd.tabData"), subtitle: t("cmd.tabDataSub"), section: "导航" },
+    { id: "tab-artifacts", icon: FileSpreadsheet, title: t("cmd.tabArtifacts"), subtitle: t("cmd.tabArtifactsSub"), section: "导航" },
+    { id: "tab-comments", icon: MessageSquare, title: t("cmd.tabComments"), subtitle: t("cmd.tabCommentsSub"), section: "导航" },
+    { id: "show-help", icon: Keyboard, title: t("cmd.showHelp"), subtitle: t("cmd.showHelpSub"), section: "帮助" },
+  ];
+}
 
 // Module-level constant: remarkPlugins array is recreated on every ReportView
 // render if declared inline, which forces ReactMarkdown to re-process the
@@ -158,7 +166,7 @@ export {
   THEME_KEY,
   ACTIVE_ANALYSIS_STATES,
   HELP_SHORTCUTS,
-  COMMAND_ACTIONS,
+  createCommandActions,
   REMARK_PLUGINS,
   MAX_UPLOAD_BYTES_CLIENT,
   presets,

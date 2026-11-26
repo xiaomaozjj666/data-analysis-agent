@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, Eye, EyeOff, KeyRound, LoaderCircle, Settings2, X } from "lucide-react";
 import { createPortal } from "react-dom";
+import { useI18n } from "../i18n";
 import { useAppStore } from "../store/useAppStore";
+import type { Locale } from "../store/useUIStore";
 import { api } from "../utils/api";
 import type { Settings } from "../types";
 
@@ -9,6 +11,7 @@ import type { Settings } from "../types";
 // 推理强度 / 连接测试 / 保存）。提取自 App.tsx，所有状态仍走 Zustand store，
 // 测试连接的 testingKey / testResult 为组件本地状态（无需跨组件共享）。
 function SettingsPanel() {
+  const { locale, t, setLocale } = useI18n();
   const {
     settings, apiKey, effort, thinking,
     setSettings, setApiKey, setEffort, setThinking,
@@ -106,11 +109,11 @@ function SettingsPanel() {
 
   return (
     <div className="provider-block">
-      <span className="sidebar-label">分析引擎</span>
+      <span className="sidebar-label">{t("nav.analysisEngine")}</span>
       <button type="button" className="model-line" aria-haspopup="dialog" aria-expanded={keyOpen} onClick={() => setKeyOpen(true)}>
         <span>
           <i className={settings?.configured ? "online" : ""} />
-          <span><strong>{settings?.model || "deepseek-chat"}</strong><small>{settings?.configured ? "已配置" : "等待配置"}</small></span>
+          <span><strong>{settings?.model || "deepseek-chat"}</strong><small>{settings?.configured ? t("nav.configured") : t("nav.waitingConfig")}</small></span>
         </span>
         <Settings2 size={15} />
       </button>
@@ -124,8 +127,8 @@ function SettingsPanel() {
         >
           <form className="settings-form" autoComplete="off" onSubmit={(event) => { event.preventDefault(); void saveSettings(); }}>
           <div className="settings-title">
-            <h2 id="model-settings-title">模型设置</h2>
-            <button type="button" title="收起设置（Esc）" aria-label="收起设置" onClick={closeSettings}><X size={15} /></button>
+            <h2 id="model-settings-title">{t("settings.title")}</h2>
+            <button type="button" title={t("settings.closeHint")} aria-label={t("settings.close")} onClick={closeSettings}><X size={15} /></button>
           </div>
           <label htmlFor="model-api-key">API Key</label>
           <div className="secret-input">
@@ -153,6 +156,17 @@ function SettingsPanel() {
               <button type="button" key={value} title={value === "high" ? "标准推理速度，适合大多数场景" : "最深推理，效果更好但更慢"} className={effort === value ? "selected" : ""} onClick={() => setEffort(value)}>{label}</button>
             ))}
           </div>
+          {/* 界面语言：零依赖 i18n，选择后立即生效并写入 localStorage */}
+          <label htmlFor="ui-language">{t("settings.language")}</label>
+          <select
+            id="ui-language"
+            className="language-select"
+            value={locale}
+            onChange={(event) => setLocale(event.target.value as Locale)}
+          >
+            <option value="zh-CN">{t("settings.zh")}</option>
+            <option value="en-US">{t("settings.en")}</option>
+          </select>
           {/* 连接测试结果：成功绿色、失败红色，提示文案来自后端 warning / detail */}
           {testResult && (
             <div className={`test-result ${testResult.ok ? "ok" : "fail"}`} role="status">

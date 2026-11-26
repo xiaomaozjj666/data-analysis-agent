@@ -1,0 +1,249 @@
+/* 定时任务面板（SchedulePanel）：覆盖层 + 任务列表 + 历史。
+   设计语言与设置弹层一致：发丝线边框、克制阴影、语义状态色只用于状态。 */
+
+.schedule-entry {
+  width: 100%;
+}
+
+.schedule-panel-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 6vh 16px;
+  background: rgba(9, 9, 11, 0.36);
+  overflow-y: auto;
+}
+
+.schedule-panel {
+  width: min(820px, 100%);
+  max-height: 86vh;
+  overflow-y: auto;
+  padding: 18px 20px 20px;
+  background: var(--canvas-default);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xl);
+}
+
+.schedule-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.schedule-panel-head h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: var(--text-lg);
+}
+
+.schedule-panel-head p {
+  margin: 4px 0 0;
+  color: var(--fg-subtle);
+  font-size: var(--text-sm);
+}
+
+.schedule-panel-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.schedule-error,
+.schedule-notice,
+.schedule-empty {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+}
+
+.schedule-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--danger-fg);
+  background: var(--danger-subtle);
+  border: 1px solid var(--danger-border);
+}
+
+.schedule-notice {
+  color: var(--success-fg);
+  background: var(--success-subtle);
+}
+
+.schedule-empty {
+  color: var(--fg-subtle);
+  background: var(--canvas-subtle);
+}
+
+.schedule-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.schedule-item {
+  padding: 12px 14px;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-md);
+  background: var(--canvas-default);
+}
+
+.schedule-item.is-disabled {
+  opacity: 0.62;
+}
+
+.schedule-item-main {
+  display: grid;
+  gap: 6px;
+}
+
+.schedule-item-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.schedule-status {
+  padding: 1px 8px;
+  border-radius: var(--radius-full);
+  background: var(--canvas-inset);
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+}
+
+.schedule-status.is-ok {
+  color: var(--success-fg);
+  background: var(--success-subtle);
+}
+
+.schedule-status.is-partial {
+  color: var(--attention-fg);
+  background: var(--tint-butter);
+}
+
+.schedule-status.is-error {
+  color: var(--danger-fg);
+  background: var(--danger-subtle);
+}
+
+.schedule-corrupt {
+  color: var(--danger-fg);
+  font-size: var(--text-xs);
+}
+
+.schedule-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  color: var(--fg-subtle);
+  font-size: var(--text-sm);
+}
+
+.schedule-alerts {
+  color: var(--attention-fg);
+}
+
+.schedule-headline,
+.schedule-item-error {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.schedule-headline {
+  color: var(--fg-muted);
+}
+
+.schedule-item-error {
+  color: var(--danger-fg);
+}
+
+.schedule-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.schedule-item-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--canvas-default);
+  color: var(--fg-default);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.schedule-item-actions button:hover:not(:disabled) {
+  background: var(--control-hover);
+}
+
+.schedule-item-actions button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.schedule-toggle[aria-pressed="true"] {
+  color: var(--success-fg);
+  border-color: var(--border-strong);
+}
+
+.schedule-run {
+  background: var(--accent-solid);
+  border-color: var(--accent-solid);
+  color: #ffffff;
+}
+
+.schedule-run:hover:not(:disabled) {
+  background: var(--accent-solid-hover);
+}
+
+.schedule-history {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border-muted);
+  font-size: var(--text-sm);
+  color: var(--fg-muted);
+}
+
+.schedule-history ul {
+  display: grid;
+  gap: 4px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.schedule-history li {
+  display: flex;
+  gap: 14px;
+}
+
+.schedule-history-toggle svg.is-open {
+  transform: rotate(180deg);
+}
+
+/* 设置弹层里的语言选择（与既有 settings 表单字段同宽） */
+.language-select {
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--canvas-default);
+  color: var(--fg-default);
+  font-size: var(--text-sm);
+}
