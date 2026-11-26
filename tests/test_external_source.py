@@ -88,6 +88,109 @@ def test_snowflake_connect_sets_statement_timeout(monkeypatch):
     assert executed == ["ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = 45"]
 
 
+def test_psycopg_connect_sets_statement_timeout(monkeypatch):
+    executed: list[str] = []
+    commits: list[bool] = []
+
+    class _Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, sql):
+            executed.append(sql)
+
+    connection = SimpleNamespace(
+        cursor=lambda: _Cursor(), commit=lambda: commits.append(True)
+    )
+    module = SimpleNamespace(connect=lambda **kwargs: connection)
+    monkeypatch.setattr(external_source.importlib, "import_module", lambda name: module)
+    monkeypatch.setenv(external_source.MODULE_ENV, "psycopg")
+    monkeypatch.setenv(external_source.KWARGS_ENV, '{"dbname": "analytics"}')
+    monkeypatch.setenv(external_source.TIMEOUT_ENV, "30")
+
+    assert external_source.connect_readonly() is connection
+    assert executed == ["SET statement_timeout = 30000"]
+    assert commits == [True]
+
+
+def test_psycopg_timeout_failure_is_tolerated(monkeypatch):
+    """部分 DB-API 包装不支持会话级 SET，不能因此拒绝连接。"""
+
+    class _Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, sql):
+            raise RuntimeError("unsupported")
+
+    connection = SimpleNamespace(cursor=lambda: _Cursor(), commit=lambda: None)
+    module = SimpleNamespace(connect=lambda **kwargs: connection)
+    monkeypatch.setattr(external_source.importlib, "import_module", lambda name: module)
+    monkeypatch.setenv(external_source.MODULE_ENV, "psycopg")
+    monkeypatch.setenv(external_source.KWARGS_ENV, "{}")
+
+    assert external_source.connect_readonly() is connection
+
+
+def test_connect_readonly_reraises_and_wraps_driver_errors(monkeypatch):
+    def broken_connect(**kwargs):
+        raise TypeError("bad kwargs")
+
+    module = SimpleNamespace(connect=broken_connect)
+    monkeypatch.setattr(external_source.importlib, "import_module", lambda name: module)
+    monkeypatch.setenv(external_source.MODULE_ENV, "sqlite3")
+    monkeypatch.setenv(external_source.KWARGS_ENV, "{}")
+    with pytest.raises(TypeError, match="bad kwargs"):
+        external_source.connect_readonly()
+
+    def auth_failed(**kwargs):
+        raise RuntimeError("auth failed")
+
+    monkeypatch.setattr(
+        external_source.importlib, "import_module", lambda name: SimpleNamespace(connect=auth_failed)
+    )
+    with pytest.raises(ValueError, match="外部数据源连接失败（RuntimeError）"):
+        external_source.connect_readonly()
+
+
+def test_row_value_prefers_attributes_then_index() -> None:
+    assert external_source._row_value(SimpleNamespace(name="sales"), "name") == "sales"
+    assert external_source._row_value(("orders",)) == "orders"
+    # 既没有匹配属性也不支持下标：降级为 None
+    assert external_source._row_value(SimpleNamespace(other=1)) is None
+
+
+def test_run_select_tolerates_progress_handler_failure(monkeypatch):
+    class _UnsupportedHandler:
+        """模拟不支持会话级进度回调的 DB-API 包装。"""
+
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        def set_progress_handler(self, *_args, **_kwargs):
+            raise RuntimeError("not supported")
+
+    inner = sqlite3.connect(":memory:", check_same_thread=False)
+    connection = _UnsupportedHandler(inner)
+    try:
+        inner.execute("CREATE TABLE t (value INTEGER)")
+        inner.execute("INSERT INTO t VALUES (7)")
+        inner.commit()
+        result = external_source.run_select(connection, "SELECT value FROM t", 10)
+        assert result["rows"] == [[7]]
+    finally:
+        inner.close()
+
+
 def test_data_sources_exposes_external(tmp_path, monkeypatch):
     path = _sqlite_db(tmp_path)
     monkeypatch.setenv(external_source.MODULE_ENV, "sqlite3")

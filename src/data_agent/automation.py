@@ -36,12 +36,13 @@ import ssl
 import statistics
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from email.message import EmailMessage
 from http import client as http_client
@@ -53,6 +54,14 @@ from data_agent.metrics import compute_metrics_on_frame, parse_metric_definition
 from data_agent.workspace import DataWorkspace
 
 _log = logging.getLogger(__name__)
+
+#: 任务定义文件的读-改-写互斥锁。
+#: ``add_spec`` / ``remove_spec`` / ``set_spec_enabled`` 都是「读全量 → 改一条
+#: → 写全量」，并发执行时会互相覆盖（后写者拿到旧快照，丢掉先写者的改动）。
+#: 文件写入本身是原子的（tmp + os.replace），但原子写只保证「不出现半截
+#: 文件」，不能保证「不丢更新」。这里用进程内锁串行化整段读改写：本项目的
+#: 写入都发生在同一个 FastAPI 进程（同步端点跑在线程池里，确实会并发）。
+_SPECS_LOCK = threading.RLock()
 
 AUTOMATION_DIRNAME = "automation"
 SPECS_FILENAME = "automations.json"
@@ -705,28 +714,54 @@ def save_specs(runs_dir: str | Path, specs: list[AutomationSpec]) -> None:
 
 
 def add_spec(runs_dir: str | Path, spec: AutomationSpec) -> list[AutomationSpec]:
-    specs = load_specs(runs_dir)
-    merged: list[AutomationSpec] = []
-    replaced = False
-    for item in specs:
-        if item.id == spec.id:
+    with _SPECS_LOCK:
+        specs = load_specs(runs_dir)
+        merged: list[AutomationSpec] = []
+        replaced = False
+        for item in specs:
+            if item.id == spec.id:
+                merged.append(spec)
+                replaced = True
+            else:
+                merged.append(item)
+        if not replaced:
             merged.append(spec)
-            replaced = True
-        else:
-            merged.append(item)
-    if not replaced:
-        merged.append(spec)
-    save_specs(runs_dir, merged)
-    return merged
+        save_specs(runs_dir, merged)
+        return merged
 
 
 def remove_spec(runs_dir: str | Path, task_id: str) -> bool:
-    specs = load_specs(runs_dir)
-    remaining = [item for item in specs if item.id != task_id]
-    if len(remaining) == len(specs):
-        return False
-    save_specs(runs_dir, remaining)
-    return True
+    with _SPECS_LOCK:
+        specs = load_specs(runs_dir)
+        remaining = [item for item in specs if item.id != task_id]
+        if len(remaining) == len(specs):
+            return False
+        save_specs(runs_dir, remaining)
+        return True
+
+
+def set_spec_enabled(
+    runs_dir: str | Path, task_id: str, enabled: bool
+) -> list[AutomationSpec] | None:
+    """启停单个任务；任务不存在返回 ``None``。
+
+    读改写在 ``_SPECS_LOCK`` 内完成：面板连点两个任务的开关（两个请求并发
+    落在线程池）时，不会出现「后一个请求用旧快照覆盖前一个」的丢更新。
+    """
+    with _SPECS_LOCK:
+        specs = load_specs(runs_dir)
+        found = False
+        merged: list[AutomationSpec] = []
+        for item in specs:
+            if item.id == task_id:
+                merged.append(replace(item, enabled=enabled))
+                found = True
+            else:
+                merged.append(item)
+        if not found:
+            return None
+        save_specs(runs_dir, merged)
+        return merged
 
 
 def _read_state(runs_dir: str | Path, task_id: str) -> dict[str, Any]:

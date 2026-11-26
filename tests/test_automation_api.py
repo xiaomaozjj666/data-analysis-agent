@@ -111,6 +111,8 @@ def test_corrupt_specs_returns_422(tmp_path, monkeypatch):
     client = TestClient(api.app)
 
     assert client.get("/api/automation/tasks").status_code == 422
+    # 历史接口先经 _specs() 读取定义，配置损坏同样返回 422 而不是 500。
+    assert client.get("/api/automation/tasks/daily-sales/history").status_code == 422
     # PATCH 走 _specs() 的同一错误分支，确保配置损坏不会 500。
     assert (
         client.patch("/api/automation/tasks/daily-sales", json={"enabled": False}).status_code

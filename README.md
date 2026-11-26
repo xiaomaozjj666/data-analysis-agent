@@ -490,7 +490,7 @@ tests/               pytest 测试
 - **访问令牌**：监听非环回地址（如 Docker / Render 的 `0.0.0.0`）时必须至少设置 `APP_ACCESS_TOKEN` 或 `APP_VIEWER_TOKEN`（后者只读，写请求 403）；本地 `127.0.0.1` 开发可留空。审计日志用 `DATA_AGENT_AUDIT_LOG` 指向 JSONL 文件。
 - **LangSmith**：`langgraph.json` 导出 `data_analysis_agent` 图，可直接创建 LangSmith Deployment；数据集通过 `dataset_id` 或受控 `dataset_path` 提供。
 - **Render**：根目录 `render.yaml` 提供 Blueprint 一键部署（Free 档可直接同步成功）。首次创建 Blueprint 需在 Render 控制台批准首次同步——状态为 `Created` 时 `autoSync` 不生效，批准后推送才会自动同步；文件内注释含 Starter 及以上档位启用持久磁盘的完整配置。Free 实例休眠后容器存储会清空，长期保存数据请启用 S3/R2 后端。
-- **CI**：`.github/workflows/ci.yml` 在 push / PR 时自动执行 ruff、pytest（含 240s 单测超时保护与 `--cov-fail-under=97` 覆盖率门禁）与前端类型检查、测试及生产构建。
+- **CI**：`.github/workflows/ci.yml` 在 push / PR 时自动执行 ruff、pytest（含 240s 单测超时保护与 `--cov-fail-under=97.4` 覆盖率门禁）与前端类型检查、测试及生产构建。
 
 ## 质量检查
 

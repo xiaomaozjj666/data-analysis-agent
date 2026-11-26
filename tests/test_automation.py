@@ -105,6 +105,61 @@ def test_store_add_list_remove(tmp_path):
     assert automation.remove_spec(tmp_path / "runs", "absent") is False
 
 
+def test_set_spec_enabled_updates_one_task_and_reports_missing(tmp_path):
+    runs = tmp_path / "runs"
+    automation.add_spec(runs, _make_spec(tmp_path, id="task-a", name="任务A"))
+    automation.add_spec(runs, _make_spec(tmp_path, id="task-b", name="任务B"))
+
+    updated = automation.set_spec_enabled(runs, "task-a", False)
+    assert updated is not None
+    by_id = {item.id: item for item in automation.load_specs(runs)}
+    assert by_id["task-a"].enabled is False
+    assert by_id["task-b"].enabled is True
+
+    assert automation.set_spec_enabled(runs, "absent", False) is None
+
+
+def test_concurrent_add_spec_does_not_lose_updates(tmp_path, monkeypatch):
+    """并发新增任务时不能丢更新。
+
+    ``add_spec`` 是「读全量 → 追加 → 写全量」。若不加锁，两个请求同时读到
+    同一份旧快照，后写者会覆盖先写者（原子写在这是不够的）。这里用屏障强制
+    两个线程都在写之前拿到旧快照，再断言最终两条任务都在。
+    """
+    original_load = automation.load_specs
+    barrier = threading.Barrier(2)
+
+    def stale_read_then_continue(runs_dir):
+        specs = original_load(runs_dir)
+        try:
+            barrier.wait(timeout=0.5)
+        except threading.BrokenBarrierError:
+            pass
+        return specs
+
+    monkeypatch.setattr(automation, "load_specs", stale_read_then_continue)
+    specs = [
+        _make_spec(tmp_path, id=f"task-{index}", name=f"任务{index}") for index in range(2)
+    ]
+
+    errors: list[BaseException] = []
+
+    def worker(spec):
+        try:
+            automation.add_spec(tmp_path / "runs", spec)
+        except BaseException as exc:  # pragma: no cover - 失败时便于定位
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(spec,)) for spec in specs]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert not errors
+    assert {item.id for item in original_load(tmp_path / "runs")} == {"task-0", "task-1"}
+
+
 # ---------------------------------------------------------------------------
 # 调度
 # ---------------------------------------------------------------------------

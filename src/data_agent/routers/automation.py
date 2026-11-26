@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -73,14 +72,12 @@ def task_history(task_id: str, limit: int = 20) -> dict[str, Any]:
 @router.patch("/api/automation/tasks/{task_id}")
 def toggle_task(task_id: str, body: TaskToggle) -> dict[str, Any]:
     """启停任务；返回更新后的完整概览，前端一次请求即可刷新列表。"""
-    specs = _specs()
-    if not any(spec.id == task_id for spec in specs):
-        raise HTTPException(status_code=404, detail=f"定时任务不存在：{task_id}")
-    updated = [replace(spec, enabled=body.enabled) if spec.id == task_id else spec for spec in specs]
     try:
-        automation.save_specs(_runs_dir(), updated)
-    except OSError as exc:
+        updated = automation.set_spec_enabled(_runs_dir(), task_id, body.enabled)
+    except (OSError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=f"任务配置写入失败：{exc}") from exc
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"定时任务不存在：{task_id}")
     return _overview()
 
 

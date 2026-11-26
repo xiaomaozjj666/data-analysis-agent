@@ -31,6 +31,25 @@
   恢复/候选数据集/审批重跑/追问/恢复轮询/重放/核验重载/访问门禁/手势），App.tsx
   行覆盖 35% → 91%；全量实测 lines 77.1% / statements 74.3% / functions 66.9% /
   branches 61.7%，阈值同步提高到 75.5 / 72.5 / 65 / 59.5。
+- **前端覆盖率第二轮补齐**：为此前完全没有测试的组件/工具补行为测试
+  （DatasetOverview、ToolTraceItem、ConversationThread、PlanPanel、HistoryPanel、
+  EmptyWorkspace、CodeBlock、ReportParts、utils/api、utils/notify），错误路径
+  （请求非 2xx、上传失败/取消、超时、剪贴板失败、任务启停 404）与交互分支一并
+  覆盖；全量实测 lines 84.7% / statements 82.3% / functions 79.4% / branches
+  72.6%，App.tsx 单文件 98.4% / 98.8%，阈值提高到 83 / 80.5 / 77.5 / 70.5。
+- **后端覆盖率余量**：补 `audit_state` 损坏/缺失状态文件、`_downloads` 打包
+  中途失败、`render.primitives` 空数组/全 NaN/零宽度、`mcp_server` 超限拒绝与
+  未配置数据源、`chart_sampling` 退化输入、API 预热与静态目录回退；本地无
+  Postgres 实测 97.00% → 97.54%，门禁 97 → 97.4（CI 含真实 Postgres 更高）。
+
+### 修复
+
+- **定时任务并发启停丢更新**：`add_spec` / `remove_spec` 与新增的
+  `set_spec_enabled` 都是「读全量 → 改一条 → 写全量」，原子写只能防半截文件、
+  防不住旧快照覆盖。三者统一在进程内 RLock 内串行化，路由启停改走新函数；
+  回归测试用屏障强制两个线程同时持有旧快照，验证最终两条任务都在。
+- **配置/文档与门禁口径对齐**：CI 注释里的前端阈值仍是上一版数字（68.5/66.5），
+  README 的后端门禁仍写 97；现与实际阈值、实测值保持一致。
 
 ### 安全
 

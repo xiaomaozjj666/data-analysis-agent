@@ -3874,3 +3874,51 @@ def test_zip_response_cleans_temp_file_when_send_fails(tmp_path, monkeypatch):
     with pytest.raises(OSError, match="client disconnected"):
         asyncio.run(response(scope, receive, send))
     assert not list(download_dir.glob("data-agent-download-*.zip"))
+
+
+def test_zip_response_removes_partial_archive_when_builder_fails(tmp_path, monkeypatch):
+    """打包回调中途失败时立即删除半截 ZIP，不把坏包留给后续请求。"""
+    import tempfile as tempfile_module
+
+    from data_agent._downloads import zip_file_response
+
+    download_dir = tmp_path / "downloads"
+    download_dir.mkdir()
+    monkeypatch.setattr(tempfile_module, "tempdir", str(download_dir))
+
+    def broken(_bundle):
+        raise RuntimeError("打包失败")
+
+    with pytest.raises(RuntimeError, match="打包失败"):
+        zip_file_response("demo.zip", broken)
+    assert not list(download_dir.glob("data-agent-download-*.zip"))
+
+
+def test_resolve_frontend_dist_falls_back_to_source_tree(monkeypatch):
+    """未构建前端且未配置静态目录时返回源码树的默认路径（供 404 兜底）。"""
+    monkeypatch.delenv("DATA_AGENT_STATIC_DIR", raising=False)
+    monkeypatch.setattr(api.Path, "is_file", lambda self: False)
+    resolved = api._resolve_frontend_dist()
+    assert resolved.name == "dist"
+    assert resolved.parent.name == "frontend"
+
+
+def test_warm_chart_bundles_runs_in_background_thread(tmp_path, monkeypatch):
+    """启动预热走后台线程，失败不影响启动（这里验证成功路径）。"""
+    import threading
+
+    import data_agent.workspace as workspace_module
+
+    done = threading.Event()
+    seen: list[object] = []
+
+    def fake_warm(runs_dir):
+        seen.append(runs_dir)
+        done.set()
+        return {"echarts": True}
+
+    monkeypatch.setattr(workspace_module, "warm_bundles", fake_warm)
+    monkeypatch.setattr(api.registry, "runs_dir", tmp_path)
+    api._warm_chart_bundles()
+    assert done.wait(5)
+    assert seen == [tmp_path]

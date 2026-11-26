@@ -400,6 +400,73 @@ def test_sql_query_discovery_lists_postgres_when_configured(monkeypatch, tmp_pat
     _run(scenario)
 
 
+def test_open_dataset_rejects_shape_over_limit_and_cleans_workspace(tmp_path):
+    settings = AgentSettings(
+        api_key="not-used",
+        runs_dir=tmp_path / "runs",
+        max_upload_bytes=10 * 1024 * 1024,
+        max_rows=1,
+        max_cells=100_000,
+        max_active_sessions=10,
+        session_ttl_hours=24.0,
+    )
+    csv_path = tmp_path / "two-rows.csv"
+    csv_path.write_text("region,sales\nEast,1\nWest,2\n", encoding="utf-8")
+
+    async def scenario():
+        async with _connected_session(create_server(settings)) as session:
+            result = await session.call_tool("open_dataset", {"path": str(csv_path)})
+            assert "数据规模超过限制" in _error_text(result)
+
+    _run(scenario)
+    # 超限被拒绝后工作区必须清理，不留孤儿目录
+    assert not list((tmp_path / "runs").glob("mcp_*"))
+
+
+def test_sql_query_rejects_unconfigured_postgres(monkeypatch, tmp_path):
+    monkeypatch.setattr(postgres_source, "is_configured", lambda: False)
+
+    async def scenario():
+        async with _connected_session(_server(tmp_path)) as session:
+            result = await session.call_tool(
+                "sql_query", {"source": "postgres", "sql": "SELECT 1"}
+            )
+            assert "未配置 PostgreSQL" in _error_text(result)
+
+    _run(scenario)
+
+
+def test_sql_query_session_without_sqlite_explains_alternatives(tmp_path):
+    csv_path = tmp_path / "sales.csv"
+    csv_path.write_text("region,sales\nEast,1\nWest,2\n", encoding="utf-8")
+
+    async def scenario():
+        async with _connected_session(_server(tmp_path)) as session:
+            opened = _payload(await session.call_tool("open_dataset", {"path": str(csv_path)}))
+            result = await session.call_tool(
+                "sql_query", {"session_id": opened["session_id"], "sql": ""}
+            )
+            assert "该会话没有 SQLite 数据源" in _error_text(result)
+
+    _run(scenario)
+
+
+def test_main_runs_stdio_server(monkeypatch):
+    from data_agent import mcp_server
+
+    class FakeServer:
+        def __init__(self) -> None:
+            self.ran = False
+
+        def run(self) -> None:
+            self.ran = True
+
+    fake = FakeServer()
+    monkeypatch.setattr(mcp_server, "create_server", lambda: fake)
+    mcp_server.main()
+    assert fake.ran is True
+
+
 def test_sql_query_reports_truncation_note(tmp_path):
     async def scenario():
         async with _connected_session(_server(tmp_path)) as session:

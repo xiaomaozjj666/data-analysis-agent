@@ -131,6 +131,55 @@ def test_confirm_attaches_receipt_to_audit_state(tmp_path, monkeypatch):
     assert state["confirmed_brief"]
 
 
+def test_audit_state_tolerates_missing_and_corrupt_files(tmp_path):
+    """核验状态文件缺失 / 损坏时只降级为 None，不阻塞主链路。"""
+    from data_agent.audit_state import attach_receipt, save_last_audit
+
+    root = tmp_path / "sess"
+    # 文件不存在：attach 静默返回，load 返回 None
+    attach_receipt(root, {"hash": "x"}, "brief")
+    assert load_last_audit(root) is None
+
+    path = root / "audit" / "last_audit.json"
+    path.parent.mkdir(parents=True)
+
+    path.write_text("{not json", encoding="utf-8")
+    attach_receipt(root, {"hash": "x"}, "brief")
+    assert load_last_audit(root) is None
+
+    # JSON 合法但不是对象
+    path.write_text("[]", encoding="utf-8")
+    attach_receipt(root, {"hash": "x"}, "brief")
+    assert load_last_audit(root) is None
+
+    # 对象但 result 不是字典
+    path.write_text('{"result": "not-a-dict"}', encoding="utf-8")
+    assert load_last_audit(root) is None
+
+    # 正常写入后仍可读取
+    save_last_audit(root, {"summary": {"ok": True}}, "draft")
+    assert load_last_audit(root)["result"] == {"summary": {"ok": True}}
+
+
+def test_audit_state_receipt_write_failure_is_swallowed(tmp_path, monkeypatch):
+    """回执落盘失败只记日志：核验/确认接口本身不能因此失败。"""
+    from data_agent import audit_state
+
+    root = tmp_path / "sess"
+    audit_state.save_last_audit(root, {"summary": {"ok": True}}, "draft")
+
+    def broken_replace(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(audit_state.os, "replace", broken_replace)
+    audit_state.attach_receipt(root, {"hash": "h"}, "brief")  # 不抛异常
+
+    loaded = audit_state.load_last_audit(root)
+    assert loaded is not None
+    # 旧结果保留，回执没有写进去
+    assert "receipt" not in loaded
+
+
 # ---------------------------------------------------------------------------
 # 候选数据集采纳 API
 # ---------------------------------------------------------------------------

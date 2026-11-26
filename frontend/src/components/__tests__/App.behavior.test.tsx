@@ -23,7 +23,11 @@ vi.mock("../../utils/format", async () => {
 });
 
 vi.mock("../../components/AccessGate", () => ({
-  AccessGate: () => <div data-testid="access-gate">access-gate</div>,
+  AccessGate: (props: { onAuthenticated?: () => void }) => (
+    <div data-testid="access-gate">
+      <button type="button" onClick={() => props.onAuthenticated?.()}>gate-pass</button>
+    </div>
+  ),
   Metric: () => null,
 }));
 
@@ -54,6 +58,7 @@ vi.mock("../../components/TaskBox", () => ({
     onRun?: () => void;
     onStop?: () => void;
     onFocusPlan?: () => void;
+    onRunPlanReview?: () => void;
   }) => (
     <div data-testid="task-box">
       <input
@@ -64,6 +69,7 @@ vi.mock("../../components/TaskBox", () => ({
       <button type="button" onClick={props.onRun}>run-task</button>
       <button type="button" onClick={props.onStop}>stop-task</button>
       <button type="button" onClick={props.onFocusPlan}>focus-plan</button>
+      <button type="button" onClick={props.onRunPlanReview}>run-plan-review</button>
     </div>
   ),
 }));
@@ -79,6 +85,7 @@ vi.mock("../../components/ConversationThread", () => ({  default: (props: {
     onInputChange?: (value: string) => void;
     onSubmit?: () => void;
     onStop?: () => void;
+    onEditMessage?: (index: number, content: string) => void;
   }) => (
     <div data-testid="conversation">
       <textarea
@@ -88,6 +95,7 @@ vi.mock("../../components/ConversationThread", () => ({  default: (props: {
       />
       <button type="button" onClick={props.onSubmit}>submit-followup</button>
       <button type="button" onClick={props.onStop}>stop-followup</button>
+      <button type="button" onClick={() => props.onEditMessage?.(0, "改后的问题")}>edit-followup</button>
     </div>
   ),
 }));
@@ -95,10 +103,17 @@ vi.mock("../../components/PreviewModal", () => ({ default: () => <div data-testi
 vi.mock("../../components/DemoBrief", () => ({ default: () => <div data-testid="demo-brief" /> }));
 vi.mock("../../components/SalesAudit", () => ({
   SALES_BRIEF_TASK: "核验任务",
-  default: (props: { report?: string; onReloadSession?: (id: string) => void }) => (
+  default: (props: {
+    report?: string;
+    onReloadSession?: (id: string) => void;
+    onPrepareDraft?: () => void;
+    onExitSession?: () => void;
+  }) => (
     <div data-testid="sales-audit">
       {props.report}
       <button type="button" onClick={() => props.onReloadSession?.("s9")}>reload-audit</button>
+      <button type="button" onClick={() => props.onPrepareDraft?.()}>prepare-draft</button>
+      <button type="button" onClick={() => props.onExitSession?.()}>exit-session</button>
     </div>
   ),
 }));
@@ -936,5 +951,208 @@ describe("App 行为", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("忽略候选数据集失败：拒绝写入");
     fireEvent.click(screen.getByRole("button", { name: "rescan-artifacts" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("扫描产物目录失败：磁盘只读");
+  });
+
+  it("侧栏入口、替换数据与指标卡片切换视图", async () => {
+    const { container } = await renderApp();
+    // 空态时侧栏上传按钮
+    fireEvent.click(container.querySelector(".upload-button") as HTMLElement);
+    fireEvent.click(container.querySelector(".new-analysis") as HTMLElement);
+    await loadSample();
+
+    // 有会话后：数据集按钮与"替换数据"
+    fireEvent.click(container.querySelector(".dataset-button") as HTMLElement);
+    fireEvent.click(container.querySelector(".change-file") as HTMLElement);
+
+    const metrics = container.querySelectorAll(".metric-clickable");
+    fireEvent.click(metrics[0]);
+    expect(useAppStoreForTest().activeTab).toBe("data");
+    fireEvent.click(metrics[1]);
+    expect(useAppStoreForTest().activeTab).toBe("data");
+    fireEvent.click(metrics[2]);
+    expect(useAppStoreForTest().activeTab).toBe("artifacts");
+  });
+
+  it("一次选择多个文件：首个主上传，其余通过事件顺序上传", async () => {
+    const { container } = await renderApp();
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(input, {
+        target: {
+          files: [
+            new File(["a"], "a.csv", { type: "text/csv" }),
+            new File(["b"], "b.xlsx", { type: "application/vnd.ms-excel" }),
+          ],
+        },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(uploadMock).toHaveBeenCalledTimes(2));
+  });
+
+  it("空态主按钮、侧栏遮罩、定时任务入口与帮助入口", async () => {
+    const { container } = await renderApp();
+    fireEvent.click(screen.getByRole("button", { name: "empty-upload" }));
+    await loadSample();
+
+    fireEvent.click(screen.getByRole("button", { name: "打开侧边栏" }));
+    fireEvent.click(container.querySelector(".sidebar-overlay") as HTMLElement);
+    expect(screen.getByRole("button", { name: "打开侧边栏" })).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(container.querySelector(".schedule-entry") as HTMLElement);
+    expect(await screen.findByTestId("schedule-panel")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "close-schedules" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "查看键盘快捷键" }));
+    expect(await screen.findByTestId("help-panel")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "close-help" }));
+  });
+
+  it("命令面板：新建分析 / 切换主题 / 关闭", async () => {
+    await renderApp();
+    await loadSample();
+    const open = async () => {
+      fireEvent.click(screen.getByRole("button", { name: "打开命令面板" }));
+      await screen.findByTestId("command-palette");
+    };
+    const inPalette = () => within(screen.getByTestId("command-palette"));
+
+    await open();
+    fireEvent.click(inPalette().getByRole("button", { name: "新建分析" }));
+    expect(screen.queryByTestId("command-palette")).toBeNull();
+
+    await open();
+    const before = document.documentElement.dataset.theme;
+    fireEvent.click(inPalette().getByRole("button", { name: "切换主题" }));
+    expect(document.documentElement.dataset.theme).not.toBe(before);
+
+    await open();
+    fireEvent.click(screen.getByRole("button", { name: "close-palette" }));
+    expect(screen.queryByTestId("command-palette")).toBeNull();
+  });
+
+  it("刷新历史与错误横幅内的重试按钮", async () => {
+    const streamFetch = vi.fn((..._args: unknown[]) => Promise.resolve(new Response(": keep-alive\n\n", { status: 200 })));
+    vi.stubGlobal("fetch", streamFetch);
+    const { container } = await renderApp();
+    await loadSample();
+    const listCalls = () =>
+      apiMock.mock.calls.filter((call) => String(call[0]).startsWith("/api/sessions?limit")).length;
+    const before = listCalls();
+    fireEvent.click(screen.getByRole("button", { name: "refresh-history" }));
+    await waitFor(() => expect(listCalls()).toBeGreaterThan(before));
+
+    await act(async () => {
+      useErrorStore.setState({ error: "任务失败" });
+      useRetryStore.setState({ retryOffer: { task: "检查销售", reason: "ready", canResume: false } });
+    });
+    expect(container.querySelector(".error-banner")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "重新运行" }));
+    await waitFor(() =>
+      expect(streamFetch.mock.calls.some((call) => String(call[0]).includes("/analyze/stream"))).toBe(true),
+    );
+  });
+
+  it("消息编辑重发会截断后续对话并把新文本写回输入框", async () => {
+    await renderApp((url, options) => {
+      if (url === "/api/sessions/s2") {
+        return Promise.resolve(
+          sessionPayload({
+            id: "s2",
+            filename: "old.csv",
+            last_result: { response: "历史报告", artifacts: [], plan: [], completed_steps: [] },
+          }),
+        );
+      }
+      return baseApi(url, options);
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "open-s2" }));
+    await screen.findByTestId("conversation");
+    fireEvent.click(screen.getByRole("button", { name: "edit-followup" }));
+    expect(screen.getByLabelText("followup-input")).toHaveValue("改后的问题");
+  });
+
+  it("额外文件事件按顺序创建会话", async () => {
+    await renderApp();
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent("empty-workspace:extra-files", {
+          detail: { files: [new File(["a"], "a.csv", { type: "text/csv" }), new File(["b"], "b.csv", { type: "text/csv" })] },
+        }),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(uploadMock).toHaveBeenCalledTimes(2));
+  });
+
+  it("打开历史会话失败（非 404）时提示原因", async () => {
+    await renderApp((url, options) => {
+      if (url === "/api/sessions/s2") return Promise.reject(new Error("服务器错误"));
+      return baseApi(url, options);
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "open-s2" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("无法打开历史会话：服务器错误");
+  });
+
+  it("上传失败与重放失败都给出错误提示", async () => {
+    const { container } = await renderApp((url, options) => {
+      if (url === "/api/sessions/s2/replay") return Promise.reject(new Error("配方损坏"));
+      if (url === "/api/sessions/s2") {
+        return Promise.resolve(
+          sessionPayload({
+            id: "s2",
+            filename: "old.csv",
+            last_result: { response: "历史报告", artifacts: [], plan: [], completed_steps: [] },
+          }),
+        );
+      }
+      return baseApi(url, options);
+    });
+    uploadMock.mockRejectedValueOnce(new Error("解析失败"));
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(input, { target: { files: [new File(["a"], "bad.csv", { type: "text/csv" })] } });
+      await Promise.resolve();
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent("解析失败");
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭错误提示" }));
+    fireEvent.click(await screen.findByRole("button", { name: "open-s2" }));
+    await screen.findByTestId("conversation");
+    fireEvent.click(screen.getByRole("button", { name: "replay-report" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("按配方重跑失败：配方损坏");
+  });
+
+  it("计划评审入口与核验草稿入口", async () => {
+    const streamFetch = vi.fn((..._args: unknown[]) => Promise.resolve(new Response(": keep-alive\n\n", { status: 200 })));
+    vi.stubGlobal("fetch", streamFetch);
+    await renderApp((url, options) => {
+      if (url.startsWith("/api/settings")) return Promise.resolve({ ...SETTINGS, configured: true });
+      return baseApi(url, options);
+    });
+    await loadSample();
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText("task-input"), { target: { value: "检查销售" } });
+    });
+    fireEvent.click(screen.getByRole("button", { name: "run-plan-review" }));
+    await waitFor(() =>
+      expect(streamFetch.mock.calls.some((call) => String(call[0]).includes("/analyze/stream"))).toBe(true),
+    );
+    await waitFor(() => expect(useAnalysisStore.getState().running).toBe(false));
+
+    fireEvent.click(screen.getByRole("tab", { name: /简报核验/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "prepare-draft" }));
+    expect(useAnalysisStore.getState().task).toBe("核验任务");
+    expect(useAppStoreForTest().activeTab).toBe("analysis");
+  });
+
+  it("核验页退出回到空态", async () => {
+    const { container } = await renderApp();
+    await loadSample();
+    fireEvent.click(screen.getByRole("tab", { name: /简报核验/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "exit-session" }));
+    expect(container.querySelector(".app-main.is-empty")).toBeTruthy();
   });
 });
