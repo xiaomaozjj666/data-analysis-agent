@@ -57,10 +57,10 @@ flowchart LR
 
 ## 界面预览
 
-| 起始页 · 拖拽上传与示例数据 | 分析工作区 · 20 万行预分析与任务 |
+| 起始页 · 拖拽上传与示例数据 | 分析工作区 · 20 万行密度网格与分组对比 |
 | :---: | :---: |
 | <img src="docs/screenshots/start-light.png" alt="起始页" width="100%" /> | <img src="docs/screenshots/overview-light.png" alt="数据分析工作台主界面（浅色主题）" width="100%" /> |
-| 深色主题 · 全流程工作台 | 有据经营简报核验 · 独立复算与哈希链存证 |
+| 深色主题 · 20 万行密度工作台 | 有据经营简报核验 · 原表复算捕获 -442 差额 |
 | <img src="docs/screenshots/overview-dark.png" alt="深色主题主界面" width="100%" /> | <img src="docs/screenshots/sales-audit-light.png" alt="经营简报核验" width="100%" /> |
 | 产物中心 · 交互图表缩略图与下载 | 图表预览 · 20 万行密度网格模态 |
 | <img src="docs/screenshots/artifacts-light.png" alt="产物中心" width="100%" /> | <img src="docs/screenshots/preview-light.png" alt="图表预览模态" width="100%" /> |

@@ -213,11 +213,22 @@ async function clickTab(page, label) {{
   await page.screenshot({{ path: path.join(OUT, "start-light.png") }});
   console.log("wrote start-light.png");
 
-  // 2) 大数据样例会话 → 分析总览（浅色）
+  // 2) 大数据样例会话 → 分析总览（浅色，适度滚动让 20 万行密度视图卡片与交互图表同屏呈现）
   await openSessionByTitle(page, "20万行密度视图");
   await clickTab(page, "分析");
+  await page.evaluate(() => {{
+    const scroller = document.querySelector("main") || document.scrollingElement;
+    if (scroller) scroller.scrollTop = 340;
+    window.scrollTo(0, 340);
+  }});
+  await page.waitForTimeout(1800);
   await page.screenshot({{ path: path.join(OUT, "overview-light.png") }});
   console.log("wrote overview-light.png");
+  await page.evaluate(() => {{
+    const scroller = document.querySelector("main") || document.scrollingElement;
+    if (scroller) scroller.scrollTop = 0;
+    window.scrollTo(0, 0);
+  }});
 
   // 3) 数据预览表格
   await clickTab(page, "数据");
@@ -261,7 +272,7 @@ async function clickTab(page, label) {{
   await page.screenshot({{ path: path.join(OUT, "sales-audit-light.png") }});
   console.log("wrote sales-audit-light.png");
 
-  // 7) 暗色主题主工作台
+  // 7) 暗色主题主工作台（同样展示 20 万行预分析密度视图）
   await openSessionByTitle(page, "20万行密度视图");
   await page.evaluate(() => {{
     const b = document.querySelector('button[title*="主题"], .theme-toggle, button[aria-label*="主题"], button[title*="暗"], button[title*="深色"]');
@@ -269,6 +280,12 @@ async function clickTab(page, label) {{
   }});
   await page.waitForTimeout(1400);
   await clickTab(page, "分析");
+  await page.evaluate(() => {{
+    const scroller = document.querySelector("main") || document.scrollingElement;
+    if (scroller) scroller.scrollTop = 340;
+    window.scrollTo(0, 340);
+  }});
+  await page.waitForTimeout(1500);
   await page.screenshot({{ path: path.join(OUT, "overview-dark.png") }});
   console.log("wrote overview-dark.png");
 
