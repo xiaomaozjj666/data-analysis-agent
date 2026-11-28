@@ -19,7 +19,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import shutil
+import stat
 import threading
 import time
 from pathlib import Path
@@ -188,6 +191,34 @@ class SessionRecord:
     def update_kernel_tool(self, call_id: str, **fields: Any) -> None:
         with self._status_lock:
             self.kernel.update_tool(call_id, **fields)
+
+
+def _robust_rmtree(path: Path) -> list[str]:
+    """Windows 友好的递归删除：失败清单式回报，绝不静默。
+
+    ``shutil.rmtree(..., ignore_errors=True)`` 在 Windows 上会把「文件被
+    占用 / 只读」吞掉，删除接口返回成功但目录残留——2026-11-28 用户实测
+    「垃圾删不掉」的直接原因。这里：
+    - 只读文件先去掉只读位再删（Windows 常见：复制来的文件带只读位）；
+    - 仍删不掉的路径收集进返回清单，由调用方决定报错方式；
+    - 目录不存在视为已删除（幂等，返回空清单）。
+    """
+    failures: list[str] = []
+
+    def _onerror(func, target, exc_info) -> None:  # noqa: ANN001
+        try:
+            os.chmod(target, stat.S_IWRITE)
+            func(target)
+        except OSError:
+            failures.append(str(target))
+
+    try:
+        shutil.rmtree(path, onerror=_onerror)
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        failures.append(f"{path}（{exc}）")
+    return failures
 
 
 class SessionRegistry:
@@ -604,8 +635,6 @@ class SessionRegistry:
         ``[a-zA-Z0-9_-]{1,80}``，且 resolve 后的 root 必须在 runs_dir
         下，防止路径穿越删除任意目录。
         """
-        import shutil
-
         if not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", session_id):
             raise HTTPException(status_code=404, detail="会话不存在。")
         root = (self.runs_dir / session_id).resolve()
@@ -619,11 +648,22 @@ class SessionRegistry:
             # 标记为删除中：锁外 rmtree 期间，get() 的 _restore_locked
             # 会检查此集合并拒绝恢复，防止竞态产生悬空 record（H9 修复）。
             self._deleting.add(session_id)
-        # 锁外清理目录（shutil.rmtree 是 I/O 密集，不持锁）
-        try:
-            shutil.rmtree(root, ignore_errors=True)
-        except OSError:
-            logger.exception("Failed to remove session directory %s", session_id)
+        # 锁外清理目录（I/O 密集，不持锁）。2026-11 修复：此前用
+        # ``shutil.rmtree(root, ignore_errors=True)``——Windows 下文件被
+        # 占用（服务进程持有 checkpoint 句柄、杀软扫描）时**静默失败**，
+        # 接口返回 204 但目录还在，侧栏（扫描磁盘）继续显示，用户反复
+        # 删都"删不掉"。现在 fail-loud：只读文件先 chmod 重试，仍删不掉
+        # 的逐一回报给调用方（HTTP 500 带具体文件）。
+        failures = _robust_rmtree(root)
+        if failures:
+            logger.error("Failed to remove session files for %s: %s", session_id, failures[:5])
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"删除会话目录失败：{len(failures)} 个文件被占用。"
+                    f"例如 {failures[0]}。请停止占用该目录的程序后重试。"
+                ),
+            )
         # 清理远端归档：与 _cleanup_remote 一致，失败仅记录不抛出
         try:
             self.storage.delete_session(session_id)

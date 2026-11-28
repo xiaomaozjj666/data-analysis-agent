@@ -39,7 +39,10 @@ export function useHistorySync({ authReady, authRequired, authenticated, running
   const fetchHistory = useCallback(async (manual = false) => {
     if (manual) setHistoryLoading(true);
     try {
-      const payload = await api<SessionListResponse>("/api/sessions?limit=30");
+      // 100 = 后端单次上限（list_sessions 内部 cap 100）。此前 30 会把
+      // 有价值的会话挤出侧栏（2026-11-28 用户实测：105 个会话里唯一
+      // 有分析结果的有效会话排在第 99 位，直接"看不见"）。
+      const payload = await api<SessionListResponse>("/api/sessions?limit=100");
       setHistory(payload.sessions || []);
       setHistoryError(false);
     } catch {

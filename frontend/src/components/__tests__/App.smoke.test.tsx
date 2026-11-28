@@ -119,7 +119,7 @@ describe("App 渲染冒烟", () => {
       screen.getByText((_content, el) => el?.tagName === "H2" && el.textContent === "从一份数据开始"),
     ).toBeInTheDocument();
     // 历史列表拉取已被触发（鉴权通过后 fetchHistory）
-    expect(apiMock).toHaveBeenCalledWith("/api/sessions?limit=30");
+    expect(apiMock).toHaveBeenCalledWith("/api/sessions?limit=100");
     expect(screen.getByText("未配置（可选）")).toBeInTheDocument();
     expect(screen.queryByRole("dialog", { name: "模型设置" })).not.toBeInTheDocument();
 
@@ -169,7 +169,7 @@ describe("App 渲染冒烟", () => {
             max_upload_bytes: 52_428_800,
           });
         }
-        if (url === "/api/sessions?limit=30") {
+        if (url === "/api/sessions?limit=100") {
           return Promise.resolve({ sessions: [historyItem] });
         }
         if (url === "/api/sessions/seed-audit") {

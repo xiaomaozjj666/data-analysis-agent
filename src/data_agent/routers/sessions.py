@@ -15,6 +15,8 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
+import time
 from pathlib import Path
 from typing import Annotated, Any
 from uuid import uuid4
@@ -27,6 +29,102 @@ from data_agent._registry_payloads import _AUDIT_SAMPLE_SALES_CSV
 from data_agent.registry import _SAMPLE_SALES_CSV, _session_payload
 
 router = APIRouter()
+
+
+class CleanupEmptyRequest(BaseModel):
+    """空壳会话批量清理的请求参数。
+
+    dry_run=True 只返回将被清理的清单，不实际移动；confirm 必须为 true
+    才会执行移动（防止误触）。
+    """
+
+    dry_run: bool = Field(default=False)
+    confirm: bool = Field(default=False)
+    keep_session_ids: list[str] = Field(default_factory=list, max_length=100)
+
+
+@router.post("/api/sessions/cleanup-empty")
+def cleanup_empty_sessions(payload: CleanupEmptyRequest) -> dict[str, Any]:
+    """批量清理「空壳会话」（上传后从未跑出分析结果的测试残留）。
+
+    判据（全部满足才算空壳，缺一不可）：
+    - ``chat`` 为空且 ``last_result`` 为 null（没有任何对话与结论）；
+    - ``analysis_status`` 不是 running / cancelling / awaiting_approval；
+    - 不在用户显式传入的 ``keep_session_ids`` 白名单里。
+
+    移动到 ``runs/_trash/<批次>/``（写 MANIFEST 记录原始路径），期间可
+    随时手动移回恢复；``dry_run=true`` 只预览不移动。
+    """
+    from data_agent import api
+    from data_agent.retention import (
+        DEFAULT_TRASH_DAYS,
+        TRASH_DIRNAME,
+        _new_trash_batch,
+        _write_manifest,
+    )
+
+    settings = api.bootstrap_settings
+    registry = api.registry
+    runs_dir = Path(settings.runs_dir).resolve()
+    busy = registry.busy_workspace_paths()
+    keep = set(payload.keep_session_ids)
+
+    candidates: list[dict[str, Any]] = []
+    for session_dir in sorted(runs_dir.glob("api_*")):
+        manifest = session_dir / "session.json"
+        if not manifest.is_file() or session_dir.name in keep:
+            continue
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        if data.get("chat") or data.get("last_result") is not None:
+            continue
+        if data.get("analysis_status") in {"running", "cancelling", "awaiting_approval"}:
+            continue
+        if session_dir.resolve() in busy:
+            continue
+        try:
+            size = sum(f.stat().st_size for f in session_dir.rglob("*") if f.is_file())
+        except OSError:
+            size = 0
+        candidates.append({"id": session_dir.name, "path": str(session_dir), "size": size})
+
+    if payload.dry_run or not payload.confirm:
+        return {
+            "dry_run": True,
+            "candidates": candidates,
+            "total_size_mb": round(sum(c["size"] for c in candidates) / 1024 / 1024, 1),
+            "hint": "确认执行请携带 confirm=true（dry_run=false）；会话将移入 runs/_trash 可恢复。",
+        }
+    if not candidates:
+        return {"moved": 0, "trash_dir": None, "failed": []}
+
+    batch = _new_trash_batch(runs_dir, time.time(), TRASH_DIRNAME)
+    entries = []
+    moved = 0
+    failed: list[str] = []
+    for item in candidates:
+        source = Path(item["path"])
+        try:
+            shutil.move(str(source), str(batch / source.name))
+            entries.append({"original": item["path"], "id": item["id"]})
+            moved += 1
+        except (OSError, shutil.Error) as exc:
+            failed.append(f"{item['id']}：{exc}")
+    _write_manifest(batch, runs_dir, entries, DEFAULT_TRASH_DAYS)
+    # 清理内存中的注册记录（若该会话已 restore 过）。
+    for item in candidates:
+        if item["id"] in registry._items:  # noqa: SLF001 - 同进程内存清理
+            registry._items.pop(item["id"], None)  # noqa: SLF001
+    return {
+        "moved": moved,
+        "trash_dir": str(batch) if moved else None,
+        "failed": failed,
+        "kept_protected": len(payload.keep_session_ids),
+    }
 
 
 @router.get("/api/sessions")

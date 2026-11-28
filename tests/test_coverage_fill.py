@@ -306,9 +306,11 @@ def test_registry_delete_rejects_root_outside_runs_dir(tmp_path, monkeypatch):
     assert exc_info.value.status_code == 404
 
 
-def test_registry_delete_logs_rmtree_and_storage_failures(tmp_path, caplog, monkeypatch):
-    """delete 的 rmtree 与远端删除失败都应记录日志而不抛出。"""
+def test_registry_delete_raises_on_rmtree_failure(tmp_path, caplog, monkeypatch):
+    """目录删除失败必须 fail-loud 抛 500（2026-11-28：静默成功导致垃圾删不掉）。"""
     import shutil
+
+    from fastapi import HTTPException
 
     runs_dir, registry, session_id = _make_registry_session(tmp_path, "api_del_fail")
 
@@ -316,9 +318,13 @@ def test_registry_delete_logs_rmtree_and_storage_failures(tmp_path, caplog, monk
         raise OSError("access denied")
 
     monkeypatch.setattr(shutil, "rmtree", failing_rmtree)
-    with caplog.at_level(logging.ERROR, logger="data_agent.registry"):
+    with caplog.at_level(logging.ERROR, logger="data_agent.registry"), pytest.raises(
+        HTTPException
+    ) as excinfo:
         registry.delete(session_id)
-    assert "Failed to remove session directory" in caplog.text
+    assert excinfo.value.status_code == 500
+    assert "删除会话目录失败" in str(excinfo.value.detail)
+    assert "Failed to remove session files" in caplog.text
 
 
 def test_registry_delete_logs_storage_delete_failure(tmp_path, caplog):
