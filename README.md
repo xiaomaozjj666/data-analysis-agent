@@ -7,7 +7,7 @@
   <img src="https://img.shields.io/badge/FastAPI-API-009688" alt="FastAPI" />
   <img src="https://img.shields.io/badge/LangGraph-agent-4D6BFE" alt="LangGraph" />
   <img src="https://img.shields.io/badge/Docker-ready-2496ED" alt="Docker" />
-  <img src="https://img.shields.io/badge/tests-2078%2B%20backend%20%C2%B7%20498%2B%20frontend-brightgreen" alt="后端 2078+ 项、前端 498+ 项自动化测试" />
+  <img src="https://img.shields.io/badge/tests-2096%20backend%20%C2%B7%20498%20frontend-brightgreen" alt="后端 2096 项、前端 498 项自动化测试" />
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License" />
 </p>
 
@@ -18,7 +18,12 @@
 ## 最快上手
 
 ```powershell
-.\run.bat     # Windows 一键启动：首次自动建虚拟环境、装依赖，之后自动开浏览器
+# 方式一（推荐）：原生 Windows 桌面程序（基于内置 WebView2，无黑框、不依赖浏览器标签页）
+.\scripts\build-desktop.ps1                     # 首次编译 desktop-app\Data Analysis Agent.exe
+# 编译完成后直接双击 desktop-app\Data Analysis Agent.exe 打开；加 -DesktopShortcut 可创建桌面快捷方式
+
+# 方式二：传统开发脚本一键启动（自动建虚拟环境、装依赖并打开浏览器）
+.\run.bat
 ```
 
 不想要界面：`data-agent analyze examples/sample_sales.csv --task "分析各区域销售趋势"`（需先在 `.env` 填 `DEEPSEEK_API_KEY`）。完整步骤、访问令牌与端口规则见 [快速开始](#快速开始)。
@@ -52,15 +57,17 @@ flowchart LR
 
 ## 界面预览
 
-| 起始页 · 拖拽上传与示例数据 | 分析工作区 · 数据概览与任务 |
+| 起始页 · 拖拽上传与示例数据 | 分析工作区 · 20 万行预分析与任务 |
 | :---: | :---: |
 | <img src="docs/screenshots/start-light.png" alt="起始页" width="100%" /> | <img src="docs/screenshots/overview-light.png" alt="数据分析工作台主界面（浅色主题）" width="100%" /> |
-| 深色主题 · 全流程工作台 | 产物中心 · 图表缩略图与下载 |
-| <img src="docs/screenshots/overview-dark.png" alt="深色主题主界面" width="100%" /> | <img src="docs/screenshots/artifacts-light.png" alt="产物中心" width="100%" /> |
-| 图表预览 · 密度视图与细节图层 | 数据预览 · 类型识别与列对齐 |
-| <img src="docs/screenshots/preview-light.png" alt="图表预览模态" width="100%" /> | <img src="docs/screenshots/data-preview.png" alt="数据预览表格" width="100%" /> |
+| 深色主题 · 全流程工作台 | 有据经营简报核验 · 独立复算与哈希链存证 |
+| <img src="docs/screenshots/overview-dark.png" alt="深色主题主界面" width="100%" /> | <img src="docs/screenshots/sales-audit-light.png" alt="经营简报核验" width="100%" /> |
+| 产物中心 · 交互图表缩略图与下载 | 图表预览 · 20 万行密度网格模态 |
+| <img src="docs/screenshots/artifacts-light.png" alt="产物中心" width="100%" /> | <img src="docs/screenshots/preview-light.png" alt="图表预览模态" width="100%" /> |
+| 数据预览 · 类型识别与列对齐 | |
+| <img src="docs/screenshots/data-preview.png" alt="数据预览表格" width="100%" /> | |
 
-以上截图可用 `python scripts/capture_docs_screenshots.py` 一键重新生成（本地起服务后逐页抓图）。
+以上截图可用 `python scripts/capture_docs_screenshots.py --auto-start` 一键重新生成（自动在隔离临时目录起服务并逐页抓图，不触碰本地 `runs/`）。
 
 ## 功能特性
 
@@ -131,7 +138,21 @@ flowchart LR
 - 一个 LLM API Key（Web 默认 DeepSeek；CLI / MCP 兼容 OpenAI）
 - 可选：`pip install -e ".[stats]"` 安装统计建模依赖（scipy / scikit-learn / statsmodels）。受限 Python 沙箱只有在装了该 extra 后才能 `import scipy / sklearn / statsmodels`；未安装时沙箱返回 `pip install "data-analysis-agent[stats]"` 的可操作提示，而不是裸 `ModuleNotFoundError`。
 
-### 一键启动（Windows）
+### 原生桌面程序（Windows，推荐）
+
+不想每次开终端脚本再跳转浏览器时，可直接用 Windows 系统自带编译器构建独立桌面程序（零 Electron 体积膨胀，基于微软原生 WebView2）：
+
+```powershell
+.\scripts\build-desktop.ps1                     # 生成 desktop-app\Data Analysis Agent.exe
+.\scripts\build-desktop.ps1 -DesktopShortcut    # 同时在桌面创建快捷方式
+```
+
+双击 `desktop-app\Data Analysis Agent.exe` 即可像常规软件一样打开：
+- 自动加载 `.env`，以 FastAPI 单端口直接托管 `frontend/dist`（无需额外起 Vite 进程），默认选用独立桌面端口 `18000`；
+- 独立窗口、专属图标、无黑框终端；关闭窗口时通过 Windows Job Object 自动清理后台服务进程，不留残留进程；
+- 可直接右键固定到任务栏或开始菜单。前端源码修改后，运行 `.\scripts\build-desktop.ps1 -RebuildFrontend` 刷新即可。
+
+### 脚本一键启动（Windows 开发模式）
 双击 `run.bat`。首次运行会自动创建虚拟环境、安装后端依赖并 `npm install`，随后分别启动（脚本会打印实际地址并自动打开浏览器）：
 
 - 前端：默认 http://127.0.0.1:5173；5173 被占用时自动在 5173–5182 间选可用端口

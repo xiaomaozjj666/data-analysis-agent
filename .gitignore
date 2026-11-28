@@ -35,3 +35,6 @@ frontend/coverage/
 .pytest-*/
 .coverage.*
 
+# 本地编译生成的 Windows 桌面应用产物（通过 scripts/build-desktop.ps1 生成）
+desktop-app/
+

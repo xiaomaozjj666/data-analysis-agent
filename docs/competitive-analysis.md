@@ -264,7 +264,7 @@ P0-2 与 P0-3 属于"在既有架构里加一层"，改动封闭、可用现有�
 
 ### 6.1 复核方式与可信度边界
 
-与 2026-09 初查（依赖二手评测与官网宣传页）不同，本次用自研爬虫（web-crawler）对六类产品的**官方一手页面**做了实地抓取与逐句核对：静态 HTTP 优先，被拦则换 TLS 指纹隐身（`--stealth`）或无头浏览器渲染（`--render-js`），遵守 robots、限速、不登录不绕过访问控制；每个站点的请求预算封顶，抓不到就如实记"无法核实"。每条结论均标注【原文】（逐字引文 + URL）或【推断】。原始抓取产物（HTML / 正文 txt / run_report）存于 `D:\XIAOMAO\Projects\web-crawler\.research\agent-data-analysis\`，不在本仓库入库。
+与 2026-09 初查（依赖二手评测与官网宣传页）不同，本次用自研爬虫（web-crawler）对六类产品的**官方一手页面**做了实地抓取与逐句核对：静态 HTTP 优先，被拦则换 TLS 指纹隐身（`--stealth`）或无头浏览器渲染（`--render-js`），遵守 robots、限速、不登录不绕过访问控制；每个站点的请求预算封顶，抓不到就如实记"无法核实"。每条结论均标注【原文】（逐字引文 + URL）或【推断】。原始抓取产物（HTML / 正文 txt / run_report）存于本地爬虫研究目录，不在本仓库入库。
 
 抓取可达性本身也是数据，而「官方文档换个入口」往往就是解法：docs.julius.ai 子域全站 HTTP 526（Cloudflare 证书故障），但官方文档实际在 **julius.ai/docs**——渲染后直接给出 `/docs/llms.txt` 全量目录，按目录取回 Tools / Data Connectors / Containers 三页原文；tableau.com 营销站对纯 HTTP / TLS 隐身 / 无头浏览器三层全部 403，但 **help.tableau.com 帮助门户经无头渲染可打开**，并拿到 Tableau 官方 `llms-full.txt`（6.1 MB 全量文档），其 MCP 章节又指向官方 `tableau.github.io/tableau-mcp/`（Hosted MCP / OAuth 2.1 原文）。Julius 与 Tableau 的结论因此都从「二手单一来源」升级为「官方一手页」。
 
